@@ -1,0 +1,25 @@
+# Everything in this repository is executed inside Linux containers, so text
+# files keep LF in the working tree on every platform. Without this, a Windows
+# clone checks out CRLF and the shell scripts fail in the container with
+# "\r: command not found" (found in S00.1).
+* text=auto eol=lf
+
+# Scripts and configuration that are read by Linux tooling.
+*.sh      text eol=lf
+*.py      text eol=lf
+*.toml    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.md      text eol=lf
+justfile  text eol=lf
+Dockerfile text eol=lf
+.githooks/* text eol=lf
+
+# uv resolves the lock file itself; keep it out of diffs and merges.
+uv.lock   text eol=lf -diff linguist-generated
+
+# Binary assets, should any arrive.
+*.png binary
+*.jpg binary
+*.gz  binary
+*.age binary
