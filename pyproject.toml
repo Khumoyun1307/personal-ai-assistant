@@ -75,6 +75,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S105", "S106", "S311"]
+# The M00 probe is throwaway, owner-run code outside src/; the gateway
+# confinement rule (TID251) protects production paths, not the probe.
+"tools/probe/**" = ["S105", "S106", "TID251"]
 "tools/**" = ["S105", "S106"]
 
 [tool.ruff.lint.flake8-tidy-imports]

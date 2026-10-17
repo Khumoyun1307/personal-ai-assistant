@@ -66,6 +66,14 @@ migrate:
 run:
     {{ compose }} run --rm --service-ports app uv run python -m assistant run
 
+# Run the M00 Telegram probe (owner only; needs a real BOT_TOKEN in .env).
+probe *args:
+    {{ run }} python tools/probe/probe.py {{ args }}
+
+# Sanitize a probe dump into committable fixtures (owner only).
+sanitize input output="tests/fixtures/telegram":
+    {{ run }} python tools/probe/sanitize.py --input {{ input }} --output {{ output }}
+
 # Dependency vulnerability audit.
 audit:
     {{ run }} uv run pip-audit
