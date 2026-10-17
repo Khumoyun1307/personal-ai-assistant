@@ -1,0 +1,123 @@
+[project]
+name = "assistant"
+version = "0.0.0"
+description = "Telegram-native personal AI agent"
+requires-python = ">=3.14,<3.15"
+license = { text = "Proprietary" }
+
+# Exact versions are pinned in uv.lock; the bounds here record deliberate
+# compatibility decisions (ARCHITECTURE §3, AGENTS §14).
+dependencies = [
+    "aiogram>=3.31,<3.32",
+    "alembic>=1.16,<2",
+    "anthropic>=0.69",
+    "procrastinate>=3.10,<3.11",
+    "psycopg[binary,pool]>=3.2,<4",
+    "pydantic>=2.13,<3",
+    "pydantic-settings>=2.7,<3",
+    "python-dateutil>=2.9,<3",
+    "sqlalchemy[asyncio]>=2.1,<2.2",
+    "structlog>=25.1",
+]
+
+[project.scripts]
+assistant = "assistant.__main__:main"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.120",
+    "import-linter>=2.3",
+    "mypy>=1.14",
+    "pip-audit>=2.9",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.9",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/assistant"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+# -----------------------------------------------------------------------------
+# ruff
+# -----------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = ["spikes", "migrations/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade
+    "B",         # bugbear
+    "A",         # builtins shadowing
+    "C4",        # comprehensions
+    "DTZ",       # naive datetimes
+    "LOG", "G",  # logging
+    "PIE", "PT", "RET", "SIM", "TID", "PTH", "RUF",
+    "ASYNC",     # async antipatterns (blocking calls in the event loop)
+    "S",         # bandit
+]
+ignore = [
+    "S101",  # assert: used by tests and by internal invariants
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S311"]
+"tools/**" = ["S105", "S106"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+# Telegram calls are confined to the gateway (AGENTS §5, ARCHITECTURE §5.2).
+# Per-file ignores below re-allow the modules that are permitted to call the
+# Bot API; an AST test covers the control-chat shortcut ban.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"aiogram.Bot".msg = "Only telegram/gateway.py, telegram/ingress/, telegram/connections.py and bootstrap.py may call the Bot API (AGENTS §5)."
+"aiogram.methods".msg = "Only telegram/gateway.py, telegram/ingress/, telegram/connections.py and bootstrap.py may call Bot API methods (AGENTS §5)."
+
+[tool.ruff.lint.isort]
+known-first-party = ["assistant"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# -----------------------------------------------------------------------------
+# mypy
+# -----------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.14"
+strict = true
+mypy_path = "src"
+packages = ["assistant"]
+warn_unreachable = true
+disallow_any_generics = true
+show_error_codes = true
+exclude = "^(spikes|tools)/"
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+
+# -----------------------------------------------------------------------------
+# pytest
+# -----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q --strict-markers --strict-config"
+markers = [
+    "integration: requires a real PostgreSQL (TEST_DATABASE_URL)",
+]
+filterwarnings = ["error"]

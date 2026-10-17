@@ -1,0 +1,65 @@
+# Layer contracts (AGENTS §5, ARCHITECTURE §5.2). Run via `just check`.
+[importlinter]
+root_package = assistant
+include_external_packages = True
+
+[importlinter:contract:domain-is-framework-free]
+name = Domain packages depend on ports, never on frameworks or adapters
+type = forbidden
+source_modules =
+    assistant.accounts
+    assistant.conversations
+    assistant.policy
+    assistant.actions
+    assistant.memory
+    assistant.inbox
+    assistant.automation
+    assistant.privacy
+forbidden_modules =
+    aiogram
+    anthropic
+    procrastinate
+    assistant.telegram
+    assistant.llm
+    assistant.jobs
+    assistant.agent
+
+[importlinter:contract:policy-is-pure]
+name = policy performs no I/O
+type = forbidden
+source_modules =
+    assistant.policy
+forbidden_modules =
+    sqlalchemy
+    assistant.db
+
+[importlinter:contract:agent-uses-ports]
+name = agent uses the LLMClient and JobScheduler ports, not adapters
+type = forbidden
+source_modules =
+    assistant.agent
+forbidden_modules =
+    aiogram
+    procrastinate
+    assistant.telegram
+    assistant.jobs
+
+[importlinter:contract:core-depends-on-nothing]
+name = core is the shared kernel and imports no other assistant package
+type = forbidden
+source_modules =
+    assistant.core
+forbidden_modules =
+    assistant.accounts
+    assistant.actions
+    assistant.agent
+    assistant.automation
+    assistant.conversations
+    assistant.db
+    assistant.inbox
+    assistant.jobs
+    assistant.llm
+    assistant.memory
+    assistant.policy
+    assistant.privacy
+    assistant.telegram

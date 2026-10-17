@@ -76,7 +76,7 @@ M04 and M05 can be developed in either order after M03 (both build on the S01.3 
 
 | Milestone | Status (`not approved` / `approved` / `in progress` / `done`) | Owner approval (date) | Report |
 |---|---|---|---|
-| M00 Foundation & Telegram reality check | `not approved` | — | — |
+| M00 Foundation & Telegram reality check | `in progress` | 2026-10-17 | [M00.md](milestones/M00.md) |
 | M01 Assistant foundation | `not approved` | — | — |
 | M02 Account connection & observation | `not approved` | — | — |
 | M03 Context, memory & summaries | `not approved` | — | — |

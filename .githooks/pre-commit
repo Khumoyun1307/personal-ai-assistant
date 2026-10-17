@@ -1,0 +1,36 @@
+#!/bin/sh
+# Installed by `just hooks`. Blocks commits that carry secrets or fail lint.
+# Never bypass with --no-verify (AGENTS §15).
+set -eu
+
+repo_root=$(git rev-parse --show-toplevel)
+gitleaks_image="zricethezav/gitleaks:v8.30.1"
+
+# Git Bash rewrites container-side paths like /repo into Windows paths.
+MSYS_NO_PATHCONV=1
+MSYS2_ARG_CONV_EXCL="*"
+export MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL
+
+echo "pre-commit: scanning staged changes for secrets (gitleaks)"
+set +e
+docker run --rm -v "${repo_root}:/repo" "${gitleaks_image}" \
+    git --staged --redact --no-banner /repo
+gitleaks_status=$?
+set -e
+
+case "${gitleaks_status}" in
+    0) ;;
+    1)
+        echo "pre-commit: gitleaks found a potential secret. Commit aborted." >&2
+        exit 1
+        ;;
+    *)
+        echo "pre-commit: gitleaks could not run (exit ${gitleaks_status})." >&2
+        echo "pre-commit: is Docker running? Commit aborted (not a detection)." >&2
+        exit 1
+        ;;
+esac
+
+echo "pre-commit: ruff"
+docker compose -f compose.dev.yml run --rm -T app uv run ruff check .
+docker compose -f compose.dev.yml run --rm -T app uv run ruff format --check .
