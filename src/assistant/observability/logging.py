@@ -26,7 +26,7 @@ CHATTY_LOGGERS: Final[tuple[str, ...]] = (
     "aiohttp.client",
     "aiogram",
     "aiogram.event",
-    "anthropic",
+    "openai",
     "httpcore",
     "httpx",
     "sqlalchemy",
@@ -44,8 +44,8 @@ def assert_production_logging_is_safe(settings: Settings) -> None:
         return
 
     problems: list[str] = []
-    if os.environ.get("ANTHROPIC_LOG", "").lower() == "debug":
-        problems.append("ANTHROPIC_LOG=debug")
+    if os.environ.get("OPENAI_LOG", "").lower() == "debug":
+        problems.append("OPENAI_LOG=debug")
     for name in CHATTY_LOGGERS:
         logger = logging.getLogger(name)
         if logger.isEnabledFor(logging.DEBUG):

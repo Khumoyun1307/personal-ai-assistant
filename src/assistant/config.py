@@ -49,8 +49,8 @@ class Settings(BaseSettings):
     owner_telegram_ids: Annotated[tuple[int, ...], NoDecode] = ()
 
     # --- Anthropic -----------------------------------------------------------
-    anthropic_api_key: SecretStr | None = None
-    llm_default_model: str = "claude-opus-5-5"
+    openai_api_key: SecretStr | None = None
+    llm_default_model: str = "gpt-6-luna"
     llm_monthly_budget_usd: Decimal | None = Field(default=None, gt=0)
 
     # --- Operations ----------------------------------------------------------
@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     @field_validator(
         "test_database_url",
         "bot_token",
-        "anthropic_api_key",
+        "openai_api_key",
         "llm_monthly_budget_usd",
         "heartbeat_url",
         mode="before",
@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     @field_validator("llm_default_model")
     @classmethod
     def _model_id_without_date_suffix(cls, value: str) -> str:
-        """Model ids carry no date suffix (AGENTS §8)."""
+        """Model ids come from configuration, never hard-coded (AGENTS §8)."""
         if not value:
             raise ValueError("llm_default_model must not be empty")
         return value
@@ -108,7 +108,7 @@ class Settings(BaseSettings):
             name
             for name, value in (
                 ("BOT_TOKEN", self.bot_token),
-                ("ANTHROPIC_API_KEY", self.anthropic_api_key),
+                ("OPENAI_API_KEY", self.openai_api_key),
             )
             if value is None
         ]

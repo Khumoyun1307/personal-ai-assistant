@@ -20,7 +20,7 @@ def test_defaults_are_development_safe(clean_env: None) -> None:
     settings = _settings()
     assert settings.app_env == "dev"
     assert settings.is_production is False
-    assert settings.llm_default_model == "claude-opus-5-5"
+    assert settings.llm_default_model == "gpt-6-luna"
     assert settings.owner_telegram_ids == ()
 
 
@@ -69,7 +69,7 @@ def test_production_requires_token_key_and_owner(clean_env: None) -> None:
         _settings(app_env="prod", log_format="json")
     message = str(caught.value)
     assert "BOT_TOKEN" in message
-    assert "ANTHROPIC_API_KEY" in message
+    assert "OPENAI_API_KEY" in message
     assert "OWNER_TELEGRAM_IDS" in message
 
 
@@ -79,7 +79,7 @@ def test_production_requires_json_logs(clean_env: None) -> None:
             app_env="prod",
             log_format="console",
             bot_token="123:abc",
-            anthropic_api_key="sk-ant-x",
+            openai_api_key="sk-proj-testkey000000",
             owner_telegram_ids="1",
         )
 
@@ -89,7 +89,7 @@ def test_production_settings_accepted_when_complete(clean_env: None) -> None:
         app_env="prod",
         log_format="json",
         bot_token="123:abc",
-        anthropic_api_key="sk-ant-x",
+        openai_api_key="sk-proj-testkey000000",
         owner_telegram_ids="1",
     )
     assert settings.is_production is True
@@ -119,7 +119,7 @@ def test_budget_must_be_positive(clean_env: None) -> None:
     [
         "test_database_url",
         "bot_token",
-        "anthropic_api_key",
+        "openai_api_key",
         "llm_monthly_budget_usd",
         "heartbeat_url",
     ],

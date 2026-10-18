@@ -16,7 +16,7 @@ from assistant.observability.redaction import (
 )
 
 BOT_TOKEN = "8123456789:AAH1bQ7xKqY-ZZ_pLm3nOpQrStUvWxYz012"
-ANTHROPIC_KEY = "sk-ant-api03-AbCdEfGhIjKlMnOp"
+OPENAI_KEY = "sk-proj-AbCdEfGhIjKlMnOpQrSt"
 
 
 class FakeDiag:
@@ -56,7 +56,7 @@ def test_identifiers_survive() -> None:
     [
         f"calling https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
         f"token={BOT_TOKEN}",
-        f"Authorization: Bearer {ANTHROPIC_KEY}",
+        f"Authorization: Bearer {OPENAI_KEY}",
         "postgresql+psycopg://assistant:hunter2@db:5432/assistant",
         "contact +998 90 123 45 67 called",
     ],
@@ -64,7 +64,7 @@ def test_identifiers_survive() -> None:
 def test_secret_shapes_are_scrubbed_anywhere_in_a_string(raw: str) -> None:
     scrubbed = scrub_text(raw)
     assert REDACTED in scrubbed
-    for secret in (BOT_TOKEN, ANTHROPIC_KEY, "hunter2", "90 123 45 67"):
+    for secret in (BOT_TOKEN, OPENAI_KEY, "hunter2", "90 123 45 67"):
         assert secret not in scrubbed
 
 

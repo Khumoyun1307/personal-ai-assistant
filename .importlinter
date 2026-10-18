@@ -17,7 +17,7 @@ source_modules =
     assistant.privacy
 forbidden_modules =
     aiogram
-    anthropic
+    openai
     procrastinate
     assistant.telegram
     assistant.llm

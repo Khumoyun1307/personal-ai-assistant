@@ -58,7 +58,7 @@ SENSITIVE_KEYS: Final[frozenset[str]] = frozenset(
         "token",
         "bot_token",
         "api_key",
-        "anthropic_api_key",
+        "openai_api_key",
         "authorization",
         "password",
         "secret",
@@ -73,7 +73,7 @@ SENSITIVE_KEYS: Final[frozenset[str]] = frozenset(
 #: would make the logs useless.
 _VALUE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}"),  # Telegram bot token
-    re.compile(r"\bsk-ant-[A-Za-z0-9_-]{8,}"),  # Anthropic API key
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"),  # OpenAI API key (sk-… / sk-proj-…)
     re.compile(r"https?://\S*?/bot\S*"),  # Bot API URL (embeds the token)
     re.compile(r"postgres(?:ql)?(?:\+\w+)?://\S+"),  # DB URL (embeds the password)
     re.compile(r"(?<![\w-])\+\d[\d\s().-]{7,}\d(?![\w-])"),  # international phone number

@@ -46,7 +46,7 @@ def test_prod_rejects_debug_third_party_logger(clean_env: None) -> None:
         app_env="prod",
         log_format="json",
         bot_token="123:abc",
-        anthropic_api_key="sk-ant-x",
+        openai_api_key="sk-proj-testkey000000",
         owner_telegram_ids="1",
     )
     logger = logging.getLogger(CHATTY_LOGGERS[0])
@@ -59,16 +59,16 @@ def test_prod_rejects_debug_third_party_logger(clean_env: None) -> None:
         logger.setLevel(previous)
 
 
-def test_prod_rejects_anthropic_debug_env(clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ANTHROPIC_LOG", "debug")
+def test_prod_rejects_provider_debug_env(clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_LOG", "debug")
     settings = _settings(
         app_env="prod",
         log_format="json",
         bot_token="123:abc",
-        anthropic_api_key="sk-ant-x",
+        openai_api_key="sk-proj-testkey000000",
         owner_telegram_ids="1",
     )
-    with pytest.raises(UnsafeLoggingError, match="ANTHROPIC_LOG"):
+    with pytest.raises(UnsafeLoggingError, match="OPENAI_LOG"):
         assert_production_logging_is_safe(settings)
 
 

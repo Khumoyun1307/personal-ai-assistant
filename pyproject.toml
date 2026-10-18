@@ -10,7 +10,7 @@ license = { text = "Proprietary" }
 dependencies = [
     "aiogram>=3.31,<3.32",
     "alembic>=1.16,<2",
-    "anthropic>=0.69",
+    "openai>=2.9",
     "procrastinate>=3.10,<3.11",
     "psycopg[binary,pool]>=3.2,<4",
     "pydantic>=2.13,<3",

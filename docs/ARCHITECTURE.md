@@ -45,7 +45,7 @@ flowchart LR
         APP["assistant app<br/>(modular monolith)"]
         DB[("PostgreSQL 18")]
     end
-    LLM["Anthropic Claude API<br/>(commercial tier)"]
+    LLM["OpenAI API<br/>(commercial tier)"]
     BK[("Encrypted off-site<br/>backup storage")]
     HB["External heartbeat<br/>monitor (no user data)"]
 
@@ -76,8 +76,8 @@ The host needs **no inbound ports** besides SSH while long polling is used (ADR-
 | DB access | **SQLAlchemy 2.1** (async, typed `Mapped[]`), **psycopg 3** async driver | asyncpg | psycopg 3 is SQLAlchemy 2.1's default and **required by procrastinate**; one driver; enables same-transaction job defer (spike). psycopg 3 stays regardless of the spike outcome (procrastinate accepts only psycopg connections); if transactional defer fails, use commit → defer-after-commit → reconciler (§12.4). asyncpg is an option only if procrastinate itself is replaced by the hand-rolled queue (ADR-06 fallback). |
 | Migrations | **Alembic** (async env); procrastinate's SQL migrations wrapped as Alembic revisions | procrastinate CLI migrations | One migration history. |
 | Jobs & scheduling | **procrastinate 3.10.x** behind a `JobScheduler` port | Hand-rolled `SKIP LOCKED` queue (fallback), saq, APScheduler (rejected), Celery/arq/dramatiq (need brokers) | Postgres-only, async, durable, locks, retries, cancellation, periodic tasks (ADR-06). |
-| AI provider | **Anthropic Claude** via official `anthropic` SDK, behind an `LLMClient` port | OpenAI, Gemini (paid), via adapters if evaluation demands | Verified availability in Uzbekistan, no-training commercial terms, strong tool use and structured outputs (ADR-07). |
-| Default model | **`claude-opus-5-5`** for all routes; effort tuned per route; per-route model overridable in config | `claude-sonnet-5-5`, `claude-haiku-5-5` as measured alternatives (comparison **mandatory** for the high-volume routes at the M03/M05 evaluations — §7.4) | One model to evaluate and reason about; cost tuned via effort first; per-route overrides only after evaluation (§7.4). |
+| AI provider | **OpenAI** via official `openai` SDK, behind an `LLMClient` port | Anthropic, Gemini (paid), via adapters if evaluation demands | Owner decision 2026-10-18 on cost grounds; training on API data disabled in the account. Supersedes the original ADR-07 choice (ADR-07a). |
+| Default model | **`gpt-6-luna`** for all routes | `gpt-6-sol`, `gpt-6-astra` as measured alternatives if Luna misses quality thresholds (M03/M05 — §7.4) | Cheapest tier ($0.10/$0.50 per 1M tokens), chosen to fit the owner's budget. The cost lever is inverted: routes move **up** on evidence, not down. |
 | Settings | **pydantic-settings** (pydantic 2.13.x, capped by aiogram) | dynaconf | Typed config, env-driven. |
 | Logging | **structlog** (JSON in prod) with redaction processors | stdlib logging only | Structured, content-free logs. |
 | Scheduling math | **python-dateutil** `rrule` + `zoneinfo` | croniter | RFC 5545 recurrence with timezones. |
@@ -107,7 +107,7 @@ flowchart TB
     end
     DB[("PostgreSQL<br/>app schema + procrastinate schema")]
     TG["Telegram Bot API"]
-    LLM["Claude API"]
+    LLM["OpenAI API"]
     P -->|insert raw updates| DB
     IP -->|claim pending updates / write domain rows / defer jobs| DB
     W -->|claim jobs / read+write domain| DB
@@ -165,7 +165,7 @@ src/assistant/
     tools/                 #   tool definitions, registry, executor
     schemas.py             #   structured-output models (Pydantic)
     prompts/               #   versioned prompt templates (text files)
-  llm/                     # ADAPTER: LLMClient port, Anthropic adapter, fake
+  llm/                     # ADAPTER: LLMClient port, OpenAI adapter, fake
   jobs/                    # ADAPTER: procrastinate app, task registry, JobScheduler port impl
   privacy/                 # DOMAIN: retention sweeper, deletion, export
   observability/           # logging setup, redaction, heartbeat, status aggregation
@@ -180,7 +180,7 @@ deploy/                    # compose files, Dockerfile, backup scripts, runbooks
 
 ### 5.2 Layering rules (enforced by import-linter, except where noted)
 
-- **Domain packages** (`accounts`, `conversations`, `policy`, `actions`, `memory`, `inbox`, `automation`, `privacy`) must not import `aiogram`, `anthropic`, `procrastinate`, or `telegram/`, `llm/`, `jobs/`, `agent/`. They depend on **ports** (Protocols) defined in `core/` or in the domain package.
+- **Domain packages** (`accounts`, `conversations`, `policy`, `actions`, `memory`, `inbox`, `automation`, `privacy`) must not import `aiogram`, `openai`, `procrastinate`, or `telegram/`, `llm/`, `jobs/`, `agent/`. They depend on **ports** (Protocols) defined in `core/` or in the domain package.
 - `policy/` is **pure**: no I/O; takes a fully-loaded `PolicyContext`, returns a `Decision`. Easy to table-test.
 - `agent/` may use domain services and the `LLMClient` and `JobScheduler` ports; never `aiogram`, `procrastinate`, `telegram/` or `jobs/`.
 - `telegram/` and `llm/` and `jobs/` are adapters implementing ports; only `bootstrap.py` instantiates and wires them.
@@ -394,7 +394,7 @@ for i in range(MAX_ITERATIONS=8):
 return partial_with_note(run)
 ```
 
-- **Append-only within a run**; across runs, context is rebuilt from domain data (control-chat turns as plain text, no replay of model thinking blocks). This satisfies the current Claude models' preserved-thinking rules without special handling.
+- **Append-only within a run**; across runs, context is rebuilt from domain data (control-chat turns as plain text, no replay of model thinking blocks). Rebuilding context from domain data keeps us clear of any provider-specific constraints on replaying prior reasoning.
 - **Budgets:** max iterations, per-run token budget, wall-clock timeout (5 min); exceeded ⇒ graceful partial answer.
 - **Cancellation:** `/pause` does not stop read-only owner runs, but any action they propose is subject to the pause; owner can cancel a long run via a "Stop" button (a `sendMessageDraft can_stop` variant is deferred to M08, TQ-06).
 - **Structured-output runs** (all other run types) are single calls with `output_config.format` (SDK `messages.parse` with Pydantic models), no tools, validated again by our own Pydantic models. Invalid or refused outputs never trigger actions.
@@ -411,10 +411,10 @@ Context builders (`agent/context.py`) are explicit, testable functions per run t
 
 ### 7.4 Model configuration and provider behaviour
 
-- `LLM_DEFAULT_MODEL=claude-opus-5-5`; per-route overrides: `LLM_ROUTE_<RUN_TYPE>_MODEL`, `_EFFORT`.
+- `LLM_DEFAULT_MODEL=gpt-6-luna`; per-route overrides: `LLM_ROUTE_<RUN_TYPE>_MODEL`.
 - Initial efforts (tuned by evaluation): `owner_request=medium`, `triage=low`, `draft_reply=medium`, `summarize=medium`, `interpret_instruction=medium`, `evaluate_monitor=low`, `extract_memory=low`.
-- Claude Opus 5.5 specifics handled in the adapter: thinking is always on (control depth only via effort); forced `tool_choice` is unsupported (use `auto` + structured outputs/strict tools); check `stop_reason == "refusal"` before reading content; optional server-side refusal fallback (beta) configurable; stream for long outputs; no sampling parameters or prefill (400); effort always set explicitly.
-- **Cost policy:** lowering effort is the first cost lever. At the M03 (summaries) and M05 (triage, monitor evaluation) evaluations, a measured comparison of the high-volume routes (`triage`, `summarize` for summary refresh, `evaluate_monitor`) on `claude-sonnet-5-5` and `claude-haiku-5-5` at matched effort is **mandatory**. Decision rule: a route is switched (`LLM_ROUTE_<RUN_TYPE>_MODEL`) only if the cheaper model meets the same quality thresholds on the synthetic eval set; otherwise it stays on `claude-opus-5-5`. Quality, cost per 100 items and the decision are recorded in `docs/evals/`. The cost estimate (TQ-03) and budget alerts apply regardless.
+- Provider specifics are confined to the adapter and must be **verified against the official OpenAI docs at S01.4, not carried over** from the superseded Anthropic design: reasoning-effort controls, tool-choice semantics, sampling parameters and streaming behaviour all differ. Always check the finish/stop reason, including refusal, before reading content.
+- **Cost policy — inverted.** `gpt-6-luna` is the cheapest tier ($0.10/$0.50 per 1M tokens), so there is no cheaper model to fall back to and effort tuning is not the lever it was. The budget risk is therefore low and the **quality** risk is high. At the M03 (summaries) and M05 (triage, monitor evaluation) evaluations, each route is measured on the synthetic Uzbek eval set; a route is moved **up** (`LLM_ROUTE_<RUN_TYPE>_MODEL` to `gpt-6-sol` or `gpt-6-astra`) only when Luna misses the thresholds, and the quality, cost per 100 items and decision are recorded in `docs/evals/`. Uzbek token inflation (Cyrillic and Latin both tokenize worse than English) must be measured in S00.3 before any volume estimate is trusted.
 - Usage (input, output, cache read/write tokens) recorded per call in `llm_calls`; monthly budget enforcement (NFR-10): soft alerts at 50/80 %, at 100 % background runs pause and the owner is asked.
 - **Provider data hygiene:** commercial API only; no feedback submission; no Files/Batch APIs for message content (separate retention — TF §7.2).
 - **Swappability:** `LLMClient` exposes `complete(...)` and `parse(...)` with provider-neutral types; an OpenAI or Gemini (paid) adapter can be added if the Uzbek evaluation requires it (TF §7.2).
@@ -961,14 +961,14 @@ Custom retry strategy: bounded attempts (default 5), small exponential base (pro
 - `consents` gates processing. Every LLM call requires `ai_control`. Every LLM call that includes managed-conversation content requires an active `ai_managed` consent whose `processors` include the adapter's processor id. Enforcement has one choke point, the `LLMClient` wrapper. Each request carries the provenance of every content part (context-builder sections, tool results, control turns flagged `contains_managed`), and the wrapper raises before calling the provider if a required consent is missing. When `ai_managed` is not active, the tool registry omits the tools that return managed content, including contact names (`get_conversation`, `search_messages`, `summarize_period`, `get_attention_list`, `list_tasks`, `get_activity`, `list_conversations`, `resolve_contact`), and the `owner_request` builder excludes control turns flagged `contains_managed`. Context builders also check, as defence in depth; tested.
 - Before `ai_managed` is granted, and after revocation, business messages from an active connection are stored normally in the owner's encrypted database (content, subject to retention) for coverage. No LLM call may include them, and LLM-dependent jobs (triage, drafts, summaries, semantic monitors) do not run; flagged conversations are processed once consent is granted. If the owner declines or revokes, they are offered deletion of the stored managed data, plus a choice between a non-AI mode (coverage and visibility only) and disconnection (J1, FR-ONB-06). The privacy policy and consent text state this.
 - Revocation stops new work immediately; queued jobs re-check consent when they run.
-- Consent text names processors (Anthropic; any future embedding/transcription/observability vendor counts — SEC-02).
+- Consent text names processors (OpenAI; any future embedding/transcription/observability vendor counts — SEC-02).
 
 ### 14.4 Logging and telemetry hygiene
 
 - structlog processors drop/redact: message text, captions, names, usernames, phone numbers, tokens, URLs containing `/bot`. Log identifiers are internal ids.
 - Exceptions are logged as `{exc_type, sqlstate, constraint, error_code}`, never as `str(exc)`. The SQLAlchemy engine is created with `hide_parameters=True`. Pydantic errors are logged via `e.errors(include_input=False, include_url=False)`, and Telegram/LLM SDK errors via their typed codes.
 - Postgres runs with `log_error_verbosity=terse`, `log_min_error_statement=panic` and `log_statement=none`, so "DETAIL: Failing row contains …" never puts message text in the db container log.
-- In prod the app refuses to start if `ANTHROPIC_LOG`, or the aiohttp, aiogram, httpx or SQLAlchemy loggers, are at DEBUG.
+- In prod the app refuses to start if `OPENAI_LOG`, or the aiohttp, aiogram, httpx or SQLAlchemy loggers, are at DEBUG.
 - Third-party error tracking is not used initially (it would be a new processor). If adopted later: self-hosted or strictly scrubbed, and disclosed.
 
 ### 14.5 Privacy policy
@@ -987,7 +987,7 @@ Versioned in `docs/legal/privacy-policy.md`, registered with @BotFather, served 
 
 ### 15.2 Configuration
 
-pydantic-settings reads environment variables (from `.env`, git-ignored; `.env.example` committed). Key settings: `BOT_TOKEN`, `OWNER_TELEGRAM_IDS`, `DATABASE_URL` (`postgresql+psycopg://…`) (procrastinate's PsycopgConnector receives a libpq DSN derived from it: `make_url(DATABASE_URL).set(drivername="postgresql").render_as_string(hide_password=False)`; unit-tested), `ANTHROPIC_API_KEY`, `LLM_DEFAULT_MODEL`, route overrides, `LLM_MONTHLY_BUDGET_USD`, `HEARTBEAT_URL`, `AUTONOMY_SEND_DELAY` (default 45 s; owner activity during it cancels the send), `APPROVAL_MAX_AGE` (default 12 h, bounded by the reply window), feature flags (`FEATURE_ASSIST`, `FEATURE_AUTONOMY`, …), retention overrides.
+pydantic-settings reads environment variables (from `.env`, git-ignored; `.env.example` committed). Key settings: `BOT_TOKEN`, `OWNER_TELEGRAM_IDS`, `DATABASE_URL` (`postgresql+psycopg://…`) (procrastinate's PsycopgConnector receives a libpq DSN derived from it: `make_url(DATABASE_URL).set(drivername="postgresql").render_as_string(hide_password=False)`; unit-tested), `OPENAI_API_KEY`, `LLM_DEFAULT_MODEL`, route overrides, `LLM_MONTHLY_BUDGET_USD`, `HEARTBEAT_URL`, `AUTONOMY_SEND_DELAY` (default 45 s; owner activity during it cancels the send), `APPROVAL_MAX_AGE` (default 12 h, bounded by the reply window), feature flags (`FEATURE_ASSIST`, `FEATURE_AUTONOMY`, …), retention overrides.
 
 ### 15.3 Bots per environment and the one-business-bot rule
 
@@ -1015,7 +1015,7 @@ deploy/
 - **Services:** `db` (`pgvector/pgvector:pg18`, data bind-mounted from the encrypted block volume per §14.2, no published ports), `migrate` (`python -m assistant migrate`, runs before app), `app` (`python -m assistant run`, restart unless-stopped, healthcheck via `python -m assistant healthcheck`, `stop_grace_period: 90s`; liveness per §4.3), `backup` (scheduled `pg_dump` → `age` → off-site object storage; 14 daily + 4 weekly).
 - **Host hardening checklist:** SSH keys only (password login disabled), non-root sudo user, provider cloud firewall allowing only SSH (polling needs no inbound ports), unattended security upgrades with `Unattended-Upgrade::Automatic-Reboot "false"` and a monthly manual-reboot checklist item, Docker log rotation, time sync, no `ports:` on `db`, encrypted volume, restore test before R1 exit in an isolated environment (NFR-09, §15.6).
 - **Deploy** (one path): `just deploy` rsyncs the working tree (excluding `.env` and `var/`) to `/opt/assistant` (or runs `git pull` with a deploy key once a remote exists), then runs `ssh <host> 'cd /opt/assistant && docker compose -f deploy/compose.prod.yml up -d --build'` (migrate runs first). The server `.env` is created once by the provisioning runbook (chmod 600). No registry until CI exists. Wrappers: `just logs`, `just status`, `just backup-now`, `just restore`. Zero-downtime is not required; restarts are < 60 s and Telegram queues updates meanwhile.
-- **Upgrades** of aiogram/anthropic/procrastinate follow AGENTS.md (changelog review, tests, staged on dev).
+- **Upgrades** of aiogram/openai/procrastinate follow AGENTS.md (changelog review, tests, staged on dev).
 
 ### 15.5 Hosting choice
 
@@ -1069,8 +1069,8 @@ CI (GitHub Actions, once a remote exists): ruff, mypy, import-linter, pip-audit,
 | Postgres down | Health check failures | App retries with backoff; poller pauses (does not advance offset) | Delays only |
 | Telegram API errors | Gateway classification | Per §6.8 table | Failed/uncertain card states |
 | Telegram 429 | `retry_after` | Throttle + retry | None |
-| Claude API outage/429 | SDK errors | Retry with backoff (jobs); owner told if interactive | "AI service unavailable, retrying" |
-| Claude refusal | `stop_reason=refusal` | No action; owner request answered with explanation; triage marks `needs_owner` | Short notice |
+| LLM API outage/429 | SDK errors | Retry with backoff (jobs); owner told if interactive | "AI service unavailable, retrying" |
+| LLM refusal | provider refusal signal | No action; owner request answered with explanation; triage marks `needs_owner` | Short notice |
 | Invalid structured output | Validation error | One retry, then treat as low-confidence (no autonomous action) | Draft/escalation instead of auto-reply |
 | Poison update | 3 deterministic failures (transient errors retried without limit) | Dead-letter; the conversation fails closed; coverage caveat; requeue after a fix; for business updates, record a `definite` coverage gap | Owner alerted daily until resolved |
 | Connection id rotated | `BUSINESS_CONNECTION_INVALID` | Mark stale; wait for the new id; owner notified after 30 min | None unless persistent |
@@ -1090,7 +1090,7 @@ CI (GitHub Actions, once a remote exists): ruff, mypy, import-linter, pip-audit,
 - Inbox processors partitioned by `stream_key`; multiple workers (procrastinate is multi-worker safe); global Telegram rate limiting shared via Postgres.
 - Note: Telegram's open-source server keys business webhook queues by `chat_id` without the connection id, so two owners' chats with the same contact may share a delivery queue (TF §3.1, inferred) — another reason to always return 2xx quickly.
 - Quotas (LLM spend, messages/day), plans, Telegram Stars billing (`createInvoiceLink` subscriptions), `/terms`, `/paysupport`.
-- Legal: Uzbekistan transfer conditions (Anthropic not DPF-listed → consider Claude via AWS Bedrock/Google Cloud EU regions), GDPR, Telegram terms clarification, AI disclosure obligations; users physically in unsupported provider regions (e.g., Russia) handled.
+- Legal: Uzbekistan transfer conditions (verify OpenAI's DPF/SCC position — PQ-09; EU-region or cloud-marketplace routing if it fails), GDPR, Telegram terms clarification, AI disclosure obligations; users physically in unsupported provider regions (e.g., Russia) handled.
 - Encryption: decide on per-account envelope encryption of content columns.
 - Alternative model: per-user Managed Bots (Bot API 9.6) if users want their own bot identity — schema already carries `bot_id`.
 
@@ -1106,7 +1106,8 @@ CI (GitHub Actions, once a remote exists): ruff, mypy, import-linter, pip-audit,
 | ADR-04 | Long polling with a durable inbox for personal phases; webhook later | Proposed | No inbound ports/TLS; equal durability; transport-agnostic ingress. |
 | ADR-05 | PostgreSQL 18 + SQLAlchemy 2.1 async + psycopg 3 + Alembic | Proposed | One driver shared with procrastinate; a spike failure changes only the defer pattern (§12.4), not the driver. |
 | ADR-06 | procrastinate jobs behind `JobScheduler`; domain rows as source of truth; reconcilers | Proposed | Durable without Redis; fallback: hand-rolled SKIP LOCKED queue. |
-| ADR-07 | Anthropic Claude via official SDK behind provider-neutral `LLMClient`; default `claude-opus-5-5` for all routes; effort per route; per-route model overrides only after evaluation; owned agent loop; structured outputs for untrusted-content runs | Proposed | Availability/terms verified; one model to evaluate and reason about; cost tuned via effort first; mandatory cheaper-model comparison for high-volume routes at M03/M05 (§7.4); provider swappable. |
+| ADR-07 | Anthropic Claude via official SDK behind provider-neutral `LLMClient`; default `claude-opus-5-5` | **Superseded by ADR-07a** | Never implemented; no code was written against it. |
+| ADR-07a | **OpenAI** via official `openai` SDK behind the same provider-neutral `LLMClient`; default `gpt-6-luna` for all routes; owned agent loop; structured outputs for untrusted-content runs | Accepted 2026-10-18 (owner) | Owner's decision on cost. The port was designed provider-neutral for exactly this, so the swap is an adapter, not a rewrite. **Consequence:** starting at the cheapest tier inverts the cost strategy — quality is now the risk, not spend, and the Uzbek evaluation (A8/A9) becomes the gate that decides whether routes must move up. Provider terms must be verified and recorded (TF PQ-08) before any message content is sent. |
 | ADR-08 | Capabilities determined by trigger trust: contact-triggered runs have no tools and return structured outputs only; owner runs that have read contact-authored text cannot change state without owner confirmation (taint) | Proposed | Decisive prompt-injection control. |
 | ADR-09 | At-most-once send protocol with `delivery_uncertain`; never auto-retry ambiguous sends | Proposed | No Bot API idempotency key. |
 | ADR-10 | Postgres FTS (`simple`) + pg_trgm with app-side multilingual normalization; no vector DB initially | Proposed | Uzbek has no stemmer; pgvector available later. |
@@ -1125,7 +1126,7 @@ CI (GitHub Actions, once a remote exists): ruff, mypy, import-linter, pip-audit,
 |---|---|---|
 | TQ-01 | Can procrastinate defer jobs on the SQLAlchemy async session's psycopg connection (same transaction)? | M00 spike; fallback documented (§12.4). |
 | TQ-02 | Exact Telegram behaviours LV-01…LV-19 (TF §11). | M00 probe; update §6.4–6.6 and error map. |
-| TQ-03 | Claude token usage per message for Uzbek/Russian text; daily cost at the owner's volume. | M00 `count_tokens` on synthetic samples; M02 real metering. |
-| TQ-04 | Uzbek output quality for summaries and drafts on `claude-opus-5-5` vs alternatives. | Evaluation sets in M03 (summaries) and M04/M06 (drafts); mandatory cheaper-model comparison for high-volume routes in M03/M05 (§7.4). |
+| TQ-03 | Token usage per message for Uzbek/Russian text (both scripts tokenize worse than English); daily cost at the owner's volume against the $5/month budget. | M00 token counting on synthetic samples; M02 real metering. |
+| TQ-04 | Uzbek output quality for summaries and drafts on `gpt-6-luna` vs more capable tiers. | Evaluation sets in M03 (summaries) and M04/M06 (drafts); mandatory comparison against more capable tiers for high-volume routes in M03/M05 (§7.4). |
 | TQ-05 | Provider encryption-at-rest guarantee for whichever hosting option is used (DigitalOcean, Hetzner, Railway). | Verify at provisioning (M02). |
 | TQ-06 | Whether `sendMessageDraft` streaming is worth implementing for the control chat. | Deferred: R0–R2 use the typing indicator (FR-CTL-04); `sendMessageDraft` streaming or a placeholder is an M08 candidate (IMPLEMENTATION_PLAN §11). |
