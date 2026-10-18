@@ -74,9 +74,19 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S105", "S106", "S311"]
+"tests/**" = ["S105", "S106", "S311", "ASYNC109"]
+# AGENTS §5: only these modules may touch the Bot API. ingress/ is limited to
+# getUpdates, getMe and deleteWebhook; gateway.py owns everything with a
+# visible effect. An AST test additionally bans aiogram shortcuts in control/.
+# ASYNC109: `timeout` is Telegram's long-poll parameter (how long the SERVER
+# holds the request open), not a client-side deadline, so asyncio.timeout()
+# is not the right tool.
+"src/assistant/telegram/ingress/*.py" = ["TID251", "ASYNC109"]
+"src/assistant/telegram/gateway.py" = ["TID251"]
+"src/assistant/telegram/connections.py" = ["TID251"]
+"src/assistant/bootstrap.py" = ["TID251"]
 # The M00 probe is throwaway, owner-run code outside src/; the gateway
-# confinement rule (TID251) protects production paths, not the probe.
+# confinement rule protects production paths, not the probe.
 "tools/probe/**" = ["S105", "S106", "TID251"]
 "tools/**" = ["S105", "S106"]
 

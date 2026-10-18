@@ -1,0 +1,211 @@
+"""The durable poller (ARCHITECTURE §6.1).
+
+The one rule everything else rests on: **the offset advances only after the
+batch is committed.** Telegram treats updates as confirmed when `getUpdates` is
+next called with a higher offset, so advancing early means a crash loses
+messages permanently — there is no history API to recover them from.
+
+This is also why aiogram's `start_polling` is banned (AGENTS §7): it confirms
+updates before handlers finish.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from assistant.core.clock import Clock
+from assistant.db.models import KEY_BOT_ID, KEY_POLLER_HEARTBEAT
+from assistant.observability.logging import get_logger
+from assistant.telegram.ingress.ports import (
+    BotIdentity,
+    TelegramConflictError,
+    UpdateSource,
+)
+from assistant.telegram.ingress.writer import read_state, write_batch, write_state
+
+logger = get_logger(__name__)
+
+#: Explicit on every call: the server remembers the last list it was given, so
+#: an omission silently stops delivery of that kind until it is set again.
+ALLOWED_UPDATES: list[str] = [
+    "message",
+    "edited_message",
+    "callback_query",
+    "my_chat_member",
+    "business_connection",
+    "business_message",
+    "edited_business_message",
+    "deleted_business_messages",
+]
+
+#: After a week of silence Telegram may reuse update_ids, and a stale-high
+#: offset would confirm new updates we never saw (TF §3.1). Six days is the
+#: safety margin: drop the offset and let Telegram replay from its earliest
+#: unconfirmed update, which the unique key de-duplicates.
+OFFSET_MAX_AGE = timedelta(days=6)
+
+
+class BotIdentityMismatchError(RuntimeError):
+    """The token does not match the database. Refuse to start.
+
+    A dev token against the production database (or the reverse) would ingest
+    one account's traffic into another's tenant.
+    """
+
+
+@dataclass(slots=True)
+class PollerState:
+    """In-memory polling state. The persisted copy is for observability only."""
+
+    offset: int | None = None
+    last_update_at: datetime | None = None
+    batches: int = 0
+    updates_written: int = 0
+    conflicts: int = 0
+    _started: bool = field(default=False, repr=False)
+
+
+class Poller:
+    """Long-polls Telegram and writes updates durably."""
+
+    def __init__(
+        self,
+        source: UpdateSource,
+        session_factory: async_sessionmaker[AsyncSession],
+        clock: Clock,
+        *,
+        timeout: int = 50,
+        limit: int = 100,
+    ) -> None:
+        self._source = source
+        self._session_factory = session_factory
+        self._clock = clock
+        self._timeout = timeout
+        self._limit = limit
+        self.state = PollerState()
+        self._bot_id: int | None = None
+
+    @property
+    def bot_id(self) -> int | None:
+        return self._bot_id
+
+    async def startup(self) -> BotIdentity:
+        """Startup checks (§6.1). Raises rather than polling into a mess."""
+        identity = await self._source.get_me()
+        self._bot_id = identity.id
+
+        async with self._session_factory() as session, session.begin():
+            stored = await read_state(session, KEY_BOT_ID)
+            if stored is not None and stored.get("id") != identity.id:
+                raise BotIdentityMismatchError(
+                    "token/database mismatch: this database belongs to another bot"
+                )
+            if stored is None:
+                await write_state(session, KEY_BOT_ID, {"id": identity.id})
+
+        if not identity.can_connect_to_business:
+            # Not fatal: the control chat still works. But the product's whole
+            # purpose is off until Secretary Mode is enabled, so say so loudly.
+            logger.warning(
+                "secretary_mode_disabled",
+                bot_id=identity.id,
+                detail="can_connect_to_business is false; business features unavailable",
+            )
+
+        # Never drop_pending_updates=True: it discards up to 24 h of business
+        # messages, permanently (TF §3.1).
+        await self._source.delete_webhook()
+        logger.info("poller_started", bot_id=identity.id)
+        return identity
+
+    def _effective_offset(self) -> int | None:
+        """The offset to send, or None to let Telegram replay from its oldest.
+
+        The first call after start deliberately omits the offset: Telegram then
+        returns the earliest unconfirmed update, and the unique key absorbs
+        anything we already stored.
+        """
+        if not self.state._started:
+            return None
+        if self.state.offset is None:
+            return None
+        last = self.state.last_update_at
+        if last is not None and self._clock.now() - last > OFFSET_MAX_AGE:
+            logger.warning("poller_offset_expired", detail="offset dropped after 6 days idle")
+            self.state.offset = None
+            return None
+        return self.state.offset
+
+    async def poll_once(self) -> int:
+        """One `getUpdates` → commit → advance offset cycle.
+
+        Returns the number of rows written (duplicates are not counted).
+        """
+        if self._bot_id is None:
+            raise RuntimeError("poll_once called before startup()")
+
+        updates = await self._source.get_updates(
+            offset=self._effective_offset(),
+            timeout=self._timeout,
+            limit=self._limit,
+            allowed_updates=ALLOWED_UPDATES,
+        )
+        self.state._started = True
+        self.state.batches += 1
+
+        if not updates:
+            await self._heartbeat()
+            return 0
+
+        highest = max(update["update_id"] for update in updates if "update_id" in update)
+
+        async with self._session_factory() as session, session.begin():
+            written = await write_batch(session, bot_id=self._bot_id, updates=updates)
+            # Still inside the transaction: the observability copy of the
+            # offset must not claim progress the batch did not make.
+            await write_state(
+                session,
+                KEY_POLLER_HEARTBEAT,
+                {"at": self._clock.now().isoformat(), "offset": highest + 1},
+            )
+
+        # ONLY NOW. Everything above this line can fail and be replayed; past
+        # it, Telegram will never send these updates again.
+        self.state.offset = highest + 1
+        self.state.last_update_at = self._clock.now()
+        self.state.updates_written += written
+
+        logger.info(
+            "poller_batch", received=len(updates), written=written, offset=self.state.offset
+        )
+        return written
+
+    async def _heartbeat(self) -> None:
+        async with self._session_factory() as session, session.begin():
+            await write_state(
+                session,
+                KEY_POLLER_HEARTBEAT,
+                {"at": self._clock.now().isoformat(), "offset": self.state.offset},
+            )
+
+    async def run_forever(self, *, stop_after_batches: int | None = None) -> None:
+        """Poll until stopped.
+
+        `stop_after_batches` exists so tests can run the real loop rather than
+        a reimplementation of it.
+        """
+        while stop_after_batches is None or self.state.batches < stop_after_batches:
+            try:
+                await self.poll_once()
+            except TelegramConflictError:
+                # Two consumers on one token make no progress at all; stop and
+                # let the supervisor surface it (§6.1).
+                self.state.conflicts += 1
+                logger.error(
+                    "poller_conflict",
+                    detail="another consumer is polling this token; stopping",
+                )
+                raise
