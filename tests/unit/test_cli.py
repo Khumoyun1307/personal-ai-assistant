@@ -34,9 +34,18 @@ def test_healthcheck_fails_when_database_is_unreachable(
 def test_unimplemented_commands_report_clearly(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    for command in ("migrate", "run"):
-        assert main([command]) == EXIT_NOT_IMPLEMENTED
-        assert "not implemented" in capsys.readouterr().err
+    """`run` arrives in S01.2; until then it must say so, not fail obscurely."""
+    assert main(["run"]) == EXIT_NOT_IMPLEMENTED
+    assert "not implemented" in capsys.readouterr().err
+
+
+def test_migrate_reports_invalid_configuration_by_name(
+    clean_env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "mysql://user:pw@db:3306/assistant")
+    monkeypatch.chdir("/")
+    assert main(["migrate"]) == EXIT_FAILED
+    assert "DATABASE_URL" in capsys.readouterr().err
 
 
 def test_unknown_command_is_rejected() -> None:

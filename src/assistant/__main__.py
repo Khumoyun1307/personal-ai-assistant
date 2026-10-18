@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -23,7 +25,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="assistant", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("healthcheck", help="validate configuration and reach the database")
-    sub.add_parser("migrate", help="apply database migrations (from S01.1)")
+    sub.add_parser("migrate", help="apply database migrations")
     sub.add_parser("run", help="run the assistant (from S01.2)")
     return parser
 
@@ -80,10 +82,38 @@ def healthcheck() -> int:
     return EXIT_OK
 
 
+def migrate() -> int:
+    """Apply Alembic migrations up to head."""
+    from alembic import command
+    from alembic.config import Config
+
+    from assistant.config import Settings
+
+    try:
+        settings = Settings()  # type: ignore[call-arg]
+    except ValidationError as error:
+        print("Configuration invalid:", file=sys.stderr)
+        for item in error.errors(include_input=False, include_url=False):
+            location = ".".join(str(part) for part in item["loc"]) or "<settings>"
+            print(f"  {location.upper()}: {item['msg']}", file=sys.stderr)
+        return EXIT_FAILED
+
+    root = Path(__file__).resolve().parents[2]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    # Passed via the environment so the URL never lands in alembic.ini.
+    os.environ["ALEMBIC_DATABASE_URL"] = settings.database_url.get_secret_value()
+    command.upgrade(config, "head")
+    print("OK: migrations applied")
+    return EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "healthcheck":
         return healthcheck()
+    if args.command == "migrate":
+        return migrate()
     print(
         f"'{args.command}' is not implemented yet; see docs/IMPLEMENTATION_PLAN.md",
         file=sys.stderr,
