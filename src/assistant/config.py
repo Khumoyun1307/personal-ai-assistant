@@ -48,10 +48,20 @@ class Settings(BaseSettings):
     bot_token: SecretStr | None = None
     owner_telegram_ids: Annotated[tuple[int, ...], NoDecode] = ()
 
-    # --- Anthropic -----------------------------------------------------------
+    # --- LLM provider (OpenAI, ADR-07a) ---------------------------------------
     openai_api_key: SecretStr | None = None
     llm_default_model: str = "gpt-6-luna"
     llm_monthly_budget_usd: Decimal | None = Field(default=None, gt=0)
+    #: Reasoning effort for owner requests (ARCHITECTURE §7.4). Empty sends no
+    #: effort at all, for a model that does not accept the parameter.
+    llm_owner_request_effort: (
+        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
+    ) = "medium"
+
+    # --- Feature flags -------------------------------------------------------
+    #: Release flags that are ON, e.g. `tool.get_status`. Everything defaults
+    #: off (AGENTS §8): a tool reaches the model only when its flag is listed.
+    feature_flags: Annotated[frozenset[str], NoDecode] = frozenset()
 
     # --- Operations ----------------------------------------------------------
     heartbeat_url: SecretStr | None = None
@@ -61,6 +71,7 @@ class Settings(BaseSettings):
         "bot_token",
         "openai_api_key",
         "llm_monthly_budget_usd",
+        "llm_owner_request_effort",
         "heartbeat_url",
         mode="before",
     )
@@ -91,6 +102,14 @@ class Settings(BaseSettings):
         if not isinstance(value, str):
             return value
         return tuple(int(part) for part in value.replace(" ", "").split(",") if part)
+
+    @field_validator("feature_flags", mode="before")
+    @classmethod
+    def _parse_flags(cls, value: object) -> object:
+        """Accept `tool.a,tool.b` from the environment; JSON decoding is disabled."""
+        if not isinstance(value, str):
+            return value
+        return frozenset(part for part in value.replace(" ", "").split(",") if part)
 
     @field_validator("llm_default_model")
     @classmethod

@@ -29,6 +29,8 @@ CHATTY_LOGGERS: Final[tuple[str, ...]] = (
     "openai",
     "httpcore",
     "httpx",
+    # The openai SDK's transport (3.x) is httpx2, which logs under its own name.
+    "httpx2",
     "sqlalchemy",
     "sqlalchemy.engine",
 )

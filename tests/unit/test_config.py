@@ -138,3 +138,18 @@ def test_env_example_loads_as_valid_configuration(clean_env: None) -> None:
     assert settings.app_env == "dev"
     assert settings.llm_monthly_budget_usd is None
     assert settings.heartbeat_url is None
+
+
+def test_feature_flags_default_off_and_parse_from_a_list(clean_env: None) -> None:
+    """AGENTS §8: every release flag defaults off."""
+    assert _settings().feature_flags == frozenset()
+    assert _settings(feature_flags="tool.get_status, tool.other").feature_flags == frozenset(
+        {"tool.get_status", "tool.other"}
+    )
+
+
+def test_owner_request_effort_defaults_to_medium_and_blank_sends_none(clean_env: None) -> None:
+    assert _settings().llm_owner_request_effort == "medium"
+    assert _settings(llm_owner_request_effort="").llm_owner_request_effort is None
+    with pytest.raises(ValidationError):
+        _settings(llm_owner_request_effort="extreme")

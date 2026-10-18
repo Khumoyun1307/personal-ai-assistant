@@ -40,9 +40,12 @@ source_modules =
     assistant.agent
 forbidden_modules =
     aiogram
+    openai
     procrastinate
     assistant.telegram
     assistant.jobs
+    assistant.llm.openai_adapter
+    assistant.bootstrap
 
 [importlinter:contract:core-depends-on-nothing]
 name = core is the shared kernel and imports no other assistant package

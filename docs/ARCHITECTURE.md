@@ -160,12 +160,19 @@ src/assistant/
   inbox/                   # DOMAIN: triage, attention, notifications, digests
   automation/              # DOMAIN: delegations, monitors, reminders, follow-ups, schedules
   agent/                   # APPLICATION: agent runtime
-    runtime.py             #   owned agent loop, budgets, run persistence
+    runtime.py             #   owned agent loop, budgets
     context.py             #   context builders per run type
-    tools/                 #   tool definitions, registry, executor
-    schemas.py             #   structured-output models (Pydantic)
-    prompts/               #   versioned prompt templates (text files)
-  llm/                     # ADAPTER: LLMClient port, OpenAI adapter, fake
+    persistence.py         #   run/turn/llm_calls repositories; DB consent reader + call recorder
+    ports.py               #   ControlChannel (implemented by telegram/control/agent_channel.py)
+    prompt_registry.py     #   active prompt version per run type
+    tools/                 #   registry.py (definitions, invariants), executor.py, one module per tool
+    schemas.py             #   structured-output models (Pydantic) — from M03
+    prompts/               #   versioned prompt templates (name.vN.md)
+  llm/                     # LLM port and adapter (the fake lives in tests/fakes/llm.py)
+    port.py                #   LLMClient Protocol + provider-neutral types (agent imports only this)
+    openai_adapter.py      #   OpenAI Responses API adapter (store=false); imported only by bootstrap
+    consent.py             #   consent choke point (§14.3)
+    metering.py            #   llm_calls metering + the single price table
   jobs/                    # ADAPTER: procrastinate app, task registry, JobScheduler port impl
   privacy/                 # DOMAIN: retention sweeper, deletion, export
   observability/           # logging setup, redaction, heartbeat, status aggregation
@@ -397,7 +404,8 @@ return partial_with_note(run)
 - **Append-only within a run**; across runs, context is rebuilt from domain data (control-chat turns as plain text, no replay of model thinking blocks). Rebuilding context from domain data keeps us clear of any provider-specific constraints on replaying prior reasoning.
 - **Budgets:** max iterations, per-run token budget, wall-clock timeout (5 min); exceeded ⇒ graceful partial answer.
 - **Cancellation:** `/pause` does not stop read-only owner runs, but any action they propose is subject to the pause; owner can cancel a long run via a "Stop" button (a `sendMessageDraft can_stop` variant is deferred to M08, TQ-06).
-- **Structured-output runs** (all other run types) are single calls with `output_config.format` (SDK `messages.parse` with Pydantic models), no tools, validated again by our own Pydantic models. Invalid or refused outputs never trigger actions.
+- **Structured-output runs** (all other run types) are single calls through `LLMClient.parse` (OpenAI adapter: Responses API `responses.parse(text_format=<Pydantic model>)`), no tools, validated again by our own Pydantic models. Invalid, truncated or refused outputs never trigger actions.
+- **As built (S01.4):** `agent/runtime.py` (`OwnerRequestRuntime`), with budgets in `AgentConfig`: 8 iterations, 60k tokens and 5 minutes per run, 120 s per call. A truncated answer is retried once with double the output budget (capped at 8k), never continued by prefilling. Within a run the adapter is stateless (`store=false`): the model's output items, including encrypted reasoning, are passed back unchanged, followed by all tool results of that turn. The `LLMClient` given to the runtime is `ConsentGatedLLMClient(MeteredLLMClient(OpenAIClient))`, built only in `bootstrap.py`.
 
 ### 7.3 Context assembly
 
@@ -524,7 +532,7 @@ There is **no** tool that sends a message directly. Owner-dictated sends always 
 
 | Tool | Class | Purpose | Release |
 |---|---|---|---|
-| `get_status` | read | Connection, rights tier, coverage, autonomy state, budget | R0 |
+| `get_status` | read | Connection, rights tier, coverage, autonomy state, budget. **Implemented S01.4** (`agent/tools/status.py`, flag `tool.get_status`) | R0 |
 | `list_conversations` | read | Filter by activity window, mode, attention, contact name | R1 |
 | `get_conversation` | read | Recent messages + summary for one conversation (paged) | R1 |
 | `search_messages` | read | Multilingual search with filters (contact, date range) | R1 |
@@ -545,7 +553,7 @@ There is **no** tool that sends a message directly. Owner-dictated sends always 
 | `pause_autonomy` / `resume_autonomy` | control | Kill switch (also available as commands); a model `resume_autonomy` call only offers a Resume card button (§7.1) | R1 |
 | `delete_conversation_data` / `delete_contact_data` / `delete_everything` | configure | Deletion with mandatory confirmation card (FR-PRV-04) | R1 |
 
-Each tool definition: name, description, JSON schema (strict), capability class, allowed run types, minimum capability tier, release flag (default off). Tools are registered in `agent/tools/registry.py`; the registry filters by run type, account capability tier, and feature flags.
+Each tool definition: name, description, JSON schema (strict), capability class, allowed run types, minimum capability tier, release flag (default off). Tools are registered in `agent/tools/registry.py`; the registry filters by run type, account capability tier, and feature flags. Release flags are switched on with `FEATURE_FLAGS` (comma-separated). Registration refuses a tool whose name looks like an outbound effect (`send_*`, `edit_*`, `delete_message*`, `mark_read*`, `reply*`), a tool allowed for any run type other than `owner_request`, and a tool without a release flag (RG-17).
 
 ### 8.3 Execution contract
 
