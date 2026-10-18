@@ -167,10 +167,29 @@ async def cmd_me(_args: argparse.Namespace) -> None:
     await with_bot("getMe", run)
 
 
+def should_capture_full(chats: set[int], listed: set[int]) -> bool:
+    """Fail closed: a full payload is written only when we are sure we may.
+
+    That means all three of: an allow-list is configured, we could identify at
+    least one chat id in the update, and one of them is allow-listed. An unset
+    allow-list, or an update whose chat we cannot identify, yields metadata
+    only — never the other way round (AGENTS §6.7).
+    """
+    return bool(listed) and bool(chats) and bool(chats & listed)
+
+
 async def cmd_listen(args: argparse.Namespace) -> None:
     bot = make_bot()
     listed = allowed_chat_ids()
-    print(f"allow-listed chat ids: {sorted(listed) or 'NONE — all payloads withheld'}")
+    if listed:
+        print(f"allow-listed chat ids: {sorted(listed)}")
+    else:
+        print(
+            "PROBE_ALLOWED_CHAT_IDS is not set: every payload will be withheld and\n"
+            "only update type, update_id and a hash of chat.id recorded. Set it in\n"
+            ".env to capture the chats you are testing.",
+            file=sys.stderr,
+        )
     print(f"allowed_updates: {ALLOWED_UPDATES}")
     # Never drop_pending_updates=True: it discards up to 24 h of business messages.
     await bot.delete_webhook(drop_pending_updates=False)
@@ -185,15 +204,15 @@ async def cmd_listen(args: argparse.Namespace) -> None:
                 payload = update.model_dump(exclude_none=True, mode="json")
                 kind = update_type_of(payload)
                 chats = extract_chat_ids(payload)
-                if chats and listed and not (chats & listed):
-                    record = redact_for_unlisted(payload, kind)
-                else:
+                if should_capture_full(chats, listed):
                     record = {
                         "kind": "update",
                         "update_type": kind,
                         "observed_at": datetime.now(UTC).isoformat(),
                         "payload": payload,
                     }
+                else:
+                    record = redact_for_unlisted(payload, kind)
                 write_record(record)
                 print(f"[{record.get('update_type')}] update_id={payload.get('update_id')}")
     except KeyboardInterrupt, asyncio.CancelledError:
