@@ -28,6 +28,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from aiogram import Bot
+
 from assistant.core.clock import Clock
 from assistant.observability.logging import get_logger
 from assistant.telegram.errors import ClassifiedError, ErrorClass, classify
@@ -234,4 +236,62 @@ class OutboundGateway:
             classified.error_class,
             error_code=classified.code,
             retry_after=classified.retry_after,
+        )
+
+
+class AiogramSender:
+    """`TelegramSender` over an aiogram `Bot`. Constructed only by bootstrap.
+
+    The four allow-listed calls and nothing else. `parse_mode="HTML"` is set
+    per call, because the renderer produces Telegram HTML; the bot's default
+    stays unset so no other path can send HTML by accident.
+    """
+
+    def __init__(self, bot: Bot) -> None:
+        self._bot = bot
+
+    async def send_message(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        reply_markup: Any | None = None,
+        business_connection_id: str | None = None,
+    ) -> dict[str, Any]:
+        message = await self._bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+            business_connection_id=business_connection_id,
+        )
+        return {"message_id": message.message_id}
+
+    async def edit_message_text(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: Any | None = None,
+        business_connection_id: str | None = None,
+    ) -> dict[str, Any]:
+        await self._bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+            business_connection_id=business_connection_id,
+        )
+        return {"message_id": message_id}
+
+    async def send_chat_action(self, *, chat_id: int, action: str) -> None:
+        await self._bot.send_chat_action(chat_id=chat_id, action=action)
+
+    async def answer_callback_query(
+        self, *, callback_query_id: str, text: str | None = None, show_alert: bool = False
+    ) -> None:
+        await self._bot.answer_callback_query(
+            callback_query_id=callback_query_id, text=text, show_alert=show_alert
         )

@@ -1,8 +1,7 @@
 """Command-line entrypoint: `python -m assistant <command>`.
 
-S00.1 implements `healthcheck`. `run` and `migrate` arrive with the milestones
-that build them (S01.x); they are declared here so the task runner's recipes
-fail with an explanation rather than an argparse error.
+Commands: `healthcheck`, `migrate`, `inbox requeue|status`, and `run` (the
+long-running process, S01.5).
 """
 
 from __future__ import annotations
@@ -26,7 +25,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("healthcheck", help="validate configuration and reach the database")
     sub.add_parser("migrate", help="apply database migrations")
-    sub.add_parser("run", help="run the assistant (from S01.5)")
+    run = sub.add_parser("run", help="run the assistant (poller, inbox, workers, system tasks)")
+    run.add_argument(
+        "--roles",
+        default="poller,inbox,worker,system",
+        help="comma-separated subset of poller,inbox,worker,system (default: all)",
+    )
 
     inbox = sub.add_parser("inbox", help="durable inbox maintenance")
     inbox_sub = inbox.add_subparsers(dest="inbox_command", required=True)
@@ -151,6 +155,44 @@ def _inbox(args: argparse.Namespace) -> int:
     return asyncio.run(run())
 
 
+def run(args: argparse.Namespace) -> int:
+    """`run` — the long-running process (ARCHITECTURE §4.1, §4.3).
+
+    Exits non-zero when any role fails or turns unhealthy, so Compose restarts
+    the container; exits 0 after a clean SIGTERM shutdown.
+    """
+    from assistant.bootstrap import InstanceAlreadyRunningError, running_process
+    from assistant.config import ConfigError, Settings
+    from assistant.observability.logging import UnsafeLoggingError, configure_logging
+
+    try:
+        settings = Settings()  # type: ignore[call-arg]
+    except ValidationError as error:
+        print("Configuration invalid:", file=sys.stderr)
+        for item in error.errors(include_input=False, include_url=False):
+            location = ".".join(str(part) for part in item["loc"]) or "<settings>"
+            print(f"  {location.upper()}: {item['msg']}", file=sys.stderr)
+        return EXIT_FAILED
+    try:
+        configure_logging(settings)
+    except UnsafeLoggingError as error:
+        print(f"Logging configuration unsafe for prod: {error}", file=sys.stderr)
+        return EXIT_FAILED
+
+    roles = frozenset(part.strip() for part in args.roles.split(",") if part.strip())
+
+    async def main() -> int:
+        async with running_process(settings, roles) as supervisor:
+            return await supervisor.run()
+
+    try:
+        return asyncio.run(main())
+    except (ConfigError, InstanceAlreadyRunningError) as error:
+        # Both messages name a setting or a condition, never a value.
+        print(f"Cannot start: {error}", file=sys.stderr)
+        return EXIT_FAILED
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "healthcheck":
@@ -159,6 +201,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return migrate()
     if args.command == "inbox":
         return _inbox(args)
+    if args.command == "run":
+        return run(args)
     print(
         f"'{args.command}' is not implemented yet; see docs/IMPLEMENTATION_PLAN.md",
         file=sys.stderr,

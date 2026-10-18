@@ -23,7 +23,7 @@ Nothing is held in a database transaction across an LLM or Telegram call.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
@@ -104,6 +104,8 @@ class RunOutcome:
     run_id: int | None = None
     reply_message_id: int | None = None
     note: str | None = None
+    account_id: int | None = None
+    ack_latency_ms: int | None = None
 
 
 # Owner-facing texts. Each says plainly what happened (§6 invariant 11).
@@ -141,6 +143,9 @@ class _RunState:
     tokens: int = 0
     #: Whether anything managed reached the model; the reply inherits it.
     used_managed: bool = False
+    #: When the owner's message arrived, and how long until the typing indicator.
+    received_at: datetime | None = None
+    ack_latency_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +233,17 @@ class OwnerRequestRuntime:
                 return RunOutcome(RunStatus.SKIPPED, note="no_control_chat")
             chat_id = account.control_chat_id
 
+            # A job can run twice (stalled-worker recovery, reconciler). A turn
+            # that already got an answer must not get a second one; a run cut
+            # off mid-way (no answer recorded) is marked and done again.
+            previous = await AgentRunRepository(session, account_id).for_trigger(f"turn:{turn_id}")
+            if any(run.status != "running" for run in previous):
+                return RunOutcome(RunStatus.SKIPPED, note="already_answered", account_id=account_id)
+            for interrupted in previous:
+                interrupted.status = RunStatus.FAILED.value
+                interrupted.error_class = "interrupted"
+                interrupted.finished_at = self._clock.now()
+
             control = await active_consent(session, account_id, kind=CONSENT_AI_CONTROL)
             if not control.granted:
                 return _Started(account_id, chat_id, no_consent=True)
@@ -258,6 +274,7 @@ class OwnerRequestRuntime:
                 items=list(context.items),
                 instructions=context.instructions,
                 used_managed=any(item.provenance is Provenance.MANAGED for item in context.items),
+                received_at=turn.created_at,
             )
             return _Started(
                 account_id,
@@ -279,6 +296,17 @@ class OwnerRequestRuntime:
                 break
             state.iterations += 1
             await self._channel.typing(account_id=state.account_id, chat_id=state.chat_id)
+            if state.ack_latency_ms is None and state.received_at is not None:
+                # M01 acceptance 1: p95 of (typing indicator minus message received).
+                state.ack_latency_ms = int(
+                    (self._clock.now() - state.received_at).total_seconds() * 1000
+                )
+                logger.info(
+                    "agent_ack",
+                    account_id=state.account_id,
+                    run_id=state.run_id,
+                    ack_latency_ms=state.ack_latency_ms,
+                )
             request = LLMRequest(
                 account_id=state.account_id,
                 run_id=state.run_id,
@@ -413,4 +441,10 @@ class OwnerRequestRuntime:
             iterations=state.iterations,
             delivered=delivery.ok,
         )
-        return RunOutcome(status, state.run_id, delivery.message_id)
+        return RunOutcome(
+            status,
+            state.run_id,
+            delivery.message_id,
+            account_id=state.account_id,
+            ack_latency_ms=state.ack_latency_ms,
+        )

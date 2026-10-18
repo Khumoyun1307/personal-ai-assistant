@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts import service
 from assistant.accounts.models import Account
 from assistant.core.clock import Clock
+from assistant.core.jobs import OWNER_REQUEST_TASK, JobScheduler, owner_control_lock
 from assistant.observability.logging import get_logger
 from assistant.telegram.control import handlers
 from assistant.telegram.control.handlers import HandlerResult, IncomingMessage
@@ -46,9 +47,16 @@ class DispatchOutcome:
 class ControlDispatcher:
     """Routes one control-chat message to a handler."""
 
-    def __init__(self, gateway: OutboundGateway, clock: Clock) -> None:
+    def __init__(
+        self,
+        gateway: OutboundGateway,
+        clock: Clock,
+        scheduler: JobScheduler | None = None,
+    ) -> None:
         self._gateway = gateway
         self._clock = clock
+        # None only in tests that exercise routing without a job queue.
+        self._scheduler = scheduler
 
     async def dispatch(self, session: AsyncSession, message: IncomingMessage) -> DispatchOutcome:
         command, argument = handlers.parse_command(message.text)
@@ -87,7 +95,7 @@ class ControlDispatcher:
             await service.clear_pending_input(session, account_id=account.id)
             send = await self._gateway.send_text(
                 ControlChat(account_id=account.id, chat_id=message.chat_id),
-                "Paused. I will not act on your behalf until you say <b>resume</b>.",
+                "Paused. I will not act on your behalf until you send /resume.",
             )
             return DispatchOutcome(HandlerResult(True, "pause", send, note="stop_word"), account.id)
 
@@ -99,17 +107,32 @@ class ControlDispatcher:
             )
             return DispatchOutcome(result, account.id)
 
-        # Rule 4: free text. The agent runtime picks this up in S01.4.
-        await service.record_control_turn(
+        # Rule 4: free text. Record the turn and queue the agent run in the
+        # SAME transaction: a crash between the two can lose neither, and a
+        # rollback leaves neither (M00 spike E1). One account's turns run one
+        # at a time, in order (lock `acct:{id}:control`).
+        turn = await service.record_control_turn(
             session,
             account_id=account.id,
             role="owner",
             text=message.text,
             telegram_message_id=message.telegram_message_id,
+            created_at=message.received_at,
         )
-        return DispatchOutcome(
-            HandlerResult(True, "free_text", None, note="recorded_for_agent"), account.id
-        )
+        if self._scheduler is None:
+            logger.warning("owner_turn_not_queued", account_id=account.id, turn_id=turn.id)
+            note = "recorded_for_agent"
+        else:
+            connection = await session.connection()
+            raw = await connection.get_raw_connection()
+            await self._scheduler.defer(
+                OWNER_REQUEST_TASK,
+                args={"turn_id": turn.id},
+                lock=owner_control_lock(account.id),
+                connection=raw.driver_connection,
+            )
+            note = "queued_for_agent"
+        return DispatchOutcome(HandlerResult(True, "free_text", None, note=note), account.id)
 
     async def _load_account(
         self, session: AsyncSession, message: IncomingMessage

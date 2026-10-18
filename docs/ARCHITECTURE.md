@@ -131,6 +131,8 @@ flowchart TB
 
 Compose restarts a container only when its process exits; it never restarts an unhealthy one. An in-process supervisor therefore exits the process with a non-zero code when any role task ends, or when a role's liveness signal is stale: poller, no successful `getUpdates` for 3 min; inbox, backlog > 0 with no progress for 2 min; worker, heartbeat stale. On SIGTERM it stops the poller, drains the inbox, stops claiming jobs, waits for in-flight sends up to the gateway HTTP timeout, then exits. CPU-heavy work runs in `asyncio.to_thread`. procrastinate `stalled_worker_timeout` (default 30 s) is set to at least 2× the longest tolerated event-loop stall, so `retry_stalled_jobs` never re-runs a live job.
 
+**As built (S01.5):** `core/supervisor.py` runs the roles from `process.py`, assembled by `bootstrap.running_process`: `poller` (holds the poller advisory lock; network/5xx back off 1→30 s; a 409 or a lost lock ends the role), `inbox` (holds the inbox advisory lock; finishes the row in hand on stop), and one procrastinate worker per queue (`worker:system`, `worker:outbound`, `worker:llm`; graceful timeouts 20/30/45 s, inside Compose's 90 s). Liveness is probed every 15 s; a role that returns at all counts as failed. procrastinate's `stalled_worker_timeout` is 60 s with a 10 s heartbeat. `python -m assistant run --roles=…` selects roles. Control-chat command replies are sent from inside the inbox row's transaction, so a crash between send and commit can repeat a command reply (never an agent answer, which is a job; see §12.2).
+
 ---
 
 ## 5. Module structure and dependency rules
@@ -168,12 +170,17 @@ src/assistant/
     tools/                 #   registry.py (definitions, invariants), executor.py, one module per tool
     schemas.py             #   structured-output models (Pydantic) — from M03
     prompts/               #   versioned prompt templates (name.vN.md)
+  process.py               #   roles (poller, inbox, workers) + liveness; run by core/supervisor.py
   llm/                     # LLM port and adapter (the fake lives in tests/fakes/llm.py)
     port.py                #   LLMClient Protocol + provider-neutral types (agent imports only this)
     openai_adapter.py      #   OpenAI Responses API adapter (store=false); imported only by bootstrap
     consent.py             #   consent choke point (§14.3)
     metering.py            #   llm_calls metering + the single price table
-  jobs/                    # ADAPTER: procrastinate app, task registry, JobScheduler port impl
+  jobs/                    # ADAPTER: app.py (queues, workers), tasks.py (catalogue), scheduler.py
+                           #   (JobScheduler impl), reconcile.py (reads procrastinate_jobs)
+                           # Ports in core/: jobs.py (JobScheduler), channel.py (ControlChannel),
+                           #   supervisor.py. Domain services: inbox/notify.py (notify_owner),
+                           #   inbox/watchdog.py, privacy/retention.py, agent/budget.py
   privacy/                 # DOMAIN: retention sweeper, deletion, export
   observability/           # logging setup, redaction, heartbeat, status aggregation
 tests/
@@ -907,6 +914,8 @@ Periodic system tasks (code-declared `@app.periodic`):
 | `system.remove_old_jobs` | daily | Job table hygiene |
 | `system.heartbeat_ping` | every 5 min | External dead-man's-switch ping (no data) |
 | `system.backup_check` | daily | Verify last backup age |
+
+**As built (S01.5):** `jobs/tasks.py` registers `agent.owner_request` (queue `llm`, lock `acct:{id}:control` set at defer, bounded retry on DB errors only), and the periodic `system.ingestion_watchdog`, `system.reconcile_pending`, `system.retention_sweep`, `system.retry_stalled_jobs`, `system.remove_old_jobs` (72 h of finished jobs; failed/aborted kept) and `system.heartbeat_ping`, each with a queueing lock. Task bodies live on `JobHandlers` so they are testable without a worker. The owner turn and its job are written in one transaction by the dispatcher. `reconcile_pending` re-defers an owner turn older than 30 s and younger than 1 h that has no `agent.owner_request` job in `todo`/`doing`/`succeeded`/`failed` (none at all, or only aborted ones after a shutdown). A re-delivered job for an already-answered turn is a no-op, and a run left `running` by a crash is marked `interrupted` and done again. Dead-letter alerts come from the watchdog (one per row); budget alerts (50/80/100 %, once per month each) run after each owner job. All alerts go through `inbox/notify.py` (`OwnerAlerts.notify_owner`), deduplicated in `audit_log`.
 
 ### 12.3 Retries
 

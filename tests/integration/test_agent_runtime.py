@@ -13,7 +13,6 @@ place of OpenAI. Pinned claims:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any
@@ -27,7 +26,6 @@ from assistant.accounts.models import Account, ControlTurn
 from assistant.agent import runtime as rt
 from assistant.agent.models import AgentRun, AgentRunStep, LlmCall
 from assistant.agent.persistence import DbCallRecorder, DbConsentReader
-from assistant.agent.ports import Delivery
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime, RunStatus
 from assistant.agent.tools.registry import default_registry
 from assistant.db.engine import build_engine, build_session_factory
@@ -44,6 +42,7 @@ from assistant.llm.port import (
     TextItem,
     ToolResultItem,
 )
+from tests.fakes.channel import FakeChannel
 from tests.fakes.clock import FakeClock
 from tests.fakes.llm import FakeLLM, stop_response, text_response, tool_response
 
@@ -52,25 +51,6 @@ pytestmark = pytest.mark.integration
 OWNER = 7000000001
 CHAT = 7000000001
 STATUS_FLAG = frozenset({"tool.get_status"})
-
-
-@dataclass
-class FakeChannel:
-    sends: list[str] = field(default_factory=list)
-    events: list[str] = field(default_factory=list)
-    deliver: bool = True
-    _next_id: int = 500
-
-    async def send(self, *, account_id: int, chat_id: int, text: str) -> Delivery:
-        self.sends.append(text)
-        self.events.append("send")
-        self._next_id += 1
-        if not self.deliver:
-            return Delivery(ok=False, error="forbidden")
-        return Delivery(ok=True, message_id=self._next_id)
-
-    async def typing(self, *, account_id: int, chat_id: int) -> None:
-        self.events.append("typing")
 
 
 @pytest.fixture
@@ -465,3 +445,70 @@ async def test_an_assistant_turn_never_starts_a_run(
 
     assert outcome.status is RunStatus.SKIPPED
     assert fake.requests == []
+
+
+# ------------------------------------------------- re-delivered jobs (S01.5)
+async def test_a_redelivered_job_for_an_answered_turn_does_not_answer_twice(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    turn_id = await owner_turn(factory, clock)
+    fake, channel = FakeLLM(text_response("Only once.")), FakeChannel()
+    runtime = build(factory, clock, fake, channel)
+
+    first = await runtime.run(turn_id)
+    second = await runtime.run(turn_id)
+
+    assert first.status is RunStatus.SUCCEEDED
+    assert (second.status, second.note) == (RunStatus.SKIPPED, "already_answered")
+    assert channel.sends == ["Only once."]
+    assert len(fake.requests) == 1
+
+
+async def test_an_interrupted_run_is_marked_and_the_turn_is_answered(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    turn_id = await owner_turn(factory, clock)
+    async with transaction(factory) as uow:
+        account = (await uow.session.execute(select(Account))).scalar_one()
+        uow.session.add(
+            AgentRun(
+                account_id=account.id,
+                run_type="owner_request",
+                trigger_ref=f"turn:{turn_id}",
+                model="gpt-6-luna",
+                status="running",
+                started_at=clock.now(),
+            )
+        )
+    channel = FakeChannel()
+
+    outcome = await build(factory, clock, FakeLLM(text_response("Answered now.")), channel).run(
+        turn_id
+    )
+
+    assert outcome.status is RunStatus.SUCCEEDED
+    assert outcome.account_id == account.id
+    assert channel.sends == ["Answered now."]
+    first, second = await rows(factory, AgentRun)
+    assert (first.status, first.error_class) == ("failed", "interrupted")
+    assert second.status == "succeeded"
+
+
+async def test_acknowledgement_latency_is_measured_from_message_receipt(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    await owner_turn(factory, clock)
+    async with transaction(factory) as uow:
+        account = (await uow.session.execute(select(Account))).scalar_one()
+        turn = await service.record_control_turn(
+            uow.session,
+            account_id=account.id,
+            role="owner",
+            text="Synthetic",
+            created_at=clock.now(),
+        )
+    clock.advance(seconds=1.25)  # inbox + job pickup, as the owner experiences it
+
+    outcome = await build(factory, clock, FakeLLM(text_response("ok")), FakeChannel()).run(turn.id)
+
+    assert outcome.ack_latency_ms == 1250

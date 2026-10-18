@@ -7,6 +7,12 @@ factories; nothing else constructs an SDK client.
 
 from __future__ import annotations
 
+import contextlib
+import functools
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from aiogram import Bot
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -15,11 +21,28 @@ from assistant.agent.ports import ControlChannel
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime
 from assistant.agent.tools.registry import default_registry
 from assistant.config import ConfigError, Settings
-from assistant.core.clock import Clock
+from assistant.core.clock import Clock, SystemClock
+from assistant.core.routing import Route
+from assistant.core.supervisor import Role, Supervisor
+from assistant.db.advisory_lock import NAMESPACE_INBOX, NAMESPACE_POLLER, AdvisoryLock
+from assistant.db.engine import build_engine, build_session_factory
+from assistant.inbox.notify import OwnerAlerts
+from assistant.inbox.processor import InboxProcessor
+from assistant.jobs.app import QUEUE_SYSTEM, QUEUES, build_app, run_queue_worker
+from assistant.jobs.scheduler import ProcrastinateScheduler
+from assistant.jobs.tasks import JobHandlers, register_tasks
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.metering import MeteredLLMClient
 from assistant.llm.openai_adapter import OpenAIClient
 from assistant.llm.port import LLMClient
+from assistant.process import InboxRole, PollerRole, WorkerRole, worker_heartbeat_probe
+from assistant.telegram.control.agent_channel import GatewayControlChannel
+from assistant.telegram.control.dispatcher import ControlDispatcher
+from assistant.telegram.control.inbox_handlers import ControlInboxHandlers, RefusalLimiter
+from assistant.telegram.gateway import AiogramSender, OutboundGateway
+from assistant.telegram.ingress.aiogram_source import AiogramUpdateSource
+from assistant.telegram.ingress.poller import Poller
+from assistant.telegram.routing import route_update
 
 #: SDK-level retries for connection errors, 429 and 5xx. Safe for a model call
 #: (it changes nothing in the world); never applied to Telegram sends.
@@ -69,3 +92,108 @@ def build_owner_runtime(
         clock=clock,
         config=agent_config(settings),
     )
+
+
+# --------------------------------------------------------------- the process
+ROLE_NAMES = ("poller", "inbox", "worker", "system")
+
+
+class InstanceAlreadyRunningError(RuntimeError):
+    """Another process holds the poller or inbox advisory lock."""
+
+
+@asynccontextmanager
+async def running_process(
+    settings: Settings, roles: frozenset[str] = frozenset(ROLE_NAMES)
+) -> AsyncIterator[Supervisor]:
+    """Build and open everything `python -m assistant run` needs (ARCHITECTURE §4.1).
+
+    Yields a supervisor ready to run; on exit, releases advisory locks and
+    closes the job app, the Telegram session and the database engine.
+    """
+    unknown = roles - set(ROLE_NAMES)
+    if unknown:
+        raise ConfigError(f"unknown role(s): {', '.join(sorted(unknown))}")
+    if settings.bot_token is None:
+        raise ConfigError("BOT_TOKEN is not set")
+
+    clock = SystemClock()
+    database_url = settings.database_url.get_secret_value()
+    engine = build_engine(database_url)
+    session_factory = build_session_factory(engine)
+    bot = Bot(token=settings.bot_token.get_secret_value())
+    gateway = OutboundGateway(AiogramSender(bot), clock)
+    channel = GatewayControlChannel(gateway)
+    jobs_app = build_app(database_url)
+    scheduler = ProcrastinateScheduler(jobs_app)
+    locks: list[AdvisoryLock] = []
+
+    try:
+        if roles & {"worker", "system"}:
+            alerts = OwnerAlerts(session_factory, channel, clock)
+            register_tasks(
+                jobs_app,
+                JobHandlers(
+                    session_factory=session_factory,
+                    clock=clock,
+                    scheduler=scheduler,
+                    owner_runtime=build_owner_runtime(settings, session_factory, channel, clock),
+                    alerts=alerts,
+                    monthly_budget_usd=settings.llm_monthly_budget_usd,
+                    heartbeat_url=(
+                        None
+                        if settings.heartbeat_url is None
+                        else settings.heartbeat_url.get_secret_value()
+                    ),
+                ),
+            )
+        async with jobs_app.open_async():
+            supervisor_roles: list[Role] = []
+            if "poller" in roles:
+                lock = AdvisoryLock(engine, NAMESPACE_POLLER, bot.id)
+                if not await lock.acquire():
+                    raise InstanceAlreadyRunningError("another process is polling this bot")
+                locks.append(lock)
+                poller = Poller(AiogramUpdateSource(bot), session_factory, clock)
+                await poller.startup()
+                supervisor_roles.append(PollerRole(poller, lock, clock).role())
+            if "inbox" in roles:
+                lock = AdvisoryLock(engine, NAMESPACE_INBOX, bot.id)
+                if not await lock.acquire():
+                    raise InstanceAlreadyRunningError("another inbox processor is running")
+                locks.append(lock)
+                control = ControlInboxHandlers(
+                    ControlDispatcher(gateway, clock, scheduler), gateway, RefusalLimiter(clock)
+                )
+                processor = InboxProcessor(
+                    session_factory,
+                    clock,
+                    owner_ids=frozenset(settings.owner_telegram_ids),
+                    bot_id=bot.id,
+                    router=functools.partial(
+                        route_update,
+                        owner_ids=frozenset(settings.owner_telegram_ids),
+                        bot_id=bot.id,
+                    ),
+                    handlers={Route.CONTROL: control.control, Route.REFUSED: control.refused},
+                )
+                supervisor_roles.append(InboxRole(processor, lock, clock).role())
+            probe = worker_heartbeat_probe(session_factory)
+            for spec in QUEUES:
+                wanted = "system" if spec.name == QUEUE_SYSTEM else "worker"
+                if wanted in roles:
+                    supervisor_roles.append(
+                        WorkerRole(
+                            spec.name,
+                            functools.partial(run_queue_worker, jobs_app, spec),
+                            probe,
+                            spec.shutdown_grace_seconds,
+                        ).role()
+                    )
+            yield Supervisor(supervisor_roles)
+    finally:
+        for lock in locks:
+            with contextlib.suppress(Exception):
+                await lock.release()
+        await bot.session.close()
+        await engine.dispose()

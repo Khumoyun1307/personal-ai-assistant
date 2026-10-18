@@ -53,6 +53,13 @@ class ControlTurnRepository(AccountScopedRepository[ControlTurn]):
 class AgentRunRepository(AccountScopedRepository[AgentRun]):
     model = AgentRun
 
+    async def for_trigger(self, trigger_ref: str) -> list[AgentRun]:
+        """Runs started for one trigger (e.g. `turn:42`), oldest first."""
+        result = await self.session.execute(
+            self._select().where(AgentRun.trigger_ref == trigger_ref).order_by(AgentRun.id)
+        )
+        return cast("list[AgentRun]", list(result.scalars().all()))
+
     async def add_step(
         self,
         run_id: int,

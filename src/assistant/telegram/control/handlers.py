@@ -12,6 +12,7 @@ they can be tested without constructing Telegram objects.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,6 +47,9 @@ class IncomingMessage:
     telegram_message_id: int
     text: str
     from_id: int
+    #: When Telegram delivered it to us (`inbound_updates.received_at`), for
+    #: the acknowledgement-latency metric. None outside the inbox (tests).
+    received_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

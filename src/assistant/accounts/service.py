@@ -8,7 +8,7 @@ waiting for them to type.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -227,6 +227,7 @@ async def record_control_turn(
     text: str | None,
     telegram_message_id: int | None = None,
     contains_managed: bool = False,
+    created_at: datetime | None = None,
 ) -> ControlTurn:
     """Append a turn to the owner's conversation with the assistant."""
     turn = ControlTurn(
@@ -236,6 +237,10 @@ async def record_control_turn(
         telegram_message_id=telegram_message_id,
         contains_managed=contains_managed,
     )
+    if created_at is not None:
+        # When the owner's message arrived, not when we got round to it: the
+        # acknowledgement-latency metric is measured from here.
+        turn.created_at = created_at
     session.add(turn)
     await session.flush()
     return turn
