@@ -3,9 +3,12 @@
 Throwaway code, never imported by `src/` (AGENTS §5). It exists to answer
 LV-01…LV-19 (TELEGRAM_FEASIBILITY §11) against real accounts.
 
-> **The owner runs this, not a coding agent.** It needs a real `BOT_TOKEN`, and
-> `var/probe/` will hold real chat content. Agents never read that directory
-> (AGENTS §9); they see only what `sanitize.py` produces.
+> It needs a real `BOT_TOKEN`, and `var/probe/` will hold real chat content.
+> The owner, or a coding agent under the standing exception in AGENTS §9
+> (granted 2026-10-18; dev/probe bot only), runs it. Agents never pass
+> `--verbose` and never read `var/probe/`; they see only `probe summary` and
+> what `sanitize.py` produces. Steps that need a human in the Telegram client
+> remain the owner's.
 
 ## Before the first run
 

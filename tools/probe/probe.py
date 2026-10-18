@@ -4,10 +4,12 @@ Never imported by `src/` (AGENTS §5). Its only job is to answer LV-01…LV-19
 (TELEGRAM_FEASIBILITY §11) against real accounts and record exactly what
 Telegram sends and returns.
 
-**The owner runs this, never a coding agent** (AGENTS §9): it needs a real
-BOT_TOKEN, and the raw dumps it writes under `var/probe/` contain real chat
-content. Fixtures for `tests/fixtures/telegram/` are produced from those dumps
-by `sanitize.py`, which the owner also runs; the agent sees only its output.
+It needs a real BOT_TOKEN, and the raw dumps it writes under `var/probe/`
+contain real chat content. The owner runs it, or a coding agent under the
+standing exception in AGENTS §9 (dev/probe bot only, never `--verbose`, never
+opening `var/probe/`). The console and `summary` are content-free: ids, flags,
+timestamps, rights, content kinds and Telegram error strings only. Fixtures for
+`tests/fixtures/telegram/` come from the dumps via `sanitize.py`.
 
 Rules this script obeys, the same as the application:
   - an explicit `allowed_updates` list (the setting is sticky server-side);
@@ -136,6 +138,115 @@ CONSOLE_SAFE_FIELDS = (
 )
 
 
+#: Keys that say *what kind* of message it is. Only the key name is shown.
+CONTENT_KINDS = (
+    "text",
+    "photo",
+    "voice",
+    "video_note",
+    "video",
+    "document",
+    "audio",
+    "sticker",
+    "animation",
+    "contact",
+    "location",
+    "poll",
+)
+
+#: Message fields we print as-is: identifiers, flags and timestamps only.
+STRUCTURAL_MESSAGE_FIELDS = ("message_id", "date", "edit_date", "is_from_offline")
+
+
+def _first_token_if_command(text: Any) -> str | None:
+    """`/start bizChat123` is a bot command, not prose; anything else is hidden."""
+    if isinstance(text, str) and text.startswith("/"):
+        return text.split()[0] + (" <param>" if " " in text.strip() else "")
+    return None
+
+
+def _deep_link_param(text: Any) -> str | None:
+    """LV-10 needs the shape of the `/start` payload (prefix and id), nothing else."""
+    if isinstance(text, str) and text.startswith("/start ") and len(text.split()) == 2:
+        return text.split()[1]
+    return None
+
+
+def describe_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Content-free view of a message: who, where, which flags — never what."""
+    out: dict[str, Any] = {key: message[key] for key in STRUCTURAL_MESSAGE_FIELDS if key in message}
+    chat = message.get("chat") or {}
+    # The dump is aiogram's model_dump (field names, not aliases): `from_user`.
+    sender = message.get("from_user") or message.get("from") or {}
+    out["chat_id"] = chat.get("id")
+    out["chat_type"] = chat.get("type")
+    out["from_id"] = sender.get("id")
+    out["from_is_bot"] = sender.get("is_bot")
+    if "sender_business_bot" in message:
+        out["sender_business_bot_id"] = (message["sender_business_bot"] or {}).get("id")
+    if message.get("business_connection_id"):
+        out["connection_id"] = message["business_connection_id"]
+    out["content"] = [key for key in CONTENT_KINDS if key in message] or ["other"]
+    if "reply_to_message" in message:
+        out["reply_to_message_id"] = (message["reply_to_message"] or {}).get("message_id")
+    command = _first_token_if_command(message.get("text"))
+    if command:
+        out["command"] = command
+        param = _deep_link_param(message.get("text"))
+        if param:
+            out["start_param"] = param
+    return out
+
+
+def describe_update(record: dict[str, Any]) -> dict[str, Any]:
+    """One content-free line per dumped update — the LV evidence we may read.
+
+    Ids, flags, timestamps, rights and content *kinds*. Never text, captions,
+    names, usernames, phone numbers or file ids (AGENTS §9).
+    """
+    kind = str(record.get("update_type"))
+    out: dict[str, Any] = {"type": kind, "observed_at": record.get("observed_at")}
+    if record.get("note"):
+        out["withheld"] = True
+        return out
+    payload = record.get("payload") or {}
+    out["update_id"] = payload.get("update_id")
+    body = payload.get(kind) or {}
+    if kind in {"business_message", "edited_business_message", "message", "edited_message"}:
+        out.update(describe_message(body))
+    elif kind == "business_connection":
+        rights = body.get("rights")
+        out.update(
+            {
+                "connection_id": body.get("id"),
+                "user_id": (body.get("user") or {}).get("id"),
+                "user_chat_id": body.get("user_chat_id"),
+                "date": body.get("date"),
+                "is_enabled": body.get("is_enabled"),
+                "rights": "absent"
+                if rights is None
+                else sorted(key for key, value in rights.items() if value is True),
+            }
+        )
+    elif kind == "deleted_business_messages":
+        out.update(
+            {
+                "connection_id": body.get("business_connection_id"),
+                "chat_id": (body.get("chat") or {}).get("id"),
+                "message_ids": body.get("message_ids"),
+            }
+        )
+    elif kind == "callback_query":
+        out["from_id"] = (body.get("from_user") or body.get("from") or {}).get("id")
+    return out
+
+
+def format_description(described: dict[str, Any]) -> str:
+    head = f"[{described.pop('type')}]"
+    described.pop("observed_at", None)
+    return head + " " + " ".join(f"{key}={value}" for key, value in described.items())
+
+
 def console_summary(value: Any) -> str:
     """A content-free one-liner: never text, captions, names or usernames."""
     if not isinstance(value, dict):
@@ -226,7 +337,7 @@ async def cmd_listen(args: argparse.Namespace) -> None:
             ".env to capture the chats you are testing.",
             file=sys.stderr,
         )
-    print(f"allowed_updates: {ALLOWED_UPDATES}")
+    print(f"allowed_updates: {ALLOWED_UPDATES}", flush=True)
     # Never drop_pending_updates=True: it discards up to 24 h of business messages.
     await bot.delete_webhook(drop_pending_updates=False)
     offset: int | None = None
@@ -250,21 +361,10 @@ async def cmd_listen(args: argparse.Namespace) -> None:
                 else:
                     record = redact_for_unlisted(payload, kind)
                 write_record(record)
-                line = f"[{record.get('update_type')}] update_id={payload.get('update_id')}"
-                # The connection id is what every send/edit command needs, and
-                # it is an identifier, not content — so surface it immediately
-                # instead of making the owner dig through the dump.
-                connection = payload.get("business_connection")
-                if isinstance(connection, dict) and connection.get("id"):
-                    line += f"  connection_id={connection['id']}  <-- use this"
-                business_id = (
-                    payload.get("business_message", {}).get("business_connection_id")
-                    if isinstance(payload.get("business_message"), dict)
-                    else None
-                )
-                if business_id:
-                    line += f"  connection_id={business_id}"
-                print(line)
+                # Structural and content-free, so the console can be read by
+                # whoever drives the probe (including an agent) while the
+                # owner acts in the Telegram client.
+                print(format_description(describe_update(record)), flush=True)
     except KeyboardInterrupt, asyncio.CancelledError:
         print("\nstopped; offset NOT advanced past the last processed update")
     finally:
@@ -333,8 +433,19 @@ async def cmd_delete(args: argparse.Namespace) -> None:
 async def cmd_getfile(args: argparse.Namespace) -> None:
     """LV-11: file availability now, after 24 h and after 7 days."""
 
+    file_id = args.file_id
+    if not file_id and not args.latest:
+        print("give a file_id or --latest <kind>", file=sys.stderr)
+        raise SystemExit(2)
+    if args.latest:
+        # Look the id up in the dump so it never has to cross the console.
+        file_id = latest_file_id(args.latest)
+        if file_id is None:
+            print(f"no {args.latest} found in var/probe/ dumps", file=sys.stderr)
+            raise SystemExit(1)
+
     async def run(bot: Bot) -> Any:
-        file = await bot.get_file(args.file_id)
+        file = await bot.get_file(file_id)
         if args.download and file.file_path:
             target = DUMP_DIR / "files" / Path(file.file_path).name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -342,17 +453,42 @@ async def cmd_getfile(args: argparse.Namespace) -> None:
             return {"file": file.model_dump(), "downloaded_to": str(target)}
         return file
 
-    await with_bot("getFile", run)
+    await with_bot(f"getFile({args.latest or 'by id'})", run)
+
+
+def latest_file_id(content_kind: str) -> str | None:
+    """The file_id of the most recent `content_kind` message in any dump."""
+    found: str | None = None
+    for path in sorted(DUMP_DIR.glob("updates-*.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            payload = record.get("payload") or {}
+            body = payload.get(str(record.get("update_type"))) or {}
+            media = body.get(content_kind) if isinstance(body, dict) else None
+            if isinstance(media, list) and media:  # photo: sizes, largest last
+                media = media[-1]
+            if isinstance(media, dict) and isinstance(media.get("file_id"), str):
+                found = media["file_id"]
+    return found
 
 
 async def cmd_sendphoto(args: argparse.Namespace) -> None:
     """LV-11: re-send a previously received photo by file_id."""
+    file_id = args.file_id or latest_file_id("photo")
+    if file_id is None:
+        print("no photo found in var/probe/ dumps", file=sys.stderr)
+        raise SystemExit(1)
+    # "none" targets the control chat, which has no business connection.
+    connection_id = None if args.connection_id == "none" else args.connection_id
     await with_bot(
         "sendPhoto(by file_id)",
         lambda bot: bot.send_photo(
             chat_id=args.chat_id,
-            photo=args.file_id,
-            business_connection_id=args.connection_id,
+            photo=file_id,
+            business_connection_id=connection_id,
         ),
     )
 
@@ -399,6 +535,7 @@ def cmd_summary(args: argparse.Namespace) -> None:
     errors: Counter[str] = Counter()
     connections: set[str] = set()
     withheld = 0
+    timeline: list[str] = []
 
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -407,12 +544,15 @@ def cmd_summary(args: argparse.Namespace) -> None:
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
+        stamp = str(record.get("observed_at", ""))[:19]
         if record.get("kind") == "api_result":
             labels[str(record.get("label"))] += 1
             result = record.get("result")
             if isinstance(result, dict) and result.get("error_class"):
                 errors[f"{result['error_class']}: {result.get('message')}"] += 1
+            timeline.append(f"{stamp}  call {record.get('label')}: {console_summary(result)}")
             continue
+        timeline.append(f"{stamp}  {format_description(describe_update(record))}")
         kinds[str(record.get("update_type"))] += 1
         if record.get("note"):
             withheld += 1
@@ -434,6 +574,10 @@ def cmd_summary(args: argparse.Namespace) -> None:
         print("\nerrors recorded (these are the LV deliverable):")
         for error, count in sorted(errors.items()):
             print(f"  {count:4}  {error}")
+    if args.timeline:
+        print("\ntimeline (structural, content-free):")
+        for entry in timeline[-args.timeline :]:
+            print(f"  {entry}")
 
 
 def _connection_ids(payload: Any) -> set[str]:
@@ -464,6 +608,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     summary = sub.add_parser("summary", help="what a dump contains, content-free")
     summary.add_argument("path", help="a var/probe/*.jsonl dump")
+    summary.add_argument(
+        "--timeline",
+        type=int,
+        default=0,
+        metavar="N",
+        help="also print the last N events as content-free structural lines",
+    )
 
     sub.add_parser("me", help="getMe; warns if Secretary Mode is off")
 
@@ -497,13 +648,18 @@ def build_parser() -> argparse.ArgumentParser:
     delete.add_argument("message_ids", type=int, nargs="+")
 
     getfile = sub.add_parser("getfile", help="getFile, optionally downloading (LV-11)")
-    getfile.add_argument("file_id")
+    getfile.add_argument("file_id", nargs="?")
+    getfile.add_argument(
+        "--latest",
+        choices=["photo", "voice", "video_note", "video", "document", "audio"],
+        help="use the newest file of this kind from the dump (keeps file ids off the console)",
+    )
     getfile.add_argument("--download", action="store_true")
 
     photo = sub.add_parser("sendphoto", help="re-send a photo by file_id (LV-11)")
     photo.add_argument("connection_id")
     photo.add_argument("chat_id", type=int)
-    photo.add_argument("file_id")
+    photo.add_argument("file_id", nargs="?", help="default: newest photo in the dump")
 
     burst = sub.add_parser("burst", help="N quick sends; records 429 (LV-16)")
     burst.add_argument("connection_id")

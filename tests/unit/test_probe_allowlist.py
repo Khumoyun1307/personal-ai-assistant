@@ -96,11 +96,11 @@ def test_console_summary_never_shows_content() -> None:
         "date": 1792285445,
         "text": "Salom, bu matn konsolga chiqmasligi kerak",
         "caption": "a caption",
-        "chat": {"id": 5794473704, "username": "HumoyunAbulqosimov"},
-        "from_user": {"first_name": "Humoyun Abulqosimov"},
+        "chat": {"id": 7000000001, "username": "synthetic_user_x"},
+        "from_user": {"first_name": "Synthetic Person"},
     }
     line = probe.console_summary(payload)
-    for secret in ("Salom", "caption", "Humoyun", "HumoyunAbulqosimov", "5794473704"):
+    for secret in ("Salom", "caption", "Synthetic Person", "synthetic_user_x", "7000000001"):
         assert secret not in line
     assert "message_id=12" in line
 
