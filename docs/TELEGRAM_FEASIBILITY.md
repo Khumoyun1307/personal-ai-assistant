@@ -290,7 +290,8 @@ Results are recorded in §12 below and drive the classification rules and error 
 
 | ID | Date | Result | Conclusion / follow-up |
 |---|---|---|---|
-| LV-01 … LV-19 | — | Pending | — |
+| **LV-09** Owner reachability | 2026-10-18 | **`/start` is required.** Owner-executed, both arms run. (a) Account that had already opened the bot (tapped the `t.me/<bot>` link from @BotFather, which starts it): `sendMessage` with no `business_connection_id` **succeeded**, `message_id: 3`. (b) Account that had never opened the bot: **failed** with `TelegramBadRequest` — `Bad Request: chat not found`. Client versions not recorded (server-side API behaviour; no client action beyond pressing Start). | **A bot cannot open a conversation.** The error is a **400 `chat not found`, not the widely-reported 403 "bot can't initiate conversation with a user"** — classification must key on the description, not the status (TF §4). ARCHITECTURE §6.8 gains a `chat_unreachable` class: *not* a block, so it must not trigger the §6.3 automatic pause. Onboarding (M01 S01.3) must handle "the owner has not opened the bot yet": the control chat is unusable until the owner presses Start, and any alert raised before that is undeliverable. |
+| LV-01 … LV-08, LV-10 … LV-19 | — | Pending | — |
 
 ---
 
@@ -306,4 +307,5 @@ Docs-checked findings that are not yet live-verified are added here as PQ rows m
 | PQ-04 | Does Telegram consider per-chat LLM inference on counterparties' messages "deployment of AI" under the Content Licensing terms? Whose "authorization" satisfies §5.4(iv)? | Acceptable risk for personal use; written clarification (@BotSupport or counsel) before public launch. |
 | PQ-05 | Uzbek output quality of the chosen model for summaries and drafts. | Synthetic multilingual eval set (M03/M04), before enabling autonomous replies (M06). |
 | PQ-06 | Card payment to Anthropic from Uzbekistan. | Owner test in M00. |
+| PQ-07 | **Telegram does not document that a bot may not open a conversation.** The Bot FAQ covers messaging users "at no cost" and rate limits, but states no such restriction; the behaviour is widely reported by developers and is now live-verified for our case in §12 (LV-09). Docs-checked 2026-10-18, not documented: https://core.telegram.org/bots/faq | Behaviour settled for us by LV-09. Re-check on Bot API upgrades (AGENTS §14); do not assume the published docs back it up. |
 | PQ-07 | New Uzbek Latin alphabet law (oʻ→ö, gʻ→ğ, sh→ş, ch→ç) passed parliament, awaiting signature; effect 6 months after publication. | Search normaliser accepts all three orthographies from day one. |

@@ -341,12 +341,13 @@ class OutboundGateway(Protocol):
 | `window_closed` | `BUSINESS_PEER_USAGE_MISSING` | Not delivered | No |
 | `peer_unavailable` | `BUSINESS_PEER_INVALID` | No right / chat excluded or paused | No; mark conversation `possibly_paused` |
 | `connection_invalid` | `BUSINESS_CONNECTION_INVALID`, "business connection not found" | Rotated/disabled connection | No; mark connection stale and wait for the new id (§6.4) |
+| `chat_unreachable` | 400 `chat not found` | The chat does not exist yet: the owner has never opened the bot (TF §12 LV-09) | No; **not** a block — never triggers the §6.3 automatic pause. Surface as "open the bot and press Start" |
 | `forbidden` | 403, blocked | Not delivered | No |
 | `bad_request` | other 400 | Not delivered | No |
 | `ambiguous` | timeout/connection reset after request sent, 5xx | **Unknown** | **No** → `delivery_uncertain` |
 
 - Classification keys on the error description code (e.g., `BUSINESS_PEER_USAGE_MISSING`, `BOT_ACCESS_FORBIDDEN`), not on the HTTP status: business errors may surface as 400 "Bad Request: <CODE>" (TF §4).
-- A `forbidden` result on a `ControlChat` target triggers the same automatic pause as a block (§6.3).
+- A `forbidden` result on a `ControlChat` target triggers the same automatic pause as a block (§6.3). A `chat_unreachable` result does not: the owner has simply not opened the bot yet (TF §12 LV-09), and onboarding must say so rather than reporting a delivery failure (§6 invariant 11).
 - The gateway never logs message text or request URLs (the Bot API URL contains the token).
 
 ---
