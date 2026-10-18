@@ -77,7 +77,8 @@ class Consent(Base):
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     policy_version: Mapped[str] = mapped_column(Text, nullable=False)
     #: Named processors (e.g. the LLM provider). SEC-02: consent names them.
-    processors: Mapped[JsonDict] = mapped_column(
+    #: A JSON array, not an object — the order people are told about matters.
+    processors: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, server_default=sql_text("'[]'")
     )
     granted_at: Mapped[CreatedAt]
