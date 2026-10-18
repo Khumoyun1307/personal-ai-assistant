@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     #: effort at all, for a model that does not accept the parameter.
     llm_owner_request_effort: (
         Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
-    ) = "medium"
+    ) = "low"
 
     # --- Feature flags -------------------------------------------------------
     #: Release flags that are ON, e.g. `tool.get_status`. Everything defaults

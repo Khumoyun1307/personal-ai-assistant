@@ -148,8 +148,8 @@ def test_feature_flags_default_off_and_parse_from_a_list(clean_env: None) -> Non
     )
 
 
-def test_owner_request_effort_defaults_to_medium_and_blank_sends_none(clean_env: None) -> None:
-    assert _settings().llm_owner_request_effort == "medium"
+def test_owner_request_effort_defaults_to_low_and_blank_sends_none(clean_env: None) -> None:
+    assert _settings().llm_owner_request_effort == "low"
     assert _settings(llm_owner_request_effort="").llm_owner_request_effort is None
     with pytest.raises(ValidationError):
         _settings(llm_owner_request_effort="extreme")

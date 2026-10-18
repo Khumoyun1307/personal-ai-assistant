@@ -213,7 +213,7 @@ async def test_the_request_carries_the_prompt_profile_and_history(
         ("user", "Synthetic question?"),
     ]
     assert request.prompt_cache_key == "owner_request:owner_request.v1"
-    assert request.effort == "medium"
+    assert request.effort == "low"
 
 
 # --------------------------------------------------------------------- consent

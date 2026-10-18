@@ -78,7 +78,7 @@ class AgentConfig:
     """Budgets and model settings for owner runs (ARCHITECTURE §7.2, §7.4)."""
 
     model: str
-    effort: str | None = "medium"
+    effort: str | None = "low"
     max_output_tokens: int = 2000
     max_output_tokens_ceiling: int = 8000
     max_iterations: int = 8
