@@ -87,3 +87,37 @@ def test_allowed_updates_is_explicit_and_covers_business() -> None:
         "deleted_business_messages",
     ):
         assert required in probe.ALLOWED_UPDATES
+
+
+def test_console_summary_never_shows_content() -> None:
+    """The console is what an agent sees; it must carry no chat content."""
+    payload = {
+        "message_id": 12,
+        "date": 1792285445,
+        "text": "Salom, bu matn konsolga chiqmasligi kerak",
+        "caption": "a caption",
+        "chat": {"id": 5794473704, "username": "HumoyunAbulqosimov"},
+        "from_user": {"first_name": "Humoyun Abulqosimov"},
+    }
+    line = probe.console_summary(payload)
+    for secret in ("Salom", "caption", "Humoyun", "HumoyunAbulqosimov", "5794473704"):
+        assert secret not in line
+    assert "message_id=12" in line
+
+
+def test_console_summary_keeps_api_error_strings() -> None:
+    """LV-04/08/16 exist to capture these exact strings; they are not content."""
+    line = probe.console_summary(
+        {
+            "error_class": "TelegramBadRequest",
+            "message": "Telegram server says - Bad Request: chat not found",
+            "retry_after": None,
+        }
+    )
+    assert "TelegramBadRequest" in line
+    assert "chat not found" in line
+
+
+def test_verbose_defaults_off() -> None:
+    """An agent running the probe must not get full payloads by accident."""
+    assert probe.VERBOSE is False

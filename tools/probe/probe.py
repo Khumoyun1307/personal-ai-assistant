@@ -37,6 +37,7 @@ import hashlib
 import json
 import os
 import sys
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,38 @@ def write_record(record: dict[str, Any]) -> None:
         handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 
 
+#: Set by --verbose. Off by default so the console stays content-free and the
+#: probe can be driven by a coding agent without real chat content reaching it
+#: (AGENTS §9). Full payloads always go to the git-ignored dump either way.
+VERBOSE = False
+
+#: Result fields safe to show on the console: ids, codes and API error strings.
+#: Telegram's error strings are diagnostics, not user content, and they are the
+#: whole point of LV-04, LV-08 and LV-16.
+CONSOLE_SAFE_FIELDS = (
+    "message_id",
+    "date",
+    "edit_date",
+    "error_class",
+    "message",
+    "retry_after",
+    "file_path",
+    "file_size",
+    "file_unique_id",
+    "downloaded_to",
+)
+
+
+def console_summary(value: Any) -> str:
+    """A content-free one-liner: never text, captions, names or usernames."""
+    if not isinstance(value, dict):
+        return "ok"
+    shown = {key: value[key] for key in CONSOLE_SAFE_FIELDS if value.get(key) is not None}
+    if not shown:
+        return "ok (payload written to var/probe/)"
+    return ", ".join(f"{key}={val}" for key, val in shown.items())
+
+
 def log_result(label: str, value: Any) -> None:
     """Record an API call's outcome — including the exact error (LV-08)."""
     record = {
@@ -122,7 +155,10 @@ def log_result(label: str, value: Any) -> None:
         "result": value,
     }
     write_record(record)
-    print(json.dumps(record, ensure_ascii=False, indent=2, default=str))
+    if VERBOSE:
+        print(json.dumps(record, ensure_ascii=False, indent=2, default=str))
+    else:
+        print(f"{label}: {console_summary(value)}")
 
 
 def make_bot() -> Bot:
@@ -214,7 +250,21 @@ async def cmd_listen(args: argparse.Namespace) -> None:
                 else:
                     record = redact_for_unlisted(payload, kind)
                 write_record(record)
-                print(f"[{record.get('update_type')}] update_id={payload.get('update_id')}")
+                line = f"[{record.get('update_type')}] update_id={payload.get('update_id')}"
+                # The connection id is what every send/edit command needs, and
+                # it is an identifier, not content — so surface it immediately
+                # instead of making the owner dig through the dump.
+                connection = payload.get("business_connection")
+                if isinstance(connection, dict) and connection.get("id"):
+                    line += f"  connection_id={connection['id']}  <-- use this"
+                business_id = (
+                    payload.get("business_message", {}).get("business_connection_id")
+                    if isinstance(payload.get("business_message"), dict)
+                    else None
+                )
+                if business_id:
+                    line += f"  connection_id={business_id}"
+                print(line)
     except KeyboardInterrupt, asyncio.CancelledError:
         print("\nstopped; offset NOT advanced past the last processed update")
     finally:
@@ -332,9 +382,88 @@ async def cmd_burst(args: argparse.Namespace) -> None:
         await bot.session.close()
 
 
+def cmd_summary(args: argparse.Namespace) -> None:
+    """What is in a dump, without showing any of it.
+
+    Prints update-type counts and the connection ids seen — identifiers and
+    codes only, never text, names or usernames — so the owner (or an agent)
+    can see what was captured without opening the dump.
+    """
+    path = Path(args.path)
+    if not path.exists():
+        print(f"no such dump: {path}", file=sys.stderr)
+        raise SystemExit(1)
+
+    kinds: Counter[str] = Counter()
+    labels: Counter[str] = Counter()
+    errors: Counter[str] = Counter()
+    connections: set[str] = set()
+    withheld = 0
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if record.get("kind") == "api_result":
+            labels[str(record.get("label"))] += 1
+            result = record.get("result")
+            if isinstance(result, dict) and result.get("error_class"):
+                errors[f"{result['error_class']}: {result.get('message')}"] += 1
+            continue
+        kinds[str(record.get("update_type"))] += 1
+        if record.get("note"):
+            withheld += 1
+        for found in _connection_ids(record.get("payload")):
+            connections.add(found)
+
+    print(f"dump: {path}")
+    print(f"\nupdates by type ({sum(kinds.values())} total):")
+    for kind, count in sorted(kinds.items()):
+        print(f"  {count:4}  {kind}")
+    if withheld:
+        print(f"  ({withheld} had payloads withheld: chat not allow-listed)")
+    print(f"\nconnection ids seen: {sorted(connections) or 'none yet'}")
+    if labels:
+        print("\nAPI calls:")
+        for label, count in sorted(labels.items()):
+            print(f"  {count:4}  {label}")
+    if errors:
+        print("\nerrors recorded (these are the LV deliverable):")
+        for error, count in sorted(errors.items()):
+            print(f"  {count:4}  {error}")
+
+
+def _connection_ids(payload: Any) -> set[str]:
+    found: set[str] = set()
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key == "business_connection_id" and isinstance(value, str):
+                found.add(value)
+            elif key == "business_connection" and isinstance(value, dict):
+                if isinstance(value.get("id"), str):
+                    found.add(value["id"])
+            else:
+                found |= _connection_ids(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            found |= _connection_ids(item)
+    return found
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="probe", description=__doc__)
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="print full payloads to the console (contains real chat content)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    summary = sub.add_parser("summary", help="what a dump contains, content-free")
+    summary.add_argument("path", help="a var/probe/*.jsonl dump")
 
     sub.add_parser("me", help="getMe; warns if Secretary Mode is off")
 
@@ -401,7 +530,12 @@ COMMANDS = {
 
 
 def main() -> int:
+    global VERBOSE
     args = build_parser().parse_args()
+    VERBOSE = bool(getattr(args, "verbose", False))
+    if args.command == "summary":  # local file read; no event loop needed
+        cmd_summary(args)
+        return 0
     asyncio.run(COMMANDS[args.command](args))
     return 0
 
