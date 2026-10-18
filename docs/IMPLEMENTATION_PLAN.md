@@ -52,15 +52,15 @@ M04 and M05 can be developed in either order after M03 (both build on the S01.3 
 
 | # | Assumption | Risk if wrong | Validated in | How |
 |---|---|---|---|---|
-| A1 | Owner's manual messages arrive as `business_message` (takeover detection) | Takeover design invalid | M00 (LV-02) | Probe with two accounts |
-| A2 | Bot sends are not echoed (or echoes are recognisable) | Duplicate records / loops | M00 (LV-03) | Probe |
-| A3 | Paused/excluded chats produce recognisable send errors | Silent failures | M00 (LV-04, LV-08) | Probe |
-| A4 | Connection id rotation and missing connection updates are handled by bootstrap | Lost connection state | M00 (LV-01, LV-05) | Probe |
+| A1 | Owner's manual messages arrive as `business_message` (takeover detection) | Takeover design invalid | M00 (LV-02) — **retired 2026-10-18** (TF §12 LV-02) | Probe with two accounts |
+| A2 | Bot sends are not echoed (or echoes are recognisable) | Duplicate records / loops | M00 (LV-03) — **retired 2026-10-18** (no echo, TF §12 LV-03) | Probe |
+| A3 | Paused/excluded chats produce recognisable send errors | Silent failures | M00 (LV-04, LV-08) — **paused and excluded: retired 2026-10-18** (both give `BUSINESS_PEER_INVALID`, TF §12 LV-04); LV-08 window errors pending | Probe |
+| A4 | Connection id rotation and missing connection updates are handled by bootstrap | Lost connection state | M00 (LV-01, LV-05) — **retired 2026-10-18**: a reconnect rotates the id (as designed: resolve by account, bootstrap unknown ids); a disconnect sends `is_enabled=false`; the old id gives `BUSINESS_CONNECTION_INVALID` (TF §12 LV-01/LV-05) | Probe |
 | A5 | 24 h window semantics and error strings | Wrong expiry/fallback | M00 (LV-08; needs > 24 h) | Probe (start early) |
 | A6 | procrastinate + SQLAlchemy async + psycopg 3 integrate (incl. transactional defer) | Job architecture change | M00 (S00.3) | Spike; fallback to hand-rolled queue |
-| A7 | Anthropic billing works from Uzbekistan | Provider change | M00 (S00.3) | Owner card test |
-| A8 | Claude quality in Uzbek (Latin/Cyrillic) for summaries | Weak core value | M00 smoke → M03 gate | Synthetic eval set |
-| A9 | Claude quality for Uzbek drafts | Autonomy unsafe | M00 smoke → M04 (informational) / M06 (gate) | Synthetic eval + owner ratings |
+| A7 | LLM provider billing works from Uzbekistan | Provider change | M00 (S00.3) — **retired 2026-10-18** (OpenAI account and payment set up, owner confirmation) | Owner card test |
+| A8 | `gpt-6-luna` quality in Uzbek (Latin/Cyrillic) for summaries | Weak core value | M00 smoke → M03 gate | Synthetic eval set |
+| A9 | `gpt-6-luna` quality for Uzbek drafts | Autonomy unsafe | M00 smoke → M04 (informational) / M06 (gate) | Synthetic eval + owner ratings |
 | A10 | LLM cost at the owner's volume is acceptable | Budget overrun | M00 estimate + owner-set budget, M02–M05 metering, M03/M05 model comparison | `count_tokens`, `llm_calls` |
 | A11 | Telegram terms permit per-chat LLM processing for the owner's service | Account/bot ban risk | Personal phase: accepted risk with consent controls; before R4: written clarification | @BotSupport / counsel (M09) |
 
@@ -109,14 +109,14 @@ Sizes are relative effort for one developer working with AI assistance: **S** �
 
 **User-visible result:** none for the product; the owner sees a verified Telegram behaviour report (TF §12) and a ready repository.
 
-**Dependencies:** owner approval of PRD/architecture; Anthropic account (by S00.3). The probe/dev bot uses any neutral throwaway username without "Telegram"; the product name (Q-01) is needed only for the prod bot (S02.5).
+**Dependencies:** owner approval of PRD/architecture; LLM provider account (OpenAI since ADR-07a; by S00.3). The probe/dev bot uses any neutral throwaway username without "Telegram"; the product name (Q-01) is needed only for the prod bot (S02.5).
 
 **Scope:** In: tooling, probe, LV-01…LV-19, stack/provider/search spikes. Out: product features, deployment.
 
 ### S00.1 Repository and tooling (M)
 
 - `git init`; `.gitignore` (incl. `.env`, `var/`); `.env.example` listing every setting with placeholder values (AGENTS §9); MIT-or-private licence decision deferred (private repo).
-- `pyproject.toml` (uv; `requires-python = ">=3.14,<3.15"`; `.python-version`); dependency groups: runtime (aiogram, sqlalchemy[asyncio], psycopg[binary,pool], alembic, procrastinate, anthropic, pydantic-settings, structlog, python-dateutil) and dev (pytest, pytest-asyncio, hypothesis, ruff, mypy, import-linter, pip-audit).
+- `pyproject.toml` (uv; `requires-python = ">=3.14,<3.15"`; `.python-version`); dependency groups: runtime (aiogram, sqlalchemy[asyncio], psycopg[binary,pool], alembic, procrastinate, openai, pydantic-settings, structlog, python-dateutil) and dev (pytest, pytest-asyncio, hypothesis, ruff, mypy, import-linter, pip-audit).
 - `src/assistant/` skeleton per ARCHITECTURE §5 with empty packages and `import-linter` contracts.
 - `config.py` (pydantic-settings), `observability/logging.py` (structlog + redaction processors), `__main__.py` with `healthcheck` = settings validation + `SELECT 1` against DATABASE_URL → exit 0, otherwise 1.
 - `deploy/Dockerfile`, `compose.dev.yml` (app with bind mount, virtualenv outside the bind mount; `pgvector/pgvector:pg18` with a separate `assistant_test` database created by an init script), optional `.devcontainer/`.
@@ -138,12 +138,12 @@ Sizes are relative effort for one developer working with AI assistance: **S** �
 ### S00.3 Stack and provider spikes (M)
 
 - **Jobs spike (A6):** in the dev container, SQLAlchemy 2.1 async + psycopg 3 + Alembic baseline + procrastinate schema as an Alembic revision; prove: `schedule_at`, `lock`, `queueing_lock` (`AlreadyEnqueued` handling), retry strategy, `retry_stalled_jobs`, **transactional defer on the session's raw psycopg connection** (TQ-01), and that a future-scheduled job does not delay an immediate job for the same conversation under the chosen pattern. Record the outcome; if transactional defer fails, adopt "commit + defer + reconciler" (already the designed fallback). If procrastinate integration fails materially, switch to the hand-rolled queue (ADR-06 fallback) before M01. Spike code lives in `spikes/` (not imported by `src/`; excluded from import-linter and mypy strict). Its deliverables are the decision record in `docs/milestones/M00.md` and a minimal reproducible test that S01.1 re-implements in `src/`. The first committed Alembic revisions are created in S01.1.
-- **Provider spike (A7, A10):** owner creates the Anthropic Console account, adds a card (Uzbek-issued card test — TF §7.2), sets a monthly spend limit, stores the key in `.env`. Run: one `messages.create` and one `messages.parse` (structured output) with `claude-opus-5-5`; `count_tokens` on synthetic Uzbek Latin/Cyrillic/Russian/English samples to estimate tokens per message; confirm refusal handling path. Estimate daily cost for the owner's typical volume (owner's volume estimate, §13).
-- **Uzbek smoke eval (early A8/A9 signal):** 8 hand-written synthetic conversations (2 each in Uzbek Latin, Uzbek Cyrillic, Uzbek–Russian mix and Russian; 10–20 messages each, with planted questions and commitments). Run a draft `CatchUp` schema via `messages.parse` and one reply draft per conversation on `claude-opus-5-5`. The owner marks pass/fail: all planted items present, no invented facts, correct language/script, reply usable with at most a minor edit. Go: ≥ 7/8 summaries pass; otherwise the owner decides before M01 whether to add an alternative adapter to the M03 evaluation. These conversations seed dataset E1 (§10.1).
+- **Provider spike (A7, A10):** owner creates the OpenAI platform account, adds a card (Uzbek-issued card test — TF §7.2), sets a monthly spend limit, stores the key in `.env` (done 2026-10-18; A7 retired). Run, on **synthetic text only**: one plain and one structured-output call with `gpt-6-luna` and `store=false`, method names taken from the official OpenAI docs (AGENTS §8); measure input/output tokens from the usage block on synthetic Uzbek Latin/Cyrillic/Russian/English samples to estimate tokens per message; confirm the refusal and truncation handling paths. Estimate daily cost for the owner's typical volume (owner's volume estimate, §13).
+- **Uzbek smoke eval (early A8/A9 signal):** 8 hand-written synthetic conversations (2 each in Uzbek Latin, Uzbek Cyrillic, Uzbek–Russian mix and Russian; 10–20 messages each, with planted questions and commitments). Run a draft `CatchUp` schema via the SDK's structured-output call and one reply draft per conversation on `gpt-6-luna`. The owner marks pass/fail: all planted items present, no invented facts, correct language/script, reply usable with at most a minor edit. Go: ≥ 7/8 summaries pass; otherwise the owner decides before M01 whether to add an alternative adapter to the M03 evaluation. These conversations seed dataset E1 (§10.1).
 - **Search spike:** prototype `normalize()`; run `ts_debug()`/`show_trgm()` in the pinned Postgres image for Uzbek apostrophe variants; confirm Latin↔Cyrillic matching on synthetic samples.
 - **Acceptance:** spike notes in `docs/milestones/M00.md`; ADR statuses updated (Accepted/Changed); cost estimate recorded; the owner sets a target monthly LLM budget (`LLM_MONTHLY_BUDGET_USD` and the Console spend limit); the estimate for the planned scope must fit it, otherwise effort or scope changes are decided with the owner before M02 (per-route model overrides only after the M03/M05 evaluations, §10.1).
 
-**Major risks:** Telegram behaviour differs from research (handled by design updates before M01/M02); Anthropic payment blocked (switch to Claude via AWS Marketplace or an alternative provider adapter); Windows Docker friction (Dev Container/WSL2).
+**Major risks:** Telegram behaviour differs from research (handled by design updates before M01/M02); provider payment blocked (retired 2026-10-18: OpenAI payment works); Windows Docker friction (Dev Container/WSL2).
 
 **API requirements:** probe only: `getMe`, `getUpdates`, `deleteWebhook`, `getBusinessConnection`, `sendMessage`/`editMessageText`/`sendChatAction`/`deleteBusinessMessages` with `business_connection_id`, `getFile`; Anthropic `messages.create`/`messages.parse`, `count_tokens`.
 
@@ -163,7 +163,7 @@ Sizes are relative effort for one developer working with AI assistance: **S** �
 | A4/LV-01/LV-05: id rotation or missing connection update | No change (bootstrap designed); record observed behaviour. |
 | A5/LV-08: error strings or window semantics differ | Update `telegram/errors.py`, ARCHITECTURE §6.6/§6.8 and TF §12 before M02. |
 | A6: procrastinate integration fails materially | Adopt the ADR-06 hand-rolled queue before M01 (+1 week to M01); if only transactional defer fails → commit + defer + reconciler (no plan change). |
-| A7: card payment fails | Owner chooses Claude on AWS (Marketplace billing) or an alternative adapter; provider spike re-run before S01.4. |
+| A7: card payment fails | Did not occur (OpenAI payment set up 2026-10-18). Had it failed: an alternative provider adapter, provider spike re-run before S01.4. |
 | Any other LV differs | Architecture delta documented and approved by the owner before the dependent milestone. |
 
 **Calendar minimum:** ≥ 2 days (LV-08).
@@ -194,14 +194,14 @@ Sizes are relative effort for one developer working with AI assistance: **S** �
 
 ### S01.3 Control chat basics (M)
 - aiogram control Router: `/start` (language, timezone, `ai_control` consent with provider named), `/help`, `/status` (basic), `/privacy` (policy v0).
-- Publish privacy policy v0 (control chat; Anthropic as processor; retention for control turns and `llm_calls`) at the chosen host and register it in @BotFather before the first live LLM call (global DoD: policy before activation).
+- Publish privacy policy v0 (control chat; OpenAI as processor, terms per TF §7.2; retention for control turns and `llm_calls`) at the chosen host and register it in @BotFather before the first live LLM call (global DoD: policy before activation).
 - `/settings` panel v1 (FR-CTL-10; deterministic inline keyboard, no LLM): language, timezone. Later slices add their settings to it.
 - **Control-chat interaction primitives:** callback tokens `<kind>:<token>:<op>` (owner-bound, single use per state, always answered with `answerCallbackQuery`); `pending_inputs` (kind, ref_id, prompt_message_id, expires_at) with routing precedence, where an active pending input consumes the owner's next text before the agent sees it and any /command cancels it; and a generic confirmation card (Confirm/Cancel, edited in place on resolution or expiry). These are used by onboarding, consent, memory/Ignore/deletion confirmations, approval cards, and automation/delegation confirmations.
 - `OutboundGateway` with `ControlChat` target, throttling, error classification; HTML renderer with sanitizer and splitting.
 - **Tests:** onboarding flow state persisted in DB; consent required before any LLM call (FakeLLM must not be called otherwise); renderer escapes/splits correctly; gateway never attaches `business_connection_id` to control targets; /settings works while FakeLLM is unavailable; non-owner callback rejected; stale token → "no longer active"; double tap → one transition; a pending input expires; an unrelated /command clears the pending input.
 
 ### S01.4 Agent runtime v1 (M)
-- `LLMClient` port, Anthropic adapter (structured outputs, refusal handling, usage capture), `FakeLLM`; consent choke point in the `LLMClient` wrapper (every request carries content-part provenance; raises before the provider call if a required consent is missing — ARCHITECTURE §14.3).
+- `LLMClient` port, OpenAI adapter on the official `openai` SDK (structured outputs via Pydantic, refusal and truncation handling, usage capture, **`store=false` on every request** — TF §7.2), `FakeLLM`; consent choke point in the `LLMClient` wrapper (every request carries content-part provenance; raises before the provider call if a required consent is missing — ARCHITECTURE §14.3).
 - Owned agent loop (ARCHITECTURE §7.2) with one tool (`get_status`); `owner_request` context builder (profile, preferences, last N control turns); budgets/timeouts; typing indicator; provider-down message; monthly budget check.
 - **Tests:** loop terminates on budget/iterations; tool results appended in one message; refusal → safe reply; provider errors → user-facing message and no crash; `llm_calls` recorded with tokens; the registry exposes no tool that sends, edits, deletes or marks read (RG-17).
 
@@ -211,7 +211,7 @@ Sizes are relative effort for one developer working with AI assistance: **S** �
 - `notify_owner(kind, refs)` domain service; every system alert goes through it (direct control-chat send in M01–M04). This covers ingestion stall, dead-letter and budget alerts, and later connection/rights and delivery alerts.
 - **Tests:** owner turns processed sequentially per account; stalled job recovery; watchdog detects stale heartbeat; payload sweeper; a 5-minute `agent.owner_request` job does not delay `heartbeat_ping` or a job on the `outbound` queue; killing any role task makes the process exit non-zero; SIGTERM during an in-flight control-chat send completes it within the grace period.
 
-**API requirements:** `getUpdates`, `getMe`, `deleteWebhook`, `sendMessage`, `sendChatAction`, `answerCallbackQuery`, `editMessageText`, `setMyCommands` (owner scope). Claude Messages API.
+**API requirements:** `getUpdates`, `getMe`, `deleteWebhook`, `sendMessage`, `sendChatAction`, `answerCallbackQuery`, `editMessageText`, `setMyCommands` (owner scope). OpenAI API (official SDK; endpoint chosen and verified against the official docs in S01.4).
 
 **Data requirements:** tables above; no business content yet.
 
@@ -309,7 +309,7 @@ Sizes are relative effort for one developer working with AI assistance: **S** �
 ### S03.4 Evaluation harness v1 (M)
 - `evals/` runner, dataset schema, metrics, result recording to `docs/evals/`.
 - **Dataset:** E1 (§10.1), frozen before S03.2.
-- Run summary/catch-up evaluation on `claude-opus-5-5`, first lowering effort to the lowest level that meets the thresholds. **Model comparison (mandatory) for the summary-refresh route:** run `claude-sonnet-5-5` and `claude-haiku-5-5` at matched effort; record quality and cost per 100 conversations for each; apply the model-choice rule (§10.1) and record the decision (`LLM_ROUTE_SUMMARIZE_MODEL` stays `claude-opus-5-5` unless a cheaper model passes).
+- Run summary/catch-up evaluation on `gpt-6-luna`. **If Luna misses a threshold**, run the same set on `gpt-6-sol` (and `gpt-6-astra` if needed); record quality and cost per 100 conversations for each; apply the model-choice rule (§10.1) and record the decision (`LLM_ROUTE_SUMMARIZE_MODEL` stays `gpt-6-luna` unless it fails the thresholds).
 - **Thresholds:** question/commitment recall ≥ 95 %; zero fabricated facts (any stated fact, date, amount, commitment or attribution not supported by the source messages counts); coverage caveat present whenever gaps exist; owner-facing language correct 100 %.
 - **Retrieval set:** ≥ 30 owner-style queries over the synthetic corpus, including paraphrase/intent queries ("where we agreed on the meeting time", "the address Kamola sent") and cross-script queries. Thresholds: target message in the top 5 `search_messages` results (with model-generated query variants) ≥ 85 %; correct final answer with reference ≥ 80 %.
 
@@ -320,7 +320,7 @@ Sizes are relative effort for one developer working with AI assistance: **S** �
 - Consent revocation (S02.4) offers these deletion scopes.
 - **Tests:** after each deletion scope (conversation, contact, everything), a scan of all ARCHITECTURE §10.1 content columns finds no text from the deleted scope; other conversations and accounts are untouched; confirmation is required; the audit row is content-free; a retention change takes effect at the next sweep; choosing "Also delete existing data" on the Ignore confirmation deletes that conversation's data.
 
-**API requirements:** none new on Telegram; Claude structured outputs.
+**API requirements:** none new on Telegram; OpenAI structured outputs.
 
 **Data requirements:** `conversation_summaries`; `memory_items` (FK-scoped per ARCHITECTURE §10.3); `search_tsv` GIN and `pg_trgm` GIN indexes; owner retention overrides in `accounts.settings`.
 
@@ -415,9 +415,9 @@ Sizes are relative effort for one developer working with AI assistance: **S** �
 - Stored as `automations` rows with `kind='monitor'` (event-only, `next_run_at` NULL); a one-shot monitor moves to `completed` on its first match.
 - **Tests:** "notify me when Daniel replies" fires exactly once on first reply; keyword monitor; semantic monitor with FakeLLM verdicts; monitors ignore Ignore-mode chats; three semantic monitors in scope → exactly one `evaluate_monitor` call per burst.
 
-**Evaluation:** triage set E3 (§10.1; synthetic, labelled): urgent/decision recall ≥ 90 %, false-alert rate ≤ 20 %, language-agnostic; commitment-resolution labels: false-closure rate ≤ 10 %, resolution recall ≥ 80 %. **Model comparison (mandatory) for the triage and `evaluate_monitor` routes:** first lower effort on `claude-opus-5-5` to the lowest level that meets the thresholds; then run `claude-sonnet-5-5` and `claude-haiku-5-5` at matched effort; record quality and cost per 100 bursts; apply the model-choice rule (§10.1) and record the decision for each route.
+**Evaluation:** triage set E3 (§10.1; synthetic, labelled): urgent/decision recall ≥ 90 %, false-alert rate ≤ 20 %, language-agnostic; commitment-resolution labels: false-closure rate ≤ 10 %, resolution recall ≥ 80 %. **Model comparison (mandatory) for the triage and `evaluate_monitor` routes:** run on `gpt-6-luna` first; if it misses a threshold, run `gpt-6-sol` (then `gpt-6-astra`); record quality and cost per 100 bursts for each model tried; apply the model-choice rule (§10.1) and record the decision for each route.
 
-**API requirements:** no new Telegram methods (control-chat `sendMessage`/`editMessageText` with inline keyboards); Claude structured outputs for `triage`, `interpret_instruction`, `evaluate_monitor`.
+**API requirements:** no new Telegram methods (control-chat `sendMessage`/`editMessageText` with inline keyboards); OpenAI structured outputs for `triage`, `interpret_instruction`, `evaluate_monitor`.
 
 **Data requirements:** `tasks`, `notifications`, `automations`, `automation_occurrences`, `digests`; `contacts.priority`; `conversations.pending_triage_at`.
 
@@ -465,7 +465,7 @@ Sizes are relative effort for one developer working with AI assistance: **S** �
 - Autonomy enabled per language only after passing (FR-AUT-13).
 - Decide from the adversarial results whether to add an independent audit call (sees only the draft, the delegation rules and shareable knowledge); record the decision in the M06 report.
 
-**API requirements:** `sendMessage` with `business_connection_id` through the same gateway (autonomous path); Claude `interpret_instruction` (DelegationSpec), `draft_reply`.
+**API requirements:** `sendMessage` with `business_connection_id` through the same gateway (autonomous path); OpenAI `interpret_instruction` (DelegationSpec), `draft_reply`.
 
 **Data requirements:** `delegations`; `memory_items` kind `shareable` with `delegation_id`; `actions.origin='delegation_auto'` + `delegation_id`; per-delegation counters.
 
@@ -509,7 +509,7 @@ Sizes are relative effort for one developer working with AI assistance: **S** �
 ### S07.5 Flagship scenario and personal trial (M effort + 14-day calendar trial)
 - Automated scenario for J7; two-week personal trial with a daily checklist; trial report, including NFR-08 ingestion availability (≥ 99 %) computed from poller heartbeats and `coverage_gaps`.
 
-**API requirements:** control-chat `sendMessage`/`editMessageText` with inline keyboards and `copy_text`; `sendDocument` (control chat only) for /export; Claude `interpret_instruction` (FollowUpSpec/AutomationSpec) and `extract_memory`.
+**API requirements:** control-chat `sendMessage`/`editMessageText` with inline keyboards and `copy_text`; `sendDocument` (control chat only) for /export; OpenAI `interpret_instruction` (FollowUpSpec/AutomationSpec) and `extract_memory`.
 
 **Data requirements:** automations of kind `follow_up`/`scheduled_summary` with `task_id`; task status transitions and `snoozed_until`; `memory_items.status='pending_review'`; temporary export file deleted after delivery.
 
@@ -577,7 +577,7 @@ Sizes are relative effort for one developer working with AI assistance: **S** �
 
 Synthetic only, never real chats. The developer writes seed scenarios, an LLM may expand them into full conversations, and the owner reviews the Uzbek text and labels. Rubrics live in `evals/rubrics/`. An LLM judge may pre-screen, but gate results (M03, M05, M06) count only items confirmed by the owner's review. Regression runs between gates use deterministic checks (language/script, disclosure, forbidden content) plus the LLM judge. Dataset authoring runs as a parallel track from M01.
 
-**Model-choice rule** (cost). `claude-opus-5-5` is the default model for all routes (ARCHITECTURE §3, ADR-07): one model to evaluate and reason about; cost is tuned via effort first; per-route overrides only after evaluation. Lowering effort is the first cost lever. For the high-volume routes (summary refresh at the M03 evaluation; triage and monitor evaluation at the M05 evaluation) a measured comparison with `claude-sonnet-5-5` and `claude-haiku-5-5` at matched effort is mandatory. A route switches from `claude-opus-5-5` only if the cheaper model meets the same quality thresholds on the synthetic eval set; the decision, with quality and cost per 100 items, is recorded in the eval report (`docs/evals/`). The S00.3 cost estimate and the `LLM_MONTHLY_BUDGET_USD` alerts apply regardless.
+**Model-choice rule** (quality — inverted by ADR-07a). `gpt-6-luna`, the cheapest tier, is the default model for all routes (ARCHITECTURE §3, §7.4, ADR-07a): there is no cheaper model to fall back to, so the risk is quality, not spend. Every gated route (summaries at M03; triage and monitor evaluation at M05; drafts at M04/M06) is measured on Luna first. A route moves **up** (`LLM_ROUTE_<RUN_TYPE>_MODEL` → `gpt-6-sol`, then `gpt-6-astra`) only when Luna misses the quality thresholds on the synthetic eval set; the decision, with quality and cost per 100 items for each model tried, is recorded in the eval report (`docs/evals/`). The S00.3 cost estimate and the `LLM_MONTHLY_BUDGET_USD` alerts apply regardless.
 
 ---
 
@@ -587,7 +587,7 @@ Synthetic only, never real chats. The developer writes seed scenarios, an LLM ma
 |---|---|---|---|
 | Channel intelligence phase 1 (admin channels + forwarded posts) | Topic updates, digests | Bot must be channel admin; forwarded content consent; no scraping (TF §9) | `channel_post` ingestion, consent text |
 | Voice message transcription | Many Uzbek users send voice | 20 MB limit; new processor (STT) consent; Uzbek STT quality; biometric localization concern only for public launch | Provider selection + eval |
-| Image understanding | Context for photos/screenshots | Vision via Claude; consent covers it | Media download at ingestion |
+| Image understanding | Context for photos/screenshots | Vision via the configured provider (OpenAI); consent covers it | Media download at ingestion |
 | Semantic retrieval (pgvector) | Better recall for vague queries | Only if the S03.4 retrieval thresholds fail; embedding provider consent; Uzbek quality | Eval evidence |
 | Undo for assistant messages | Safety net | Needs delete-own right; 48 h limit | M04 |
 | Opt-in mark-as-read | Owner convenience | Needs `can_read_messages`; logged; off by default | M04 actions |
@@ -605,7 +605,7 @@ Each selected candidate becomes a vertical slice with the same template (objecti
 
 Entry gate: owner decision to go public + **legal review** (Uzbekistan personal data and AI rules, GDPR if EU users, Telegram terms clarification on AI processing of counterparties' messages, provider regional policy for users in unsupported regions).
 
-Workstreams: multi-user onboarding (waitlist → self-serve); per-account quotas and budgets; webhook ingress (FastAPI) and partitioned inbox processors; worker scaling; content encryption decision (per-account envelope encryption); public privacy policy and terms (`/terms`), self-serve export/deletion; abuse prevention and rate limits; observability upgrade; load and failure testing; support process; billing inside the bot exclusively via Telegram Stars (subscriptions via `createInvoiceLink`, `/paysupport`, `/terms`); local payment options (e.g., Payme/Click/Uzum) evaluated only for sales made outside Telegram, never linked from the bot, with Stars parity (TF §7.1); provider strategy (Claude via EU cloud regions for transfer compliance; alternatives for users in unsupported regions).
+Workstreams: multi-user onboarding (waitlist → self-serve); per-account quotas and budgets; webhook ingress (FastAPI) and partitioned inbox processors; worker scaling; content encryption decision (per-account envelope encryption); public privacy policy and terms (`/terms`), self-serve export/deletion; abuse prevention and rate limits; observability upgrade; load and failure testing; support process; billing inside the bot exclusively via Telegram Stars (subscriptions via `createInvoiceLink`, `/paysupport`, `/terms`); local payment options (e.g., Payme/Click/Uzum) evaluated only for sales made outside Telegram, never linked from the bot, with Stars parity (TF §7.1); provider strategy (OpenAI EU data residency/processing, or another adapter, for transfer compliance; alternatives for users in unsupported regions).
 
 ---
 
@@ -618,7 +618,7 @@ Workstreams: multi-user onboarding (waitlist → self-serve); per-account quotas
 | M00 S00.2 | Create the probe/dev bot in @BotFather: `/newbot` → neutral working name/username (not the product name) → copy token into `.env` (never paste tokens in chat) → open the bot in the @BotFather Mini App (or /mybots) → Mode Settings (older versions: Bot Settings) → enable **Secretary Mode** (formerly "Business Mode") → `/setjoingroups` → Disable; keep Bot-to-Bot Communication Mode off; verify that `getMe` returns `can_connect_to_business: true` | Instructions repeated in `deploy/runbooks/botfather.md`, showing both menu paths (FR-ONB-10) |
 | M00 S00.2 | Have a third Telegram account available | LV-08 chat; non-owner refusal tests (M01, R0 AC1) |
 | M00 S00.2 | Set up connections A and B per TF §11 (A: main account → Settings → Chat Automation, older clients: Settings → Telegram Business → Chatbots, restricted to the chats with the second and third accounts; B: second account, all 1:1 chats); run LV steps with the second account (LV-08 with the third); do not press Start in the probe bot until LV-09 is done | ~1 hour active + one message 24 h+ apart; LV-11 re-checks after 24 h and 7 days |
-| M00 S00.3 | Anthropic Console account, API key into `.env`, card test, monthly spend limit | If the card fails: Claude via AWS Marketplace or alternative provider |
+| M00 S00.3 | ~~OpenAI platform account, API key into `.env`, card test~~ (done 2026-10-18); monthly spend limit set in the OpenAI dashboard | — |
 | M00 S00.3 | Estimate daily volume: active chats, messages/day, language mix | Input to the cost estimate |
 | M00 S00.3 | Set the monthly LLM budget (USD) | Drives `LLM_MONTHLY_BUDGET_USD` alerts and the Console spend limit |
 | M00 S00.3 | Mark the Uzbek smoke-eval results pass/fail | 8 synthetic conversations; early A8/A9 signal |
@@ -632,7 +632,7 @@ Workstreams: multi-user onboarding (waitlist → self-serve); per-account quotas
 | M03/M05/M06 | Approve the evaluation-run budget (estimated in S00.3) | Evals call the real API |
 | M03–M06 | Decide Q-04…Q-09, or accept the PRD §22 defaults, by the milestone listed there | — |
 | M04/M06 | Rate draft quality on evaluation sets | Gate for autonomy |
-| M05/M06 | Brief two friends: they send scripted synthetic messages and are told an AI processes them | Their messages reach Claude |
+| M05/M06 | Brief two friends: they send scripted synthetic messages and are told an AI processes them | Their messages reach OpenAI |
 | Optional | Private GitHub repository for CI | Local workflow works without it |
 
 ---

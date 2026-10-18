@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Version** | v0 (draft — control chat only) |
-| **Status** | **Not yet approved or published.** Blocked on PQ-09 and owner approval. |
+| **Status** | **Not yet approved or published.** Blocked on owner approval, host/contact choice and @BotFather registration (OpenAI terms recorded 2026-10-18). |
 | **Last updated** | 2026-10-18 |
 
 > **This version covers the control chat only.** It does not yet cover managed
@@ -37,7 +37,7 @@ update arrived, and its content is discarded at processing.
 
 | Processor | What reaches them | Their terms |
 |---|---|---|
-| **OpenAI** (`gpt-6-luna`) | The text of your control-chat conversation, when you ask the assistant something | **To be recorded — PQ-09.** Training on API data is disabled in the account. |
+| **OpenAI** (`gpt-6-luna`) | The text of your control-chat conversation, when you ask the assistant something | OpenAI does not train on API data (data sharing is off in the account). OpenAI keeps abuse-monitoring logs, which may include prompts and responses, for up to 30 days. The assistant asks OpenAI not to store responses (`store=false`), so nothing else is retained there. Source: https://developers.openai.com/api/docs/guides/your-data |
 | **Telegram** | Everything, inherently — it is the transport | Telegram's own privacy policy |
 
 No other processor. No analytics, no error-tracking service, no advertising.
@@ -80,8 +80,9 @@ and an opt-out **before** the change takes effect.
 
 ### What must happen before this is published
 
-1. **PQ-09** — record OpenAI's actual retention and data-usage terms in
-   TELEGRAM_FEASIBILITY §7.2, with a source URL.
+1. ~~**PQ-09** — record OpenAI's actual retention and data-usage terms in
+   TELEGRAM_FEASIBILITY §7.2, with a source URL.~~ Done 2026-10-18; the
+   processor row above now states them.
 2. Owner chooses the host (default: a telegra.ph page) and a contact address.
 3. Owner reviews and approves this text and the consent wording.
 4. Register the URL with @BotFather.
