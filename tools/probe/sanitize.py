@@ -65,6 +65,9 @@ ID_KEYS = frozenset(
     }
 )
 
+#: Integer ids that name a user or chat (a private chat's id is its user's id).
+PEER_ID_KEYS = frozenset({"id", "chat_id", "user_chat_id", "sender_chat_id"})
+
 #: Keys whose *integer* values are timestamps, kept so window tests stay real.
 TIMESTAMP_KEYS = frozenset({"date", "edit_date", "forward_date", "expiration_date"})
 
@@ -82,20 +85,37 @@ class Sanitizer:
         self._counters[bucket] = self._counters.get(bucket, 0) + 1
         return self._counters[bucket]
 
+    @staticmethod
+    def _namespace(key: str, value: Any) -> str:
+        """Keys that name the same kind of thing share one mapping.
+
+        A user id appears as `user.id`, `from.id`, `chat.id`, `user_chat_id`
+        and `chat_id`; a connection id as `business_connection.id` and
+        `business_connection_id`. Mapped per key, one real id became several
+        synthetic ones and fixtures could not link a message to its
+        connection or its sender to the owner.
+        """
+        if isinstance(value, int) and key in PEER_ID_KEYS:
+            return "peer"
+        if isinstance(value, str) and key in {"id", "business_connection_id"}:
+            return "business-connection-id"
+        return key
+
     def map_id(self, key: str, value: Any) -> Any:
-        cached = self._ids.get((key, value))
-        if cached is not None:
-            return cached
-        index = self._next(key)
         if isinstance(value, bool):
             return value
+        namespace = self._namespace(key, value)
+        cached = self._ids.get((namespace, value))
+        if cached is not None:
+            return cached
+        index = self._next(namespace)
         if isinstance(value, int):
             # Keep the sign: negative chat ids mean groups/channels.
             base = {"update_id": 100_000, "message_id": 1_000}.get(key, 700_000_000)
             mapped: Any = -(base + index) if value < 0 else base + index
         else:
-            mapped = f"synthetic-{key.replace('_', '-')}-{index:04d}"
-        self._ids[(key, value)] = mapped
+            mapped = f"synthetic-{namespace.replace('_', '-')}-{index:04d}"
+        self._ids[(namespace, value)] = mapped
         return mapped
 
     @staticmethod

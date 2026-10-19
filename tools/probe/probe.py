@@ -135,6 +135,9 @@ CONSOLE_SAFE_FIELDS = (
     "file_size",
     "file_unique_id",
     "downloaded_to",
+    # getBusinessConnection: flags only, no names (connection health checks).
+    "is_enabled",
+    "rights",
 )
 
 

@@ -53,7 +53,7 @@ def _rights_note(rights: list[str]) -> str:
     if not surplus:
         return ""
     return (
-        "\n\nRights you granted that I will never use: "
+        "\n\nRights you granted that I do not use: "
         + ", ".join(f"<code>{name}</code>" for name in surplus)
         + ". You can turn them off where you connected me."
     )

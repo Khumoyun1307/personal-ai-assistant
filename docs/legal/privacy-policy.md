@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | v2 — control chat + chats included under Chat Automation (draft) |
-| **Status** | **Draft, not published.** Needs the owner's go-ahead; then published at the same URL as v1 (`tools/legal/publish_policy.py` edits the existing page). v1 stays in force until then. |
+| **Version** | v2 — control chat + chats included under Chat Automation |
+| **Status** | Published 2026-10-19 (owner go-ahead 2026-10-19) at the same URL as v1: https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19 (Telegraph keeps the original slug; the page title says v2). |
 | **Last updated** | 2026-10-18 |
 | **Previous** | v1 — control chat only, published 2026-10-18 (see git history of this file) |
 
@@ -82,5 +82,5 @@ This is a personal deployment: the operator is the owner. Questions about it go 
 1. PQ-09 — OpenAI's terms recorded in TELEGRAM_FEASIBILITY §7.2 (2026-10-18).
 2. Host: telegra.ph (plan default), same page as v1.
 3. v1 published 2026-10-18 (owner go-ahead). v2 drafted 2026-10-18 in M02 S02.1;
-   **owner go-ahead to publish: pending.**
+   owner go-ahead to publish: 2026-10-19; published the same day (page edited in place).
 4. @BotFather registration: same URL, no change needed.

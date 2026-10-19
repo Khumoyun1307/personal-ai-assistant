@@ -122,6 +122,25 @@ def test_identifiers_are_remapped_consistently(cleaned: dict[str, Any]) -> None:
     assert message["from"]["id"] != 584113992
 
 
+def test_the_same_id_under_different_keys_maps_to_the_same_synthetic_id() -> None:
+    """A message must stay linked to its connection, and the owner to themself."""
+    cleaner = sanitize.Sanitizer()
+    connection = cleaner.walk(
+        {
+            "business_connection": {
+                "id": "KxQ2k9_realLookingConnectionId",
+                "user": {"id": 584113000},
+                "user_chat_id": 584113000,
+            }
+        }
+    )["business_connection"]
+    message = cleaner.walk(SAMPLE)["payload"]["business_message"]
+
+    assert message["business_connection_id"] == connection["id"]
+    assert connection["user"]["id"] == connection["user_chat_id"]
+    assert connection["user"]["id"] != message["from"]["id"]
+
+
 def test_sanitizing_twice_gives_the_same_output() -> None:
     first = json.dumps(sanitize.Sanitizer().walk(SAMPLE), sort_keys=True)
     second = json.dumps(sanitize.Sanitizer().walk(SAMPLE), sort_keys=True)
