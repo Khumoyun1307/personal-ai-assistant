@@ -8,6 +8,8 @@ Every data class the privacy policy names has a rule here, and the hourly
 | `inbound_updates.payload` | 7 days | payload cleared; the row stays as content-free metadata |
 | `control_turns.text` | 90 days | text cleared; the row stays (role, time, run link) |
 | `llm_calls`, `agent_runs` (+ steps), `audit_log` | 1 year | rows deleted (they carry no content) |
+| `business_connection_events` | 1 year | rows deleted (ids, rights, flags only) |
+| `foreign_connections` | 30 days after last seen | rows deleted (metadata of non-owners) |
 
 Other classes join as their tables arrive.
 """
@@ -20,7 +22,12 @@ from datetime import timedelta
 from sqlalchemy import delete, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from assistant.accounts.models import AuditLogEntry, ControlTurn
+from assistant.accounts.models import (
+    AuditLogEntry,
+    BusinessConnectionEvent,
+    ControlTurn,
+    ForeignConnection,
+)
 from assistant.core.clock import Clock
 from assistant.db.uow import transaction
 from assistant.inbox.models import InboundUpdate
@@ -28,6 +35,7 @@ from assistant.inbox.models import InboundUpdate
 INBOUND_PAYLOAD_RETENTION = timedelta(days=7)
 CONTROL_TURN_TEXT_RETENTION = timedelta(days=90)
 ACCOUNTING_RETENTION = timedelta(days=365)
+FOREIGN_CONNECTION_RETENTION = timedelta(days=30)
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +45,8 @@ class SweepReport:
     llm_calls: int = 0
     agent_runs: int = 0
     audit_entries: int = 0
+    connection_events: int = 0
+    foreign_connections: int = 0
 
     @property
     def total(self) -> int:
@@ -46,6 +56,8 @@ class SweepReport:
             + self.llm_calls
             + self.agent_runs
             + self.audit_entries
+            + self.connection_events
+            + self.foreign_connections
         )
 
 
@@ -107,4 +119,19 @@ async def sweep_all(session_factory: async_sessionmaker[AsyncSession], clock: Cl
                 delete(AuditLogEntry).where(AuditLogEntry.at < accounting_cutoff)
             )
         )
-    return SweepReport(inbound, turns, calls, runs, audit)
+        events = _count(
+            await uow.session.execute(
+                delete(BusinessConnectionEvent).where(
+                    BusinessConnectionEvent.observed_at < accounting_cutoff
+                )
+            )
+        )
+    async with transaction(session_factory) as uow:
+        foreign = _count(
+            await uow.session.execute(
+                delete(ForeignConnection).where(
+                    ForeignConnection.last_seen_at < now - FOREIGN_CONNECTION_RETENTION
+                )
+            )
+        )
+    return SweepReport(inbound, turns, calls, runs, audit, events, foreign)

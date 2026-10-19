@@ -1,4 +1,4 @@
-"""Task catalogue for M01 (ARCHITECTURE §12.2).
+"""Task catalogue (ARCHITECTURE §12.2).
 
 Task bodies are methods of `JobHandlers`, plain async code that tests can call
 directly; `register_tasks` binds them to the procrastinate app with their
@@ -7,6 +7,7 @@ queue, lock and schedule. Job arguments are ids only (AGENTS §13).
 | Task | Queue | Lock / schedule |
 |---|---|---|
 | `agent.owner_request(turn_id)` | llm | lock `acct:{id}:control` (set at defer) |
+| `connections.notify_owner(event_id)` | system | deferred with the registry change (S02.1) |
 | `system.ingestion_watchdog` | system | every minute |
 | `system.reconcile_pending` | system | every minute |
 | `system.retention_sweep` | system | hourly |
@@ -30,9 +31,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from assistant.agent.budget import check_budget_thresholds
 from assistant.agent.runtime import RunOutcome
 from assistant.core.clock import Clock
-from assistant.core.jobs import OWNER_REQUEST_TASK, JobScheduler, owner_control_lock
+from assistant.core.jobs import (
+    CONNECTION_NOTIFY_TASK,
+    OWNER_REQUEST_TASK,
+    JobScheduler,
+    owner_control_lock,
+)
 from assistant.db.uow import transaction
-from assistant.inbox.notify import OwnerAlerts
+from assistant.inbox.connection_alerts import notify_connection_change
+from assistant.inbox.notify import AlertResult, OwnerAlerts
 from assistant.inbox.watchdog import STALL_AFTER, check_ingestion, poller_heartbeat_at
 from assistant.jobs.app import QUEUE_LLM, QUEUE_SYSTEM, STALLED_WORKER_TIMEOUT
 from assistant.jobs.reconcile import unqueued_owner_turns
@@ -50,6 +57,13 @@ JOB_HISTORY_HOURS = 72
 #: `retry=True`). Provider errors are handled inside the run, not retried here,
 #: and a retry of an already-answered turn is a no-op (see the runtime).
 OWNER_REQUEST_RETRY = RetryStrategy(
+    max_attempts=3, exponential_wait=2, retry_exceptions={OperationalError, DBAPIError}
+)
+
+
+#: Database hiccups only. A Telegram failure is reported by the channel as an
+#: undelivered result, not raised, and is never retried blindly.
+NOTIFY_RETRY = RetryStrategy(
     max_attempts=3, exponential_wait=2, retry_exceptions={OperationalError, DBAPIError}
 )
 
@@ -80,6 +94,11 @@ class JobHandlers:
             )
         return outcome
 
+    async def connection_notify(self, event_id: int) -> AlertResult:
+        return await notify_connection_change(
+            self.session_factory, self.clock, self.alerts, event_id
+        )
+
     async def ingestion_watchdog(self) -> None:
         report = await check_ingestion(self.session_factory, self.clock, self.alerts)
         if report.stalled:
@@ -109,6 +128,8 @@ class JobHandlers:
                 llm_calls=report.llm_calls,
                 agent_runs=report.agent_runs,
                 audit_entries=report.audit_entries,
+                connection_events=report.connection_events,
+                foreign_connections=report.foreign_connections,
             )
         return report
 
@@ -135,6 +156,10 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
     @app.task(name=OWNER_REQUEST_TASK, queue=QUEUE_LLM, retry=OWNER_REQUEST_RETRY)
     async def owner_request(turn_id: int) -> None:
         await handlers.owner_request(turn_id)
+
+    @app.task(name=CONNECTION_NOTIFY_TASK, queue=QUEUE_SYSTEM, retry=NOTIFY_RETRY)
+    async def connection_notify(event_id: int) -> None:
+        await handlers.connection_notify(event_id)
 
     @app.periodic(cron="* * * * *")
     @app.task(

@@ -16,17 +16,20 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts import service
+from assistant.accounts import connections, service
 from assistant.accounts.models import Account
 from assistant.core.clock import Clock
 from assistant.telegram.gateway import ControlChat, OutboundGateway, SendResult
 from assistant.telegram.render import escape
 
 #: The version of the consent text and policy currently in force.
-POLICY_VERSION = "v1"
+POLICY_VERSION = service.POLICY_VERSION
 
 #: Named in the consent, because consent has to say who the data goes to.
-AI_PROCESSORS = ["OpenAI"]
+AI_PROCESSORS = list(service.AI_PROCESSORS)
+
+#: Answers that count as agreement to a consent question. Anything else declines.
+AGREEMENT_WORDS = frozenset({"yes", "ha", "да", "y", "ok", "okay"})
 
 #: Stop words treated as `/pause` before any model is called (§6.7). Matched
 #: against the whole message, so an ordinary sentence containing "stop" does
@@ -146,7 +149,7 @@ async def handle_consent_reply(
 ) -> HandlerResult:
     """The owner's answer to the consent question."""
     target = ControlChat(account_id=account.id, chat_id=message.chat_id)
-    agreed = message.text.strip().lower() in {"yes", "ha", "да", "y", "ok", "okay"}
+    agreed = message.text.strip().lower() in AGREEMENT_WORDS
     await service.clear_pending_input(session, account_id=account.id)
 
     if not agreed:
@@ -172,6 +175,88 @@ async def handle_consent_reply(
     return HandlerResult(True, "consent", result, note="granted")
 
 
+MANAGED_CONSENT_TEXT = (
+    "<b>AI for your chats with other people</b>\n\n"
+    "To summarize the chats you included and help you with them, I need to send "
+    "their text to <b>{processors}</b>. Nothing is sent anywhere else, and it is "
+    "not used to train any model. Until you agree, nothing from those chats is "
+    "sent to any AI provider.\n\n"
+    "Reply <b>yes</b> to agree, or anything else to decline. "
+    "You can revoke this at any time with <code>/privacy revoke</code>."
+)
+
+
+async def handle_managed_consent_request(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    message: IncomingMessage,
+) -> HandlerResult:
+    """`/privacy managed` — ask for consent to process managed chats (FR-ONB-05b)."""
+    target = ControlChat(account_id=account.id, chat_id=message.chat_id)
+    state = await service.active_consent(session, account.id, kind=service.CONSENT_AI_MANAGED)
+    if state.granted:
+        result = await gateway.send_text(
+            target, "You have already agreed. Send <code>/privacy revoke</code> to withdraw."
+        )
+        return HandlerResult(True, "managed_consent", result, note="already_granted")
+    if await connections.connection_for_account(session, account.id) is None:
+        result = await gateway.send_text(
+            target,
+            "I am not connected to your account yet. Connect me in your Telegram settings "
+            "(Chat Automation, or Telegram Business → Chatbots in older apps) first; "
+            "I will ask you then.",
+        )
+        return HandlerResult(True, "managed_consent", result, note="not_connected")
+    await service.set_pending_input(
+        session,
+        account_id=account.id,
+        kind=service.PENDING_MANAGED_CONSENT,
+        clock=clock,
+        ttl=service.MANAGED_CONSENT_TTL,
+        prompt_message_id=message.telegram_message_id,
+    )
+    result = await gateway.send_text(
+        target, MANAGED_CONSENT_TEXT.format(processors=", ".join(AI_PROCESSORS))
+    )
+    return HandlerResult(True, "managed_consent", result, note="requested")
+
+
+async def handle_managed_consent_reply(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    message: IncomingMessage,
+    account: Account,
+) -> HandlerResult:
+    """The owner's answer to the managed-conversation consent question."""
+    target = ControlChat(account_id=account.id, chat_id=message.chat_id)
+    agreed = message.text.strip().lower() in AGREEMENT_WORDS
+    await service.clear_pending_input(session, account_id=account.id)
+    if not agreed:
+        result = await gateway.send_text(
+            target,
+            "Understood — nothing from your chats with other people will be sent to an "
+            "AI provider. Send <code>/privacy managed</code> if you change your mind.",
+        )
+        return HandlerResult(True, "managed_consent", result, note="declined")
+    await service.grant_consent(
+        session,
+        account,
+        kind=service.CONSENT_AI_MANAGED,
+        policy_version=POLICY_VERSION,
+        processors=AI_PROCESSORS,
+        clock=clock,
+    )
+    result = await gateway.send_text(
+        target,
+        "Thank you — recorded. From now on I may send the text of the chats you "
+        f"included to {', '.join(AI_PROCESSORS)} when I work on them for you.",
+    )
+    return HandlerResult(True, "managed_consent", result, note="granted")
+
+
 async def handle_help(
     gateway: OutboundGateway, account: Account, message: IncomingMessage
 ) -> HandlerResult:
@@ -191,22 +276,30 @@ async def handle_privacy(
 ) -> HandlerResult:
     """`/privacy` — say plainly what is stored and who sees it (FR-PRV-01)."""
     consent = await service.active_consent(session, account.id, kind=service.CONSENT_AI_CONTROL)
-    state = (
-        f"granted (policy {consent.policy_version}, "
-        f"processor: {', '.join(consent.processors) or 'none named'})"
-        if consent.granted
-        else "<b>not granted</b> — nothing is sent to an AI provider"
-    )
+    managed = await service.active_consent(session, account.id, kind=service.CONSENT_AI_MANAGED)
+    connected = await connections.connection_for_account(session, account.id) is not None
+
+    def describe(state: service.ConsentState) -> str:
+        if not state.granted:
+            return "<b>not granted</b> — nothing is sent to an AI provider"
+        return (
+            f"granted (policy {state.policy_version}, "
+            f"processor: {', '.join(state.processors) or 'none named'})"
+        )
+
     text = (
         "<b>Privacy</b>\n\n"
-        f"AI consent: {state}\n\n"
+        f"AI for this chat: {describe(consent)}\n"
+        f"AI for your chats with other people: {describe(managed)}\n\n"
         "In this chat I store your messages and my replies for 90 days, your "
         "settings, and a content-free record of what I did.\n\n"
         "Messages from anyone who is not you are discarded — I keep no record "
         "of what they said.\n\n"
         "Your messages are never used to train a model."
     )
-    if consent.granted:
+    if connected and not managed.granted:
+        text += "\n\nSend <code>/privacy managed</code> to decide about your other chats."
+    if consent.granted or managed.granted:
         text += "\n\nSend <code>/privacy revoke</code> to stop all AI processing."
     if policy_url:
         text += f'\n\nFull policy: <a href="{escape(policy_url)}">{escape(policy_url)}</a>'
@@ -357,8 +450,10 @@ def describe_unknown_command(command: str) -> str:
 
 
 __all__ = [
+    "AGREEMENT_WORDS",
     "AI_PROCESSORS",
     "HELP_TEXT",
+    "MANAGED_CONSENT_TEXT",
     "POLICY_VERSION",
     "REFUSAL_TEXT",
     "STOP_WORDS",
@@ -368,6 +463,8 @@ __all__ = [
     "describe_unknown_command",
     "handle_consent_reply",
     "handle_help",
+    "handle_managed_consent_reply",
+    "handle_managed_consent_request",
     "handle_privacy",
     "handle_revoke",
     "handle_settings",

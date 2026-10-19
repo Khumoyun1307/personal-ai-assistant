@@ -16,11 +16,16 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import service
-from assistant.accounts.models import AuditLogEntry, ControlTurn
+from assistant.accounts.models import (
+    AuditLogEntry,
+    BusinessConnectionEvent,
+    ControlTurn,
+    ForeignConnection,
+)
 from assistant.agent.budget import check_budget_thresholds
 from assistant.agent.models import AgentRun, LlmCall
 from assistant.db.engine import build_engine, build_session_factory
@@ -225,6 +230,54 @@ async def test_budget_thresholds_alert_once_per_month_each(
     clock.set(datetime(2026, 11, 1, 0, 5, tzinfo=UTC))  # a new month starts from zero
     assert await check() == []
     assert len(channel.sends) == 3
+
+
+async def test_connection_history_and_foreign_connections_expire(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    """Connection events: 1 year. Foreign connections: 30 days after last seen."""
+    account_id = await owner(factory, clock)
+    async with transaction(factory) as uow:
+        for age_days in (366, 10):
+            uow.session.add(
+                BusinessConnectionEvent(
+                    account_id=account_id,
+                    connection_id=f"synthetic-{age_days}",
+                    payload_digest="synthetic",
+                    rights=[],
+                    is_enabled=True,
+                    change="connected",
+                    source="update",
+                    observed_at=NOW - timedelta(days=age_days),
+                )
+            )
+            uow.session.add(
+                ForeignConnection(
+                    connection_id=f"synthetic-foreign-{age_days}",
+                    telegram_user_id=7000000009,
+                    first_seen_at=NOW - timedelta(days=age_days),
+                    last_seen_at=NOW - timedelta(days=age_days if age_days < 30 else 31),
+                )
+            )
+
+    try:
+        report = await sweep_all(factory, clock)
+
+        assert (report.connection_events, report.foreign_connections) == (1, 1)
+        async with factory() as session:
+            kept_events = (
+                (await session.execute(select(BusinessConnectionEvent.connection_id)))
+                .scalars()
+                .all()
+            )
+            kept_foreign = (
+                (await session.execute(select(ForeignConnection.connection_id))).scalars().all()
+            )
+        assert kept_events == ["synthetic-10"]
+        assert kept_foreign == ["synthetic-foreign-10"]
+    finally:
+        async with transaction(factory) as uow:
+            await uow.session.execute(delete(ForeignConnection))
 
 
 async def test_every_policy_retention_rule_is_applied(

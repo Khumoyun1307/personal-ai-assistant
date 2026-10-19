@@ -265,7 +265,7 @@ sequenceDiagram
 - **Key:** `business_connections.account_id` (the owner's Telegram user id resolves the account). The Telegram `connection_id` is a **mutable attribute** with history (`business_connection_events`).
 - **Owner check:** a connection is linked only if `BusinessConnection.user.id` is in the allowlist. For an allowlisted user without an `accounts` row, one is created (`status='onboarding'`) and the connection row gets `status='pending_owner'`. Business messages on a `pending_owner` connection are marked `ignored` with `payload` nulled (FR-ONB-03, J1). For a non-allowlisted user, no `accounts` or `business_connections` row is created: the `inbound_updates` row is marked `rejected` with `payload` set to NULL during processing. The connection id is cached in the non-tenant table `foreign_connections` so later updates on it are rejected without calling `getBusinessConnection` again.
 - **Bootstrap:** any business update with an unknown `connection_id` triggers `getBusinessConnection` (TF §2: the initial connection update can be missing). Connection updates and messages are processed idempotently in any order. The call is made before the processing transaction; a failure is transient (the row stays pending).
-- **Rights snapshot:** stored per connection version; missing `rights` or `is_enabled=false` ⇒ *no permissions*. Capability tier derived: `observe_only` (no `can_reply`), `can_reply`, `extended` (+ mark-read/delete-own).
+- **Rights snapshot:** stored per connection version; missing `rights` or `is_enabled=false` ⇒ *no permissions*. Capability tier derived: `none` (disabled), `observe_only` (no `can_reply`), `can_reply`, `extended` (+ `can_read_messages`, `can_delete_sent_messages` or `can_delete_all_messages`). Only rights documented in the official Bot API count (aiogram's undocumented `can_delete_outgoing_messages` grants nothing — TF §13 PQ-10). Granted rights the product never uses (profile, gifts, Stars, stories, `can_delete_all_messages`) are named in the owner notice so they can be turned off (FR-ONB-04).
 - **Lifecycle:**
 
 ```mermaid
@@ -281,6 +281,7 @@ stateDiagram-v2
 ```
 
 - On `disabled`: stop all business processing for the account, cancel pending sends, notify the owner. On rights change: re-evaluate pending actions; notify the owner (FR-ONB-07).
+- **As built (S02.1):** domain logic in `accounts/connections.py` (`apply_snapshot`, `activate_pending`, `resolve`); the adapter `telegram/connections.py` parses payloads, calls `getBusinessConnection` and provides the inbox **preparer** (bootstrap of an unknown id, run by the inbox processor *before* the processing transaction; a network failure raises `core.errors.TransientError`, so the row stays pending without an attempt) and the `CONNECTION`/`BUSINESS` route handlers. A handler may return a `Disposition` (`ignored`/`rejected`) that overrides the route's status and clears the payload in the same transaction. Each applied change writes a `business_connection_events` row (`change`: connected, activated, reconnected, rights_changed, disabled, pending_owner, updated, stale_event; `source`: update, bootstrap, onboarding); an identical state writes nothing. An event about a connection id older than the current one (`date` earlier) is recorded as `stale_event` and not applied. Owner notices are the `connections.notify_owner(event_id)` job, deferred in the same transaction and deduplicated per event (§17). A business update on an old (rotated) id resolves to the owner through the event history. Until S02.2, live business updates are also `ignored` with the payload cleared.
 - `BUSINESS_CONNECTION_INVALID` / "business connection not found" on a send: mark the connection `stale`, fail the action as `connection_invalid` (the card offers copy-ready text), block business sends for the account, and wait for the new id from a `business_connection` update or from any business update carrying an unknown id (bootstrap path). Notify the owner if no new id arrives within 30 min. `getBusinessConnection` is called only for ids not yet cached (its documented purpose; it cannot reveal a rotated id). Never retry blindly.
 
 ### 6.5 Business message normalization and classification
@@ -786,7 +787,7 @@ erDiagram
 | `accounts` | `id`, `telegram_user_id` UNIQUE, `status` (onboarding/active/blocked/deleted), `control_chat_id`, `timezone`, `locale_pref`, `settings` jsonb (validated), `autonomy_paused` bool, `created_at` | Tenant root. Allowlist from config; a row (status `onboarding`) is created on the first /start or the first connection from an allowlisted user. |
 | `consents` | `account_id`, `kind` (`ai_control`, `ai_managed`), `policy_version`, `processors` jsonb, `granted_at`, `revoked_at` | Append-only; current = latest non-revoked. |
 | `business_connections` | `account_id` UNIQUE, `connection_id`, `is_enabled`, `rights` jsonb, `capability_tier`, `user_chat_id`, `status` (pending_owner/active/disabled/stale), `connected_at`, `updated_at` | One row per account (one bot per account). |
-| `business_connection_events` | `account_id`, `connection_id`, `payload_digest`, `rights`, `is_enabled`, `observed_at`, `source` (update/bootstrap) | History for audit and id rotation. |
+| `business_connection_events` | `account_id`, `connection_id`, `payload_digest`, `rights`, `is_enabled`, `change`, `observed_at`, `source` (update/bootstrap/onboarding) | History for audit and id rotation; content-free. |
 | `foreign_connections` | `connection_id` PK, `telegram_user_id`, `first_seen_at`, `last_seen_at` | Non-tenant; connections from non-allowlisted users (metadata only; purged 30 days after `last_seen_at`) |
 | `inbound_updates` | `id`, `bot_id`, `update_id`, UNIQUE(`bot_id`,`update_id`), `kind`, `account_id` NULL, `message_id` NULL (set when the update is processed into a message), `payload` jsonb (cleared at processing for ignored/rejected/Ignore-mode rows and on message deletion; otherwise purged after ≤ 7 d), `status` (pending/processed/ignored/rejected/failed), `attempts`, `error_code`, `received_at`, `processed_at` | Durable inbox. |
 | `contacts` | `account_id`, `telegram_user_id`, UNIQUE(`account_id`,`telegram_user_id`), `display_name`, `username`, `is_bot`, `priority`, `first_seen_at` | Names refreshed from messages. |
@@ -825,6 +826,8 @@ erDiagram
 | `automation_occurrences`, `digests` | 1 year (metadata only) | Sweep |
 | `notifications.refs`, `pending_inputs` | 30 days / until expiry | Sweep |
 | `audit_log` | 1 year (no content) | Sweep |
+| `business_connection_events` | 1 year (no content) | Sweep |
+| `foreign_connections` | 30 days after `last_seen_at` (metadata only) | Sweep |
 | `agent_runs`/`llm_calls` | 1 year | Sweep |
 | Backups | 14 daily + 4 weekly | Backup rotation (contains data within retention) |
 
@@ -896,7 +899,9 @@ Job payloads carry **ids only**; handlers reload state and re-check conditions (
 | `digest.build(account_id, period)` | qlock `digest:{acct}:{period}` (dedupe by the `digests` row) | Daily digest |
 | `memory.refresh_summary(conversation_id)` | qlock `sum:{conv}`; debounce | Rolling summary |
 | `memory.extract(conversation_id)` (R2) | qlock `mem:{conv}` | Inferred memory candidates for review |
-| `connections.refresh(account_id)` | qlock `conn:{acct}`; queue `outbound` | `getBusinessConnection` for a connection id not yet cached |
+| `connections.notify_owner(event_id)` | no lock; queue `system`; deferred in the registry transaction; deduplicated per event by `notify_owner` | Connection notice: tier, unused rights, managed-consent question (FR-ONB-04/07, S02.1) |
+
+`getBusinessConnection` for an unknown id is **not** a job: the inbox processor calls it before the processing transaction (§6.2, §6.4), so the update is processed with the connection known. (An earlier draft listed a `connections.refresh` job; S02.1 replaced it.)
 
 Delayed work uses lock-free timer jobs (queueing lock only, e.g., `actions.release_scheduled`); these re-check domain state and defer jobs for immediate execution.
 

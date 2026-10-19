@@ -25,6 +25,9 @@ from assistant.db.base import Base, CreatedAt, IdPk, JsonDict, TelegramId
 
 ACCOUNT_STATUSES = ("onboarding", "active", "blocked", "deleted")
 CONSENT_KINDS = ("ai_control", "ai_managed")
+CONNECTION_STATUSES = ("pending_owner", "active", "disabled", "stale")
+CAPABILITY_TIERS = ("none", "observe_only", "can_reply", "extended")
+CONNECTION_EVENT_SOURCES = ("update", "bootstrap", "onboarding")
 CONTROL_TURN_ROLES = ("owner", "assistant")
 AUDIT_ACTORS = ("owner", "agent", "system")
 
@@ -83,6 +86,94 @@ class Consent(Base):
     )
     granted_at: Mapped[CreatedAt]
     revoked_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class BusinessConnection(Base):
+    """The owner's Chat Automation connection to this bot (ARCHITECTURE §6.4).
+
+    One row per account — an account can connect one bot. Keyed by account,
+    not by Telegram's `connection_id`, because that id is **mutable**: a
+    reconnect issues a new one (TF §12 LV-05). The history of ids lives in
+    `business_connection_events`.
+    """
+
+    __tablename__ = "business_connections"
+    __table_args__ = (
+        _enum_check("status", CONNECTION_STATUSES, "status"),
+        _enum_check("capability_tier", CAPABILITY_TIERS, "capability_tier"),
+        Index("ix_business_connections_connection_id", "connection_id"),
+    )
+
+    id: Mapped[IdPk]
+    account_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("app.accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    connection_id: Mapped[str] = mapped_column(Text, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(nullable=False)
+    #: Granted right names, e.g. ["can_reply", "can_read_messages"]. Empty when
+    #: `rights` was absent or the connection is disabled: no permissions (§6.7).
+    rights: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=sql_text("'[]'")
+    )
+    capability_tier: Mapped[str] = mapped_column(Text, nullable=False)
+    user_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Telegram's `date` for the current connection id. A reconnect moves it
+    #: forward; rights and chat-list edits do not (TF §12 LV-05). Used to
+    #: refuse a late event about an older id.
+    connected_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    updated_at: Mapped[CreatedAt]
+
+
+class BusinessConnectionEvent(Base):
+    """One observed connection state, for audit and id rotation.
+
+    Content-free: ids, rights, flags and a digest of the payload — never the
+    owner's name or username.
+    """
+
+    __tablename__ = "business_connection_events"
+    __table_args__ = (
+        _enum_check("source", CONNECTION_EVENT_SOURCES, "source"),
+        Index("ix_business_connection_events_account_id", "account_id"),
+        Index("ix_business_connection_events_connection_id", "connection_id"),
+    )
+
+    id: Mapped[IdPk]
+    account_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app.accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    connection_id: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_digest: Mapped[str] = mapped_column(Text, nullable=False)
+    rights: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=sql_text("'[]'")
+    )
+    is_enabled: Mapped[bool] = mapped_column(nullable=False)
+    #: What the event changed (`connected`, `rights_changed`, …) — see
+    #: `accounts.connections.ConnectionChange`.
+    change: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[CreatedAt]
+
+
+class ForeignConnection(Base):
+    """A connection from someone who is not an allowlisted owner.
+
+    Deliberately **not** a tenant table: there is no account, and there must
+    never be one (§6 invariant 12). Metadata only, so later updates on the id
+    are rejected without asking Telegram again. Purged 30 days after
+    `last_seen_at` (ARCHITECTURE §10.4).
+    """
+
+    __tablename__ = "foreign_connections"
+
+    connection_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    first_seen_at: Mapped[CreatedAt]
+    last_seen_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
 
 
 class ControlTurn(Base):

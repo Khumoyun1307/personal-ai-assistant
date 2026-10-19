@@ -26,8 +26,11 @@ EXPECTED_TABLES = {
     "agent_run_steps",
     "agent_runs",
     "audit_log",
+    "business_connection_events",
+    "business_connections",
     "consents",
     "control_turns",
+    "foreign_connections",
     "inbound_updates",
     "llm_calls",
     "pending_inputs",
@@ -118,6 +121,7 @@ def test_every_tenant_table_has_an_account_id(scratch_url: str) -> None:
         "alembic_version",
         "accounts",  # the tenant root itself: its `id` IS the account id
         "system_state",  # deployment state, belongs to no tenant
+        "foreign_connections",  # non-owners: must never get an account (§6 invariant 12)
         "agent_run_steps",  # scoped transitively via run_id -> agent_runs
     }
     with psycopg.connect(libpq(scratch_url)) as conn:

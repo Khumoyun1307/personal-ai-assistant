@@ -11,7 +11,13 @@ behind it.
 
 **Payload hygiene.** Rows routed to refusal or ignored get `payload = NULL` in
 the same transaction that marks them — we have no basis to keep content from
-someone who is not the owner (§6 invariant 12).
+someone who is not the owner (§6 invariant 12). A handler can reach the same
+verdict later, once it has looked at the database (`Disposition`).
+
+**No network inside the transaction.** A route may have a *preparer* that runs
+before the processing transaction opens — the `getBusinessConnection` bootstrap
+is one (§6.2, §6.4). It does its own short write; a `TransientError` from it
+leaves the row pending without counting an attempt.
 """
 
 from __future__ import annotations
@@ -25,7 +31,14 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.core.clock import Clock
-from assistant.core.routing import Route, RouteDecision, Router
+from assistant.core.errors import TransientError
+from assistant.core.routing import (
+    CLEAR_PAYLOAD_DISPOSITIONS,
+    Disposition,
+    Route,
+    RouteDecision,
+    Router,
+)
 from assistant.inbox.models import InboundUpdate
 from assistant.observability.logging import get_logger
 
@@ -53,20 +66,25 @@ class ProcessResult:
     dead_lettered: int = 0
 
 
-#: A handler for a routed update. Returns nothing; raises to signal failure.
-Handler = Callable[[AsyncSession, InboundUpdate, RouteDecision], Awaitable[None]]
+#: A handler for a routed update. Returns a `Disposition` to override the
+#: route's status (None = as routed); raises to signal failure.
+Handler = Callable[[AsyncSession, InboundUpdate, RouteDecision], Awaitable[Disposition | None]]
+
+#: Runs before the processing transaction, for work that needs the network.
+#: Gets the raw update and the routing decision; writes in its own transaction.
+Preparer = Callable[[dict[str, Any], RouteDecision], Awaitable[None]]
 
 
 async def _noop_handler(
     _session: AsyncSession, _row: InboundUpdate, _decision: RouteDecision
-) -> None:
+) -> Disposition | None:
     """Default handler: record the routing and do nothing else.
 
     M01 only needs updates captured and classified. Control-chat handling
     arrives in S01.3 and the business pipeline in M02; until then a correctly
     routed update that does nothing is the right behaviour, not a gap.
     """
-    return
+    return None
 
 
 class InboxProcessor:
@@ -81,6 +99,7 @@ class InboxProcessor:
         bot_id: int,
         router: Router,
         handlers: dict[Route, Handler] | None = None,
+        preparers: dict[Route, Preparer] | None = None,
         batch_size: int = 20,
     ) -> None:
         self._session_factory = session_factory
@@ -91,6 +110,7 @@ class InboxProcessor:
         # adapter that knows what a Telegram update looks like (§5.2).
         self._router = router
         self._handlers = handlers or {}
+        self._preparers = preparers or {}
         self._batch_size = batch_size
 
     async def _claim(self, session: AsyncSession) -> list[InboundUpdate]:
@@ -129,7 +149,35 @@ class InboxProcessor:
                     result.deferred += 1
         return result
 
+    async def _prepare(self, row_id: int) -> None:
+        """Run the route's preparer, if any, outside the processing transaction."""
+        if not self._preparers:
+            return
+        async with self._session_factory() as session:
+            row = await session.get(InboundUpdate, row_id)
+            if row is None or row.status != "pending":
+                return
+            payload = row.payload or {}
+        decision = self._router(payload)
+        preparer = self._preparers.get(decision.route)
+        if preparer is not None:
+            await preparer(payload, decision)
+
     async def _process_one(self, row_id: int) -> str:
+        try:
+            await self._prepare(row_id)
+        except (OperationalError, DBAPIError, TransientError) as error:
+            logger.warning(
+                "inbox_transient_error", update_row_id=row_id, exc_type=type(error).__name__
+            )
+            raise
+        except Exception as error:
+            async with self._session_factory() as session, session.begin():
+                row = await session.get(InboundUpdate, row_id, with_for_update=True)
+                if row is None or row.status != "pending":
+                    return "deferred"
+                return await self._record_failure(session, row, type(error).__name__)
+
         async with self._session_factory() as session, session.begin():
             row = await session.get(InboundUpdate, row_id, with_for_update=True)
             if row is None or row.status != "pending":
@@ -139,8 +187,8 @@ class InboxProcessor:
             try:
                 decision = self._router(payload)
                 handler = self._handlers.get(decision.route, _noop_handler)
-                await handler(session, row, decision)
-            except (OperationalError, DBAPIError) as error:
+                disposition = await handler(session, row, decision)
+            except (OperationalError, DBAPIError, TransientError) as error:
                 # Transient by definition: deadlock, serialization failure,
                 # connection loss. Leave pending, do NOT burn an attempt —
                 # otherwise an outage dead-letters the whole backlog.
@@ -155,10 +203,12 @@ class InboxProcessor:
             except Exception as error:
                 return await self._record_failure(session, row, type(error).__name__)
 
-            status = self._status_for(decision.route)
+            status = (
+                disposition.value if disposition is not None else self._status_for(decision.route)
+            )
             row.status = status
             row.processed_at = self._clock.now()
-            if decision.clears_payload:
+            if decision.clears_payload or disposition in CLEAR_PAYLOAD_DISPOSITIONS:
                 # Same transaction as the status change: a crash between the
                 # two would leave content we have no basis to hold.
                 row.payload = None
