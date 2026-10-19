@@ -136,6 +136,27 @@ async def test_startup_refuses_a_database_belonging_to_another_bot(factory) -> N
         await other.startup()
 
 
+async def test_startup_refreshes_the_heartbeat_so_a_restart_is_not_a_stall(factory) -> None:  # type: ignore[no-untyped-def]
+    """Regression (found in the S01.5 live run): the watchdog read the previous
+    run's heartbeat while the first long poll was still open and alerted the
+    owner about a stall that was really a restart."""
+    from datetime import timedelta
+
+    from assistant.inbox.watchdog import STALL_AFTER, poller_heartbeat_at
+
+    clock = FakeClock()
+    await Poller(FakeUpdateSource(), factory, clock).startup()
+    clock.advance(minutes=10)  # the process was down for ten minutes
+
+    await Poller(FakeUpdateSource(), factory, clock).startup()
+
+    async with factory() as session:
+        beat = await poller_heartbeat_at(session)
+    assert beat is not None
+    assert clock.now() - beat < STALL_AFTER
+    assert clock.now() - beat == timedelta(0)
+
+
 async def test_startup_never_drops_pending_updates(factory) -> None:  # type: ignore[no-untyped-def]
     """drop_pending_updates=True would discard up to 24 h of messages."""
     source = FakeUpdateSource()

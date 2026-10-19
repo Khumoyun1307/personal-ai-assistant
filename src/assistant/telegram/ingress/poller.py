@@ -118,6 +118,10 @@ class Poller:
         # Never drop_pending_updates=True: it discards up to 24 h of business
         # messages, permanently (TF §3.1).
         await self._source.delete_webhook()
+        # A poller that passed its startup checks is alive. Without this, the
+        # watchdog reads the previous run's heartbeat while the first long poll
+        # (up to `timeout` seconds) is open, and reports a restart as a stall.
+        await self._heartbeat()
         logger.info("poller_started", bot_id=identity.id)
         return identity
 
