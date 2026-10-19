@@ -52,11 +52,14 @@ class ControlDispatcher:
         gateway: OutboundGateway,
         clock: Clock,
         scheduler: JobScheduler | None = None,
+        *,
+        policy_url: str | None = None,
     ) -> None:
         self._gateway = gateway
         self._clock = clock
         # None only in tests that exercise routing without a job queue.
         self._scheduler = scheduler
+        self._policy_url = policy_url
 
     async def dispatch(self, session: AsyncSession, message: IncomingMessage) -> DispatchOutcome:
         command, argument = handlers.parse_command(message.text)
@@ -163,7 +166,13 @@ class ControlDispatcher:
             case "help":
                 return await handlers.handle_help(self._gateway, account, message)
             case "privacy":
-                return await handlers.handle_privacy(session, self._gateway, account, message)
+                if argument.strip().lower() == "revoke":
+                    return await handlers.handle_revoke(
+                        session, self._gateway, self._clock, account, message
+                    )
+                return await handlers.handle_privacy(
+                    session, self._gateway, account, message, policy_url=self._policy_url
+                )
             case "status":
                 return await handlers.handle_status(self._gateway, account, message)
             case "settings":

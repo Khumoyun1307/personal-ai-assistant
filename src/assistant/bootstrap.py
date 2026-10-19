@@ -163,7 +163,11 @@ async def running_process(
                     raise InstanceAlreadyRunningError("another inbox processor is running")
                 locks.append(lock)
                 control = ControlInboxHandlers(
-                    ControlDispatcher(gateway, clock, scheduler), gateway, RefusalLimiter(clock)
+                    ControlDispatcher(
+                        gateway, clock, scheduler, policy_url=settings.privacy_policy_url
+                    ),
+                    gateway,
+                    RefusalLimiter(clock),
                 )
                 processor = InboxProcessor(
                     session_factory,

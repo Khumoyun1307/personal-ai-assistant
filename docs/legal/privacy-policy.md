@@ -2,90 +2,71 @@
 
 | | |
 |---|---|
-| **Version** | v0 (draft — control chat only) |
-| **Status** | **Not yet approved or published.** Blocked on owner approval, host/contact choice and @BotFather registration (OpenAI terms recorded 2026-10-18). |
+| **Version** | v1 — control chat only |
+| **Status** | Published 2026-10-18 (owner go-ahead given in the session of 2026-10-18). URL recorded in M01.md and set as `PRIVACY_POLICY_URL`. |
 | **Last updated** | 2026-10-18 |
 
-> **This version covers the control chat only.** It does not yet cover managed
-> conversations (messages between the owner and their contacts), which begin at
-> M02 and require a version bump and a separate `ai_managed` consent before any
-> such data is processed.
-
-## Who this is about
-
-This assistant is operated by its owner, for their own use. There is one owner.
-"You" below means the owner.
-
-## What is collected
-
-**In the control chat** (your private chat with the bot):
-
-| Data | Why | Kept for |
-|---|---|---|
-| Your Telegram user id | To recognise you as the owner and refuse everyone else | While the account exists |
-| Messages you send to the bot, and its replies | So the assistant can hold a conversation with context | 90 days |
-| Your settings (language, timezone) | To reply in the right language and at the right time | While the account exists |
-| Raw Telegram updates | Debugging and replay after a failure | 7 days, then deleted |
-| Records of AI calls (model, token counts, cost) | Budgeting. **No message content.** | 1 year |
-| An activity log (what the assistant did, and when) | So you can audit it. **No message content.** | 1 year |
-
-**From anyone who is not the owner:** nothing. A message from a
-non-allowlisted account produces no stored record beyond the fact that an
-update arrived, and its content is discarded at processing.
-
-## Who else sees it
-
-| Processor | What reaches them | Their terms |
-|---|---|---|
-| **OpenAI** (`gpt-6-luna`) | The text of your control-chat conversation, when you ask the assistant something | OpenAI does not train on API data (data sharing is off in the account). OpenAI keeps abuse-monitoring logs, which may include prompts and responses, for up to 30 days. The assistant asks OpenAI not to store responses (`store=false`), so nothing else is retained there. Source: https://developers.openai.com/api/docs/guides/your-data |
-| **Telegram** | Everything, inherently — it is the transport | Telegram's own privacy policy |
-
-No other processor. No analytics, no error-tracking service, no advertising.
-Adding one requires updating this policy and asking you again, **before** any
-data flows (AGENTS §9).
-
-Your messages are **not** used to train any model. They are never sent to
-feedback programmes, file/upload APIs or batch APIs.
-
-## Consent
-
-Nothing is sent to an AI provider without your active `ai_control` consent,
-which names the provider. Revoking it stops new processing immediately; work
-already queued re-checks before it runs.
-
-## Your rights
-
-- **See it** — the activity log, and an export of your data.
-- **Delete it** — any conversation, or everything.
-- **Revoke consent** — at any time, with no loss of the non-AI functions.
-
-## Two honest limitations
-
-- **Messages already delivered stay in your Telegram history.** The bot can
-  delete its own messages only within 48 hours, and cannot delete yours.
-- **Deleted data can survive in encrypted backups** until they rotate out —
-  up to about four weeks (14 daily + 4 weekly).
-
-## Changes
-
-This policy is versioned. If the scope of processing grows, you get a notice
-and an opt-out **before** the change takes effect.
-
-## Contact
-
-(To be filled in before publication — owner decision, see IMPLEMENTATION_PLAN
-§13: privacy-policy host and contact address.)
+Everything between the two `---` lines below is the published text. Change it
+only with a version bump (AGENTS §16); a change that widens processing needs an
+owner notice with opt-out before it takes effect.
 
 ---
 
-### What must happen before this is published
+## Personal AI assistant — privacy policy (v1)
 
-1. ~~**PQ-09** — record OpenAI's actual retention and data-usage terms in
-   TELEGRAM_FEASIBILITY §7.2, with a source URL.~~ Done 2026-10-18; the
-   processor row above now states them.
-2. Owner chooses the host (default: a telegra.ph page) and a contact address.
-3. Owner reviews and approves this text and the consent wording.
-4. Register the URL with @BotFather.
+This is a personal assistant bot, run by its owner for their own use. There is one user, the owner, and "you" below means the owner. This version covers only your private chat with the bot (the control chat). It does not cover your conversations with other people; processing those would need a new version of this policy and your separate consent first.
 
-Until all four are done, no message content may be sent to an AI provider
-(AGENTS §9, global Definition of Done).
+## What is stored
+
+- Your Telegram user id — to recognise you and refuse everyone else. Kept while your account exists.
+- The messages you send to the bot and its replies — so it can hold a conversation with context. The text is deleted after 90 days.
+- Your settings (language, timezone) — kept while your account exists.
+- Raw Telegram updates — for recovery after a failure. Their content is deleted after 7 days.
+- Records of AI calls (model, token counts, estimated cost) — for budgeting. No message content. Deleted after 1 year.
+- An activity log (what the assistant did and when) — so you can audit it. No message content. Deleted after 1 year.
+
+Deletion happens automatically, every hour.
+
+## People who are not the owner
+
+If anyone else writes to the bot, they get one fixed reply saying it works only for its owner. Their message is not answered by AI, not stored beyond the technical fact that an update arrived, and its content is discarded when it is processed.
+
+## Who else receives data
+
+- OpenAI (model gpt-6-luna) — receives the text of your control-chat conversation when you ask the assistant something, and only after you have agreed to it. OpenAI does not use API data to train its models, and data sharing is turned off in this account. OpenAI keeps abuse-monitoring logs, which can include prompts and replies, for up to 30 days. The assistant tells OpenAI not to store responses, so nothing else is kept there. OpenAI's terms: https://developers.openai.com/api/docs/guides/your-data
+- Telegram — carries every message, under Telegram's own privacy policy.
+
+There is no other recipient: no analytics, no error-tracking service, no advertising. Your messages are never used to train or evaluate any AI model, and are never sent to feedback programmes, file-upload or batch services.
+
+## Your consent
+
+Nothing is sent to an AI provider until you agree, and the request names the provider. You can withdraw at any time by sending /privacy revoke to the bot. Withdrawal takes effect immediately: work already queued checks your consent again before it runs and stops. Everything that does not need AI (/status, /settings, /privacy) keeps working.
+
+## Your rights in this version
+
+- See your consent state and this policy at any time with /privacy.
+- Withdraw consent at any time with /privacy revoke.
+- Deleting chosen data and exporting your data from inside the bot are planned and not yet available. Until they are, the data lives only in the owner's own database, and the owner — you — can delete it directly.
+
+## Limitations, stated plainly
+
+- Messages already delivered stay in your Telegram chat history; this policy covers what the assistant stores, not what Telegram shows you.
+- There are no backups yet. When backups are introduced, deleted data may survive in them until they rotate out, and this policy will say for how long.
+
+## Changes
+
+This policy is versioned. If what is processed ever grows, you will be told and offered an opt-out before the change takes effect.
+
+## Contact
+
+This is a personal deployment: the operator is the owner. Nobody else's data is kept, so there is no one else to contact about it.
+
+---
+
+### Publication record
+
+1. PQ-09 — OpenAI's terms recorded in TELEGRAM_FEASIBILITY §7.2 (2026-10-18).
+2. Host: telegra.ph (plan default). Contact: no address published — the owner
+   is the only data subject and operator; an address can be added in v1.1.
+3. Owner go-ahead to finalise and publish: 2026-10-18.
+4. @BotFather registration: done by the owner (no Bot API method exists).

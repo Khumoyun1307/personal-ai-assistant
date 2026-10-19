@@ -20,9 +20,10 @@ from assistant.accounts import service
 from assistant.accounts.models import Account
 from assistant.core.clock import Clock
 from assistant.telegram.gateway import ControlChat, OutboundGateway, SendResult
+from assistant.telegram.render import escape
 
 #: The version of the consent text and policy currently in force.
-POLICY_VERSION = "v0"
+POLICY_VERSION = "v1"
 
 #: Named in the consent, because consent has to say who the data goes to.
 AI_PROCESSORS = ["OpenAI"]
@@ -185,8 +186,10 @@ async def handle_privacy(
     gateway: OutboundGateway,
     account: Account,
     message: IncomingMessage,
+    *,
+    policy_url: str | None = None,
 ) -> HandlerResult:
-    """`/privacy` — say plainly what is stored and who sees it."""
+    """`/privacy` — say plainly what is stored and who sees it (FR-PRV-01)."""
     consent = await service.active_consent(session, account.id, kind=service.CONSENT_AI_CONTROL)
     state = (
         f"granted (policy {consent.policy_version}, "
@@ -203,10 +206,41 @@ async def handle_privacy(
         "of what they said.\n\n"
         "Your messages are never used to train a model."
     )
+    if consent.granted:
+        text += "\n\nSend <code>/privacy revoke</code> to stop all AI processing."
+    if policy_url:
+        text += f'\n\nFull policy: <a href="{escape(policy_url)}">{escape(policy_url)}</a>'
     result = await gateway.send_text(
         ControlChat(account_id=account.id, chat_id=message.chat_id), text
     )
     return HandlerResult(True, "privacy", result)
+
+
+async def handle_revoke(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    message: IncomingMessage,
+) -> HandlerResult:
+    """`/privacy revoke` — consent is revocable at any time (FR-PRV-02).
+
+    Takes effect at once: the consent wrapper reads consent on every model
+    call, so queued work re-checks and stops (§6 invariant 9).
+    """
+    revoked = 0
+    for kind in (service.CONSENT_AI_CONTROL, service.CONSENT_AI_MANAGED):
+        revoked += await service.revoke_consent(session, account, kind=kind, clock=clock)
+    target = ControlChat(account_id=account.id, chat_id=message.chat_id)
+    if not revoked:
+        result = await gateway.send_text(target, "There was no AI consent to revoke.")
+        return HandlerResult(True, "revoke", result, note="nothing_to_revoke")
+    result = await gateway.send_text(
+        target,
+        "AI consent revoked. Nothing more will be sent to an AI provider.\n"
+        "/settings, /status and /privacy still work. Send /start to agree again.",
+    )
+    return HandlerResult(True, "revoke", result, note="revoked")
 
 
 async def handle_status(
@@ -335,6 +369,7 @@ __all__ = [
     "handle_consent_reply",
     "handle_help",
     "handle_privacy",
+    "handle_revoke",
     "handle_settings",
     "handle_start",
     "handle_status",

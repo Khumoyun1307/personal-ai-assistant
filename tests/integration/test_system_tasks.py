@@ -20,16 +20,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import service
-from assistant.accounts.models import AuditLogEntry
+from assistant.accounts.models import AuditLogEntry, ControlTurn
 from assistant.agent.budget import check_budget_thresholds
-from assistant.agent.models import LlmCall
+from assistant.agent.models import AgentRun, LlmCall
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.db.models import KEY_POLLER_HEARTBEAT
 from assistant.db.uow import transaction
 from assistant.inbox.models import InboundUpdate
 from assistant.inbox.notify import ALERT_TEXT, AlertKind, OwnerAlerts
 from assistant.inbox.watchdog import check_ingestion
-from assistant.privacy.retention import sweep_inbound_payloads
+from assistant.privacy.retention import sweep_all, sweep_inbound_payloads
 from assistant.telegram.ingress.writer import write_state
 from tests.fakes.channel import FakeChannel
 from tests.fakes.clock import FakeClock
@@ -225,3 +225,65 @@ async def test_budget_thresholds_alert_once_per_month_each(
     clock.set(datetime(2026, 11, 1, 0, 5, tzinfo=UTC))  # a new month starts from zero
     assert await check() == []
     assert len(channel.sends) == 3
+
+
+async def test_every_policy_retention_rule_is_applied(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    """The privacy policy's retention table, enforced (FR-PRV-03, AGENTS §9)."""
+    account_id = await owner(factory, clock)
+    async with transaction(factory) as uow:
+        old_turn = await service.record_control_turn(
+            uow.session,
+            account_id=account_id,
+            role="owner",
+            text="Synthetic old",
+            created_at=NOW - timedelta(days=91),
+        )
+        new_turn = await service.record_control_turn(
+            uow.session,
+            account_id=account_id,
+            role="owner",
+            text="Synthetic new",
+            created_at=NOW - timedelta(days=89),
+        )
+        for age_days in (366, 10):
+            uow.session.add(
+                LlmCall(
+                    account_id=account_id,
+                    purpose="owner_request",
+                    model="gpt-6-luna",
+                    created_at=NOW - timedelta(days=age_days),
+                )
+            )
+            uow.session.add(
+                AuditLogEntry(
+                    account_id=account_id,
+                    actor="system",
+                    event="synthetic",
+                    at=NOW - timedelta(days=age_days),
+                )
+            )
+            uow.session.add(
+                AgentRun(
+                    account_id=account_id,
+                    run_type="owner_request",
+                    model="gpt-6-luna",
+                    status="succeeded",
+                    started_at=NOW - timedelta(days=age_days),
+                )
+            )
+
+    report = await sweep_all(factory, clock)
+
+    assert (report.control_turn_texts, report.llm_calls, report.agent_runs) == (1, 1, 1)
+    assert report.audit_entries == 1
+    async with factory() as session:
+        texts = {
+            turn.id: turn.text
+            for turn in (await session.execute(select(ControlTurn))).scalars().all()
+        }
+        assert len((await session.execute(select(LlmCall))).scalars().all()) == 1
+        assert len((await session.execute(select(AuditLogEntry))).scalars().all()) == 1
+        assert len((await session.execute(select(AgentRun))).scalars().all()) == 1
+    assert texts == {old_turn.id: None, new_turn.id: "Synthetic new"}

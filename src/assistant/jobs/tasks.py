@@ -38,7 +38,7 @@ from assistant.jobs.app import QUEUE_LLM, QUEUE_SYSTEM, STALLED_WORKER_TIMEOUT
 from assistant.jobs.reconcile import unqueued_owner_turns
 from assistant.observability import heartbeat
 from assistant.observability.logging import get_logger
-from assistant.privacy.retention import sweep_inbound_payloads
+from assistant.privacy.retention import SweepReport, sweep_all
 
 logger = get_logger(__name__)
 
@@ -99,11 +99,18 @@ class JobHandlers:
             logger.warning("owner_turns_redeferred", count=len(lost))
         return len(lost)
 
-    async def retention_sweep(self) -> int:
-        cleared = await sweep_inbound_payloads(self.session_factory, self.clock)
-        if cleared:
-            logger.info("retention_swept", table="inbound_updates", rows=cleared)
-        return cleared
+    async def retention_sweep(self) -> SweepReport:
+        report = await sweep_all(self.session_factory, self.clock)
+        if report.total:
+            logger.info(
+                "retention_swept",
+                inbound_payloads=report.inbound_payloads,
+                control_turn_texts=report.control_turn_texts,
+                llm_calls=report.llm_calls,
+                agent_runs=report.agent_runs,
+                audit_entries=report.audit_entries,
+            )
+        return report
 
     async def heartbeat_ping(self) -> bool:
         """Ping only while ingestion is healthy; silence is the alarm."""

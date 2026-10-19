@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     #: off (AGENTS §8): a tool reaches the model only when its flag is listed.
     feature_flags: Annotated[frozenset[str], NoDecode] = frozenset()
 
+    # --- Privacy ---------------------------------------------------------------
+    #: The published privacy policy (FR-PRV-01), shown by /privacy.
+    privacy_policy_url: str | None = None
+
     # --- Operations ----------------------------------------------------------
     heartbeat_url: SecretStr | None = None
 
@@ -72,6 +76,7 @@ class Settings(BaseSettings):
         "openai_api_key",
         "llm_monthly_budget_usd",
         "llm_owner_request_effort",
+        "privacy_policy_url",
         "heartbeat_url",
         mode="before",
     )

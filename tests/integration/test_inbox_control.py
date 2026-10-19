@@ -73,7 +73,12 @@ async def setup(
         return None
 
     handlers = ControlInboxHandlers(
-        ControlDispatcher(gateway, clock, ProcrastinateScheduler(app)),
+        ControlDispatcher(
+            gateway,
+            clock,
+            ProcrastinateScheduler(app),
+            policy_url="https://telegra.ph/synthetic-policy",
+        ),
         gateway,
         RefusalLimiter(clock),
     )
@@ -218,3 +223,23 @@ async def test_a_business_message_from_the_owner_never_reaches_the_control_chat(
     assert sender.sends == []
     async with factory() as session:
         assert (await session.execute(select(ControlTurn))).first() is None
+
+
+async def test_privacy_revoke_withdraws_consent_at_once(setup: Any) -> None:
+    """FR-PRV-02: consent is revocable, and revocation is immediate."""
+    factory, processor, sender = setup
+    await deliver(factory, processor, private_message(OWNER, "/start"))
+    await deliver(factory, processor, private_message(OWNER, "yes"))
+
+    await deliver(factory, processor, private_message(OWNER, "/privacy"))
+    await deliver(factory, processor, private_message(OWNER, "/privacy revoke"))
+
+    privacy_text, revoke_text = sender.sends[2]["text"], sender.sends[3]["text"]
+    assert "/privacy revoke" in privacy_text
+    assert "https://telegra.ph/synthetic-policy" in privacy_text
+    assert "AI consent revoked" in revoke_text
+    async with factory() as session:
+        account = (await session.execute(select(Account))).scalar_one()
+        from assistant.accounts.service import active_consent
+
+        assert (await active_consent(session, account.id, kind="ai_control")).granted is False
