@@ -59,8 +59,8 @@ M04 and M05 can be developed in either order after M03 (both build on the S01.3 
 | A5 | 24 h window semantics and error strings | Wrong expiry/fallback | M00 (LV-08; needs > 24 h) | Probe (start early) |
 | A6 | procrastinate + SQLAlchemy async + psycopg 3 integrate (incl. transactional defer) | Job architecture change | M00 (S00.3) | Spike; fallback to hand-rolled queue |
 | A7 | LLM provider billing works from Uzbekistan | Provider change | M00 (S00.3) — **retired 2026-10-18** (OpenAI account and payment set up, owner confirmation) | Owner card test |
-| A8 | `gpt-6-luna` quality in Uzbek (Latin/Cyrillic) for summaries | Weak core value | M00 smoke → M03 gate | Synthetic eval set |
-| A9 | `gpt-6-luna` quality for Uzbek drafts | Autonomy unsafe | M00 smoke → M04 (informational) / M06 (gate) | Synthetic eval + owner ratings |
+| A8 | `gpt-6-luna` quality in Uzbek (Latin/Cyrillic) for summaries | Weak core value | M03 gate (M00 smoke deferred to it, owner 2026-10-18) | Synthetic eval set |
+| A9 | `gpt-6-luna` quality for Uzbek drafts | Autonomy unsafe | M04 (informational) / M06 (gate) (M00 smoke deferred, owner 2026-10-18) | Synthetic eval + owner ratings |
 | A10 | LLM cost at the owner's volume is acceptable | Budget overrun | M00 estimate + owner-set budget, M02–M05 metering, M03/M05 model comparison | `count_tokens`, `llm_calls` |
 | A11 | Telegram terms permit per-chat LLM processing for the owner's service | Account/bot ban risk | Personal phase: accepted risk with consent controls; before R4: written clarification | @BotSupport / counsel (M09) |
 
@@ -78,7 +78,7 @@ M04 and M05 can be developed in either order after M03 (both build on the S01.3 
 |---|---|---|---|
 | M00 Foundation & Telegram reality check | `in progress` | 2026-10-17 | [M00.md](milestones/M00.md) |
 | M01 Assistant foundation | `done` (owner reviewed 2026-10-19 via the M01 review page; merge approved) | 2026-10-17 | [M01.md](milestones/M01.md) |
-| M02 Account connection & observation | `not approved` | — | — |
+| M02 Account connection & observation | `approved` — **S02.1 only** until LV-08 is recorded in TF §12; S02.2 onwards after that (owner decision: S02.1 does not depend on the reply-window errors) | 2026-10-18 | — |
 | M03 Context, memory & summaries | `not approved` | — | — |
 | M04 Assisted replies | `not approved` | — | — |
 | M05 Inbox intelligence & alerts | `not approved` | — | — |
@@ -139,7 +139,7 @@ Sizes are relative effort for one developer working with AI assistance: **S** �
 
 - **Jobs spike (A6):** in the dev container, SQLAlchemy 2.1 async + psycopg 3 + Alembic baseline + procrastinate schema as an Alembic revision; prove: `schedule_at`, `lock`, `queueing_lock` (`AlreadyEnqueued` handling), retry strategy, `retry_stalled_jobs`, **transactional defer on the session's raw psycopg connection** (TQ-01), and that a future-scheduled job does not delay an immediate job for the same conversation under the chosen pattern. Record the outcome; if transactional defer fails, adopt "commit + defer + reconciler" (already the designed fallback). If procrastinate integration fails materially, switch to the hand-rolled queue (ADR-06 fallback) before M01. Spike code lives in `spikes/` (not imported by `src/`; excluded from import-linter and mypy strict). Its deliverables are the decision record in `docs/milestones/M00.md` and a minimal reproducible test that S01.1 re-implements in `src/`. The first committed Alembic revisions are created in S01.1.
 - **Provider spike (A7, A10):** owner creates the OpenAI platform account, adds a card (Uzbek-issued card test — TF §7.2), sets a monthly spend limit, stores the key in `.env` (done 2026-10-18; A7 retired). Run, on **synthetic text only**: one plain and one structured-output call with `gpt-6-luna` and `store=false`, method names taken from the official OpenAI docs (AGENTS §8); measure input/output tokens from the usage block on synthetic Uzbek Latin/Cyrillic/Russian/English samples to estimate tokens per message; confirm the refusal and truncation handling paths. Estimate daily cost for the owner's typical volume (owner's volume estimate, §13).
-- **Uzbek smoke eval (early A8/A9 signal):** 8 hand-written synthetic conversations (2 each in Uzbek Latin, Uzbek Cyrillic, Uzbek–Russian mix and Russian; 10–20 messages each, with planted questions and commitments). Run a draft `CatchUp` schema via the SDK's structured-output call and one reply draft per conversation on `gpt-6-luna`. The owner marks pass/fail: all planted items present, no invented facts, correct language/script, reply usable with at most a minor edit. Go: ≥ 7/8 summaries pass; otherwise the owner decides before M01 whether to add an alternative adapter to the M03 evaluation. These conversations seed dataset E1 (§10.1).
+- **Uzbek smoke eval (early A8/A9 signal) — deferred to the M03 summary gate by the owner (2026-10-18);** A8/A9 are judged there and at M04/M06 on dataset E1. Original scope: 8 hand-written synthetic conversations (2 each in Uzbek Latin, Uzbek Cyrillic, Uzbek–Russian mix and Russian; 10–20 messages each, with planted questions and commitments). Run a draft `CatchUp` schema via the SDK's structured-output call and one reply draft per conversation on `gpt-6-luna`. The owner marks pass/fail: all planted items present, no invented facts, correct language/script, reply usable with at most a minor edit. Go: ≥ 7/8 summaries pass; otherwise the owner decides before M01 whether to add an alternative adapter to the M03 evaluation. These conversations seed dataset E1 (§10.1).
 - **Search spike:** prototype `normalize()`; run `ts_debug()`/`show_trgm()` in the pinned Postgres image for Uzbek apostrophe variants; confirm Latin↔Cyrillic matching on synthetic samples.
 - **Acceptance:** spike notes in `docs/milestones/M00.md`; ADR statuses updated (Accepted/Changed); cost estimate recorded; the owner sets a target monthly LLM budget (`LLM_MONTHLY_BUDGET_USD` and the Console spend limit); the estimate for the planned scope must fit it, otherwise effort or scope changes are decided with the owner before M02 (per-route model overrides only after the M03/M05 evaluations, §10.1).
 
@@ -570,7 +570,7 @@ Sizes are relative effort for one developer working with AI assistance: **S** �
 
 | Set | Content | Minimum size | Ready by |
 |---|---|---|---|
-| E1 Summaries/catch-up | Synthetic conversations labelled with questions to the owner, commitments, decisions, key facts | 40 conversations; ≥ 120 labelled items; ≥ 8 conversations per variant (Uzbek Latin, Uzbek Cyrillic, Russian, English, Uzbek–Russian mix) | Frozen before S03.2 (authored during M01–M02; seeded by the S00.3 smoke set) |
+| E1 Summaries/catch-up | Synthetic conversations labelled with questions to the owner, commitments, decisions, key facts | 40 conversations; ≥ 120 labelled items; ≥ 8 conversations per variant (Uzbek Latin, Uzbek Cyrillic, Russian, English, Uzbek–Russian mix) | Frozen before S03.2 (authored during M01–M02; the deferred S00.3 smoke set is authored as its first 8 conversations) |
 | E2 Drafts | Reply situations reusing E1, each with the expected reply intent | ≥ 20 per variant (M04 baseline); ≥ 30 per language to be enabled for autonomy (M06 gate) | M04 exit / before S06.5 |
 | E3 Triage | Labelled bursts (needs reply, decision, urgency, commitment resolution) | ≥ 150 bursts with ≥ 40 urgent/decision positives | Before S05.1 |
 | E4 Adversarial | Injection, cross-conversation extraction, commitment bait, sincere "are you a bot/person?" (≥ 5 per language), sensitive topics | ≥ 20 per language to be enabled for autonomy | Before S06.2 |
@@ -621,7 +621,7 @@ Workstreams: multi-user onboarding (waitlist → self-serve); per-account quotas
 | M00 S00.3 | ~~OpenAI platform account, API key into `.env`, card test~~ (done 2026-10-18); monthly spend limit set in the OpenAI dashboard | — |
 | M00 S00.3 | Estimate daily volume: active chats, messages/day, language mix | Input to the cost estimate |
 | M00 S00.3 | Set the monthly LLM budget (USD) | Drives `LLM_MONTHLY_BUDGET_USD` alerts and the Console spend limit |
-| M00 S00.3 | Mark the Uzbek smoke-eval results pass/fail | 8 synthetic conversations; early A8/A9 signal |
+| M00 S00.3 | ~~Mark the Uzbek smoke-eval results pass/fail~~ | Deferred to the M03 gate (owner, 2026-10-18) |
 | Before S01.3 | Choose the privacy-policy host and a contact address; review and approve the policy v0 and consent texts | Default host: a telegra.ph page (the app needs no HTTP surface; GitHub Pages on a private repo needs a paid plan); canonical text stays in `docs/legal/privacy-policy.md` |
 | M01–M06 | Review synthetic evaluation data (E1 by S03.2, E2 by M04 exit, E3 by S05.1, E4 by S06.2): native-speaker Uzbek quality and labels | ~4 h per set; never export real chats |
 | M02 S02.1 | Approve policy v1 and the `ai_managed` consent text | Same URL, version bumped |
