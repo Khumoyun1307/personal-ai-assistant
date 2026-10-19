@@ -70,7 +70,9 @@ class InboundUpdate(Base):
     #: Set once the update becomes a stored message, so deleting that message
     #: can clear this payload too (§6.5 step 6).
     message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    #: `none_as_null`: clearing the payload must store SQL NULL, not a JSON
+    #: `null` value, so `IS NULL` checks (retention, audits) see it as empty.
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     error_code: Mapped[str | None] = mapped_column(Text, nullable=True)

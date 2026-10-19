@@ -174,6 +174,16 @@ async def test_a_stranger_gets_one_refusal_and_leaves_no_trace(setup: Any) -> No
         assert (await session.execute(select(ControlTurn))).first() is None
         rows = (await session.execute(select(InboundUpdate))).scalars().all()
     assert [(row.status, row.payload) for row in rows] == [("rejected", None)] * 2
+    # Regression (found in the live refusal check): Python None round-trips
+    # from a JSON `null` too, so check SQL NULL in SQL — "no content" must mean
+    # NULL, which `IS NULL` queries such as the retention sweep rely on.
+    async with factory() as session:
+        sql_nulls = (
+            await session.execute(
+                text("SELECT count(*) FROM app.inbound_updates WHERE payload IS NULL")
+            )
+        ).scalar_one()
+    assert sql_nulls == 2
 
 
 async def test_a_button_press_is_always_answered(setup: Any) -> None:
