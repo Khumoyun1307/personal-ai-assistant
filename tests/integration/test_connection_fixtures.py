@@ -16,10 +16,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import connections
-from assistant.accounts.connections import Change, Source
+from assistant.accounts.connections import Change, ResolutionKind, Source
 from assistant.accounts.models import Account, BusinessConnection
-from assistant.telegram.connections import parse_connection
-from tests.contract.test_telegram_fixtures import connection_updates, lookups
+from assistant.telegram.connections import business_connection_id, parse_connection
+from assistant.telegram.routing import BUSINESS_KINDS
+from tests.contract.test_telegram_fixtures import connection_updates, lookups, records
 from tests.fakes.clock import FakeClock
 
 pytestmark = pytest.mark.integration
@@ -109,3 +110,33 @@ async def test_bootstrapping_the_replaced_id_does_not_undo_the_reconnect(
     current = (await db_session.execute(select(BusinessConnection))).scalar_one()
     assert current.connection_id == updates[-1]["id"]
     assert current.status == "active"
+
+
+async def test_every_observed_business_update_resolves_to_the_owner(
+    db_session: AsyncSession,
+) -> None:
+    """Messages carry the connection id of their time; after the reconnect,
+    traffic on the replaced id must still resolve to the owner, without a
+    `getBusinessConnection` round trip (the id is in the event history)."""
+    updates = connection_updates()
+    owner_id = updates[0]["user"]["id"]
+    account = await onboarded_owner(db_session, owner_id)
+    clock = FakeClock(datetime(2026, 10, 18, 20, 0, tzinfo=UTC))
+    for update in updates:
+        await connections.apply_snapshot(
+            db_session,
+            parse_connection(update),
+            owner_ids=frozenset({owner_id}),
+            source=Source.UPDATE,
+            clock=clock,
+        )
+
+    business = [r for r in records() if r.get("update_type") in BUSINESS_KINDS]
+    assert business
+    for record in business:
+        connection_id = business_connection_id(record["payload"], record["update_type"])
+        assert connection_id is not None
+        resolution = await connections.resolve(db_session, connection_id, clock)
+        assert resolution.kind is ResolutionKind.OWNER
+        assert resolution.account_id == account.id
+        assert resolution.is_live

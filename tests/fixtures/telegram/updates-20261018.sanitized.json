@@ -238,7 +238,7 @@
     "payload": {
       "update_id": 100001,
       "business_connection": {
-        "id": "synthetic-id-0003",
+        "id": "synthetic-business-connection-id-0001",
         "user": {
           "id": 700000002,
           "is_bot": false,
@@ -247,7 +247,7 @@
           "language_code": "en",
           "is_premium": true
         },
-        "user_chat_id": 700000001,
+        "user_chat_id": 700000002,
         "date": 1792286146,
         "is_enabled": true,
         "rights": {
@@ -267,7 +267,7 @@
     "payload": {
       "update_id": 100002,
       "business_connection": {
-        "id": "synthetic-id-0003",
+        "id": "synthetic-business-connection-id-0001",
         "user": {
           "id": 700000002,
           "is_bot": false,
@@ -276,7 +276,7 @@
           "language_code": "en",
           "is_premium": true
         },
-        "user_chat_id": 700000001,
+        "user_chat_id": 700000002,
         "date": 1792286146,
         "is_enabled": true,
         "rights": {
@@ -299,12 +299,12 @@
         "message_id": 1002,
         "date": 1792288358,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "ghij"
         },
         "from_user": {
-          "id": 700000004,
+          "id": 700000003,
           "is_bot": false,
           "first_name": "hijk"
         },
@@ -321,7 +321,7 @@
       "message_id": 1003,
       "date": 1792288692,
       "chat": {
-        "id": 700000004,
+        "id": 700000003,
         "type": "private",
         "title": null,
         "username": null,
@@ -537,7 +537,7 @@
       "message_id": 1004,
       "date": 1792288725,
       "chat": {
-        "id": 700000004,
+        "id": 700000003,
         "type": "private",
         "title": null,
         "username": null,
@@ -753,7 +753,7 @@
       "message_id": 1005,
       "date": 1792288725,
       "chat": {
-        "id": 700000004,
+        "id": 700000003,
         "type": "private",
         "title": null,
         "username": null,
@@ -969,7 +969,7 @@
       "message_id": 1006,
       "date": 1792288726,
       "chat": {
-        "id": 700000004,
+        "id": 700000003,
         "type": "private",
         "title": null,
         "username": null,
@@ -1185,7 +1185,7 @@
       "message_id": 1007,
       "date": 1792288726,
       "chat": {
-        "id": 700000004,
+        "id": 700000003,
         "type": "private",
         "title": null,
         "username": null,
@@ -1401,7 +1401,7 @@
       "message_id": 1008,
       "date": 1792288726,
       "chat": {
-        "id": 700000004,
+        "id": 700000003,
         "type": "private",
         "title": null,
         "username": null,
@@ -1619,12 +1619,12 @@
         "message_id": 1009,
         "date": 1792289980,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "efgh"
         },
         "from_user": {
-          "id": 700000004,
+          "id": 700000003,
           "is_bot": false,
           "first_name": "fghi"
         },
@@ -1638,7 +1638,7 @@
     "label": "getBusinessConnection",
     "observed_at": "zabcdefghijklmnopqrstuvwxyzabcde",
     "result": {
-      "id": "synthetic-id-0003",
+      "id": "synthetic-business-connection-id-0001",
       "user": {
         "id": 700000002,
         "is_bot": false,
@@ -1659,7 +1659,7 @@
         "can_manage_bots": null,
         "supports_join_request_queries": null
       },
-      "user_chat_id": 700000001,
+      "user_chat_id": 700000002,
       "date": 1792286146,
       "is_enabled": true,
       "rights": {
@@ -1715,7 +1715,7 @@
       "message_id": 1010,
       "date": 1792351630,
       "chat": {
-        "id": 700000004,
+        "id": 700000003,
         "type": "private",
         "title": null,
         "username": null,
@@ -1933,7 +1933,7 @@
         "message_id": 1011,
         "date": 1792351790,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "cdef"
         },
@@ -1960,7 +1960,7 @@
         "message_id": 1012,
         "date": 1792351795,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "efgh"
         },
@@ -1987,12 +1987,12 @@
         "message_id": 1013,
         "date": 1792351811,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "ghij"
         },
         "from_user": {
-          "id": 700000004,
+          "id": 700000003,
           "is_bot": false,
           "first_name": "hijk"
         },
@@ -2011,12 +2011,12 @@
         "message_id": 1013,
         "date": 1792351811,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "ijkl"
         },
         "from_user": {
-          "id": 700000004,
+          "id": 700000003,
           "is_bot": false,
           "first_name": "abcd"
         },
@@ -2036,12 +2036,12 @@
         "message_id": 1014,
         "date": 1792351889,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "bcde"
         },
         "from_user": {
-          "id": 700000004,
+          "id": 700000003,
           "is_bot": false,
           "first_name": "cdef"
         },
@@ -2361,7 +2361,7 @@
       "message_id": 1017,
       "date": 1792352062,
       "chat": {
-        "id": 700000004,
+        "id": 700000003,
         "type": "private",
         "title": null,
         "username": null,
@@ -2608,7 +2608,7 @@
         "message_id": 1012,
         "date": 1792351795,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "bcde"
         },
@@ -2636,12 +2636,12 @@
         "message_id": 1018,
         "date": 1792352350,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "defg"
         },
         "from_user": {
-          "id": 700000004,
+          "id": 700000003,
           "is_bot": false,
           "first_name": "efgh"
         },
@@ -2666,12 +2666,12 @@
         "message_id": 1019,
         "date": 1792352389,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "fghi"
         },
         "from_user": {
-          "id": 700000004,
+          "id": 700000003,
           "is_bot": false,
           "first_name": "ghij"
         },
@@ -2697,12 +2697,12 @@
         "message_id": 1020,
         "date": 1792352414,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "hijk"
         },
         "from_user": {
-          "id": 700000004,
+          "id": 700000003,
           "is_bot": false,
           "first_name": "ijkl"
         },
@@ -2788,7 +2788,7 @@
       "deleted_business_messages": {
         "business_connection_id": "synthetic-business-connection-id-0001",
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "jklm"
         },
@@ -2808,12 +2808,12 @@
         "message_id": 1021,
         "date": 1792352726,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "klmn"
         },
         "from_user": {
-          "id": 700000004,
+          "id": 700000003,
           "is_bot": false,
           "first_name": "cdef"
         },
@@ -2831,7 +2831,7 @@
       "deleted_business_messages": {
         "business_connection_id": "synthetic-business-connection-id-0001",
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "defg"
         },
@@ -2851,7 +2851,7 @@
         "message_id": 1022,
         "date": 1792352747,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "efgh"
         },
@@ -2877,7 +2877,7 @@
       "deleted_business_messages": {
         "business_connection_id": "synthetic-business-connection-id-0001",
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "ghij"
         },
@@ -2897,7 +2897,7 @@
         "message_id": 1023,
         "date": 1792352789,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "hijk"
         },
@@ -2923,7 +2923,7 @@
       "deleted_business_messages": {
         "business_connection_id": "synthetic-business-connection-id-0001",
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "jklm"
         },
@@ -2942,7 +2942,7 @@
       "deleted_business_messages": {
         "business_connection_id": "synthetic-business-connection-id-0001",
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "klmn"
         },
@@ -2977,7 +2977,7 @@
     "label": "getBusinessConnection",
     "observed_at": "cdefghijklmnopqrstuvwxyzabcdefgh",
     "result": {
-      "id": "synthetic-id-0003",
+      "id": "synthetic-business-connection-id-0001",
       "user": {
         "id": 700000002,
         "is_bot": false,
@@ -2998,7 +2998,7 @@
         "can_manage_bots": null,
         "supports_join_request_queries": null
       },
-      "user_chat_id": 700000001,
+      "user_chat_id": 700000002,
       "date": 1792286146,
       "is_enabled": true,
       "rights": {
@@ -3031,12 +3031,12 @@
         "message_id": 1024,
         "date": 1792353255,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "defg"
         },
         "from_user": {
-          "id": 700000004,
+          "id": 700000003,
           "is_bot": false,
           "first_name": "efgh"
         },
@@ -3053,7 +3053,7 @@
       "message_id": 1025,
       "date": 1792353344,
       "chat": {
-        "id": 700000004,
+        "id": 700000003,
         "type": "private",
         "title": null,
         "username": null,
@@ -3268,7 +3268,7 @@
     "payload": {
       "update_id": 100024,
       "business_connection": {
-        "id": "synthetic-id-0003",
+        "id": "synthetic-business-connection-id-0001",
         "user": {
           "id": 700000002,
           "is_bot": false,
@@ -3277,7 +3277,7 @@
           "language_code": "en",
           "is_premium": true
         },
-        "user_chat_id": 700000001,
+        "user_chat_id": 700000002,
         "date": 1792286146,
         "is_enabled": true,
         "rights": {
@@ -3305,7 +3305,7 @@
     "label": "getBusinessConnection",
     "observed_at": "hijklmnopqrstuvwxyzabcdefghijklm",
     "result": {
-      "id": "synthetic-id-0003",
+      "id": "synthetic-business-connection-id-0001",
       "user": {
         "id": 700000002,
         "is_bot": false,
@@ -3326,7 +3326,7 @@
         "can_manage_bots": null,
         "supports_join_request_queries": null
       },
-      "user_chat_id": 700000001,
+      "user_chat_id": 700000002,
       "date": 1792286146,
       "is_enabled": true,
       "rights": {
@@ -3356,7 +3356,7 @@
     "payload": {
       "update_id": 100025,
       "business_connection": {
-        "id": "synthetic-id-0003",
+        "id": "synthetic-business-connection-id-0001",
         "user": {
           "id": 700000002,
           "is_bot": false,
@@ -3365,7 +3365,7 @@
           "language_code": "en",
           "is_premium": true
         },
-        "user_chat_id": 700000001,
+        "user_chat_id": 700000002,
         "date": 1792286146,
         "is_enabled": true,
         "rights": {
@@ -3388,12 +3388,12 @@
         "message_id": 1026,
         "date": 1792353857,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "lmno"
         },
         "from_user": {
-          "id": 700000004,
+          "id": 700000003,
           "is_bot": false,
           "first_name": "mnop"
         },
@@ -3412,7 +3412,7 @@
         "message_id": 1027,
         "date": 1792353866,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "efgh"
         },
@@ -3437,7 +3437,7 @@
       "message_id": 1028,
       "date": 1792353910,
       "chat": {
-        "id": 700000004,
+        "id": 700000003,
         "type": "private",
         "title": null,
         "username": null,
@@ -3652,7 +3652,7 @@
     "payload": {
       "update_id": 100028,
       "business_connection": {
-        "id": "synthetic-id-0003",
+        "id": "synthetic-business-connection-id-0001",
         "user": {
           "id": 700000002,
           "is_bot": false,
@@ -3661,7 +3661,7 @@
           "language_code": "en",
           "is_premium": true
         },
-        "user_chat_id": 700000001,
+        "user_chat_id": 700000002,
         "date": 1792286146,
         "is_enabled": true,
         "rights": {
@@ -3680,7 +3680,7 @@
     "payload": {
       "update_id": 100029,
       "business_connection": {
-        "id": "synthetic-id-0003",
+        "id": "synthetic-business-connection-id-0001",
         "user": {
           "id": 700000002,
           "is_bot": false,
@@ -3689,7 +3689,7 @@
           "language_code": "en",
           "is_premium": true
         },
-        "user_chat_id": 700000001,
+        "user_chat_id": 700000002,
         "date": 1792286146,
         "is_enabled": true,
         "rights": {
@@ -3709,7 +3709,7 @@
     "payload": {
       "update_id": 100030,
       "business_connection": {
-        "id": "synthetic-id-0003",
+        "id": "synthetic-business-connection-id-0001",
         "user": {
           "id": 700000002,
           "is_bot": false,
@@ -3718,7 +3718,7 @@
           "language_code": "en",
           "is_premium": true
         },
-        "user_chat_id": 700000001,
+        "user_chat_id": 700000002,
         "date": 1792286146,
         "is_enabled": true,
         "rights": {},
@@ -3733,7 +3733,7 @@
     "payload": {
       "update_id": 100031,
       "business_connection": {
-        "id": "synthetic-id-0003",
+        "id": "synthetic-business-connection-id-0001",
         "user": {
           "id": 700000002,
           "is_bot": false,
@@ -3742,7 +3742,7 @@
           "language_code": "en",
           "is_premium": true
         },
-        "user_chat_id": 700000001,
+        "user_chat_id": 700000002,
         "date": 1792286146,
         "is_enabled": true,
         "rights": {},
@@ -3760,12 +3760,12 @@
         "message_id": 1029,
         "date": 1792354611,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "nopq"
         },
         "from_user": {
-          "id": 700000004,
+          "id": 700000003,
           "is_bot": false,
           "first_name": "fghi"
         },
@@ -3781,7 +3781,7 @@
     "payload": {
       "update_id": 100033,
       "business_connection": {
-        "id": "synthetic-id-0003",
+        "id": "synthetic-business-connection-id-0001",
         "user": {
           "id": 700000002,
           "is_bot": false,
@@ -3790,7 +3790,7 @@
           "language_code": "en",
           "is_premium": true
         },
-        "user_chat_id": 700000001,
+        "user_chat_id": 700000002,
         "date": 1792286146,
         "is_enabled": true,
         "rights": {
@@ -3813,12 +3813,12 @@
         "message_id": 1030,
         "date": 1792354652,
         "chat": {
-          "id": 700000004,
+          "id": 700000003,
           "type": "private",
           "first_name": "hijk"
         },
         "from_user": {
-          "id": 700000004,
+          "id": 700000003,
           "is_bot": false,
           "first_name": "ijkl"
         },
@@ -3835,7 +3835,7 @@
       "message_id": 1031,
       "date": 1792354742,
       "chat": {
-        "id": 700000004,
+        "id": 700000003,
         "type": "private",
         "title": null,
         "username": null,
@@ -4050,7 +4050,7 @@
     "payload": {
       "update_id": 100035,
       "business_connection": {
-        "id": "synthetic-id-0003",
+        "id": "synthetic-business-connection-id-0001",
         "user": {
           "id": 700000002,
           "is_bot": false,
@@ -4059,7 +4059,7 @@
           "language_code": "en",
           "is_premium": true
         },
-        "user_chat_id": 700000001,
+        "user_chat_id": 700000002,
         "date": 1792286146,
         "is_enabled": false,
         "can_reply": false
@@ -4073,7 +4073,7 @@
     "payload": {
       "update_id": 100036,
       "business_connection": {
-        "id": "synthetic-id-0005",
+        "id": "synthetic-business-connection-id-0002",
         "user": {
           "id": 700000002,
           "is_bot": false,
@@ -4082,7 +4082,7 @@
           "language_code": "en",
           "is_premium": true
         },
-        "user_chat_id": 700000001,
+        "user_chat_id": 700000002,
         "date": 1792354939,
         "is_enabled": true,
         "rights": {},
@@ -4115,7 +4115,7 @@
     "label": "getBusinessConnection",
     "observed_at": "ghijklmnopqrstuvwxyzabcdefghijkl",
     "result": {
-      "id": "synthetic-id-0003",
+      "id": "synthetic-business-connection-id-0001",
       "user": {
         "id": 700000002,
         "is_bot": false,
@@ -4136,7 +4136,7 @@
         "can_manage_bots": null,
         "supports_join_request_queries": null
       },
-      "user_chat_id": 700000001,
+      "user_chat_id": 700000002,
       "date": 1792286146,
       "is_enabled": false,
       "rights": null,
@@ -4184,7 +4184,7 @@
     "payload": {
       "update_id": 100038,
       "business_connection": {
-        "id": "synthetic-id-0005",
+        "id": "synthetic-business-connection-id-0002",
         "user": {
           "id": 700000002,
           "is_bot": false,
@@ -4193,7 +4193,7 @@
           "language_code": "en",
           "is_premium": true
         },
-        "user_chat_id": 700000001,
+        "user_chat_id": 700000002,
         "date": 1792354939,
         "is_enabled": true,
         "rights": {},
@@ -4208,7 +4208,7 @@
     "payload": {
       "update_id": 100039,
       "business_connection": {
-        "id": "synthetic-id-0005",
+        "id": "synthetic-business-connection-id-0002",
         "user": {
           "id": 700000002,
           "is_bot": false,
@@ -4217,7 +4217,7 @@
           "language_code": "en",
           "is_premium": true
         },
-        "user_chat_id": 700000001,
+        "user_chat_id": 700000002,
         "date": 1792354939,
         "is_enabled": true,
         "rights": {
@@ -4238,7 +4238,7 @@
       "message_id": 1033,
       "date": 1792355693,
       "chat": {
-        "id": 700000004,
+        "id": 700000003,
         "type": "private",
         "title": null,
         "username": null,
