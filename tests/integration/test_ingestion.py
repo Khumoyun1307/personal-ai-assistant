@@ -13,6 +13,7 @@ Named regression suite. The claims being pinned:
 from __future__ import annotations
 
 import functools
+from datetime import UTC, datetime, timedelta
 
 import psycopg.errors
 import pytest
@@ -20,6 +21,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from assistant.conversations.models import CoverageGap
 from assistant.core.routing import Route
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.inbox.models import InboundUpdate
@@ -47,7 +49,7 @@ async def factory(migrated_url: str):  # type: ignore[no-untyped-def]
     engine = build_engine(migrated_url)
     session_factory = build_session_factory(engine)
     async with engine.begin() as conn:
-        await conn.exec_driver_sql("TRUNCATE app.inbound_updates, app.system_state")
+        await conn.exec_driver_sql("TRUNCATE app.inbound_updates, app.system_state CASCADE")
     yield session_factory
     await engine.dispose()
 
@@ -450,3 +452,68 @@ async def test_a_failing_dead_letter_hook_does_not_prevent_dead_lettering(factor
     assert row.status == "failed"
     assert row.attempts == 3
     assert not await _state_exists(factory, "bad-hook")
+
+
+# ------------------------------------------------------- outage coverage gaps
+async def _active_account(factory: async_sessionmaker[AsyncSession]) -> None:
+    async with factory() as session, session.begin():
+        await session.execute(text("TRUNCATE app.accounts CASCADE"))
+        await session.execute(
+            text(
+                "INSERT INTO app.accounts (telegram_user_id, status, timezone) "
+                "VALUES (7000000001, 'active', 'UTC')"
+            )
+        )
+
+
+async def _gaps(factory: async_sessionmaker[AsyncSession]) -> list[CoverageGap]:
+    async with factory() as session:
+        return list((await session.execute(select(CoverageGap))).scalars().all())
+
+
+async def test_an_outage_over_24h_records_a_possible_gap(factory) -> None:  # type: ignore[no-untyped-def]
+    """§6.6: Telegram keeps updates ~24 h. A longer silence between two
+    completed polls may have lost messages dated in [T0, T1 - 24 h + 10 min]."""
+    await _active_account(factory)
+    clock = FakeClock(datetime(2026, 10, 19, 6, 0, tzinfo=UTC))
+    first = Poller(FakeUpdateSource(), factory, clock)
+    await first.startup()
+    await first.poll_once()
+    t0 = clock.now()
+    clock.advance(hours=30)
+
+    second = Poller(FakeUpdateSource(), factory, clock)
+    await second.startup()  # the startup heartbeat must not count as a poll
+    await second.poll_once()
+    await second.poll_once()  # only the first completed poll records the gap
+
+    [gap] = await _gaps(factory)
+    assert (gap.kind, gap.certainty) == ("outage", "possible")
+    assert gap.at_risk_from == t0
+    assert gap.at_risk_to == clock.now() - timedelta(hours=24) + timedelta(minutes=10)
+    assert gap.conversation_id is None
+
+
+async def test_a_short_outage_records_a_delayed_gap(factory) -> None:  # type: ignore[no-untyped-def]
+    await _active_account(factory)
+    clock = FakeClock(datetime(2026, 10, 19, 6, 0, tzinfo=UTC))
+    first = Poller(FakeUpdateSource(), factory, clock)
+    await first.startup()
+    await first.poll_once()
+    clock.advance(hours=2)
+
+    second = Poller(FakeUpdateSource(), factory, clock)
+    await second.startup()
+    await second.poll_once()
+
+    [gap] = await _gaps(factory)
+    assert gap.certainty == "delayed"
+    assert gap.at_risk_to == clock.now()
+
+
+async def test_a_first_ever_poll_records_no_gap(factory) -> None:  # type: ignore[no-untyped-def]
+    await _active_account(factory)
+    poller = Poller(FakeUpdateSource(), factory, FakeClock())
+    await poller.startup()
+    await poller.poll_once()
+    assert await _gaps(factory) == []

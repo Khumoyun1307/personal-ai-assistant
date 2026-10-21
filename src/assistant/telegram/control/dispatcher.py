@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import connections, service
 from assistant.accounts.models import Account
+from assistant.conversations import coverage
 from assistant.core.clock import Clock
 from assistant.core.jobs import (
     CONNECTION_NOTIFY_TASK,
@@ -30,6 +31,7 @@ from assistant.core.jobs import (
     JobScheduler,
     owner_control_lock,
 )
+from assistant.inbox.processor import inbox_backlog_for
 from assistant.observability.logging import get_logger
 from assistant.telegram.control import handlers
 from assistant.telegram.control.handlers import HandlerResult, IncomingMessage
@@ -210,7 +212,15 @@ class ControlDispatcher:
                     session, self._gateway, account, message, policy_url=self._policy_url
                 )
             case "status":
-                return await handlers.handle_status(self._gateway, account, message)
+                backlog = await inbox_backlog_for(session, account.id)
+                summary = await coverage.summarize(session, account.id)
+                return await handlers.handle_status(
+                    self._gateway,
+                    account,
+                    message,
+                    backlog=backlog,
+                    coverage_caveat=summary.caveat,
+                )
             case "settings":
                 if argument:
                     return await handlers.apply_setting(

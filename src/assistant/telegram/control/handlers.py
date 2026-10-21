@@ -342,8 +342,14 @@ async def handle_status(
     message: IncomingMessage,
     *,
     backlog: dict[str, int] | None = None,
+    coverage_caveat: str | None = None,
 ) -> HandlerResult:
-    """`/status` — must work even when the model is unreachable."""
+    """`/status` — must work even when the model is unreachable.
+
+    `coverage_caveat` is the honest-coverage line (FR-OBS-05): shown whenever
+    a chat is paused by an ingest error or a gap is unresolved, never
+    swallowed (§6 invariant 11). S02.3 extends this into the full report.
+    """
     counts = backlog or {}
     lines = [
         "<b>Status</b>",
@@ -361,6 +367,8 @@ async def handle_status(
     failed = counts.get("failed", 0)
     if failed:
         lines += ["", f"⚠️ {failed} update(s) could not be processed."]
+    if coverage_caveat:
+        lines += ["", escape(coverage_caveat)]
     result = await gateway.send_text(
         ControlChat(account_id=account.id, chat_id=message.chat_id), "\n".join(lines)
     )

@@ -1,0 +1,117 @@
+"""Coverage: what the owner can and cannot have seen (ARCHITECTURE §6.6).
+
+Two writers and one reader:
+
+- `record_outage` — the poller noticed that its last successful poll was long
+  ago. Messages dated inside an outage longer than Telegram's 24 h retention
+  may be gone for good (`possible`); a shorter one only delayed them.
+- `record_ingest_failure` lives in `service.py` (a dead letter is `definite`).
+- `caveat` — the one-line warning `/status` and summaries show while a
+  conversation is paused by an ingest error or a possible/definite gap is
+  unresolved (FR-OBS-05, §6 invariant 11: never report a gap as coverage).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from assistant.accounts.models import Account
+from assistant.conversations.models import Conversation, CoverageGap
+from assistant.conversations.service import PAUSE_INGEST_ERROR
+from assistant.core.clock import Clock
+
+#: Telegram keeps undelivered updates this long (TF §3.1). An outage longer
+#: than this, minus a margin, can have lost messages for good.
+TELEGRAM_UPDATE_RETENTION = timedelta(hours=24)
+OUTAGE_MARGIN = timedelta(minutes=10)
+#: Shorter outages are not worth a row: the watchdog already alerted.
+OUTAGE_MIN = timedelta(minutes=3)
+
+
+async def record_outage(
+    session: AsyncSession, *, last_ok: datetime, resumed: datetime, clock: Clock
+) -> int:
+    """One gap per active account for an outage between two successful polls.
+
+    `possible` if longer than 24 h - 10 min, with the at-risk range
+    `[last_ok, resumed - 24 h + 10 min]` (only messages dated in it can have
+    expired); otherwise `delayed`. Returns the number of rows written.
+    """
+    length = resumed - last_ok
+    if length < OUTAGE_MIN:
+        return 0
+    threshold = TELEGRAM_UPDATE_RETENTION - OUTAGE_MARGIN
+    if length > threshold:
+        certainty = "possible"
+        at_risk_to = resumed - threshold
+    else:
+        certainty = "delayed"
+        at_risk_to = resumed
+    accounts = await session.execute(select(Account.id).where(Account.status == "active"))
+    written = 0
+    for account_id in accounts.scalars().all():
+        session.add(
+            CoverageGap(
+                account_id=account_id,
+                conversation_id=None,
+                kind="outage",
+                certainty=certainty,
+                at_risk_from=last_ok,
+                at_risk_to=max(at_risk_to, last_ok),
+                created_at=clock.now(),
+            )
+        )
+        written += 1
+    return written
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageSummary:
+    paused_by_ingest_error: int
+    unresolved_possible_gaps: int
+    unresolved_definite_gaps: int
+
+    @property
+    def caveat(self) -> str | None:
+        """The warning line, or None when coverage is clean."""
+        parts: list[str] = []
+        if self.paused_by_ingest_error:
+            parts.append(
+                f"{self.paused_by_ingest_error} chat(s) could not be processed and are "
+                "paused for automation"
+            )
+        if self.unresolved_definite_gaps or self.unresolved_possible_gaps:
+            parts.append(
+                f"{self.unresolved_definite_gaps} definite and "
+                f"{self.unresolved_possible_gaps} possible coverage gap(s): "
+                "some messages may be missing"
+            )
+        return "⚠️ " + "; ".join(parts) + "." if parts else None
+
+
+async def summarize(session: AsyncSession, account_id: int) -> CoverageSummary:
+    paused = (
+        await session.execute(
+            select(func.count())
+            .select_from(Conversation)
+            .where(Conversation.account_id == account_id)
+            .where(Conversation.autonomy_paused_reason == PAUSE_INGEST_ERROR)
+        )
+    ).scalar_one()
+    gaps = await session.execute(
+        select(CoverageGap.certainty, func.count())
+        .where(CoverageGap.account_id == account_id)
+        .where(CoverageGap.resolved_at.is_(None))
+        .where(CoverageGap.certainty.in_(["possible", "definite"]))
+        .group_by(CoverageGap.certainty)
+    )
+    counts = dict(gaps.all())
+    return CoverageSummary(
+        paused_by_ingest_error=int(paused),
+        unresolved_possible_gaps=int(counts.get("possible", 0)),
+        unresolved_definite_gaps=int(counts.get("definite", 0)),
+    )

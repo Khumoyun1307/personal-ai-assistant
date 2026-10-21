@@ -36,6 +36,7 @@ from assistant.llm.metering import MeteredLLMClient
 from assistant.llm.openai_adapter import OpenAIClient
 from assistant.llm.port import LLMClient
 from assistant.process import InboxRole, PollerRole, WorkerRole, worker_heartbeat_probe
+from assistant.telegram.business import BusinessPipeline
 from assistant.telegram.connections import AiogramConnectionLookup, ConnectionRegistry
 from assistant.telegram.control.agent_channel import GatewayControlChannel
 from assistant.telegram.control.dispatcher import ControlDispatcher
@@ -178,6 +179,7 @@ async def running_process(
                     scheduler,
                     owner_ids=owner_ids,
                 )
+                business = BusinessPipeline(registry, clock, bot_id=bot.id)
                 processor = InboxProcessor(
                     session_factory,
                     clock,
@@ -188,9 +190,10 @@ async def running_process(
                         Route.CONTROL: control.control,
                         Route.REFUSED: control.refused,
                         Route.CONNECTION: registry.connection,
-                        Route.BUSINESS: registry.business,
+                        Route.BUSINESS: business.handle,
                     },
                     preparers={Route.BUSINESS: registry.prepare},
+                    dead_letter_hooks={Route.BUSINESS: business.on_dead_letter},
                 )
                 supervisor_roles.append(InboxRole(processor, lock, clock).role())
             probe = worker_heartbeat_probe(session_factory)

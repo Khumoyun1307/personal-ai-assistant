@@ -15,15 +15,8 @@ Payloads are synthetic and shaped like aiogram's JSON dump (TF §12 LV-01/05/12)
 
 from __future__ import annotations
 
-import functools
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from typing import Any
-
 import pytest
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import select
 
 from assistant.accounts import service
 from assistant.accounts.models import (
@@ -33,216 +26,28 @@ from assistant.accounts.models import (
     ForeignConnection,
 )
 from assistant.core.errors import TransientError
-from assistant.core.routing import Route
-from assistant.db.engine import build_engine, build_session_factory
 from assistant.db.uow import transaction
-from assistant.inbox.models import InboundUpdate
-from assistant.inbox.processor import InboxProcessor
-from assistant.jobs.app import build_app
-from assistant.jobs.scheduler import ProcrastinateScheduler
-from assistant.telegram.connections import ConnectionRegistry
-from assistant.telegram.control.dispatcher import ControlDispatcher
-from assistant.telegram.control.inbox_handlers import ControlInboxHandlers, RefusalLimiter
-from assistant.telegram.gateway import OutboundGateway
 from assistant.telegram.ingress.writer import write_batch
-from assistant.telegram.routing import route_update
-from tests.fakes.clock import FakeClock
-from tests.fakes.sender import FakeTelegramSender
-
-pytestmark = pytest.mark.integration
-
-OWNER = 7000000001
-STRANGER = 7000000009
-CONTACT = 7000000005
-BOT_ID = 8845134387
-RESET = (
-    "TRUNCATE app.accounts, app.inbound_updates, app.system_state, "
-    "app.foreign_connections CASCADE; "
-    "TRUNCATE procrastinate.procrastinate_jobs CASCADE"
+from tests.integration.business_env import (
+    BOT_ID,
+    OWNER,
+    STRANGER,
+    Env,
+    business_message,
+    connection_body,
+    connection_row,
+    connection_update,
+    count,
+    deliver,
+    events,
+    inbound,
+    notify_jobs,
+    onboard,
+    payload_is_sql_null,
+    private_message,
 )
 
-_ids = iter(range(1_000_000, 1_999_999))
-
-
-@dataclass
-class FakeLookup:
-    """`getBusinessConnection`, scripted."""
-
-    known: dict[str, dict[str, Any]] = field(default_factory=dict)
-    calls: list[str] = field(default_factory=list)
-    fail: Exception | None = None
-
-    async def get(self, connection_id: str) -> dict[str, Any] | None:
-        self.calls.append(connection_id)
-        if self.fail is not None:
-            raise self.fail
-        return self.known.get(connection_id)
-
-
-@dataclass
-class Env:
-    factory: async_sessionmaker[AsyncSession]
-    processor: InboxProcessor
-    sender: FakeTelegramSender
-    lookup: FakeLookup
-
-
-def connection_body(
-    *,
-    user_id: int = OWNER,
-    connection_id: str = "synthetic-conn-a",
-    enabled: bool = True,
-    rights: tuple[str, ...] | None = ("can_reply",),
-    date: int = 1792350000,
-) -> dict[str, Any]:
-    body: dict[str, Any] = {
-        "id": connection_id,
-        "user": {"id": user_id, "is_bot": False, "first_name": "Synthetic"},
-        "user_chat_id": user_id,
-        "date": date,
-        "is_enabled": enabled,
-    }
-    if rights is not None:
-        body["rights"] = dict.fromkeys(rights, True)
-    return body
-
-
-def connection_update(**kwargs: Any) -> dict[str, Any]:
-    return {"update_id": next(_ids), "business_connection": connection_body(**kwargs)}
-
-
-def business_message(connection_id: str, *, from_id: int = CONTACT) -> dict[str, Any]:
-    update_id = next(_ids)
-    return {
-        "update_id": update_id,
-        "business_message": {
-            "message_id": update_id % 100_000,
-            "date": 1792354000,
-            "chat": {"id": CONTACT, "type": "private"},
-            "from_user": {"id": from_id, "is_bot": False, "first_name": "Synthetic"},
-            "text": "synthetic contact text",
-            "business_connection_id": connection_id,
-        },
-    }
-
-
-def private_message(sender_id: int, message_text: str) -> dict[str, Any]:
-    update_id = next(_ids)
-    return {
-        "update_id": update_id,
-        "message": {
-            "message_id": update_id % 100_000,
-            "date": 1792354000,
-            "chat": {"id": sender_id, "type": "private"},
-            "from": {"id": sender_id, "is_bot": False, "first_name": "Synthetic"},
-            "text": message_text,
-        },
-    }
-
-
-@pytest.fixture
-async def env(migrated_url: str) -> AsyncIterator[Env]:
-    engine = build_engine(migrated_url)
-    async with engine.begin() as conn:
-        await conn.exec_driver_sql(RESET)
-    factory = build_session_factory(engine)
-    clock = FakeClock(datetime(2026, 10, 18, 12, 0, tzinfo=UTC))
-    sender = FakeTelegramSender()
-    gateway = OutboundGateway(sender, clock)
-    app = build_app(migrated_url)
-
-    @app.task(name="agent.owner_request", queue="llm")
-    async def owner_request(turn_id: int) -> None:  # deferred only
-        return None
-
-    @app.task(name="connections.notify_owner", queue="system")
-    async def notify_owner(event_id: int) -> None:  # deferred only
-        return None
-
-    scheduler = ProcrastinateScheduler(app)
-    owners = frozenset({OWNER})
-    lookup = FakeLookup()
-    registry = ConnectionRegistry(factory, clock, lookup, scheduler, owner_ids=owners)
-    control = ControlInboxHandlers(
-        ControlDispatcher(gateway, clock, scheduler), gateway, RefusalLimiter(clock)
-    )
-    processor = InboxProcessor(
-        factory,
-        clock,
-        owner_ids=owners,
-        bot_id=BOT_ID,
-        router=functools.partial(route_update, owner_ids=owners, bot_id=BOT_ID),
-        handlers={
-            Route.CONTROL: control.control,
-            Route.REFUSED: control.refused,
-            Route.CONNECTION: registry.connection,
-            Route.BUSINESS: registry.business,
-        },
-        preparers={Route.BUSINESS: registry.prepare},
-    )
-    async with app.open_async():
-        yield Env(factory, processor, sender, lookup)
-    async with engine.begin() as conn:
-        await conn.exec_driver_sql(RESET)
-    await engine.dispose()
-
-
-async def deliver(env: Env, *updates: dict[str, Any]) -> None:
-    async with transaction(env.factory) as uow:
-        await write_batch(uow.session, bot_id=BOT_ID, updates=list(updates))
-    await env.processor.process_batch()
-
-
-async def onboard(env: Env) -> None:
-    await deliver(env, private_message(OWNER, "/start"))
-    await deliver(env, private_message(OWNER, "yes"))
-
-
-async def inbound(env: Env, update: dict[str, Any]) -> InboundUpdate:
-    async with env.factory() as session:
-        return (
-            await session.execute(
-                select(InboundUpdate).where(InboundUpdate.update_id == update["update_id"])
-            )
-        ).scalar_one()
-
-
-async def payload_is_sql_null(env: Env, update: dict[str, Any]) -> bool:
-    async with env.factory() as session:
-        result = await session.execute(
-            text("SELECT payload IS NULL FROM app.inbound_updates WHERE update_id = :id"),
-            {"id": update["update_id"]},
-        )
-        return bool(result.scalar_one())
-
-
-async def connection_row(env: Env) -> BusinessConnection | None:
-    async with env.factory() as session:
-        return (await session.execute(select(BusinessConnection))).scalar_one_or_none()
-
-
-async def events(env: Env) -> list[BusinessConnectionEvent]:
-    async with env.factory() as session:
-        result = await session.execute(
-            select(BusinessConnectionEvent).order_by(BusinessConnectionEvent.id)
-        )
-        return list(result.scalars().all())
-
-
-async def notify_jobs(env: Env) -> list[int]:
-    async with env.factory() as session:
-        result = await session.execute(
-            text(
-                "SELECT (args->>'event_id')::bigint FROM procrastinate.procrastinate_jobs "
-                "WHERE task_name = 'connections.notify_owner' ORDER BY id"
-            )
-        )
-        return [int(row[0]) for row in result.all()]
-
-
-async def count(env: Env, model: type[Any]) -> int:
-    async with env.factory() as session:
-        return len((await session.execute(select(model))).scalars().all())
+pytestmark = pytest.mark.integration
 
 
 # ------------------------------------------------------------ non-owners

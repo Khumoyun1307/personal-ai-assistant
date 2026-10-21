@@ -7,11 +7,15 @@ impossible rather than merely discouraged.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from typing import Any
+
 import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
+from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.db.repository import AccountScopedRepository, AccountScopeError
 
 pytestmark = pytest.mark.integration
@@ -114,3 +118,87 @@ async def test_account_telegram_user_id_is_unique(db_session: AsyncSession) -> N
     db_session.add(Account(telegram_user_id=1010, status="active", timezone="UTC"))
     with pytest.raises(IntegrityError):
         await db_session.flush()
+
+
+# ------------------------------------------------ managed conversations (S02.2)
+class ContactRepository(AccountScopedRepository[Contact]):
+    model = Contact
+
+
+class ConversationRepository(AccountScopedRepository[Conversation]):
+    model = Conversation
+
+
+class MessageRepository(AccountScopedRepository[Message]):
+    model = Message
+
+
+class CoverageGapRepository(AccountScopedRepository[CoverageGap]):
+    model = CoverageGap
+
+
+async def _seed_chat(session: AsyncSession, account: Account, chat_id: int, text: str) -> int:
+    contact = Contact(account_id=account.id, telegram_user_id=chat_id, display_name=text)
+    session.add(contact)
+    await session.flush()
+    conversation = Conversation(
+        account_id=account.id, business_chat_id=chat_id, contact_id=contact.id
+    )
+    session.add(conversation)
+    await session.flush()
+    session.add(
+        Message(
+            account_id=account.id,
+            conversation_id=conversation.id,
+            telegram_message_id=1,
+            direction="contact",
+            sent_at=datetime(2026, 10, 18, 12, 0, tzinfo=UTC),
+            content_type="text",
+            text=text,
+        )
+    )
+    session.add(
+        CoverageGap(
+            account_id=account.id,
+            conversation_id=conversation.id,
+            kind="dead_letter",
+            certainty="definite",
+            at_risk_from=datetime(2026, 10, 18, 12, 0, tzinfo=UTC),
+            at_risk_to=datetime(2026, 10, 18, 12, 0, tzinfo=UTC),
+        )
+    )
+    await session.flush()
+    return conversation.id
+
+
+@pytest.mark.parametrize(
+    "repository",
+    [ContactRepository, ConversationRepository, MessageRepository, CoverageGapRepository],
+)
+async def test_isolation_holds_for_every_managed_conversation_table(
+    db_session: AsyncSession, repository: type[AccountScopedRepository[Any]]
+) -> None:
+    """RG-21 extended to S02.2's tables: one owner never sees another's chats."""
+    owner = await make_account(db_session, 2001)
+    stranger = await make_account(db_session, 2002)
+    await _seed_chat(db_session, owner, 3001, "mine")
+    await _seed_chat(db_session, stranger, 3002, "theirs")
+
+    rows = await repository(db_session, owner.id).list_all()
+    assert len(rows) == 1
+    assert rows[0].account_id == owner.id
+
+
+async def test_the_same_chat_under_two_owners_is_two_conversations(
+    db_session: AsyncSession,
+) -> None:
+    """Business chat ids live in each owner's numbering (AGENTS §7): the same
+    counterpart id under two accounts is two unrelated conversations."""
+    owner = await make_account(db_session, 2003)
+    other = await make_account(db_session, 2004)
+    first = await _seed_chat(db_session, owner, 3003, "a")
+    second = await _seed_chat(db_session, other, 3003, "b")
+
+    assert first != second
+    assert await ConversationRepository(db_session, owner.id).get(second) is None
+    assert await MessageRepository(db_session, owner.id).count() == 1

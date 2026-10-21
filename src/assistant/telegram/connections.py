@@ -9,9 +9,10 @@ inbox glue between raw Telegram payloads and `accounts.connections`:
 - `ConnectionRegistry.prepare` is the inbox *preparer* for business traffic:
   an unknown connection id is looked up **before** the processing transaction
   opens (§6.2), because the initial connection update can be missing (TF §2).
-- `ConnectionRegistry.connection` / `.business` are the inbox handlers. In
-  S02.1 a business update is only *gated*: foreign → rejected, not yet live →
-  ignored, payload cleared either way. Storing live traffic is S02.2.
+- `ConnectionRegistry.connection` is the inbox handler for connection
+  updates; `.gate_business` is the first step of the business pipeline
+  (`telegram/business.py`): foreign → rejected, not yet live → ignored,
+  payload cleared either way; live traffic is handed on to be stored.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from assistant.accounts import connections
 from assistant.accounts.connections import (
     ApplyResult,
     ConnectionSnapshot,
+    Resolution,
     ResolutionKind,
     Source,
 )
@@ -207,9 +209,16 @@ class ConnectionRegistry:
         await self._after_apply(session, result)
         return None
 
-    async def business(
+    async def gate_business(
         self, session: AsyncSession, row: InboundUpdate, decision: RouteDecision
-    ) -> Disposition | None:
+    ) -> Disposition | Resolution:
+        """Whose traffic is this, and may it be stored? (§6.4, §6 invariant 7)
+
+        Returns a `Disposition` when the update must end here with its
+        payload cleared — foreign → rejected; unknown, not yet onboarded or
+        disabled → ignored — or the owner's live `Resolution`, for the
+        business pipeline (`telegram/business.py`) to store.
+        """
         connection_id = self._connection_id_of(row.payload or {}, decision.kind)
         if connection_id is None:
             return Disposition.IGNORED
@@ -227,10 +236,7 @@ class ConnectionRegistry:
                 connection_status=None if resolution.status is None else resolution.status.value,
             )
             return Disposition.IGNORED
-        # Live traffic. Normalization and storage arrive in S02.2; until then
-        # nothing is kept (M01 rule: business updates are ignored, payload cleared).
-        logger.info("business_update_not_stored_yet", update_row_id=row.id)
-        return Disposition.IGNORED
+        return resolution
 
     async def _after_apply(self, session: AsyncSession, result: ApplyResult) -> None:
         if not result.notify or result.event_id is None:

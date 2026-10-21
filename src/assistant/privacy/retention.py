@@ -10,6 +10,9 @@ Every data class the privacy policy names has a rule here, and the hourly
 | `llm_calls`, `agent_runs` (+ steps), `audit_log` | 1 year | rows deleted (they carry no content) |
 | `business_connection_events` | 1 year | rows deleted (ids, rights, flags only) |
 | `foreign_connections` | 30 days after last seen | rows deleted (metadata of non-owners) |
+| `messages` content | 90 days from `sent_at`/last edit | content cleared, `purged_at` set, kept |
+| (text, media, search key, hash) | | `summary_gap_before` advanced (rollup: M03) |
+| `contacts` names | while message content is retained | names cleared afterwards |
 
 Other classes join as their tables arrive.
 """
@@ -17,9 +20,9 @@ Other classes join as their tables arrive.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-from sqlalchemy import delete, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import (
@@ -28,12 +31,14 @@ from assistant.accounts.models import (
     ControlTurn,
     ForeignConnection,
 )
+from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.db.uow import transaction
 from assistant.inbox.models import InboundUpdate
 
 INBOUND_PAYLOAD_RETENTION = timedelta(days=7)
 CONTROL_TURN_TEXT_RETENTION = timedelta(days=90)
+MESSAGE_CONTENT_RETENTION = timedelta(days=90)
 ACCOUNTING_RETENTION = timedelta(days=365)
 FOREIGN_CONNECTION_RETENTION = timedelta(days=30)
 
@@ -47,6 +52,8 @@ class SweepReport:
     audit_entries: int = 0
     connection_events: int = 0
     foreign_connections: int = 0
+    message_contents: int = 0
+    contact_names: int = 0
 
     @property
     def total(self) -> int:
@@ -58,6 +65,8 @@ class SweepReport:
             + self.audit_entries
             + self.connection_events
             + self.foreign_connections
+            + self.message_contents
+            + self.contact_names
         )
 
 
@@ -134,4 +143,79 @@ async def sweep_all(session_factory: async_sessionmaker[AsyncSession], clock: Cl
                 )
             )
         )
-    return SweepReport(inbound, turns, calls, runs, audit, events, foreign)
+    message_contents = await sweep_message_content(session_factory, clock)
+    contact_names = await sweep_contact_names(session_factory, clock)
+    return SweepReport(
+        inbound, turns, calls, runs, audit, events, foreign, message_contents, contact_names
+    )
+
+
+async def sweep_message_content(
+    session_factory: async_sessionmaker[AsyncSession], clock: Clock
+) -> int:
+    """Purge message content past the retention ceiling (§10.4).
+
+    Unconditional: the ceiling holds whether or not a summary exists (M03
+    adds the rollup that *tries* to run first). When content goes without a
+    summary the conversation remembers it in `summary_gap_before`, so later
+    summaries can say that earlier messages expired unsummarised.
+    """
+    now = clock.now()
+    cutoff = now - MESSAGE_CONTENT_RETENTION
+    async with transaction(session_factory) as uow:
+        purged = await uow.session.execute(
+            update(Message)
+            .where(func.coalesce(Message.edited_at, Message.sent_at) < cutoff)
+            .where((Message.text.is_not(None)) | (Message.media.is_not(None)))
+            .values(
+                text=None,
+                media=None,
+                search_key=None,
+                script=None,
+                lang_guess=None,
+                content_hash=None,
+                purged_at=now,
+                updated_at=now,
+            )
+            .returning(Message.conversation_id, Message.sent_at)
+        )
+        rows = purged.all()
+        newest: dict[int, datetime] = {}
+        for conversation_id, sent_at in rows:
+            if sent_at is not None and (
+                conversation_id not in newest or sent_at > newest[conversation_id]
+            ):
+                newest[conversation_id] = sent_at
+        for conversation_id, sent_at in newest.items():
+            await uow.session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(
+                    (Conversation.summary_gap_before.is_(None))
+                    | (Conversation.summary_gap_before < sent_at)
+                )
+                .values(summary_gap_before=sent_at, updated_at=now)
+            )
+        return len(rows)
+
+
+async def sweep_contact_names(
+    session_factory: async_sessionmaker[AsyncSession], clock: Clock
+) -> int:
+    """Clear names of contacts with no retained message content (§10.4)."""
+    async with transaction(session_factory) as uow:
+        retained = (
+            select(Conversation.contact_id)
+            .join(Message, Message.conversation_id == Conversation.id)
+            .where((Message.text.is_not(None)) | (Message.media.is_not(None)))
+        )
+        result = await uow.session.execute(
+            update(Contact)
+            .where((Contact.display_name.is_not(None)) | (Contact.username.is_not(None)))
+            .where(Contact.id.not_in(retained))
+            # Only contacts whose conversations have aged out: a contact seen
+            # today without content yet still gets to keep their name.
+            .where(Contact.updated_at < clock.now() - MESSAGE_CONTENT_RETENTION)
+            .values(display_name=None, username=None, updated_at=clock.now())
+        )
+        return _count(result)

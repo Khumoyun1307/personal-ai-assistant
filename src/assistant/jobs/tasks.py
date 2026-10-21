@@ -130,6 +130,8 @@ class JobHandlers:
                 audit_entries=report.audit_entries,
                 connection_events=report.connection_events,
                 foreign_connections=report.foreign_connections,
+                message_contents=report.message_contents,
+                contact_names=report.contact_names,
             )
         return report
 

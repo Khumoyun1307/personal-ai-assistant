@@ -115,3 +115,68 @@ def test_connection_updates_route_to_the_registry() -> None:
         if record.get("update_type") == "business_connection":
             decision = route_update(record["payload"], owner_ids=frozenset(), bot_id=bot_id())
             assert decision.route is Route.CONNECTION
+
+
+# ------------------------------------------------------- S02.2: normalization
+def _business_records() -> list[tuple[str, dict[str, Any]]]:
+    return [
+        (record["update_type"], record["payload"])
+        for record in records()
+        if record.get("update_type") in BUSINESS_KINDS
+    ]
+
+
+def test_every_observed_business_update_normalizes() -> None:
+    """Nothing Telegram actually sent in the session is malformed to us."""
+    from assistant.conversations.events import ObservedDeletion, ObservedMessage
+    from assistant.telegram.normalize import normalize
+
+    owner = connection_updates()[0]["user"]["id"]
+    seen: list[type[object]] = []
+    for kind, update in _business_records():
+        event = normalize(update, kind, owner_user_id=owner, bot_id=bot_id())
+        assert isinstance(event, ObservedMessage | ObservedDeletion)
+        seen.append(type(event))
+    assert ObservedMessage in seen
+    assert ObservedDeletion in seen
+
+
+def test_observed_messages_classify_as_contact_or_owner_manual() -> None:
+    """The session had a contact (the second account) and the owner typing
+    from two clients (LV-02) — nothing automated, nothing bot-sent (LV-03)."""
+    from assistant.conversations.events import Direction, ObservedMessage
+    from assistant.telegram.normalize import normalize
+
+    owner = connection_updates()[0]["user"]["id"]
+    directions = []
+    for kind, update in _business_records():
+        if kind == "deleted_business_messages":
+            continue
+        event = normalize(update, kind, owner_user_id=owner, bot_id=bot_id())
+        assert isinstance(event, ObservedMessage)
+        directions.append(event.direction)
+    assert set(directions) == {Direction.CONTACT, Direction.OWNER_MANUAL}
+    assert directions.count(Direction.OWNER_MANUAL) >= 2
+    assert directions.count(Direction.CONTACT) > directions.count(Direction.OWNER_MANUAL)
+
+
+def test_observed_media_keeps_structure_and_drops_file_ids() -> None:
+    """LV-11: photo, voice, document and video note — kinds and sizes stay,
+    `file_id` (a download capability) and file names never do."""
+    from assistant.conversations.events import ObservedMessage
+    from assistant.telegram.normalize import normalize
+
+    owner = connection_updates()[0]["user"]["id"]
+    kinds: set[str] = set()
+    for kind, update in _business_records():
+        if kind == "deleted_business_messages":
+            continue
+        event = normalize(update, kind, owner_user_id=owner, bot_id=bot_id())
+        assert isinstance(event, ObservedMessage)
+        if event.content.media is not None:
+            kinds.add(event.content.media.kind)
+            dumped = event.content.media.as_json()
+            assert "file_id" not in dumped
+            assert "file_name" not in dumped
+            assert dumped.get("file_unique_id")
+    assert {"photo", "voice", "document", "video_note"} <= kinds

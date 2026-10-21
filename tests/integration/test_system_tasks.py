@@ -28,6 +28,7 @@ from assistant.accounts.models import (
 )
 from assistant.agent.budget import check_budget_thresholds
 from assistant.agent.models import AgentRun, LlmCall
+from assistant.conversations.models import Contact, Conversation, Message
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.db.models import KEY_POLLER_HEARTBEAT
 from assistant.db.uow import transaction
@@ -340,3 +341,93 @@ async def test_every_policy_retention_rule_is_applied(
         assert len((await session.execute(select(AuditLogEntry))).scalars().all()) == 1
         assert len((await session.execute(select(AgentRun))).scalars().all()) == 1
     assert texts == {old_turn.id: None, new_turn.id: "Synthetic new"}
+
+
+# ------------------------------------------------- retention: managed content
+async def _seed_message(
+    factory: async_sessionmaker[AsyncSession],
+    account_id: int,
+    *,
+    chat_id: int,
+    sent_at: datetime,
+    message_text: str,
+    name: str,
+) -> int:
+    async with transaction(factory) as uow:
+        contact = Contact(
+            account_id=account_id,
+            telegram_user_id=chat_id,
+            display_name=name,
+            updated_at=sent_at,
+        )
+        uow.session.add(contact)
+        await uow.session.flush()
+        conversation = Conversation(
+            account_id=account_id, business_chat_id=chat_id, contact_id=contact.id
+        )
+        uow.session.add(conversation)
+        await uow.session.flush()
+        uow.session.add(
+            Message(
+                account_id=account_id,
+                conversation_id=conversation.id,
+                telegram_message_id=1,
+                direction="contact",
+                sent_at=sent_at,
+                content_type="text",
+                text=message_text,
+                search_key=message_text,
+                content_hash="synthetic-hash",
+            )
+        )
+        return conversation.id
+
+
+async def test_message_content_is_purged_after_ninety_days_and_the_gap_recorded(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    """§10.4: the retention period is a hard ceiling, summary or not; the
+    conversation remembers that content expired unsummarised."""
+    account_id = await owner(factory, clock)
+    old = await _seed_message(
+        factory,
+        account_id,
+        chat_id=5001,
+        sent_at=NOW - timedelta(days=91),
+        message_text="synthetic old",
+        name="Old Synthetic",
+    )
+    fresh = await _seed_message(
+        factory,
+        account_id,
+        chat_id=5002,
+        sent_at=NOW - timedelta(days=10),
+        message_text="synthetic fresh",
+        name="Fresh Synthetic",
+    )
+
+    report = await sweep_all(factory, clock)
+
+    assert report.message_contents == 1
+    assert report.contact_names == 1
+    async with factory() as session:
+        purged = (
+            await session.execute(select(Message).where(Message.conversation_id == old))
+        ).scalar_one()
+        kept = (
+            await session.execute(select(Message).where(Message.conversation_id == fresh))
+        ).scalar_one()
+        old_conv = await session.get(Conversation, old)
+        fresh_conv = await session.get(Conversation, fresh)
+        names = (await session.execute(select(Contact.display_name))).scalars().all()
+    assert purged.text is None
+    assert purged.search_key is None
+    assert purged.content_hash is None
+    assert purged.purged_at == NOW
+    assert purged.deleted_at is None  # expired, not deleted: the tombstone says which
+    assert kept.text == "synthetic fresh"
+    assert old_conv is not None
+    assert old_conv.summary_gap_before == NOW - timedelta(days=91)
+    assert fresh_conv is not None
+    assert fresh_conv.summary_gap_before is None
+    assert set(names) == {None, "Fresh Synthetic"}

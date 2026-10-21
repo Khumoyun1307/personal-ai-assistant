@@ -68,8 +68,14 @@ class InboundUpdate(Base):
         BigInteger, ForeignKey("app.accounts.id", ondelete="SET NULL"), nullable=True
     )
     #: Set once the update becomes a stored message, so deleting that message
-    #: can clear this payload too (§6.5 step 6).
-    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: can clear this payload too (§6.5 step 6). The FK (revision 0005) is
+    #: SET NULL: purging a message must not purge the audit of its arrival.
+    message_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("app.messages.id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
+        index=True,
+    )
     #: `none_as_null`: clearing the payload must store SQL NULL, not a JSON
     #: `null` value, so `IS NULL` checks (retention, audits) see it as empty.
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)

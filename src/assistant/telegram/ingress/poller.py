@@ -16,8 +16,9 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from assistant.conversations.coverage import record_outage
 from assistant.core.clock import Clock
-from assistant.db.models import KEY_BOT_ID, KEY_POLLER_HEARTBEAT
+from assistant.db.models import KEY_BOT_ID, KEY_LAST_POLL_OK, KEY_POLLER_HEARTBEAT
 from assistant.observability.logging import get_logger
 from assistant.telegram.ingress.ports import (
     BotIdentity,
@@ -87,6 +88,7 @@ class Poller:
         self._limit = limit
         self.state = PollerState()
         self._bot_id: int | None = None
+        self._last_poll_ok_before: datetime | None = None
 
     @property
     def bot_id(self) -> int | None:
@@ -118,6 +120,13 @@ class Poller:
         # Never drop_pending_updates=True: it discards up to 24 h of business
         # messages, permanently (TF §3.1).
         await self._source.delete_webhook()
+        # Remember when the previous run last polled successfully, so the first
+        # successful poll of this run can record the outage in between (§6.6).
+        async with self._session_factory() as session:
+            previous = await read_state(session, KEY_LAST_POLL_OK)
+        self._last_poll_ok_before = (
+            datetime.fromisoformat(previous["at"]) if previous and "at" in previous else None
+        )
         # A poller that passed its startup checks is alive. Without this, the
         # watchdog reads the previous run's heartbeat while the first long poll
         # (up to `timeout` seconds) is open, and reports a restart as a stall.
@@ -162,6 +171,7 @@ class Poller:
 
         if not updates:
             await self._heartbeat()
+            await self._mark_poll_ok()
             return 0
 
         highest = max(update["update_id"] for update in updates if "update_id" in update)
@@ -181,11 +191,30 @@ class Poller:
         self.state.offset = highest + 1
         self.state.last_update_at = self._clock.now()
         self.state.updates_written += written
+        await self._mark_poll_ok()
 
         logger.info(
             "poller_batch", received=len(updates), written=written, offset=self.state.offset
         )
         return written
+
+    async def _mark_poll_ok(self) -> None:
+        """Record a completed poll; on the first one after startup, record the
+        outage since the previous run's last completed poll (§6.6)."""
+        now = self._clock.now()
+        async with self._session_factory() as session, session.begin():
+            if self._last_poll_ok_before is not None:
+                written = await record_outage(
+                    session, last_ok=self._last_poll_ok_before, resumed=now, clock=self._clock
+                )
+                if written:
+                    logger.warning(
+                        "poller_outage_recorded",
+                        since=self._last_poll_ok_before.isoformat(),
+                        gaps=written,
+                    )
+                self._last_poll_ok_before = None
+            await write_state(session, KEY_LAST_POLL_OK, {"at": now.isoformat()})
 
     async def _heartbeat(self) -> None:
         async with self._session_factory() as session, session.begin():

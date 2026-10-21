@@ -347,3 +347,21 @@ async def inbox_backlog(session_factory: async_sessionmaker[AsyncSession]) -> di
             select(InboundUpdate.status, func.count()).group_by(InboundUpdate.status)
         )
         return dict(result.all())
+
+
+async def inbox_backlog_for(session: AsyncSession, account_id: int) -> dict[str, int]:
+    """Counts per status for one account's rows plus the unrouted pending ones
+    (a pending row has no account yet, and may be this owner's)."""
+    from sqlalchemy import func, or_
+
+    result = await session.execute(
+        select(InboundUpdate.status, func.count())
+        .where(
+            or_(
+                InboundUpdate.account_id == account_id,
+                (InboundUpdate.account_id.is_(None)) & (InboundUpdate.status == "pending"),
+            )
+        )
+        .group_by(InboundUpdate.status)
+    )
+    return {str(status): int(count) for status, count in result.all()}
