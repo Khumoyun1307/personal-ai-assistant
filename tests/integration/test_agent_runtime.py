@@ -269,7 +269,7 @@ async def test_a_tool_call_round_trip_appends_output_then_all_results(
     assert isinstance(tail[1], ToolResultItem)
     assert tail[1].call_id == "c1"
     assert '"status": "ok"' in tail[1].output
-    assert '"business_connection": "none"' in tail[1].output
+    assert '"connection": {"present": false' in tail[1].output  # S02.3: the StatusReport
     [step] = await rows(factory, AgentRunStep)
     assert (step.tool_name, step.status, step.seq) == ("get_status", "ok", 1)
     [run] = await rows(factory, AgentRun)

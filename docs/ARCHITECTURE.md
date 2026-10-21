@@ -153,12 +153,13 @@ src/assistant/
     payload.py             #   small readers for stored aiogram payloads (from_user/from, dates)
     business.py            #   BusinessPipeline: gate → normalize → store; dead-letter hook — S02.2
     connections.py         #   business connection registry adapter (getBusinessConnection)
-    control/               #   aiogram Router: commands, callbacks, keyboards, renderers
+    control/               #   commands, callbacks, renderers; deeplinks.py (/start bizChat<id>) — S02.3
     gateway.py             #   OutboundGateway: the ONLY place that sends to Telegram
     errors.py              #   Telegram error classification
   accounts/                # DOMAIN: accounts, owner allowlist, consents, settings
   conversations/           # DOMAIN: contacts, conversations, messages, coverage, reply window
                            #   models.py, events.py, service.py (7-step transaction), window.py, coverage.py — S02.2
+                           #   visibility.py (the bizChat conversation panel) — S02.3
   policy/                  # DOMAIN: policy engine, rules, decisions (pure)
   actions/                 # DOMAIN: action lifecycle, approvals, execution service, audit log
   memory/                  # DOMAIN: memory items, summaries, search normalization, retrieval
@@ -546,7 +547,7 @@ There is **no** tool that sends a message directly. Owner-dictated sends always 
 
 | Tool | Class | Purpose | Release |
 |---|---|---|---|
-| `get_status` | read | Connection, rights tier, coverage, autonomy state, budget. **Implemented S01.4** (`agent/tools/status.py`, flag `tool.get_status`) | R0 |
+| `get_status` | read | Connection, rights tier, coverage, autonomy state, budget. **Implemented S01.4** (`agent/tools/status.py`, flag `tool.get_status`); **extended S02.3**: returns the same `observability/status.py::StatusReport` that `/status` renders (content-free: counts, states, times) | R0 |
 | `list_conversations` | read | Filter by activity window, mode, attention, contact name | R1 |
 | `get_conversation` | read | Recent messages + summary for one conversation (paged) | R1 |
 | `search_messages` | read | Multilingual search with filters (contact, date range) | R1 |
@@ -1080,7 +1081,7 @@ CI (GitHub Actions, once a remote exists): ruff, mypy, import-linter, pip-audit,
 ## 17. Observability and operations
 
 - **Logs:** JSON (structlog), content-free, with `account_id`, `conversation_id`, `update_id`, `job`, `action_id`, `run_id`, `error_class`.
-- **Status:** `/status` (owner) aggregates from the DB: connection/rights tier, poller heartbeat age, inbox backlog, failed updates, pending/uncertain actions, queued jobs, coverage gaps, autonomy state, LLM spend this month.
+- **Status:** `/status` (owner) aggregates from the DB: connection/rights tier, poller heartbeat age, inbox backlog, failed updates, pending/uncertain actions, queued jobs, coverage gaps, autonomy state, LLM spend this month. **As built (S02.3):** one read model, `observability/status.py::build_status` → `StatusReport`, rendered by the `/status` handler and returned as-is by the `get_status` tool, so the two never disagree; it reports connection state/tier/rights/connected-since, chats observed by mode and the earliest coverage start, unresolved gaps (counts and the latest range), per-chat autonomy pauses, both consents, inbox pending/failed, poller heartbeat age and month-to-date spend, plus the coverage caveat (§6.6). `/start bizChat<id>` ("Manage Bot", TF §12 LV-10) shows `conversations/visibility.py::conversation_panel` for an onboarded owner: contact, mode, first seen, coverage start, counts by direction, deleted/expired, last contact time, approximate reply-window state, availability and gap warnings; unknown, foreign and malformed ids get one identical refusal, and a malformed id never reaches the database (`control/deeplinks.py`).
 - **Owner alerts** (via the bot): ingestion stall, dead-lettered updates, delivery uncertain, connection disabled/rights changed, budget thresholds, backup stale. These are class `system` alerts: never suppressed by quiet hours, batching or caps.
 - **External heartbeat:** the app pings a dead-man's-switch URL every 5 min only while the poller and worker are healthy; the monitor alerts the owner (email/push) if pings stop — covers the case where the app cannot message the owner.
 - **Runbooks** (`deploy/runbooks/`): provision server, deploy, restore from backup (§15.6), rotate bot token/API key, respond to delivery-uncertain, handle Telegram outage, handle breach.

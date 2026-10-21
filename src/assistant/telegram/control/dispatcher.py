@@ -18,12 +18,13 @@ The handlers are plain functions; this module decides which one runs.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import connections, service
 from assistant.accounts.models import Account
-from assistant.conversations import coverage
+from assistant.conversations import visibility
 from assistant.core.clock import Clock
 from assistant.core.jobs import (
     CONNECTION_NOTIFY_TASK,
@@ -31,9 +32,10 @@ from assistant.core.jobs import (
     JobScheduler,
     owner_control_lock,
 )
-from assistant.inbox.processor import inbox_backlog_for
+from assistant.inbox.connection_alerts import VISIBILITY
 from assistant.observability.logging import get_logger
-from assistant.telegram.control import handlers
+from assistant.observability.status import build_status
+from assistant.telegram.control import deeplinks, handlers
 from assistant.telegram.control.handlers import HandlerResult, IncomingMessage
 from assistant.telegram.gateway import ControlChat, OutboundGateway
 
@@ -61,12 +63,14 @@ class ControlDispatcher:
         scheduler: JobScheduler | None = None,
         *,
         policy_url: str | None = None,
+        monthly_budget_usd: Decimal | None = None,
     ) -> None:
         self._gateway = gateway
         self._clock = clock
         # None only in tests that exercise routing without a job queue.
         self._scheduler = scheduler
         self._policy_url = policy_url
+        self._budget = monthly_budget_usd
 
     async def dispatch(self, session: AsyncSession, message: IncomingMessage) -> DispatchOutcome:
         command, argument = handlers.parse_command(message.text)
@@ -74,6 +78,15 @@ class ControlDispatcher:
         # /start is special: it is the only entry point that may create an
         # account, so it runs before any account lookup.
         if command == "start":
+            if deeplinks.is_deep_link(argument):
+                # "Manage Bot" (TF §12 LV-10): a panel for an onboarded owner;
+                # for anyone else it is just /start.
+                account = await self._load_account(session, message)
+                if account is not None and account.status == "active":
+                    return DispatchOutcome(
+                        await self._conversation_panel(session, account, message, argument),
+                        account.id,
+                    )
             result = await handlers.handle_start(session, self._gateway, self._clock, message)
             return DispatchOutcome(result)
 
@@ -171,6 +184,20 @@ class ControlDispatcher:
             connection=raw.driver_connection,
         )
 
+    async def _conversation_panel(
+        self, session: AsyncSession, account: Account, message: IncomingMessage, argument: str
+    ) -> HandlerResult:
+        chat_id = deeplinks.parse_biz_chat(argument)
+        panel = None
+        if chat_id is not None:
+            # A malformed parameter never reaches the database.
+            panel = await visibility.conversation_panel(
+                session, account_id=account.id, business_chat_id=chat_id, now=self._clock.now()
+            )
+        if panel is None:
+            logger.info("panel_refused", account_id=account.id, malformed=chat_id is None)
+        return await handlers.handle_conversation_panel(self._gateway, account, message, panel)
+
     async def _load_account(
         self, session: AsyncSession, message: IncomingMessage
     ) -> Account | None:
@@ -212,14 +239,15 @@ class ControlDispatcher:
                     session, self._gateway, account, message, policy_url=self._policy_url
                 )
             case "status":
-                backlog = await inbox_backlog_for(session, account.id)
-                summary = await coverage.summarize(session, account.id)
-                return await handlers.handle_status(
-                    self._gateway,
+                report = await build_status(
+                    session,
                     account,
-                    message,
-                    backlog=backlog,
-                    coverage_caveat=summary.caveat,
+                    self._clock.now(),
+                    monthly_budget_usd=self._budget,
+                    in_flight_rows=1,  # this command's own inbox row
+                )
+                return await handlers.handle_status(
+                    self._gateway, account, message, report, visibility=VISIBILITY
                 )
             case "settings":
                 if argument:

@@ -18,7 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import connections, service
 from assistant.accounts.models import Account
+from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
+from assistant.observability.status import StatusReport
 from assistant.telegram.gateway import ControlChat, OutboundGateway, SendResult
 from assistant.telegram.render import escape
 
@@ -88,7 +90,7 @@ HELP_TEXT = (
     "<b>What I can do</b>\n\n"
     "/start — set up or re-run onboarding\n"
     "/help — this message\n"
-    "/status — what I am doing and whether anything is wrong\n"
+    "/status — what I can see: connection, rights, coverage, gaps, consent\n"
     "/settings — language and timezone\n"
     "/privacy — what I store, who sees it, and how to delete it\n\n"
     "Send me anything else and I will answer it.\n"
@@ -336,43 +338,180 @@ async def handle_revoke(
     return HandlerResult(True, "revoke", result, note="revoked")
 
 
+def local_time(value: datetime | None, timezone: str) -> str:
+    """A timestamp in the owner's timezone, for presentation only (AGENTS §9)."""
+    if value is None:
+        return "—"
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    try:
+        zone = ZoneInfo(timezone)
+    except ZoneInfoNotFoundError, ValueError, KeyError:
+        zone = ZoneInfo("UTC")
+    return value.astimezone(zone).strftime("%Y-%m-%d %H:%M %Z")
+
+
+TIER_TEXT = {
+    "none": "no permissions (disabled or no rights)",
+    "observe_only": "observe only (no reply right)",
+    "can_reply": "can reply",
+    "extended": "can reply, plus rights I do not use",
+}
+
+
+def render_status(report: StatusReport, *, visibility: str) -> str:
+    """The visibility report (FR-ONB-08): what I can see, and what is wrong.
+
+    Every line comes from `StatusReport`, so the `get_status` tool and this
+    command cannot disagree. The coverage caveat is never swallowed
+    (§6 invariant 11).
+    """
+    tz = report.timezone
+    lines = [
+        "<b>Status</b>",
+        "",
+        f"Account: {escape(report.account_status)}",
+        f"Autonomy: {'paused' if report.autonomy.paused else 'active'}",
+        f"Timezone: {escape(tz)}",
+        "",
+        "<b>Connection</b>",
+    ]
+    conn = report.connection
+    if not conn.present:
+        lines.append("  Not connected. Add me under Settings → Chat Automation.")
+    else:
+        tier = TIER_TEXT.get(conn.tier or "", conn.tier or "unknown")
+        lines += [
+            f"  State: {escape(conn.status or 'unknown')}",
+            f"  Rights: {escape(tier)}",
+            f"  Connected since: {local_time(conn.connected_at, tz)}",
+        ]
+    cov = report.coverage
+    lines += ["", "<b>Coverage</b>"]
+    if cov.conversations == 0:
+        lines.append("  No managed chats observed yet.")
+    else:
+        modes = ", ".join(f"{count} {mode}" for mode, count in sorted(cov.by_mode.items()))
+        lines += [
+            f"  Chats observed: {cov.conversations} ({escape(modes)})",
+            f"  Observing since: {local_time(cov.coverage_started_at, tz)}",
+        ]
+    lines.append(f"  {escape(visibility)}")
+    if cov.latest_gap is not None:
+        gap = cov.latest_gap
+        lines.append(
+            f"  Latest gap ({escape(gap.certainty)}): {local_time(gap.at_risk_from, tz)} → "
+            f"{local_time(gap.at_risk_to, tz)}"
+        )
+    consent = report.consent
+    lines += [
+        "",
+        "<b>AI consent</b>",
+        f"  This chat: {'granted' if consent.control_chat else 'not granted'}",
+        f"  Included chats: {'granted' if consent.managed_chats else 'not granted'}",
+    ]
+    if report.autonomy.conversations_paused:
+        detail = ", ".join(
+            f"{count} {reason}"
+            for reason, count in sorted(report.autonomy.conversations_paused.items())
+        )
+        lines += ["", "<b>Autonomy per chat</b>", f"  Paused: {escape(detail)}"]
+    inbox = report.inbox
+    lines += ["", "<b>Inbox</b>"]
+    if inbox.pending or inbox.failed:
+        lines.append(f"  pending: {inbox.pending}, failed: {inbox.failed}")
+    else:
+        lines.append("  nothing pending")
+    if inbox.poller_heartbeat_age_seconds is not None:
+        lines.append(f"  Last poll: {inbox.poller_heartbeat_age_seconds} s ago")
+    lines += [
+        "",
+        "<b>AI spend this month</b>",
+        f"  ${escape(report.budget.month_to_date_usd)}"
+        + (
+            f" of ${escape(report.budget.monthly_limit_usd)}"
+            if report.budget.monthly_limit_usd
+            else ""
+        ),
+    ]
+    if inbox.failed:
+        lines += ["", f"⚠️ {inbox.failed} update(s) could not be processed."]
+    if report.coverage_caveat:
+        lines += ["", escape(report.coverage_caveat)]
+    return "\n".join(lines)
+
+
 async def handle_status(
     gateway: OutboundGateway,
     account: Account,
     message: IncomingMessage,
+    report: StatusReport,
     *,
-    backlog: dict[str, int] | None = None,
-    coverage_caveat: str | None = None,
+    visibility: str,
 ) -> HandlerResult:
-    """`/status` — must work even when the model is unreachable.
-
-    `coverage_caveat` is the honest-coverage line (FR-OBS-05): shown whenever
-    a chat is paused by an ingest error or a gap is unresolved, never
-    swallowed (§6 invariant 11). S02.3 extends this into the full report.
-    """
-    counts = backlog or {}
-    lines = [
-        "<b>Status</b>",
-        "",
-        f"Account: {account.status}",
-        f"Autonomy: {'paused' if account.autonomy_paused else 'active'}",
-        f"Timezone: {account.timezone}",
-        "",
-        "<b>Inbox</b>",
-    ]
-    if counts:
-        lines += [f"  {status}: {count}" for status, count in sorted(counts.items())]
-    else:
-        lines.append("  nothing pending")
-    failed = counts.get("failed", 0)
-    if failed:
-        lines += ["", f"⚠️ {failed} update(s) could not be processed."]
-    if coverage_caveat:
-        lines += ["", escape(coverage_caveat)]
+    """`/status` — must work even when the model is unreachable."""
     result = await gateway.send_text(
-        ControlChat(account_id=account.id, chat_id=message.chat_id), "\n".join(lines)
+        ControlChat(account_id=account.id, chat_id=message.chat_id),
+        render_status(report, visibility=visibility),
     )
     return HandlerResult(True, "status", result)
+
+
+PANEL_UNKNOWN = "I don't have that chat. Only chats included under Chat Automation appear here."
+
+
+def render_panel(panel: ConversationPanel, *, timezone: str) -> str:
+    name = panel.display_name or "(no name)"
+    handle = f" @{escape(panel.username)}" if panel.username else ""
+    counts = ", ".join(
+        f"{count} {direction.replace('_', ' ')}"
+        for direction, count in sorted(panel.counts_by_direction.items())
+    )
+    window = (
+        f"open until about {local_time(panel.window_closes_at, timezone)}"
+        if panel.window_open
+        else "closed (no contact message in the last 24 h)"
+    )
+    lines = [
+        f"<b>{escape(name)}</b>{handle}",
+        "",
+        f"Mode: {escape(panel.mode)}",
+        f"First seen: {local_time(panel.first_seen_at, timezone)}",
+        f"Observing since: {local_time(panel.coverage_started_at, timezone)}",
+        f"Messages: {panel.total}" + (f" ({escape(counts)})" if counts else ""),
+    ]
+    if panel.deleted or panel.expired:
+        lines.append(f"Deleted: {panel.deleted}, expired: {panel.expired}")
+    lines += [
+        f"Last from contact: {local_time(panel.last_contact_msg_at, timezone)}",
+        f"Reply window: {window} (approximate)",
+    ]
+    if panel.availability != "active":
+        lines.append("⚠️ The chat may be paused or excluded; my last action there failed.")
+    if panel.autonomy_paused_reason == "ingest_error":
+        lines.append("⚠️ A message here could not be processed; automation is paused.")
+    if panel.unresolved_gaps:
+        lines.append(f"⚠️ {panel.unresolved_gaps} coverage gap(s): some messages may be missing.")
+    return "\n".join(lines)
+
+
+async def handle_conversation_panel(
+    gateway: OutboundGateway,
+    account: Account,
+    message: IncomingMessage,
+    panel: ConversationPanel | None,
+) -> HandlerResult:
+    """`/start bizChat<id>` from "Manage Bot" (TF §12 LV-10).
+
+    Unknown, foreign and malformed ids all get the same reply, so the panel
+    reveals nothing about chats that are not this owner's (AGENTS §6.7).
+    """
+    target = ControlChat(account_id=account.id, chat_id=message.chat_id)
+    if panel is None:
+        result = await gateway.send_text(target, PANEL_UNKNOWN)
+        return HandlerResult(True, "panel", result, note="unknown_chat")
+    result = await gateway.send_text(target, render_panel(panel, timezone=account.timezone))
+    return HandlerResult(True, "panel", result, note="shown")
 
 
 async def handle_settings(
