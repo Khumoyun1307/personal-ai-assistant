@@ -21,6 +21,10 @@ KEY_BOT_ID = "bot_id"
 KEY_POLLER_HEARTBEAT = "poller_heartbeat"
 KEY_RESTORE_PENDING = "restore_pending"
 KEY_NORMALIZER_VERSION = "normalizer_version"
+#: When the poller last completed a `getUpdates` and committed what it got.
+#: Unlike the heartbeat it is never written at startup, so the interval
+#: between two values is a real outage (ARCHITECTURE §6.6).
+KEY_LAST_POLL_OK = "last_poll_ok"
 
 
 class SystemState(Base):

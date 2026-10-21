@@ -149,13 +149,16 @@ src/assistant/
   telegram/                # ADAPTER: everything aiogram-specific lives here
     ingress/               #   poller, inbox writer, (webhook later)
     routing.py             #   update classification → domain commands
-    normalize.py           #   Telegram Message → domain InboundEvent
+    normalize.py           #   business update → domain event (classify, normalize) — S02.2
+    payload.py             #   small readers for stored aiogram payloads (from_user/from, dates)
+    business.py            #   BusinessPipeline: gate → normalize → store; dead-letter hook — S02.2
     connections.py         #   business connection registry adapter (getBusinessConnection)
     control/               #   aiogram Router: commands, callbacks, keyboards, renderers
     gateway.py             #   OutboundGateway: the ONLY place that sends to Telegram
     errors.py              #   Telegram error classification
   accounts/                # DOMAIN: accounts, owner allowlist, consents, settings
   conversations/           # DOMAIN: contacts, conversations, messages, coverage, reply window
+                           #   models.py, events.py, service.py (7-step transaction), window.py, coverage.py — S02.2
   policy/                  # DOMAIN: policy engine, rules, decisions (pure)
   actions/                 # DOMAIN: action lifecycle, approvals, execution service, audit log
   memory/                  # DOMAIN: memory items, summaries, search normalization, retrieval
@@ -265,7 +268,7 @@ sequenceDiagram
 - **Key:** `business_connections.account_id` (the owner's Telegram user id resolves the account). The Telegram `connection_id` is a **mutable attribute** with history (`business_connection_events`).
 - **Owner check:** a connection is linked only if `BusinessConnection.user.id` is in the allowlist. For an allowlisted user without an `accounts` row, one is created (`status='onboarding'`) and the connection row gets `status='pending_owner'`. Business messages on a `pending_owner` connection are marked `ignored` with `payload` nulled (FR-ONB-03, J1). For a non-allowlisted user, no `accounts` or `business_connections` row is created: the `inbound_updates` row is marked `rejected` with `payload` set to NULL during processing. The connection id is cached in the non-tenant table `foreign_connections` so later updates on it are rejected without calling `getBusinessConnection` again.
 - **Bootstrap:** any business update with an unknown `connection_id` triggers `getBusinessConnection` (TF §2: the initial connection update can be missing). Connection updates and messages are processed idempotently in any order. The call is made before the processing transaction; a failure is transient (the row stays pending).
-- **Rights snapshot:** stored per connection version; missing `rights` or `is_enabled=false` ⇒ *no permissions*. Capability tier derived: `observe_only` (no `can_reply`), `can_reply`, `extended` (+ mark-read/delete-own).
+- **Rights snapshot:** stored per connection version; missing `rights` or `is_enabled=false` ⇒ *no permissions*. Capability tier derived: `none` (disabled), `observe_only` (no `can_reply`), `can_reply`, `extended` (+ `can_read_messages`, `can_delete_sent_messages` or `can_delete_all_messages`). Only rights documented in the official Bot API count (aiogram's undocumented `can_delete_outgoing_messages` grants nothing — TF §13 PQ-10). Granted rights the product never uses (profile, gifts, Stars, stories, `can_delete_all_messages`) are named in the owner notice so they can be turned off (FR-ONB-04).
 - **Lifecycle:**
 
 ```mermaid
@@ -281,6 +284,7 @@ stateDiagram-v2
 ```
 
 - On `disabled`: stop all business processing for the account, cancel pending sends, notify the owner. On rights change: re-evaluate pending actions; notify the owner (FR-ONB-07).
+- **As built (S02.1):** domain logic in `accounts/connections.py` (`apply_snapshot`, `activate_pending`, `resolve`); the adapter `telegram/connections.py` parses payloads, calls `getBusinessConnection` and provides the inbox **preparer** (bootstrap of an unknown id, run by the inbox processor *before* the processing transaction; a network failure raises `core.errors.TransientError`, so the row stays pending without an attempt) and the `CONNECTION`/`BUSINESS` route handlers. A handler may return a `Disposition` (`ignored`/`rejected`) that overrides the route's status and clears the payload in the same transaction. Each applied change writes a `business_connection_events` row (`change`: connected, activated, reconnected, rights_changed, disabled, pending_owner, updated, stale_event; `source`: update, bootstrap, onboarding); an identical state writes nothing. An event about a connection id older than the current one (`date` earlier) is recorded as `stale_event` and not applied. Owner notices are the `connections.notify_owner(event_id)` job, deferred in the same transaction and deduplicated per event (§17). A business update on an old (rotated) id resolves to the owner through the event history. Since S02.2 the `BUSINESS` handler is `telegram/business.py` (§6.5), which calls `ConnectionRegistry.gate_business` first: the S02.1 verdicts are unchanged, and only the owner's live traffic goes on to be stored.
 - `BUSINESS_CONNECTION_INVALID` / "business connection not found" on a send: mark the connection `stale`, fail the action as `connection_invalid` (the card offers copy-ready text), block business sends for the account, and wait for the new id from a `business_connection` update or from any business update carrying an unknown id (bootstrap path). Notify the owner if no new id arrives within 30 min. `getBusinessConnection` is called only for ids not yet cached (its documented purpose; it cannot reveal a rotated id). Never retry blindly.
 
 ### 6.5 Business message normalization and classification
@@ -306,11 +310,14 @@ Then, in one transaction:
 
 If the conversation mode is **Ignore**, steps 2–7 store only metadata needed for coverage (no text, no media metadata), and the update's `inbound_updates.payload` is cleared (§6.1).
 
+- **As built (S02.2):** classification and normalization are the pure functions `telegram/normalize.py::classify/normalize` (raw payload → `conversations/events.py` dataclasses); the ignore rules from TF §12 LV-06/LV-18 run first: not a private chat, `chat.id == bot.id`, `chat.id == owner` (Saved Messages), the service account 777000, or a bot counterpart create no rows at all and clear the payload. A `sender_business_bot` other than this bot classifies as `owner_automated` (owner-authored, not presence). The seven steps are `conversations/service.py::record_message`/`record_deletion`, run inside the inbox row's transaction after locking the conversation row (`INSERT … ON CONFLICT DO NOTHING` then `SELECT … FOR UPDATE`). `telegram/business.py::BusinessPipeline.handle` is the `BUSINESS` route handler: it reuses the S02.1 gate (`ConnectionRegistry.gate_business`), normalizes, stores, links `inbound_updates.message_id`, and in Ignore mode clears the payload itself. A no-op edit (same content hash — over content only, never `edit_date`) touches nothing; an edit of a message never seen is stored as `observed_via='edit'` with no state change; an edit after a deletion or a retention purge never restores content. A deletion purges the content columns, keeps the row as a tombstone (`deleted_at`), inserts tombstones for ids never stored (so a late requeue cannot store them), and clears every linked or payload-matching `inbound_updates` row. No jobs are deferred yet: nothing in M02 processes managed content. The dead-letter path is `BusinessPipeline.on_dead_letter` (the processor's per-route `dead_letter_hooks`, run in their own savepoint): it resolves the account from the connection id (never a foreign one), sets `autonomy_paused_reason='ingest_error'`, writes one `definite` `coverage_gaps` row per failed update row (idempotent on `inbound_update_id`), and a later successful processing of that row (`inbox requeue`) resolves the gap and lifts the pause. Media is stored as structural facts only (`kind`, `file_unique_id`, size, mime, duration, dimensions): never `file_id`, a file name, or a shared contact's phone number. Captions live in `messages.text`.
+
 ### 6.6 Conversation state, reply window, coverage
 
-- **Reply window:** `window_open = now < last_contact_msg_at + 24h − safety_margin` (default margin 5 min), where `last_contact_msg_at` is the Telegram `date` of the newest contact `business_message` (§6.5 step 3). The local value is an approximation (some incoming events never reach the bot), so `BUSINESS_PEER_USAGE_MISSING` is handled as an expected outcome (TF §4).
+- **Reply window:** `window_open = now < last_contact_msg_at + 24h − safety_margin` (default margin 5 min), where `last_contact_msg_at` is the Telegram `date` of the newest contact `business_message` (§6.5 step 3). The local value is an approximation (some incoming events never reach the bot), so a closed-window error is handled as an expected outcome: observed as `PEER_ID_INVALID` on a send or typing action and as `BUSINESS_PEER_INVALID` on an edit (TF §12 LV-08, 2026-10-21; the MTProto `BUSINESS_PEER_USAGE_MISSING` was never seen). Because the edit error is the same as for a paused or excluded chat, the window check runs before every edit as well as every send, and an edit failure is reported as "paused, excluded or window closed". Until the deferred half of LV-08 is run, only contact messages are assumed to reopen the window (the conservative `can_reply` reading).
 - **Telegram availability state** per conversation: `active` → `possibly_paused` (after `BUSINESS_PEER_INVALID` on a previously working chat) → back to `active` on the next delivered message.
 - **Coverage gaps:** the poller heartbeat is written only after a successful `getUpdates` whose batch was committed. When the interval between the last successful poll T0 and the next one T1 exceeds the watchdog threshold, a `coverage_gaps` row is written. If T1 − T0 > 24 h − 10 min, it gets `certainty = possible` with the at-risk range [T0, T1 − 24 h + 10 min], since only messages dated in that range can have expired. Otherwise it gets `certainty = delayed`: processing was late, and nothing is missing. A dead-lettered business update writes a `definite` gap for its conversation (§6.2); a backup restore writes a `possible` gap (§15.6). Summaries report only `possible`/`definite` gaps as possibly missing messages (FR-SUM-06).
+- **As built (S02.2):** the window maths live in `conversations/window.py` (`window_open`, 24 h minus a 5-minute margin, anchored on `last_contact_msg_at` only). Because the M01 poller writes its heartbeat at startup (a restart must not look like a stall), the outage logic uses a second key, `system_state.last_poll_ok`, written only after a completed `getUpdates` (empty or committed): the first completed poll of a run compares it with the previous run's value and `conversations/coverage.py::record_outage` writes one `outage` gap per active account — `possible` with the range above when the silence exceeded 24 h − 10 min, `delayed` otherwise (nothing under 3 minutes). `coverage.summarize` produces the one-line caveat that `/status` shows while a chat is paused by an ingest error or a `possible`/`definite` gap is unresolved.
 
 ### 6.7 Control-chat interface
 
@@ -352,15 +359,15 @@ class OutboundGateway(Protocol):
 |---|---|---|---|
 | `ok` | — | Delivered; returns `Message` (may have `message_id == 0` if Telegram scheduled it → "pending identity"); edit/undo disabled while identity is pending | — |
 | `rate_limited` | 429 | Not delivered | Yes, after `retry_after` |
-| `window_closed` | `BUSINESS_PEER_USAGE_MISSING` | Not delivered | No |
-| `peer_unavailable` | `BUSINESS_PEER_INVALID` | No right / chat excluded or paused | No; mark conversation `possibly_paused` |
+| `window_closed` | `PEER_ID_INVALID` on send/typing (TF §12 LV-08); `BUSINESS_PEER_USAGE_MISSING` (MTProto docs, never observed) | Not delivered; the 24 h window has expired | No |
+| `peer_unavailable` | `BUSINESS_PEER_INVALID` | No right / chat excluded or paused (LV-04, LV-12) — **or an edit after the window closed (LV-08)**, which Telegram reports the same way | No; mark conversation `possibly_paused` (an edit failure says "paused, excluded or window closed") |
 | `connection_invalid` | `BUSINESS_CONNECTION_INVALID`, "business connection not found" | Rotated/disabled connection | No; mark connection stale and wait for the new id (§6.4) |
 | `chat_unreachable` | 400 `chat not found` | The chat does not exist yet: the owner has never opened the bot (TF §12 LV-09) | No; **not** a block — never triggers the §6.3 automatic pause. Surface as "open the bot and press Start" |
 | `forbidden` | 403, blocked | Not delivered | No |
 | `bad_request` | other 400 | Not delivered | No |
 | `ambiguous` | timeout/connection reset after request sent, 5xx | **Unknown** | **No** → `delivery_uncertain` |
 
-- Classification keys on the error description code (e.g., `BUSINESS_PEER_USAGE_MISSING`, `BOT_ACCESS_FORBIDDEN`), not on the HTTP status: business errors may surface as 400 "Bad Request: <CODE>" (TF §4).
+- Classification keys on the error description code (e.g., `PEER_ID_INVALID`, `BUSINESS_PEER_INVALID`, `BOT_ACCESS_FORBIDDEN`), not on the HTTP status: business errors surface as 400 "Bad Request: <CODE>" (TF §4, verified in LV-01/04/08).
 - A `forbidden` result on a `ControlChat` target triggers the same automatic pause as a block (§6.3). A `chat_unreachable` result does not: the owner has simply not opened the bot yet (TF §12 LV-09), and onboarding must say so rather than reporting a delivery failure (§6 invariant 11).
 - The gateway never logs message text or request URLs (the Bot API URL contains the token).
 
@@ -746,7 +753,7 @@ The approval token is bound to (action_id, version). Every edit or revision incr
 - **Every tenant-owned table has `account_id` (FK, NOT NULL, indexed)**; repositories require an account context.
 - Timestamps `timestamptz` in UTC; owner timezone applied only at presentation/scheduling.
 - Enums as `text` with CHECK constraints (easier migrations).
-- Content-bearing columns (the complete set that retention, deletion and any future field-level encryption must cover): `messages.text`, `messages.media` caption, `messages.search_key`/`search_tsv`, `actions.text`, `memory_items.content`, `conversation_summaries.summary`, `tasks.title`/`details`, `control_turns.text`, `delegations.spec` (knowledge excerpts), `automations.spec` (owner-authored conditions and reminder text, often naming contacts), `contacts.display_name`/`username`, `inbound_updates.payload`. A new content-bearing column must be added to this list, to §10.4 and to the deletion cascade.
+- Content-bearing columns (the complete set that retention, deletion and any future field-level encryption must cover): `messages.text` (a media caption is stored here too, so one column holds every message text — S02.2), `messages.media` (structural facts only, but tied to the message and purged with it), `messages.search_key`/`search_tsv`, `actions.text`, `memory_items.content`, `conversation_summaries.summary`, `tasks.title`/`details`, `control_turns.text`, `delegations.spec` (knowledge excerpts), `automations.spec` (owner-authored conditions and reminder text, often naming contacts), `contacts.display_name`/`username`, `inbound_updates.payload`. A new content-bearing column must be added to this list, to §10.4 and to the deletion cascade.
 
 ### 10.2 Entity-relationship overview
 
@@ -786,13 +793,13 @@ erDiagram
 | `accounts` | `id`, `telegram_user_id` UNIQUE, `status` (onboarding/active/blocked/deleted), `control_chat_id`, `timezone`, `locale_pref`, `settings` jsonb (validated), `autonomy_paused` bool, `created_at` | Tenant root. Allowlist from config; a row (status `onboarding`) is created on the first /start or the first connection from an allowlisted user. |
 | `consents` | `account_id`, `kind` (`ai_control`, `ai_managed`), `policy_version`, `processors` jsonb, `granted_at`, `revoked_at` | Append-only; current = latest non-revoked. |
 | `business_connections` | `account_id` UNIQUE, `connection_id`, `is_enabled`, `rights` jsonb, `capability_tier`, `user_chat_id`, `status` (pending_owner/active/disabled/stale), `connected_at`, `updated_at` | One row per account (one bot per account). |
-| `business_connection_events` | `account_id`, `connection_id`, `payload_digest`, `rights`, `is_enabled`, `observed_at`, `source` (update/bootstrap) | History for audit and id rotation. |
+| `business_connection_events` | `account_id`, `connection_id`, `payload_digest`, `rights`, `is_enabled`, `change`, `observed_at`, `source` (update/bootstrap/onboarding) | History for audit and id rotation; content-free. |
 | `foreign_connections` | `connection_id` PK, `telegram_user_id`, `first_seen_at`, `last_seen_at` | Non-tenant; connections from non-allowlisted users (metadata only; purged 30 days after `last_seen_at`) |
 | `inbound_updates` | `id`, `bot_id`, `update_id`, UNIQUE(`bot_id`,`update_id`), `kind`, `account_id` NULL, `message_id` NULL (set when the update is processed into a message), `payload` jsonb (cleared at processing for ignored/rejected/Ignore-mode rows and on message deletion; otherwise purged after ≤ 7 d), `status` (pending/processed/ignored/rejected/failed), `attempts`, `error_code`, `received_at`, `processed_at` | Durable inbox. |
 | `contacts` | `account_id`, `telegram_user_id`, UNIQUE(`account_id`,`telegram_user_id`), `display_name`, `username`, `is_bot`, `priority`, `first_seen_at` | Names refreshed from messages. |
 | `conversations` | `account_id`, `kind` (`business`), `business_chat_id`, UNIQUE(`account_id`,`business_chat_id`), `contact_id`, `mode` (ignore/observe/assist), `availability` (active/possibly_paused), `last_contact_msg_at`, `last_owner_msg_at`, `last_assistant_msg_at`, `coverage_started_at`, `autonomy_paused_until`/`autonomy_paused_reason`, `pending_triage_at`, `pending_draft_at`, `summary_gap_before` NULL, `settings` jsonb | Reply window derived from `last_contact_msg_at`. Delegate is not a mode value (§8.2). |
 | `control_turns` | `account_id`, `role` (owner/assistant), `telegram_message_id`, `text`, `created_at`, `run_id`, `contains_managed` (bool), `refs` jsonb | Control-chat history (plain text). `contains_managed` is set when the turn was produced from managed content; `refs` lists the conversation/contact ids the turn drew on (filled from tool calls), used to purge or redact turns on deletion. |
-| `messages` | `account_id`, `conversation_id`, `telegram_message_id` NULL (NULL = pending identity), UNIQUE(`conversation_id`,`telegram_message_id`) (NULLs distinct), `direction` (contact/owner_manual/owner_automated/assistant_sent), `sent_at`, `edited_at`, `deleted_at`, `reply_to_telegram_message_id`, `content_type`, `text`, `media` jsonb (type, size, file_unique_id, caption), `search_key`, `search_tsv` (generated), `script`, `lang_guess`, `content_hash`, `source_update_id`, `action_id` NULL | Content columns purged by retention; tombstones keep ids. Edits overwrite text (no revision history, §6.5). |
+| `messages` | `account_id`, `conversation_id`, `telegram_message_id` NULL (NULL = pending identity), UNIQUE(`conversation_id`,`telegram_message_id`) (NULLs distinct), `direction` (contact/owner_manual/owner_automated/assistant_sent), `sent_at`, `edited_at`, `deleted_at`, `reply_to_telegram_message_id`, `content_type`, `text` (also the caption), `media` jsonb (kind, size, file_unique_id, mime, duration, dimensions — never `file_id`), `search_key`, `search_tsv` (generated; from S03.1), `script`, `lang_guess`, `content_hash`, `source_update_id`, `observed_via` (new/edit/deletion), `purged_at`, `action_id` NULL (from M04) | Content columns purged by retention or deletion; tombstones keep ids (`deleted_at` = gone from the owner's view, `purged_at` = expired). Edits overwrite text (no revision history, §6.5). Built in S02.2 (revision 0005). |
 | `conversation_summaries` | `account_id`, `conversation_id`, `kind` (rolling/period), `period_start`, `period_end`, `covers_through_message_id`, `summary` jsonb, `prompt_version`, `model`, `created_at` | Long-term memory; rollup is attempted before the retention purge; the purge does not wait for it (§10.4). |
 | `memory_items` | `account_id`, `scope` (owner/contact/conversation/delegation), `contact_id` NULL FK, `conversation_id` NULL FK, `delegation_id` NULL FK (ON DELETE CASCADE; CHECK: exactly the FK matching `scope` is set, none for `owner`), `kind` (instruction/preference/fact/style/shareable), `content`, `source` (owner_stated/agent_inferred), `status` (active/pending_review/archived), `provenance` jsonb (message ids, `run_id`, `tainted`), `sensitivity`, `applies_to_replies` (bool, owner-set, default false), `created_at`, `updated_at` | Inferred items require review before use. Contact-facing loading rules in §7.3. |
 | `tasks` | `account_id`, `conversation_id` NULL, `kind` (owner_commitment/contact_commitment/open_question/follow_up/reminder/decision), `title`, `details`, `due_at`, `snoozed_until` NULL, `status` (open/done/cancelled/expired), `source_message_ids`, `created_by` (owner/agent), `closed_at` | Open loops. Snoozed tasks stay `open` and are hidden from attention lists and reminders until `snoozed_until`. Agent-created tasks are unique on (`conversation_id`, `kind`, first `source_message_id`); a candidate that matches an open task updates it instead of inserting a new one. Agent-created tasks close automatically when triage lists them in `resolved_task_ids` (audited; reported in the digest). |
@@ -825,6 +832,8 @@ erDiagram
 | `automation_occurrences`, `digests` | 1 year (metadata only) | Sweep |
 | `notifications.refs`, `pending_inputs` | 30 days / until expiry | Sweep |
 | `audit_log` | 1 year (no content) | Sweep |
+| `business_connection_events` | 1 year (no content) | Sweep |
+| `foreign_connections` | 30 days after `last_seen_at` (metadata only) | Sweep |
 | `agent_runs`/`llm_calls` | 1 year | Sweep |
 | Backups | 14 daily + 4 weekly | Backup rotation (contains data within retention) |
 
@@ -896,7 +905,9 @@ Job payloads carry **ids only**; handlers reload state and re-check conditions (
 | `digest.build(account_id, period)` | qlock `digest:{acct}:{period}` (dedupe by the `digests` row) | Daily digest |
 | `memory.refresh_summary(conversation_id)` | qlock `sum:{conv}`; debounce | Rolling summary |
 | `memory.extract(conversation_id)` (R2) | qlock `mem:{conv}` | Inferred memory candidates for review |
-| `connections.refresh(account_id)` | qlock `conn:{acct}`; queue `outbound` | `getBusinessConnection` for a connection id not yet cached |
+| `connections.notify_owner(event_id)` | no lock; queue `system`; deferred in the registry transaction; deduplicated per event by `notify_owner` | Connection notice: tier, unused rights, managed-consent question (FR-ONB-04/07, S02.1) |
+
+`getBusinessConnection` for an unknown id is **not** a job: the inbox processor calls it before the processing transaction (§6.2, §6.4), so the update is processed with the connection known. (An earlier draft listed a `connections.refresh` job; S02.1 replaced it.)
 
 Delayed work uses lock-free timer jobs (queueing lock only, e.g., `actions.release_scheduled`); these re-check domain state and defer jobs for immediate execution.
 
@@ -1092,7 +1103,7 @@ CI (GitHub Actions, once a remote exists): ruff, mypy, import-linter, pip-audit,
 | Poison update | 3 deterministic failures (transient errors retried without limit) | Dead-letter; the conversation fails closed; coverage caveat; requeue after a fix; for business updates, record a `definite` coverage gap | Owner alerted daily until resolved |
 | Connection id rotated | `BUSINESS_CONNECTION_INVALID` | Mark stale; wait for the new id; owner notified after 30 min | None unless persistent |
 | Chat paused/excluded | `BUSINESS_PEER_INVALID` | `possibly_paused`; stop automation there | One notice |
-| Window closed | `BUSINESS_PEER_USAGE_MISSING` | Expire action; copy-ready text | Card shows expired |
+| Window closed | `PEER_ID_INVALID` on send (an edit gives `BUSINESS_PEER_INVALID`, TF §12 LV-08); normally caught earlier by the local window check | Expire action; copy-ready text | Card shows expired |
 | Budget exhausted | `llm_calls` sum | Pause background LLM work; ask owner | Notice with options |
 | Clock/timezone change | Settings update | Recompute `next_run_at` for `follow_owner` automations; `fixed` ones unchanged (§12.4) | Confirmation message |
 

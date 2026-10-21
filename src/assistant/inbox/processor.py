@@ -11,7 +11,13 @@ behind it.
 
 **Payload hygiene.** Rows routed to refusal or ignored get `payload = NULL` in
 the same transaction that marks them — we have no basis to keep content from
-someone who is not the owner (§6 invariant 12).
+someone who is not the owner (§6 invariant 12). A handler can reach the same
+verdict later, once it has looked at the database (`Disposition`).
+
+**No network inside the transaction.** A route may have a *preparer* that runs
+before the processing transaction opens — the `getBusinessConnection` bootstrap
+is one (§6.2, §6.4). It does its own short write; a `TransientError` from it
+leaves the row pending without counting an attempt.
 """
 
 from __future__ import annotations
@@ -25,7 +31,14 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.core.clock import Clock
-from assistant.core.routing import Route, RouteDecision, Router
+from assistant.core.errors import TransientError
+from assistant.core.routing import (
+    CLEAR_PAYLOAD_DISPOSITIONS,
+    Disposition,
+    Route,
+    RouteDecision,
+    Router,
+)
 from assistant.inbox.models import InboundUpdate
 from assistant.observability.logging import get_logger
 
@@ -53,20 +66,59 @@ class ProcessResult:
     dead_lettered: int = 0
 
 
-#: A handler for a routed update. Returns nothing; raises to signal failure.
-Handler = Callable[[AsyncSession, InboundUpdate, RouteDecision], Awaitable[None]]
+#: A handler for a routed update. Returns a `Disposition` to override the
+#: route's status (None = as routed); raises to signal failure.
+Handler = Callable[[AsyncSession, InboundUpdate, RouteDecision], Awaitable[Disposition | None]]
+
+#: Runs before the processing transaction, for work that needs the network.
+#: Gets the raw update and the routing decision; writes in its own transaction.
+Preparer = Callable[[dict[str, Any], RouteDecision], Awaitable[None]]
+
+#: Runs in the dead-lettering transaction when a row goes `failed`, so the
+#: domain can record the consequence (a coverage gap, a paused conversation —
+#: §6.2). It gets its own savepoint: a hook bug must not keep a poison row
+#: pending.
+DeadLetterHook = Callable[[AsyncSession, InboundUpdate, RouteDecision], Awaitable[None]]
+
+#: SQLSTATE classes that mean "try again later", not "this row is bad":
+#: 08 connection exception, 40001 serialization failure, 40P01 deadlock,
+#: 57P0x server shutdown / cannot connect now.
+_TRANSIENT_SQLSTATES = frozenset({"40001", "40P01"})
+_TRANSIENT_SQLSTATE_PREFIXES = ("08", "57P")
+
+
+def _is_transient(error: BaseException) -> bool:
+    """Transient = leave the row pending without counting an attempt.
+
+    Only deadlocks, serialization failures and connection loss qualify
+    (ARCHITECTURE §6.2). Every other database error — a unique or NOT NULL
+    violation, a bad cast, a syntax error — is deterministic: it will recur on
+    every retry, so it must burn an attempt and eventually dead-letter, or the
+    row blocks the whole queue behind it.
+    """
+    if isinstance(error, TransientError | OperationalError):
+        return True
+    if isinstance(error, DBAPIError):
+        if error.connection_invalidated:
+            return True
+        sqlstate = getattr(error.orig, "sqlstate", None)
+        if isinstance(sqlstate, str):
+            return sqlstate in _TRANSIENT_SQLSTATES or sqlstate.startswith(
+                _TRANSIENT_SQLSTATE_PREFIXES
+            )
+    return False
 
 
 async def _noop_handler(
     _session: AsyncSession, _row: InboundUpdate, _decision: RouteDecision
-) -> None:
+) -> Disposition | None:
     """Default handler: record the routing and do nothing else.
 
     M01 only needs updates captured and classified. Control-chat handling
     arrives in S01.3 and the business pipeline in M02; until then a correctly
     routed update that does nothing is the right behaviour, not a gap.
     """
-    return
+    return None
 
 
 class InboxProcessor:
@@ -81,6 +133,8 @@ class InboxProcessor:
         bot_id: int,
         router: Router,
         handlers: dict[Route, Handler] | None = None,
+        preparers: dict[Route, Preparer] | None = None,
+        dead_letter_hooks: dict[Route, DeadLetterHook] | None = None,
         batch_size: int = 20,
     ) -> None:
         self._session_factory = session_factory
@@ -91,6 +145,8 @@ class InboxProcessor:
         # adapter that knows what a Telegram update looks like (§5.2).
         self._router = router
         self._handlers = handlers or {}
+        self._preparers = preparers or {}
+        self._dead_letter_hooks = dead_letter_hooks or {}
         self._batch_size = batch_size
 
     async def _claim(self, session: AsyncSession) -> list[InboundUpdate]:
@@ -129,36 +185,72 @@ class InboxProcessor:
                     result.deferred += 1
         return result
 
+    async def _prepare(self, row_id: int) -> None:
+        """Run the route's preparer, if any, outside the processing transaction."""
+        if not self._preparers:
+            return
+        async with self._session_factory() as session:
+            row = await session.get(InboundUpdate, row_id)
+            if row is None or row.status != "pending":
+                return
+            payload = row.payload or {}
+        decision = self._router(payload)
+        preparer = self._preparers.get(decision.route)
+        if preparer is not None:
+            await preparer(payload, decision)
+
     async def _process_one(self, row_id: int) -> str:
+        try:
+            await self._prepare(row_id)
+        except Exception as error:
+            if _is_transient(error):
+                logger.warning(
+                    "inbox_transient_error", update_row_id=row_id, exc_type=type(error).__name__
+                )
+                raise
+            async with self._session_factory() as session, session.begin():
+                row = await session.get(InboundUpdate, row_id, with_for_update=True)
+                if row is None or row.status != "pending":
+                    return "deferred"
+                decision = self._router(row.payload or {})
+                return await self._record_failure(session, row, decision, type(error).__name__)
+
         async with self._session_factory() as session, session.begin():
             row = await session.get(InboundUpdate, row_id, with_for_update=True)
             if row is None or row.status != "pending":
                 return "deferred"
 
             payload = row.payload or {}
+            decision = self._router(payload)
+            handler = self._handlers.get(decision.route, _noop_handler)
             try:
-                decision = self._router(payload)
-                handler = self._handlers.get(decision.route, _noop_handler)
-                await handler(session, row, decision)
-            except (OperationalError, DBAPIError) as error:
-                # Transient by definition: deadlock, serialization failure,
-                # connection loss. Leave pending, do NOT burn an attempt —
-                # otherwise an outage dead-letters the whole backlog.
-                logger.warning(
-                    "inbox_transient_error",
-                    update_row_id=row_id,
-                    exc_type=type(error).__name__,
-                )
-                raise
-            except DeterministicError as error:
-                return await self._record_failure(session, row, type(error).__name__)
+                # A savepoint: whatever a failing handler wrote is rolled back
+                # before the failure is counted, so a half-written row never
+                # commits, and a SQL error does not abort the transaction the
+                # attempt counter needs.
+                async with session.begin_nested():
+                    disposition = await handler(session, row, decision)
             except Exception as error:
-                return await self._record_failure(session, row, type(error).__name__)
+                if _is_transient(error):
+                    # Leave pending, do NOT burn an attempt — otherwise an
+                    # outage dead-letters the whole backlog.
+                    logger.warning(
+                        "inbox_transient_error",
+                        update_row_id=row_id,
+                        exc_type=type(error).__name__,
+                    )
+                    raise
+                # The rollback expired `row`; reload it under the lock we hold
+                # (an expired attribute cannot lazy-load in async code).
+                await session.refresh(row)
+                return await self._record_failure(session, row, decision, type(error).__name__)
 
-            status = self._status_for(decision.route)
+            status = (
+                disposition.value if disposition is not None else self._status_for(decision.route)
+            )
             row.status = status
             row.processed_at = self._clock.now()
-            if decision.clears_payload:
+            if decision.clears_payload or disposition in CLEAR_PAYLOAD_DISPOSITIONS:
                 # Same transaction as the status change: a crash between the
                 # two would leave content we have no basis to hold.
                 row.payload = None
@@ -175,12 +267,13 @@ class InboxProcessor:
                 return "processed"
 
     async def _record_failure(
-        self, session: AsyncSession, row: InboundUpdate, error_code: str
+        self, session: AsyncSession, row: InboundUpdate, decision: RouteDecision, error_code: str
     ) -> str:
         """Count a deterministic failure; dead-letter on the third."""
         row.attempts += 1
         row.error_code = error_code
         if row.attempts >= MAX_ATTEMPTS:
+            await self._run_dead_letter_hook(session, row, decision)
             row.status = "failed"
             row.processed_at = self._clock.now()
             logger.error(
@@ -198,6 +291,31 @@ class InboxProcessor:
             error_code=error_code,
         )
         return "deferred"
+
+    async def _run_dead_letter_hook(
+        self, session: AsyncSession, row: InboundUpdate, decision: RouteDecision
+    ) -> None:
+        """Let the domain record the consequence of a dead letter (§6.2).
+
+        Runs before the row is marked, in its own savepoint: if the hook
+        itself fails, its writes are rolled back, the failure is logged, and
+        the row is dead-lettered anyway — a hook bug must never resurrect a
+        poison row.
+        """
+        hook = self._dead_letter_hooks.get(decision.route)
+        if hook is None:
+            return
+        try:
+            async with session.begin_nested():
+                await hook(session, row, decision)
+        except Exception as error:
+            logger.error(
+                "inbox_dead_letter_hook_failed",
+                update_row_id=row.id,
+                route=decision.route.value,
+                exc_type=type(error).__name__,
+            )
+            await session.refresh(row)
 
 
 async def requeue_failed(
@@ -229,3 +347,21 @@ async def inbox_backlog(session_factory: async_sessionmaker[AsyncSession]) -> di
             select(InboundUpdate.status, func.count()).group_by(InboundUpdate.status)
         )
         return dict(result.all())
+
+
+async def inbox_backlog_for(session: AsyncSession, account_id: int) -> dict[str, int]:
+    """Counts per status for one account's rows plus the unrouted pending ones
+    (a pending row has no account yet, and may be this owner's)."""
+    from sqlalchemy import func, or_
+
+    result = await session.execute(
+        select(InboundUpdate.status, func.count())
+        .where(
+            or_(
+                InboundUpdate.account_id == account_id,
+                (InboundUpdate.account_id.is_(None)) & (InboundUpdate.status == "pending"),
+            )
+        )
+        .group_by(InboundUpdate.status)
+    )
+    return {str(status): int(count) for status, count in result.all()}

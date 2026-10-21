@@ -35,6 +35,9 @@ class AlertKind(StrEnum):
     INGESTION_STALL = "ingestion_stall"
     DEAD_LETTER = "dead_letter"
     BUDGET_THRESHOLD = "budget_threshold"
+    #: Connected, rights changed, disabled, reconnected (FR-ONB-07). The body is
+    #: composed by `inbox.connection_alerts` from the registry's state.
+    CONNECTION_CHANGE = "connection_change"
 
 
 #: Owner-facing text per kind. Plain statements of fact (§6 invariant 11).
@@ -48,6 +51,7 @@ ALERT_TEXT: dict[AlertKind, str] = {
         "aside. Nothing was lost; it can be retried once the problem is fixed."
     ),
     AlertKind.BUDGET_THRESHOLD: "💰 This month's AI spend has reached {percent}% of the budget.",
+    AlertKind.CONNECTION_CHANGE: "{body}",
 }
 
 

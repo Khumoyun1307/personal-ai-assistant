@@ -89,7 +89,7 @@ allowed-confusables = ["ʻ", "ʼ", "‘", "’"]
 "src/assistant/telegram/gateway.py" = ["TID251"]
 "src/assistant/telegram/connections.py" = ["TID251"]
 "src/assistant/bootstrap.py" = ["TID251"]
-# The M00 probe is throwaway, owner-run code outside src/; the gateway
+# The M00 probe is throwaway, owner- or agent-run code outside src/; the gateway
 # confinement rule protects production paths, not the probe.
 "tools/probe/**" = ["S105", "S106", "TID251"]
 "tools/**" = ["S105", "S106"]

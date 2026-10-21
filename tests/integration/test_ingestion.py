@@ -13,11 +13,15 @@ Named regression suite. The claims being pinned:
 from __future__ import annotations
 
 import functools
+from datetime import UTC, datetime, timedelta
 
+import psycopg.errors
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from assistant.conversations.models import CoverageGap
 from assistant.core.routing import Route
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.inbox.models import InboundUpdate
@@ -45,7 +49,7 @@ async def factory(migrated_url: str):  # type: ignore[no-untyped-def]
     engine = build_engine(migrated_url)
     session_factory = build_session_factory(engine)
     async with engine.begin() as conn:
-        await conn.exec_driver_sql("TRUNCATE app.inbound_updates, app.system_state")
+        await conn.exec_driver_sql("TRUNCATE app.inbound_updates, app.system_state CASCADE")
     yield session_factory
     await engine.dispose()
 
@@ -321,3 +325,195 @@ async def test_backlog_counts_by_status(factory) -> None:  # type: ignore[no-unt
     assert backlog.get("processed") == 1
     assert backlog.get("rejected") == 1
     assert "pending" not in backlog
+
+
+# ------------------------------------------- transient vs deterministic (fix)
+# A unique or NOT NULL violation is a DBAPIError, and an earlier version treated
+# every DBAPIError as transient: the row never burned an attempt and was retried
+# forever, blocking the queue behind it. Only deadlocks, serialization failures
+# and connection loss are transient (ARCHITECTURE §6.2).
+
+
+async def _insert_state(session: AsyncSession, key: str) -> None:
+    await session.execute(
+        text("INSERT INTO app.system_state (key, value) VALUES (:k, '{}'::jsonb)"), {"k": key}
+    )
+
+
+async def _state_exists(factory: async_sessionmaker[AsyncSession], key: str) -> bool:
+    async with factory() as session:
+        found = await session.execute(
+            text("SELECT 1 FROM app.system_state WHERE key = :k"), {"k": key}
+        )
+        return found.first() is not None
+
+
+async def test_an_integrity_error_counts_as_an_attempt_and_dead_letters(factory) -> None:  # type: ignore[no-untyped-def]
+    async def duplicate_key(session, _row, _decision) -> None:  # type: ignore[no-untyped-def]
+        await _insert_state(session, "dup")
+        await _insert_state(session, "dup")  # IntegrityError (unique violation)
+
+    async with factory() as session, session.begin():
+        await write_batch(session, bot_id=BOT_ID, updates=[make_update(80, chat_id=OWNER)])
+
+    proc = processor(factory, handlers={Route.CONTROL: duplicate_key})
+    for _ in range(3):
+        await proc.process_batch()
+
+    row = await fetch(factory, 80)
+    assert row.status == "failed"
+    assert row.attempts == 3
+    assert row.error_code == "IntegrityError"
+    # Nothing the handler wrote before failing survives.
+    assert not await _state_exists(factory, "dup")
+
+
+async def test_a_failed_handler_leaves_no_partial_writes(factory) -> None:  # type: ignore[no-untyped-def]
+    async def write_then_explode(session, _row, _decision) -> None:  # type: ignore[no-untyped-def]
+        await _insert_state(session, "partial")
+        raise DeterministicError("after writing")
+
+    async with factory() as session, session.begin():
+        await write_batch(session, bot_id=BOT_ID, updates=[make_update(81, chat_id=OWNER)])
+
+    await processor(factory, handlers={Route.CONTROL: write_then_explode}).process_batch()
+
+    row = await fetch(factory, 81)
+    assert row.status == "pending"
+    assert row.attempts == 1
+    assert not await _state_exists(factory, "partial")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OperationalError("stmt", {}, psycopg.errors.DeadlockDetected("deadlock detected")),
+        DBAPIError("stmt", {}, psycopg.errors.SerializationFailure("could not serialize")),
+    ],
+    ids=["deadlock", "serialization_failure"],
+)
+async def test_a_deadlock_or_serialization_failure_is_still_transient(factory, error) -> None:  # type: ignore[no-untyped-def]
+    async def contended(_session, _row, _decision) -> None:  # type: ignore[no-untyped-def]
+        raise error
+
+    async with factory() as session, session.begin():
+        await write_batch(session, bot_id=BOT_ID, updates=[make_update(82, chat_id=OWNER)])
+
+    with pytest.raises(type(error)):
+        await processor(factory, handlers={Route.CONTROL: contended}).process_batch()
+
+    row = await fetch(factory, 82)
+    assert row.status == "pending"
+    assert row.attempts == 0
+
+
+async def test_the_dead_letter_hook_runs_once_when_the_row_fails(factory) -> None:  # type: ignore[no-untyped-def]
+    calls: list[tuple[int, Route]] = []
+
+    async def explode(_session, _row, _decision) -> None:  # type: ignore[no-untyped-def]
+        raise DeterministicError("poison")
+
+    async def hook(session, row, decision) -> None:  # type: ignore[no-untyped-def]
+        calls.append((row.update_id, decision.route))
+        await _insert_state(session, "hooked")
+
+    async with factory() as session, session.begin():
+        await write_batch(session, bot_id=BOT_ID, updates=[make_update(83, chat_id=OWNER)])
+
+    proc = processor(
+        factory, handlers={Route.CONTROL: explode}, dead_letter_hooks={Route.CONTROL: hook}
+    )
+    for _ in range(4):
+        await proc.process_batch()
+
+    assert calls == [(83, Route.CONTROL)]
+    assert (await fetch(factory, 83)).status == "failed"
+    assert await _state_exists(factory, "hooked")
+
+
+async def test_a_failing_dead_letter_hook_does_not_prevent_dead_lettering(factory) -> None:  # type: ignore[no-untyped-def]
+    async def explode(_session, _row, _decision) -> None:  # type: ignore[no-untyped-def]
+        raise DeterministicError("poison")
+
+    async def bad_hook(session, _row, _decision) -> None:  # type: ignore[no-untyped-def]
+        await _insert_state(session, "bad-hook")
+        raise RuntimeError("hook bug")
+
+    async with factory() as session, session.begin():
+        await write_batch(session, bot_id=BOT_ID, updates=[make_update(84, chat_id=OWNER)])
+
+    proc = processor(
+        factory, handlers={Route.CONTROL: explode}, dead_letter_hooks={Route.CONTROL: bad_hook}
+    )
+    for _ in range(3):
+        await proc.process_batch()
+
+    row = await fetch(factory, 84)
+    assert row.status == "failed"
+    assert row.attempts == 3
+    assert not await _state_exists(factory, "bad-hook")
+
+
+# ------------------------------------------------------- outage coverage gaps
+async def _active_account(factory: async_sessionmaker[AsyncSession]) -> None:
+    async with factory() as session, session.begin():
+        await session.execute(text("TRUNCATE app.accounts CASCADE"))
+        await session.execute(
+            text(
+                "INSERT INTO app.accounts (telegram_user_id, status, timezone) "
+                "VALUES (7000000001, 'active', 'UTC')"
+            )
+        )
+
+
+async def _gaps(factory: async_sessionmaker[AsyncSession]) -> list[CoverageGap]:
+    async with factory() as session:
+        return list((await session.execute(select(CoverageGap))).scalars().all())
+
+
+async def test_an_outage_over_24h_records_a_possible_gap(factory) -> None:  # type: ignore[no-untyped-def]
+    """§6.6: Telegram keeps updates ~24 h. A longer silence between two
+    completed polls may have lost messages dated in [T0, T1 - 24 h + 10 min]."""
+    await _active_account(factory)
+    clock = FakeClock(datetime(2026, 10, 19, 6, 0, tzinfo=UTC))
+    first = Poller(FakeUpdateSource(), factory, clock)
+    await first.startup()
+    await first.poll_once()
+    t0 = clock.now()
+    clock.advance(hours=30)
+
+    second = Poller(FakeUpdateSource(), factory, clock)
+    await second.startup()  # the startup heartbeat must not count as a poll
+    await second.poll_once()
+    await second.poll_once()  # only the first completed poll records the gap
+
+    [gap] = await _gaps(factory)
+    assert (gap.kind, gap.certainty) == ("outage", "possible")
+    assert gap.at_risk_from == t0
+    assert gap.at_risk_to == clock.now() - timedelta(hours=24) + timedelta(minutes=10)
+    assert gap.conversation_id is None
+
+
+async def test_a_short_outage_records_a_delayed_gap(factory) -> None:  # type: ignore[no-untyped-def]
+    await _active_account(factory)
+    clock = FakeClock(datetime(2026, 10, 19, 6, 0, tzinfo=UTC))
+    first = Poller(FakeUpdateSource(), factory, clock)
+    await first.startup()
+    await first.poll_once()
+    clock.advance(hours=2)
+
+    second = Poller(FakeUpdateSource(), factory, clock)
+    await second.startup()
+    await second.poll_once()
+
+    [gap] = await _gaps(factory)
+    assert gap.certainty == "delayed"
+    assert gap.at_risk_to == clock.now()
+
+
+async def test_a_first_ever_poll_records_no_gap(factory) -> None:  # type: ignore[no-untyped-def]
+    await _active_account(factory)
+    poller = Poller(FakeUpdateSource(), factory, FakeClock())
+    await poller.startup()
+    await poller.poll_once()
+    assert await _gaps(factory) == []

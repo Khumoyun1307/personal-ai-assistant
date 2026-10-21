@@ -66,7 +66,13 @@ class ClassifiedError:
 #: Description fragments → class. Checked in order; first match wins, so more
 #: specific fragments must come first.
 _DESCRIPTION_RULES: tuple[tuple[str, ErrorClass], ...] = (
+    # LV-08, 2026-10-21: an expired 24 h window fails a business send or a
+    # typing action with PEER_ID_INVALID, not with the MTProto code the docs
+    # suggest. The MTProto rule stays in case the Bot API ever surfaces it.
+    ("peer_id_invalid", ErrorClass.WINDOW_CLOSED),
     ("business_peer_usage_missing", ErrorClass.WINDOW_CLOSED),
+    # Paused, excluded, no reply right (LV-04, LV-12) — and also an *edit*
+    # after the window closed (LV-08), which Telegram does not distinguish.
     ("business_peer_invalid", ErrorClass.PEER_UNAVAILABLE),
     ("business_connection_invalid", ErrorClass.CONNECTION_INVALID),
     ("business connection not found", ErrorClass.CONNECTION_INVALID),

@@ -23,6 +23,20 @@ PENDING_INPUT_TTL = timedelta(minutes=30)
 CONSENT_AI_CONTROL = "ai_control"
 CONSENT_AI_MANAGED = "ai_managed"
 
+#: The privacy-policy version consents are recorded against. v2 adds managed
+#: conversations (docs/legal/privacy-policy.md).
+POLICY_VERSION = "v2"
+
+#: Named in every consent, because consent has to say who the data goes to
+#: (SEC-02). A new processor needs a new consent, not just a new entry here.
+AI_PROCESSORS: tuple[str, ...] = ("OpenAI",)
+
+#: Pending-input kind for the managed-conversation consent question, and how
+#: long it stays open: it is asked when the connection arrives, which the owner
+#: may not see for a while.
+PENDING_MANAGED_CONSENT = "managed_consent"
+MANAGED_CONSENT_TTL = timedelta(hours=24)
+
 
 class ConsentMissingError(RuntimeError):
     """An LLM call was attempted without the consent that gates it.

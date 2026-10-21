@@ -21,10 +21,17 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts import service
+from assistant.accounts import connections, service
 from assistant.accounts.models import Account
+from assistant.conversations import coverage
 from assistant.core.clock import Clock
-from assistant.core.jobs import OWNER_REQUEST_TASK, JobScheduler, owner_control_lock
+from assistant.core.jobs import (
+    CONNECTION_NOTIFY_TASK,
+    OWNER_REQUEST_TASK,
+    JobScheduler,
+    owner_control_lock,
+)
+from assistant.inbox.processor import inbox_backlog_for
 from assistant.observability.logging import get_logger
 from assistant.telegram.control import handlers
 from assistant.telegram.control.handlers import HandlerResult, IncomingMessage
@@ -108,6 +115,13 @@ class ControlDispatcher:
             result = await handlers.handle_consent_reply(
                 session, self._gateway, self._clock, message, account
             )
+            if result.note == "granted":
+                await self._activate_pending_connection(session, account)
+            return DispatchOutcome(result, account.id)
+        if pending is not None and pending.kind == service.PENDING_MANAGED_CONSENT:
+            result = await handlers.handle_managed_consent_reply(
+                session, self._gateway, self._clock, message, account
+            )
             return DispatchOutcome(result, account.id)
 
         # Rule 4: free text. Record the turn and queue the agent run in the
@@ -136,6 +150,26 @@ class ControlDispatcher:
             )
             note = "queued_for_agent"
         return DispatchOutcome(HandlerResult(True, "free_text", None, note=note), account.id)
+
+    async def _activate_pending_connection(self, session: AsyncSession, account: Account) -> None:
+        """A connection that arrived before onboarding goes live now (J1 edge case).
+
+        The notice — with the managed-consent question — is a job deferred in
+        this transaction, exactly as for a connection that arrives later.
+        """
+        result = await connections.activate_pending(session, account, self._clock)
+        if not result.notify or result.event_id is None:
+            return
+        if self._scheduler is None:
+            logger.warning("connection_notice_not_queued", account_id=account.id)
+            return
+        connection = await session.connection()
+        raw = await connection.get_raw_connection()
+        await self._scheduler.defer(
+            CONNECTION_NOTIFY_TASK,
+            args={"event_id": result.event_id},
+            connection=raw.driver_connection,
+        )
 
     async def _load_account(
         self, session: AsyncSession, message: IncomingMessage
@@ -170,11 +204,23 @@ class ControlDispatcher:
                     return await handlers.handle_revoke(
                         session, self._gateway, self._clock, account, message
                     )
+                if argument.strip().lower() == "managed":
+                    return await handlers.handle_managed_consent_request(
+                        session, self._gateway, self._clock, account, message
+                    )
                 return await handlers.handle_privacy(
                     session, self._gateway, account, message, policy_url=self._policy_url
                 )
             case "status":
-                return await handlers.handle_status(self._gateway, account, message)
+                backlog = await inbox_backlog_for(session, account.id)
+                summary = await coverage.summarize(session, account.id)
+                return await handlers.handle_status(
+                    self._gateway,
+                    account,
+                    message,
+                    backlog=backlog,
+                    coverage_caveat=summary.caveat,
+                )
             case "settings":
                 if argument:
                     return await handlers.apply_setting(

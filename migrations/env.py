@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # Without these imports autogenerate would cheerfully propose dropping them.
 import assistant.accounts.models
 import assistant.agent.models
+import assistant.conversations.models
 import assistant.db.models
 import assistant.inbox.models  # noqa: F401
 from assistant.db.base import APP_SCHEMA, JOBS_SCHEMA, Base

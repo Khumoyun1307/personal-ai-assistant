@@ -1,4 +1,4 @@
-# M00 S00.2 — Telegram probe (owner-run)
+# M00 S00.2 — Telegram probe (owner or agent, AGENTS §9)
 
 Throwaway code, never imported by `src/` (AGENTS §5). It exists to answer
 LV-01…LV-19 (TELEGRAM_FEASIBILITY §11) against real accounts.
@@ -53,6 +53,12 @@ rather than avoiding them.
 
 Only one process may poll a token at a time. **Stop `just probe listen` before
 `just run`**, or the second poller gets HTTP 409.
+
+The `just probe` recipe passes its arguments unquoted to the container, so
+message text must be a single token (`LV08-synthetic-send`, not `"LV-08 send"`);
+a spaced string is rejected by argparse before any API call. Run
+`docker compose -f compose.dev.yml run --rm app python tools/probe/probe.py send … "two words"`
+directly when spaces are needed.
 
 ## Which command serves which LV
 

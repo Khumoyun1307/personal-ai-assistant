@@ -21,6 +21,7 @@ JobArgs = Mapping[str, int | str]
 #: Task names callers defer by. Defined here so callers need not import the
 #: jobs adapter that registers them.
 OWNER_REQUEST_TASK = "agent.owner_request"
+CONNECTION_NOTIFY_TASK = "connections.notify_owner"
 
 
 class JobScheduler(Protocol):

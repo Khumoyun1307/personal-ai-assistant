@@ -97,7 +97,7 @@ Every change must preserve these. Each invariant gets a named regression test in
 - Handle `BUSINESS_PEER_USAGE_MISSING`, `BUSINESS_PEER_INVALID`, `BUSINESS_CONNECTION_INVALID` as expected domain outcomes (no blind retries). Honour 429 `retry_after`.
 - Owner-facing controls (approve/edit/reject) appear **only** in the control chat — never as buttons on messages sent into contacts' chats.
 - Respect throttling (~1 msg/s per chat). Never hard-code Telegram limits in more than one place.
-- Test fixtures derived from real updates must have **all text, names, usernames, file ids and media replaced with synthetic content** before committing; they are produced only by the owner-run sanitiser (§9).
+- Test fixtures derived from real updates must have **all text, names, usernames, file ids and media replaced with synthetic content** before committing; they are produced only by the sanitiser, run by the owner or by the agent under the §9 standing exception.
 
 ## 8. LLM and agent rules
 
@@ -124,8 +124,13 @@ Every change must preserve these. Each invariant gets a named regression test in
     1. The probe's console output is content-free by default; `--verbose` prints real payloads and **an agent must never pass it**.
     2. The agent still never opens `var/probe/`. To learn what was captured it uses `probe summary` (counts, connection ids, error strings) or the sanitiser's output.
     3. Sends go only to chats in `PROBE_ALLOWED_CHAT_IDS`, and message text the agent writes is its own synthetic test text.
-    4. This covers the probe bot only. It does **not** extend to the prod bot, to `just run`, to evals, or to any LLM provider call — those still need a per-run go-ahead.
+    4. This covers the probe bot only. The prod bot, evals and provider spikes still need a per-run go-ahead; dev-bot runs of the app are covered by the next exception.
     5. Steps needing a human in the Telegram client (connecting, pausing, editing, deleting, tapping "Manage Bot") remain the owner's.
+  - **Standing exception, granted by the owner on 2026-10-19 — sanitiser and dev-bot checks.** The agent may, without asking each time:
+    1. Run the fixture sanitiser (`just sanitize var/probe/<dump>`) to produce committable fixtures. It reads only the sanitiser's output, never the dump, and checks every string value in the output is synthetic before committing (the sanitiser is a safety net, not a substitute for looking).
+    2. Run the app against the **dev bot and dev database** (`just migrate`, `just run`, `just healthcheck`, `inbox requeue`) to execute a milestone's manual integration checks and acceptance runs. The LLM calls such a run makes (the owner's control-chat messages, the agent's own synthetic control-chat test messages) are covered and stay within `LLM_MONTHLY_BUDGET_USD`; the run is reported in the milestone report.
+    3. Change, through the rule change process (§2), the documentation that records these permissions.
+    Conditions 1–3 and 5 of the probe exception apply unchanged: content-free console and logs only, never reading `var/` or content-bearing database rows, sends only to allow-listed chats with the agent's own synthetic text, and client-side steps stay with the owner — the agent asks only when it genuinely needs the owner to act in or look at the Telegram client. Still **not** covered: the prod bot, eval runs that call a real model (their cost needs the owner's approval, §8), provider spikes, and pushing or merging (§15).
 - Local secrets live in `.env` at the repo root (git-ignored), loaded by Compose `env_file:`. `.env.example` (committed) lists every setting with placeholder values and is updated in the same change that adds a setting. The owner enters real values; never ask for secrets in chat. Never display secret values: do not `cat`/`type`/`Get-Content` `.env`, and do not run `docker compose config`, `env` or `printenv`. Verify configuration with `just healthcheck`, which reports missing or invalid settings by name only.
 - Secret settings use pydantic `SecretStr`. Never commit `.env`, tokens, keys, `var/`, probe dumps or database dumps, and never paste secrets into chat, issues or docs.
 - New external processors (AI, embeddings, transcription, error tracking, analytics) require: owner approval, consent text update, privacy policy update — before any data flows.

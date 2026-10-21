@@ -5,7 +5,7 @@
 | **Status** | Draft v1.0 for owner review (2026-10-17) |
 | **Owner** | Project owner (first user) |
 | **Related** | [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) (vision & history) · [TELEGRAM_FEASIBILITY.md](TELEGRAM_FEASIBILITY.md) (verified platform facts) · [ARCHITECTURE.md](ARCHITECTURE.md) · [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) |
-| **Working name** | "the assistant". The public product/bot name is undecided (Q-01) and **must not contain "Telegram"** (Telegram Bot Developer Terms §8.1). |
+| **Working name** | "the assistant". The public product/bot name is **Alviro** (owner decision 2026-10-21, Q-01); it **must not contain "Telegram"** (Telegram Bot Developer Terms §8.1). |
 
 **How to read this document.** Requirements describe *what the product must do and how it must behave*, not how it is built. Decision-register items (§5) are tagged; untagged requirements elsewhere are derived from them and are approved together with the register (Q-02):
 
@@ -702,7 +702,7 @@ Voice and audio understanding; document processing; advanced semantic search; ri
 
 | ID | Question | Recommendation / default | Needed by |
 |---|---|---|---|
-| Q-01 | Product and bot name (no "Telegram"; username must end in "bot"). | Owner chooses; a neutral working name is fine for the private phase. | M02 S02.5 (prod bot); the M00 probe/dev bot uses a neutral throwaway username |
+| Q-01 | Product and bot name (no "Telegram"; username must end in "bot"). | **Decided 2026-10-21: Alviro** (owner, in conversation). | M02 S02.5 (prod bot); the M00 probe/dev bot uses a neutral throwaway username |
 | Q-02 | Approve R-01…R-11. | As recommended. | Before M00 |
 | Q-03 | Retention defaults (R-07). | Raw message content 90 days; summaries and memory until deleted; tasks until closed + 1 year; control-chat history 90 days; activity log 1 year; raw update payloads up to 7 days. | M02 |
 | Q-04 | Default AI-disclosure wording and languages. | Short neutral line, owner-editable, in the reply language. | M06 |

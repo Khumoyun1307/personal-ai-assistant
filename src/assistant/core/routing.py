@@ -35,6 +35,26 @@ class Route(StrEnum):
     """Groups, bot chats, anything out of scope. Payload cleared."""
 
 
+class Disposition(StrEnum):
+    """A handler's verdict, when it knows more than the route did.
+
+    The router sees one update; the handler sees the database. A business
+    message on a connection that is foreign, not yet onboarded or disabled is
+    routed as business traffic but must end `rejected` or `ignored` with its
+    payload cleared (ARCHITECTURE §6.4). Returning None means "as routed".
+    """
+
+    PROCESSED = "processed"
+    IGNORED = "ignored"
+    REJECTED = "rejected"
+
+
+#: Dispositions that clear the payload, for the same reason as the routes below.
+CLEAR_PAYLOAD_DISPOSITIONS: frozenset[Disposition] = frozenset(
+    {Disposition.IGNORED, Disposition.REJECTED}
+)
+
+
 #: Routes whose payload must be cleared in the processing transaction, because
 #: we have no lawful basis to keep the content (§6.1, §6 invariant 12).
 CLEAR_PAYLOAD: frozenset[Route] = frozenset({Route.REFUSED, Route.IGNORED})

@@ -19,6 +19,7 @@ from alembic.config import Config
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.db.engine import build_engine, build_session_factory
+from tests.integration.business_env import Env, environment
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -87,3 +88,10 @@ async def db_session(migrated_url: str) -> AsyncIterator[AsyncSession]:
         await session.rollback()
         await session.close()
         await engine.dispose()
+
+
+@pytest.fixture
+async def env(migrated_url: str) -> AsyncIterator[Env]:
+    """The S02 business-traffic environment (`tests/integration/business_env.py`)."""
+    async with environment(migrated_url) as built:
+        yield built

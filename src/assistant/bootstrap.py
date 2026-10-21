@@ -36,6 +36,8 @@ from assistant.llm.metering import MeteredLLMClient
 from assistant.llm.openai_adapter import OpenAIClient
 from assistant.llm.port import LLMClient
 from assistant.process import InboxRole, PollerRole, WorkerRole, worker_heartbeat_probe
+from assistant.telegram.business import BusinessPipeline
+from assistant.telegram.connections import AiogramConnectionLookup, ConnectionRegistry
 from assistant.telegram.control.agent_channel import GatewayControlChannel
 from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.inbox_handlers import ControlInboxHandlers, RefusalLimiter
@@ -169,17 +171,29 @@ async def running_process(
                     gateway,
                     RefusalLimiter(clock),
                 )
+                owner_ids = frozenset(settings.owner_telegram_ids)
+                registry = ConnectionRegistry(
+                    session_factory,
+                    clock,
+                    AiogramConnectionLookup(bot),
+                    scheduler,
+                    owner_ids=owner_ids,
+                )
+                business = BusinessPipeline(registry, clock, bot_id=bot.id)
                 processor = InboxProcessor(
                     session_factory,
                     clock,
-                    owner_ids=frozenset(settings.owner_telegram_ids),
+                    owner_ids=owner_ids,
                     bot_id=bot.id,
-                    router=functools.partial(
-                        route_update,
-                        owner_ids=frozenset(settings.owner_telegram_ids),
-                        bot_id=bot.id,
-                    ),
-                    handlers={Route.CONTROL: control.control, Route.REFUSED: control.refused},
+                    router=functools.partial(route_update, owner_ids=owner_ids, bot_id=bot.id),
+                    handlers={
+                        Route.CONTROL: control.control,
+                        Route.REFUSED: control.refused,
+                        Route.CONNECTION: registry.connection,
+                        Route.BUSINESS: business.handle,
+                    },
+                    preparers={Route.BUSINESS: registry.prepare},
+                    dead_letter_hooks={Route.BUSINESS: business.on_dead_letter},
                 )
                 supervisor_roles.append(InboxRole(processor, lock, clock).role())
             probe = worker_heartbeat_probe(session_factory)

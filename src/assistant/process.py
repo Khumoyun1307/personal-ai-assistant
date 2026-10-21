@@ -25,6 +25,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.core.clock import Clock
+from assistant.core.errors import TransientError
 from assistant.core.supervisor import Role
 from assistant.db.advisory_lock import AdvisoryLock
 from assistant.inbox.processor import InboxProcessor
@@ -118,7 +119,7 @@ class InboxRole:
             await self._lock.verify()
             try:
                 result = await self._processor.process_batch()
-            except (OperationalError, DBAPIError) as error:
+            except (OperationalError, DBAPIError, TransientError) as error:
                 failures += 1
                 delay = BACKOFF_SECONDS[min(failures, len(BACKOFF_SECONDS)) - 1]
                 logger.warning("inbox_transient", exc_type=type(error).__name__, retry_in_s=delay)

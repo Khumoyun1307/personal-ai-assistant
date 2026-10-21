@@ -16,13 +16,19 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import service
-from assistant.accounts.models import AuditLogEntry, ControlTurn
+from assistant.accounts.models import (
+    AuditLogEntry,
+    BusinessConnectionEvent,
+    ControlTurn,
+    ForeignConnection,
+)
 from assistant.agent.budget import check_budget_thresholds
 from assistant.agent.models import AgentRun, LlmCall
+from assistant.conversations.models import Contact, Conversation, Message
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.db.models import KEY_POLLER_HEARTBEAT
 from assistant.db.uow import transaction
@@ -227,6 +233,54 @@ async def test_budget_thresholds_alert_once_per_month_each(
     assert len(channel.sends) == 3
 
 
+async def test_connection_history_and_foreign_connections_expire(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    """Connection events: 1 year. Foreign connections: 30 days after last seen."""
+    account_id = await owner(factory, clock)
+    async with transaction(factory) as uow:
+        for age_days in (366, 10):
+            uow.session.add(
+                BusinessConnectionEvent(
+                    account_id=account_id,
+                    connection_id=f"synthetic-{age_days}",
+                    payload_digest="synthetic",
+                    rights=[],
+                    is_enabled=True,
+                    change="connected",
+                    source="update",
+                    observed_at=NOW - timedelta(days=age_days),
+                )
+            )
+            uow.session.add(
+                ForeignConnection(
+                    connection_id=f"synthetic-foreign-{age_days}",
+                    telegram_user_id=7000000009,
+                    first_seen_at=NOW - timedelta(days=age_days),
+                    last_seen_at=NOW - timedelta(days=age_days if age_days < 30 else 31),
+                )
+            )
+
+    try:
+        report = await sweep_all(factory, clock)
+
+        assert (report.connection_events, report.foreign_connections) == (1, 1)
+        async with factory() as session:
+            kept_events = (
+                (await session.execute(select(BusinessConnectionEvent.connection_id)))
+                .scalars()
+                .all()
+            )
+            kept_foreign = (
+                (await session.execute(select(ForeignConnection.connection_id))).scalars().all()
+            )
+        assert kept_events == ["synthetic-10"]
+        assert kept_foreign == ["synthetic-foreign-10"]
+    finally:
+        async with transaction(factory) as uow:
+            await uow.session.execute(delete(ForeignConnection))
+
+
 async def test_every_policy_retention_rule_is_applied(
     factory: async_sessionmaker[AsyncSession], clock: FakeClock
 ) -> None:
@@ -287,3 +341,93 @@ async def test_every_policy_retention_rule_is_applied(
         assert len((await session.execute(select(AuditLogEntry))).scalars().all()) == 1
         assert len((await session.execute(select(AgentRun))).scalars().all()) == 1
     assert texts == {old_turn.id: None, new_turn.id: "Synthetic new"}
+
+
+# ------------------------------------------------- retention: managed content
+async def _seed_message(
+    factory: async_sessionmaker[AsyncSession],
+    account_id: int,
+    *,
+    chat_id: int,
+    sent_at: datetime,
+    message_text: str,
+    name: str,
+) -> int:
+    async with transaction(factory) as uow:
+        contact = Contact(
+            account_id=account_id,
+            telegram_user_id=chat_id,
+            display_name=name,
+            updated_at=sent_at,
+        )
+        uow.session.add(contact)
+        await uow.session.flush()
+        conversation = Conversation(
+            account_id=account_id, business_chat_id=chat_id, contact_id=contact.id
+        )
+        uow.session.add(conversation)
+        await uow.session.flush()
+        uow.session.add(
+            Message(
+                account_id=account_id,
+                conversation_id=conversation.id,
+                telegram_message_id=1,
+                direction="contact",
+                sent_at=sent_at,
+                content_type="text",
+                text=message_text,
+                search_key=message_text,
+                content_hash="synthetic-hash",
+            )
+        )
+        return conversation.id
+
+
+async def test_message_content_is_purged_after_ninety_days_and_the_gap_recorded(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    """§10.4: the retention period is a hard ceiling, summary or not; the
+    conversation remembers that content expired unsummarised."""
+    account_id = await owner(factory, clock)
+    old = await _seed_message(
+        factory,
+        account_id,
+        chat_id=5001,
+        sent_at=NOW - timedelta(days=91),
+        message_text="synthetic old",
+        name="Old Synthetic",
+    )
+    fresh = await _seed_message(
+        factory,
+        account_id,
+        chat_id=5002,
+        sent_at=NOW - timedelta(days=10),
+        message_text="synthetic fresh",
+        name="Fresh Synthetic",
+    )
+
+    report = await sweep_all(factory, clock)
+
+    assert report.message_contents == 1
+    assert report.contact_names == 1
+    async with factory() as session:
+        purged = (
+            await session.execute(select(Message).where(Message.conversation_id == old))
+        ).scalar_one()
+        kept = (
+            await session.execute(select(Message).where(Message.conversation_id == fresh))
+        ).scalar_one()
+        old_conv = await session.get(Conversation, old)
+        fresh_conv = await session.get(Conversation, fresh)
+        names = (await session.execute(select(Contact.display_name))).scalars().all()
+    assert purged.text is None
+    assert purged.search_key is None
+    assert purged.content_hash is None
+    assert purged.purged_at == NOW
+    assert purged.deleted_at is None  # expired, not deleted: the tombstone says which
+    assert kept.text == "synthetic fresh"
+    assert old_conv is not None
+    assert old_conv.summary_gap_before == NOW - timedelta(days=91)
+    assert fresh_conv is not None
+    assert fresh_conv.summary_gap_before is None
+    assert set(names) == {None, "Fresh Synthetic"}
