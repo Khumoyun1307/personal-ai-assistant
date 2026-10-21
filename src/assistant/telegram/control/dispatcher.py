@@ -22,7 +22,7 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts import connections, service
+from assistant.accounts import callbacks, connections, service
 from assistant.accounts.models import Account
 from assistant.conversations import visibility
 from assistant.core.clock import Clock
@@ -183,6 +183,43 @@ class ControlDispatcher:
             args={"event_id": result.event_id},
             connection=raw.driver_connection,
         )
+
+    async def dispatch_callback(
+        self,
+        session: AsyncSession,
+        *,
+        callback_id: str,
+        from_id: int,
+        data: str | None,
+        chat_id: int,
+        message_id: int | None,
+    ) -> HandlerResult:
+        """A button press. Everything in it came from the client: parse, then
+        resolve the token only within the presser's own account (§6.7)."""
+        try:
+            parsed = callbacks.parse(data)
+        except callbacks.CallbackDataError:
+            await self._gateway.answer_callback(callback_id, handlers.CALLBACK_EXPIRED_TEXT)
+            return HandlerResult(False, "card", None, note="malformed")
+        account = await self._load_account_by_id(session, from_id)
+        if account is None:
+            await self._gateway.answer_callback(callback_id, handlers.CALLBACK_EXPIRED_TEXT)
+            return HandlerResult(False, "card", None, note="no_account")
+        press = handlers.CardPress(
+            kind=parsed.kind,
+            token=parsed.token,
+            op=parsed.op,
+            callback_id=callback_id,
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+        return await handlers.handle_card_press(session, self._gateway, self._clock, account, press)
+
+    async def _load_account_by_id(self, session: AsyncSession, from_id: int) -> Account | None:
+        from sqlalchemy import select
+
+        result = await session.execute(select(Account).where(Account.telegram_user_id == from_id))
+        return result.scalar_one_or_none()
 
     async def _conversation_panel(
         self, session: AsyncSession, account: Account, message: IncomingMessage, argument: str

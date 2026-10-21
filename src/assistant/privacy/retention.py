@@ -13,6 +13,7 @@ Every data class the privacy policy names has a rule here, and the hourly
 | `messages` content | 90 days from `sent_at`/last edit | content cleared, `purged_at` set, kept |
 | (text, media, search key, hash) | | `summary_gap_before` advanced (rollup: M03) |
 | `contacts` names | while message content is retained | names cleared afterwards |
+| `pending_inputs` | until expiry | rows deleted (questions and cards) |
 
 Other classes join as their tables arrive.
 """
@@ -31,6 +32,7 @@ from assistant.accounts.models import (
     ControlTurn,
     ForeignConnection,
 )
+from assistant.accounts.service import sweep_expired_cards
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.db.uow import transaction
@@ -54,6 +56,7 @@ class SweepReport:
     foreign_connections: int = 0
     message_contents: int = 0
     contact_names: int = 0
+    expired_inputs: int = 0
 
     @property
     def total(self) -> int:
@@ -67,6 +70,7 @@ class SweepReport:
             + self.foreign_connections
             + self.message_contents
             + self.contact_names
+            + self.expired_inputs
         )
 
 
@@ -145,8 +149,19 @@ async def sweep_all(session_factory: async_sessionmaker[AsyncSession], clock: Cl
         )
     message_contents = await sweep_message_content(session_factory, clock)
     contact_names = await sweep_contact_names(session_factory, clock)
+    async with transaction(session_factory) as uow:
+        expired = await sweep_expired_cards(uow.session, clock)
     return SweepReport(
-        inbound, turns, calls, runs, audit, events, foreign, message_contents, contact_names
+        inbound,
+        turns,
+        calls,
+        runs,
+        audit,
+        events,
+        foreign,
+        message_contents,
+        contact_names,
+        expired,
     )
 
 

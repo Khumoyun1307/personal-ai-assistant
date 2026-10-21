@@ -132,6 +132,7 @@ class JobHandlers:
                 foreign_connections=report.foreign_connections,
                 message_contents=report.message_contents,
                 contact_names=report.contact_names,
+                expired_inputs=report.expired_inputs,
             )
         return report
 

@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Version** | v2 — control chat + chats included under Chat Automation |
-| **Status** | Published 2026-10-19 (owner go-ahead 2026-10-19) at the same URL as v1: https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19 (Telegraph keeps the original slug; the page title says v2). |
-| **Last updated** | 2026-10-18 |
-| **Previous** | v1 — control chat only, published 2026-10-18 (see git history of this file) |
+| **Version** | v3 — adds deletion of stored managed-chat data and the "stop observing" choice (no new processing) |
+| **Status** | Published 2026-10-21 (plan approved by the owner 2026-10-21) at the same URL as v1/v2: https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19 (Telegraph keeps the original slug; the page title says v3). |
+| **Last updated** | 2026-10-21 |
+| **Previous** | v2 — control chat + managed chats, published 2026-10-19; v1 — control chat only, published 2026-10-18 (see git history of this file) |
 
 Everything between the two `---` lines below is the published text. Change it
 only with a version bump (AGENTS §16); a change that widens processing needs an
@@ -16,7 +16,7 @@ an AI provider without it.
 
 ---
 
-## Personal AI assistant — privacy policy (v2)
+## Personal AI assistant — privacy policy (v3)
 
 This is a personal assistant bot, run by its owner for their own use. There is one user, the owner, and "you" below means the owner. This version covers your private chat with the bot (the control chat) and the chats you choose to include when you connect the bot to your account under Telegram's Chat Automation (managed chats).
 
@@ -60,7 +60,7 @@ You can withdraw both at any time by sending /privacy revoke to the bot, and giv
 - See your consent state and this policy at any time with /privacy.
 - Withdraw consent at any time with /privacy revoke.
 - Stop the bot seeing your chats at any time by disconnecting it, or by removing chats from Chat Automation, in your Telegram settings.
-- Deleting chosen data and exporting your data from inside the bot are planned and not yet available. Until they are, the data lives only in the owner's own database, and the owner — you — can delete it directly.
+- Delete everything the assistant stored from your included chats (messages, names, raw updates): when you decline or withdraw the second consent, the bot offers a **Delete** button, and then a choice between continuing without AI (coverage and visibility only) and **stopping** (it stores nothing further; to disconnect it completely, remove it under Settings → Chat Automation — the bot cannot do that itself). Deleting chosen conversations and exporting your data from inside the bot are planned and not yet available.
 
 ## Limitations, stated plainly
 
@@ -84,3 +84,4 @@ This is a personal deployment: the operator is the owner. Questions about it go 
 3. v1 published 2026-10-18 (owner go-ahead). v2 drafted 2026-10-18 in M02 S02.1;
    owner go-ahead to publish: 2026-10-19; published the same day (page edited in place).
 4. @BotFather registration: same URL, no change needed.
+5. v3 (2026-10-21, M02 S02.4): deletion of stored managed-chat data and the "stop observing" choice become available from inside the bot; no new processing, so no opt-out notice is required (AGENTS §16).

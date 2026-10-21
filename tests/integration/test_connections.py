@@ -312,7 +312,7 @@ async def test_managed_consent_is_asked_and_recorded_with_the_policy_and_process
 
     state = await managed_consent(env)
     assert state.granted
-    assert (state.policy_version, state.processors) == ("v2", ("OpenAI",))
+    assert (state.policy_version, state.processors) == ("v3", ("OpenAI",))
 
 
 async def test_declining_managed_consent_grants_nothing(env: Env) -> None:
@@ -322,7 +322,8 @@ async def test_declining_managed_consent_grants_nothing(env: Env) -> None:
     await deliver(env, private_message(OWNER, "no"))
 
     assert not (await managed_consent(env)).granted
-    assert "nothing from your chats" in env.sender.sends[-1]["text"]
+    assert any("nothing from your chats" in sent for sent in env.sender.texts)
+    assert "Delete what I stored" in env.sender.texts[-1]  # S02.4: the deletion card follows
 
 
 async def test_managed_consent_is_not_asked_before_a_connection_exists(env: Env) -> None:
