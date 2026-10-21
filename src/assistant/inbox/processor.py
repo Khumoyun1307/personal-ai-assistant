@@ -74,6 +74,40 @@ Handler = Callable[[AsyncSession, InboundUpdate, RouteDecision], Awaitable[Dispo
 #: Gets the raw update and the routing decision; writes in its own transaction.
 Preparer = Callable[[dict[str, Any], RouteDecision], Awaitable[None]]
 
+#: Runs in the dead-lettering transaction when a row goes `failed`, so the
+#: domain can record the consequence (a coverage gap, a paused conversation —
+#: §6.2). It gets its own savepoint: a hook bug must not keep a poison row
+#: pending.
+DeadLetterHook = Callable[[AsyncSession, InboundUpdate, RouteDecision], Awaitable[None]]
+
+#: SQLSTATE classes that mean "try again later", not "this row is bad":
+#: 08 connection exception, 40001 serialization failure, 40P01 deadlock,
+#: 57P0x server shutdown / cannot connect now.
+_TRANSIENT_SQLSTATES = frozenset({"40001", "40P01"})
+_TRANSIENT_SQLSTATE_PREFIXES = ("08", "57P")
+
+
+def _is_transient(error: BaseException) -> bool:
+    """Transient = leave the row pending without counting an attempt.
+
+    Only deadlocks, serialization failures and connection loss qualify
+    (ARCHITECTURE §6.2). Every other database error — a unique or NOT NULL
+    violation, a bad cast, a syntax error — is deterministic: it will recur on
+    every retry, so it must burn an attempt and eventually dead-letter, or the
+    row blocks the whole queue behind it.
+    """
+    if isinstance(error, TransientError | OperationalError):
+        return True
+    if isinstance(error, DBAPIError):
+        if error.connection_invalidated:
+            return True
+        sqlstate = getattr(error.orig, "sqlstate", None)
+        if isinstance(sqlstate, str):
+            return sqlstate in _TRANSIENT_SQLSTATES or sqlstate.startswith(
+                _TRANSIENT_SQLSTATE_PREFIXES
+            )
+    return False
+
 
 async def _noop_handler(
     _session: AsyncSession, _row: InboundUpdate, _decision: RouteDecision
@@ -100,6 +134,7 @@ class InboxProcessor:
         router: Router,
         handlers: dict[Route, Handler] | None = None,
         preparers: dict[Route, Preparer] | None = None,
+        dead_letter_hooks: dict[Route, DeadLetterHook] | None = None,
         batch_size: int = 20,
     ) -> None:
         self._session_factory = session_factory
@@ -111,6 +146,7 @@ class InboxProcessor:
         self._router = router
         self._handlers = handlers or {}
         self._preparers = preparers or {}
+        self._dead_letter_hooks = dead_letter_hooks or {}
         self._batch_size = batch_size
 
     async def _claim(self, session: AsyncSession) -> list[InboundUpdate]:
@@ -166,17 +202,18 @@ class InboxProcessor:
     async def _process_one(self, row_id: int) -> str:
         try:
             await self._prepare(row_id)
-        except (OperationalError, DBAPIError, TransientError) as error:
-            logger.warning(
-                "inbox_transient_error", update_row_id=row_id, exc_type=type(error).__name__
-            )
-            raise
         except Exception as error:
+            if _is_transient(error):
+                logger.warning(
+                    "inbox_transient_error", update_row_id=row_id, exc_type=type(error).__name__
+                )
+                raise
             async with self._session_factory() as session, session.begin():
                 row = await session.get(InboundUpdate, row_id, with_for_update=True)
                 if row is None or row.status != "pending":
                     return "deferred"
-                return await self._record_failure(session, row, type(error).__name__)
+                decision = self._router(row.payload or {})
+                return await self._record_failure(session, row, decision, type(error).__name__)
 
         async with self._session_factory() as session, session.begin():
             row = await session.get(InboundUpdate, row_id, with_for_update=True)
@@ -184,24 +221,29 @@ class InboxProcessor:
                 return "deferred"
 
             payload = row.payload or {}
+            decision = self._router(payload)
+            handler = self._handlers.get(decision.route, _noop_handler)
             try:
-                decision = self._router(payload)
-                handler = self._handlers.get(decision.route, _noop_handler)
-                disposition = await handler(session, row, decision)
-            except (OperationalError, DBAPIError, TransientError) as error:
-                # Transient by definition: deadlock, serialization failure,
-                # connection loss. Leave pending, do NOT burn an attempt —
-                # otherwise an outage dead-letters the whole backlog.
-                logger.warning(
-                    "inbox_transient_error",
-                    update_row_id=row_id,
-                    exc_type=type(error).__name__,
-                )
-                raise
-            except DeterministicError as error:
-                return await self._record_failure(session, row, type(error).__name__)
+                # A savepoint: whatever a failing handler wrote is rolled back
+                # before the failure is counted, so a half-written row never
+                # commits, and a SQL error does not abort the transaction the
+                # attempt counter needs.
+                async with session.begin_nested():
+                    disposition = await handler(session, row, decision)
             except Exception as error:
-                return await self._record_failure(session, row, type(error).__name__)
+                if _is_transient(error):
+                    # Leave pending, do NOT burn an attempt — otherwise an
+                    # outage dead-letters the whole backlog.
+                    logger.warning(
+                        "inbox_transient_error",
+                        update_row_id=row_id,
+                        exc_type=type(error).__name__,
+                    )
+                    raise
+                # The rollback expired `row`; reload it under the lock we hold
+                # (an expired attribute cannot lazy-load in async code).
+                await session.refresh(row)
+                return await self._record_failure(session, row, decision, type(error).__name__)
 
             status = (
                 disposition.value if disposition is not None else self._status_for(decision.route)
@@ -225,12 +267,13 @@ class InboxProcessor:
                 return "processed"
 
     async def _record_failure(
-        self, session: AsyncSession, row: InboundUpdate, error_code: str
+        self, session: AsyncSession, row: InboundUpdate, decision: RouteDecision, error_code: str
     ) -> str:
         """Count a deterministic failure; dead-letter on the third."""
         row.attempts += 1
         row.error_code = error_code
         if row.attempts >= MAX_ATTEMPTS:
+            await self._run_dead_letter_hook(session, row, decision)
             row.status = "failed"
             row.processed_at = self._clock.now()
             logger.error(
@@ -248,6 +291,31 @@ class InboxProcessor:
             error_code=error_code,
         )
         return "deferred"
+
+    async def _run_dead_letter_hook(
+        self, session: AsyncSession, row: InboundUpdate, decision: RouteDecision
+    ) -> None:
+        """Let the domain record the consequence of a dead letter (§6.2).
+
+        Runs before the row is marked, in its own savepoint: if the hook
+        itself fails, its writes are rolled back, the failure is logged, and
+        the row is dead-lettered anyway — a hook bug must never resurrect a
+        poison row.
+        """
+        hook = self._dead_letter_hooks.get(decision.route)
+        if hook is None:
+            return
+        try:
+            async with session.begin_nested():
+                await hook(session, row, decision)
+        except Exception as error:
+            logger.error(
+                "inbox_dead_letter_hook_failed",
+                update_row_id=row.id,
+                route=decision.route.value,
+                exc_type=type(error).__name__,
+            )
+            await session.refresh(row)
 
 
 async def requeue_failed(
