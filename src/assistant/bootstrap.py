@@ -166,7 +166,11 @@ async def running_process(
                 locks.append(lock)
                 control = ControlInboxHandlers(
                     ControlDispatcher(
-                        gateway, clock, scheduler, policy_url=settings.privacy_policy_url
+                        gateway,
+                        clock,
+                        scheduler,
+                        policy_url=settings.privacy_policy_url,
+                        monthly_budget_usd=settings.llm_monthly_budget_usd,
                     ),
                     gateway,
                     RefusalLimiter(clock),
