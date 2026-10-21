@@ -1,4 +1,4 @@
-"""M00 S00.2 Telegram probe — throwaway, owner-run.
+"""M00 S00.2 Telegram probe — throwaway, owner- or agent-run (AGENTS §9).
 
 Never imported by `src/` (AGENTS §5). Its only job is to answer LV-01…LV-19
 (TELEGRAM_FEASIBILITY §11) against real accounts and record exactly what

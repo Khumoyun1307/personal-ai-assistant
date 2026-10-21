@@ -1,7 +1,8 @@
-"""Turn raw probe dumps into committable test fixtures. Owner-run.
+"""Turn raw probe dumps into committable test fixtures. Owner- or agent-run (AGENTS §9).
 
-AGENTS §9: coding agents never read `var/probe/`. The owner runs this; the
-agent sees only its output, which is committed to `tests/fixtures/telegram/`.
+AGENTS §9: coding agents never read `var/probe/`. The owner or the agent runs
+this (AGENTS §9 standing exception); the agent sees only its output, which is
+committed to `tests/fixtures/telegram/`.
 
 The rule is **default-deny for strings**: a string value is kept only when its
 key is on the structural allow-list below (chat types, statuses, MIME types —

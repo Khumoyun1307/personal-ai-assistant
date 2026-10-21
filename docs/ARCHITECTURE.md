@@ -309,7 +309,7 @@ If the conversation mode is **Ignore**, steps 2–7 store only metadata needed f
 
 ### 6.6 Conversation state, reply window, coverage
 
-- **Reply window:** `window_open = now < last_contact_msg_at + 24h − safety_margin` (default margin 5 min), where `last_contact_msg_at` is the Telegram `date` of the newest contact `business_message` (§6.5 step 3). The local value is an approximation (some incoming events never reach the bot), so `BUSINESS_PEER_USAGE_MISSING` is handled as an expected outcome (TF §4).
+- **Reply window:** `window_open = now < last_contact_msg_at + 24h − safety_margin` (default margin 5 min), where `last_contact_msg_at` is the Telegram `date` of the newest contact `business_message` (§6.5 step 3). The local value is an approximation (some incoming events never reach the bot), so a closed-window error is handled as an expected outcome: observed as `PEER_ID_INVALID` on a send or typing action and as `BUSINESS_PEER_INVALID` on an edit (TF §12 LV-08, 2026-10-21; the MTProto `BUSINESS_PEER_USAGE_MISSING` was never seen). Because the edit error is the same as for a paused or excluded chat, the window check runs before every edit as well as every send, and an edit failure is reported as "paused, excluded or window closed". Until the deferred half of LV-08 is run, only contact messages are assumed to reopen the window (the conservative `can_reply` reading).
 - **Telegram availability state** per conversation: `active` → `possibly_paused` (after `BUSINESS_PEER_INVALID` on a previously working chat) → back to `active` on the next delivered message.
 - **Coverage gaps:** the poller heartbeat is written only after a successful `getUpdates` whose batch was committed. When the interval between the last successful poll T0 and the next one T1 exceeds the watchdog threshold, a `coverage_gaps` row is written. If T1 − T0 > 24 h − 10 min, it gets `certainty = possible` with the at-risk range [T0, T1 − 24 h + 10 min], since only messages dated in that range can have expired. Otherwise it gets `certainty = delayed`: processing was late, and nothing is missing. A dead-lettered business update writes a `definite` gap for its conversation (§6.2); a backup restore writes a `possible` gap (§15.6). Summaries report only `possible`/`definite` gaps as possibly missing messages (FR-SUM-06).
 
@@ -353,15 +353,15 @@ class OutboundGateway(Protocol):
 |---|---|---|---|
 | `ok` | — | Delivered; returns `Message` (may have `message_id == 0` if Telegram scheduled it → "pending identity"); edit/undo disabled while identity is pending | — |
 | `rate_limited` | 429 | Not delivered | Yes, after `retry_after` |
-| `window_closed` | `BUSINESS_PEER_USAGE_MISSING` | Not delivered | No |
-| `peer_unavailable` | `BUSINESS_PEER_INVALID` | No right / chat excluded or paused | No; mark conversation `possibly_paused` |
+| `window_closed` | `PEER_ID_INVALID` on send/typing (TF §12 LV-08); `BUSINESS_PEER_USAGE_MISSING` (MTProto docs, never observed) | Not delivered; the 24 h window has expired | No |
+| `peer_unavailable` | `BUSINESS_PEER_INVALID` | No right / chat excluded or paused (LV-04, LV-12) — **or an edit after the window closed (LV-08)**, which Telegram reports the same way | No; mark conversation `possibly_paused` (an edit failure says "paused, excluded or window closed") |
 | `connection_invalid` | `BUSINESS_CONNECTION_INVALID`, "business connection not found" | Rotated/disabled connection | No; mark connection stale and wait for the new id (§6.4) |
 | `chat_unreachable` | 400 `chat not found` | The chat does not exist yet: the owner has never opened the bot (TF §12 LV-09) | No; **not** a block — never triggers the §6.3 automatic pause. Surface as "open the bot and press Start" |
 | `forbidden` | 403, blocked | Not delivered | No |
 | `bad_request` | other 400 | Not delivered | No |
 | `ambiguous` | timeout/connection reset after request sent, 5xx | **Unknown** | **No** → `delivery_uncertain` |
 
-- Classification keys on the error description code (e.g., `BUSINESS_PEER_USAGE_MISSING`, `BOT_ACCESS_FORBIDDEN`), not on the HTTP status: business errors may surface as 400 "Bad Request: <CODE>" (TF §4).
+- Classification keys on the error description code (e.g., `PEER_ID_INVALID`, `BUSINESS_PEER_INVALID`, `BOT_ACCESS_FORBIDDEN`), not on the HTTP status: business errors surface as 400 "Bad Request: <CODE>" (TF §4, verified in LV-01/04/08).
 - A `forbidden` result on a `ControlChat` target triggers the same automatic pause as a block (§6.3). A `chat_unreachable` result does not: the owner has simply not opened the bot yet (TF §12 LV-09), and onboarding must say so rather than reporting a delivery failure (§6 invariant 11).
 - The gateway never logs message text or request URLs (the Bot API URL contains the token).
 
@@ -1097,7 +1097,7 @@ CI (GitHub Actions, once a remote exists): ruff, mypy, import-linter, pip-audit,
 | Poison update | 3 deterministic failures (transient errors retried without limit) | Dead-letter; the conversation fails closed; coverage caveat; requeue after a fix; for business updates, record a `definite` coverage gap | Owner alerted daily until resolved |
 | Connection id rotated | `BUSINESS_CONNECTION_INVALID` | Mark stale; wait for the new id; owner notified after 30 min | None unless persistent |
 | Chat paused/excluded | `BUSINESS_PEER_INVALID` | `possibly_paused`; stop automation there | One notice |
-| Window closed | `BUSINESS_PEER_USAGE_MISSING` | Expire action; copy-ready text | Card shows expired |
+| Window closed | `PEER_ID_INVALID` on send (an edit gives `BUSINESS_PEER_INVALID`, TF §12 LV-08); normally caught earlier by the local window check | Expire action; copy-ready text | Card shows expired |
 | Budget exhausted | `llm_calls` sum | Pause background LLM work; ask owner | Notice with options |
 | Clock/timezone change | Settings update | Recompute `next_run_at` for `follow_owner` automations; `fixed` ones unchanged (§12.4) | Confirmation message |
 

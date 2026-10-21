@@ -1,7 +1,8 @@
 """Contract tests on sanitised real payloads (TF §12 LV-01/05/12, S02.1).
 
-`tests/fixtures/telegram/*.sanitized.json` is produced by the owner-run
-sanitiser from probe dumps (AGENTS §9): real structure, synthetic content.
+`tests/fixtures/telegram/*.sanitized.json` is produced by the owner- or
+agent-run sanitiser from probe dumps (AGENTS §9): real structure, synthetic
+content.
 These tests pin that our parsing and routing hold for what Telegram actually
 sent, not only for payloads we wrote by hand.
 """
