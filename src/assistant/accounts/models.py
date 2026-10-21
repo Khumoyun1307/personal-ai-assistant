@@ -215,7 +215,15 @@ class PendingInput(Base):
     """
 
     __tablename__ = "pending_inputs"
-    __table_args__ = (Index("ix_pending_inputs_account_id_kind", "account_id", "kind"),)
+    __table_args__ = (
+        Index("ix_pending_inputs_account_id_kind", "account_id", "kind"),
+        Index(
+            "uq_pending_inputs_token",
+            "token",
+            unique=True,
+            postgresql_where=sql_text("token IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[IdPk]
     account_id: Mapped[int] = mapped_column(
@@ -224,6 +232,9 @@ class PendingInput(Base):
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     ref_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     prompt_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: Set for a confirmation card (single-use button token, §6.7); NULL for
+    #: a plain "answer with your next message" question.
+    token: Mapped[str | None] = mapped_column(Text, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
     created_at: Mapped[CreatedAt]
 

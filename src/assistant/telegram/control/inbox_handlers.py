@@ -99,9 +99,7 @@ class ControlInboxHandlers:
             case "message":
                 await self._message(session, row, payload)
             case "callback_query":
-                callback_id = payload.get("id")
-                if isinstance(callback_id, str):
-                    await self._gateway.answer_callback(callback_id, CALLBACK_EXPIRED)
+                await self._callback(session, payload)
             case "my_chat_member":
                 logger.info("owner_membership_changed", update_row_id=row.id)
             case _:
@@ -134,6 +132,30 @@ class ControlInboxHandlers:
                 from_id=from_id,
                 received_at=row.received_at,
             ),
+        )
+
+    async def _callback(self, session: AsyncSession, payload: dict[str, Any]) -> None:
+        """A button press (S02.4 cards). Runs in the singleton inbox processor,
+        so a card's effect is serialised with ingestion."""
+        callback_id = payload.get("id")
+        sender = payload.get("from") or payload.get("from_user") or {}
+        from_id = sender.get("id")
+        if not isinstance(callback_id, str) or not isinstance(from_id, int):
+            return
+        message = payload.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_id = chat.get("id")
+        message_id = message.get("message_id")
+        if not isinstance(chat_id, int):
+            await self._gateway.answer_callback(callback_id, CALLBACK_EXPIRED)
+            return
+        await self._dispatcher.dispatch_callback(
+            session,
+            callback_id=callback_id,
+            from_id=from_id,
+            data=payload.get("data") if isinstance(payload.get("data"), str) else None,
+            chat_id=chat_id,
+            message_id=message_id if isinstance(message_id, int) else None,
         )
 
     async def refused(

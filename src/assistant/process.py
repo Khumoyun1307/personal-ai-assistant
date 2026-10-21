@@ -84,7 +84,7 @@ class PollerRole(_Cancellable):
             except TelegramTransientError as error:
                 failures += 1
                 delay = BACKOFF_SECONDS[min(failures, len(BACKOFF_SECONDS)) - 1]
-                logger.warning("poller_transient", exc_type=str(error), retry_in_s=delay)
+                logger.warning("poller_transient", exc_type=type(error).__name__, retry_in_s=delay)
                 await asyncio.sleep(delay)
                 continue
             failures = 0

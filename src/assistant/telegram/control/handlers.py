@@ -21,6 +21,8 @@ from assistant.accounts.models import Account
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
 from assistant.observability.status import StatusReport
+from assistant.privacy import deletion
+from assistant.telegram.control.cards import card_keyboard
 from assistant.telegram.gateway import ControlChat, OutboundGateway, SendResult
 from assistant.telegram.render import escape
 
@@ -242,6 +244,7 @@ async def handle_managed_consent_reply(
             "Understood — nothing from your chats with other people will be sent to an "
             "AI provider. Send <code>/privacy managed</code> if you change your mind.",
         )
+        await offer_managed_data_choices(session, gateway, clock, account, message.chat_id)
         return HandlerResult(True, "managed_consent", result, note="declined")
     await service.grant_consent(
         session,
@@ -251,6 +254,8 @@ async def handle_managed_consent_reply(
         processors=AI_PROCESSORS,
         clock=clock,
     )
+    # Agreeing again lifts a "stop observing" choice made earlier.
+    await service.set_managed_mode(session, account, service.MANAGED_MODE_OBSERVE)
     result = await gateway.send_text(
         target,
         "Thank you — recorded. From now on I may send the text of the chats you "
@@ -323,11 +328,14 @@ async def handle_revoke(
     Takes effect at once: the consent wrapper reads consent on every model
     call, so queued work re-checks and stops (§6 invariant 9).
     """
-    revoked = 0
-    for kind in (service.CONSENT_AI_CONTROL, service.CONSENT_AI_MANAGED):
-        revoked += await service.revoke_consent(session, account, kind=kind, clock=clock)
+    revoked = await service.revoke_consent(
+        session, account, kind=service.CONSENT_AI_CONTROL, clock=clock
+    )
+    managed_revoked = await service.revoke_consent(
+        session, account, kind=service.CONSENT_AI_MANAGED, clock=clock
+    )
     target = ControlChat(account_id=account.id, chat_id=message.chat_id)
-    if not revoked:
+    if not revoked and not managed_revoked:
         result = await gateway.send_text(target, "There was no AI consent to revoke.")
         return HandlerResult(True, "revoke", result, note="nothing_to_revoke")
     result = await gateway.send_text(
@@ -335,7 +343,157 @@ async def handle_revoke(
         "AI consent revoked. Nothing more will be sent to an AI provider.\n"
         "/settings, /status and /privacy still work. Send /start to agree again.",
     )
+    if managed_revoked:
+        await offer_managed_data_choices(session, gateway, clock, account, message.chat_id)
     return HandlerResult(True, "revoke", result, note="revoked")
+
+
+# ------------------------------------------------------------ managed-data cards
+MANAGED_DELETE_KIND = "managed_delete"
+MANAGED_MODE_KIND = "managed_mode"
+
+DELETE_CARD_TEXT = (
+    "<b>Delete what I stored from your chats?</b>\n\n"
+    "This removes every message, name and raw update I kept from the chats you "
+    "included under Chat Automation. It cannot be undone. Summaries and settings "
+    "in this chat stay."
+)
+MODE_CARD_TEXT = (
+    "<b>How should I continue?</b>\n\n"
+    "<b>Without AI</b> — I keep observing your included chats for coverage and "
+    "visibility only; nothing is sent to an AI provider.\n"
+    "<b>Stop observing</b> — I store nothing further from them. To disconnect me "
+    "completely, remove me under Settings → Chat Automation; there is no way for "
+    "me to do that myself."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CardPress:
+    """A button press on a control-chat card, already parsed and owner-routed."""
+
+    kind: str
+    token: str
+    op: str
+    callback_id: str
+    chat_id: int
+    message_id: int | None
+
+
+async def offer_managed_data_choices(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    chat_id: int,
+) -> SendResult:
+    """Card A of the decline/revoke flow (FR-ONB-06, J1 step 5)."""
+    card = await service.create_card(
+        session, account_id=account.id, kind=MANAGED_DELETE_KIND, clock=clock
+    )
+    assert card.token is not None
+    result = await gateway.send_text(
+        ControlChat(account_id=account.id, chat_id=chat_id),
+        DELETE_CARD_TEXT,
+        keyboard=card_keyboard(
+            MANAGED_DELETE_KIND, card.token, [("Delete", "delete"), ("Keep", "keep")]
+        ),
+    )
+    card.prompt_message_id = result.message_id
+    await session.flush()
+    return result
+
+
+async def _offer_mode_choice(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    chat_id: int,
+) -> SendResult:
+    """Card B: continue without AI, or stop observing."""
+    card = await service.create_card(
+        session, account_id=account.id, kind=MANAGED_MODE_KIND, clock=clock
+    )
+    assert card.token is not None
+    result = await gateway.send_text(
+        ControlChat(account_id=account.id, chat_id=chat_id),
+        MODE_CARD_TEXT,
+        keyboard=card_keyboard(
+            MANAGED_MODE_KIND,
+            card.token,
+            [("Without AI", "observe"), ("Stop observing", "stop")],
+        ),
+    )
+    card.prompt_message_id = result.message_id
+    await session.flush()
+    return result
+
+
+async def handle_card_press(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    press: CardPress,
+) -> HandlerResult:
+    """Resolve a card exactly once; edit it in place; always answer the press.
+
+    `claim_card` is scoped to the pressing owner's account and deletes the
+    row under a lock, so a stale, foreign, expired or double tap all end as
+    "no longer active" (§6 invariant 12; S01.3 primitives).
+    """
+    card = await service.claim_card(session, account_id=account.id, token=press.token, clock=clock)
+    if card is None or card.kind != press.kind:
+        await gateway.answer_callback(press.callback_id, CALLBACK_EXPIRED_TEXT)
+        return HandlerResult(False, "card", None, note="no_longer_active")
+    target = ControlChat(account_id=account.id, chat_id=press.chat_id)
+    message_id = press.message_id if press.message_id is not None else card.prompt_message_id
+
+    async def settle(text: str, answer: str) -> SendResult | None:
+        await gateway.answer_callback(press.callback_id, answer)
+        if message_id is None:
+            return await gateway.send_text(target, text)
+        return await gateway.edit_control_text(target, message_id, text)
+
+    match (press.kind, press.op):
+        case (k, "delete") if k == MANAGED_DELETE_KIND:
+            report = await deletion.delete_managed_data(session, account_id=account.id, clock=clock)
+            result = await settle(
+                f"🗑 Deleted: {report.messages} message(s), {report.contacts_cleared} "
+                f"contact name(s), {report.payloads_cleared} raw update(s).",
+                "Deleted",
+            )
+            await _offer_mode_choice(session, gateway, clock, account, press.chat_id)
+            return HandlerResult(True, "card", result, note="deleted")
+        case (k, "keep") if k == MANAGED_DELETE_KIND:
+            result = await settle("Kept. Nothing was deleted.", "Kept")
+            await _offer_mode_choice(session, gateway, clock, account, press.chat_id)
+            return HandlerResult(True, "card", result, note="kept")
+        case (k, "observe") if k == MANAGED_MODE_KIND:
+            await service.set_managed_mode(session, account, service.MANAGED_MODE_OBSERVE)
+            result = await settle(
+                "👀 I keep observing your included chats for coverage and visibility. "
+                "Nothing is sent to an AI provider. Send <code>/privacy managed</code> "
+                "to change that.",
+                "Observing without AI",
+            )
+            return HandlerResult(True, "card", result, note="observe")
+        case (k, "stop") if k == MANAGED_MODE_KIND:
+            await service.set_managed_mode(session, account, service.MANAGED_MODE_STOPPED)
+            result = await settle(
+                "⏹ Stopped. I store nothing further from your included chats. To "
+                "disconnect me completely, remove me under Settings → Chat Automation. "
+                "Send <code>/privacy managed</code> to start observing again.",
+                "Stopped",
+            )
+            return HandlerResult(True, "card", result, note="stopped")
+        case _:
+            await gateway.answer_callback(press.callback_id, CALLBACK_EXPIRED_TEXT)
+            return HandlerResult(False, "card", None, note="unknown_op")
+
+
+CALLBACK_EXPIRED_TEXT = "This button is no longer active."
 
 
 def local_time(value: datetime | None, timezone: str) -> str:

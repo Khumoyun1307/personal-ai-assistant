@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.accounts import callbacks
 from assistant.accounts.models import Account, Consent, ControlTurn, PendingInput
 from assistant.core.clock import Clock
 
@@ -25,7 +26,7 @@ CONSENT_AI_MANAGED = "ai_managed"
 
 #: The privacy-policy version consents are recorded against. v2 adds managed
 #: conversations (docs/legal/privacy-policy.md).
-POLICY_VERSION = "v2"
+POLICY_VERSION = "v3"
 
 #: Named in every consent, because consent has to say who the data goes to
 #: (SEC-02). A new processor needs a new consent, not just a new entry here.
@@ -203,10 +204,12 @@ async def set_pending_input(
 async def get_pending_input(
     session: AsyncSession, *, account_id: int, clock: Clock
 ) -> PendingInput | None:
-    """The live pending input, if any. Expired ones are cleared, not returned."""
+    """The live pending *text* question, if any (cards are not questions:
+    they are resolved by a tap, see `claim_card`). Expired ones are cleared."""
     result = await session.execute(
         select(PendingInput)
         .where(PendingInput.account_id == account_id)
+        .where(PendingInput.token.is_(None))
         .order_by(PendingInput.id.desc())
         .limit(1)
     )
@@ -221,9 +224,12 @@ async def get_pending_input(
 
 
 async def clear_pending_input(session: AsyncSession, *, account_id: int) -> int:
-    """Drop any pending input. Returns how many were cleared."""
+    """Drop any pending text question (a command cancels it — S01.3 precedence
+    rule 1). Cards survive: their buttons stay valid until tapped or expired."""
     result = await session.execute(
-        select(PendingInput).where(PendingInput.account_id == account_id)
+        select(PendingInput)
+        .where(PendingInput.account_id == account_id)
+        .where(PendingInput.token.is_(None))
     )
     rows = list(result.scalars().all())
     for row in rows:
@@ -258,3 +264,98 @@ async def record_control_turn(
     session.add(turn)
     await session.flush()
     return turn
+
+
+# ------------------------------------------------------------ confirmation cards
+CARD_TTL = timedelta(hours=24)
+
+
+async def create_card(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    kind: str,
+    clock: Clock,
+    ref_id: int | None = None,
+    prompt_message_id: int | None = None,
+    ttl: timedelta = CARD_TTL,
+) -> PendingInput:
+    """A confirmation card's state: one row, one unguessable token (§6.7).
+
+    Unlike a text question, several cards may be live at once, and a command
+    does not cancel them. `claim_card` resolves one exactly once.
+    """
+    card = PendingInput(
+        account_id=account_id,
+        kind=kind,
+        ref_id=ref_id,
+        prompt_message_id=prompt_message_id,
+        token=callbacks.new_token(),
+        expires_at=clock.now() + ttl,
+    )
+    session.add(card)
+    await session.flush()
+    return card
+
+
+async def claim_card(
+    session: AsyncSession, *, account_id: int, token: str, clock: Clock
+) -> PendingInput | None:
+    """Resolve a card by its token — single use, under a row lock, scoped to
+    the account that owns it. None means "no longer active": unknown,
+    another owner's, expired, or already tapped (a double tap)."""
+    result = await session.execute(
+        select(PendingInput)
+        .where(PendingInput.account_id == account_id)
+        .where(PendingInput.token == token)
+        .with_for_update()
+    )
+    card = result.scalar_one_or_none()
+    if card is None:
+        return None
+    claimed = PendingInput(
+        account_id=card.account_id,
+        kind=card.kind,
+        ref_id=card.ref_id,
+        prompt_message_id=card.prompt_message_id,
+        token=card.token,
+        expires_at=card.expires_at,
+    )
+    await session.delete(card)
+    await session.flush()
+    if claimed.expires_at <= clock.now():
+        return None
+    return claimed
+
+
+async def sweep_expired_cards(session: AsyncSession, clock: Clock) -> int:
+    """Expired pending inputs of both kinds (§10.4: "until expiry")."""
+    result = await session.execute(
+        select(PendingInput).where(PendingInput.expires_at <= clock.now())
+    )
+    rows = list(result.scalars().all())
+    for row in rows:
+        await session.delete(row)
+    await session.flush()
+    return len(rows)
+
+
+# ------------------------------------------------------------ managed mode
+MANAGED_MODE_KEY = "managed_mode"
+MANAGED_MODE_OBSERVE = "observe"
+MANAGED_MODE_STOPPED = "stopped"
+
+
+def managed_mode(account: Account) -> str:
+    """How the owner's included chats are handled without AI consent:
+    `observe` (store for coverage and visibility — the default) or `stopped`
+    (store nothing further; FR-ONB-06)."""
+    value = (account.settings or {}).get(MANAGED_MODE_KEY)
+    return MANAGED_MODE_STOPPED if value == MANAGED_MODE_STOPPED else MANAGED_MODE_OBSERVE
+
+
+async def set_managed_mode(session: AsyncSession, account: Account, mode: str) -> None:
+    if mode not in (MANAGED_MODE_OBSERVE, MANAGED_MODE_STOPPED):
+        raise ValueError(mode)
+    account.settings = {**(account.settings or {}), MANAGED_MODE_KEY: mode}
+    await session.flush()

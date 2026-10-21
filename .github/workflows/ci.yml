@@ -47,6 +47,17 @@ jobs:
           PGPASSWORD=ci-local-password psql -h localhost -U postgres -d assistant \
             -c 'CREATE DATABASE assistant_test;'
 
+      # The same terse logging as compose.dev.yml: a constraint violation's
+      # DETAIL line quotes the failing row, i.e. message text (ARCHITECTURE
+      # §14.4). A service container takes no command, so it is set live.
+      - name: Terse Postgres error logging
+        run: |
+          PGPASSWORD=ci-local-password psql -h localhost -U postgres -d assistant -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET log_error_verbosity = 'terse';" \
+            -c "ALTER SYSTEM SET log_min_error_statement = 'panic';" \
+            -c "ALTER SYSTEM SET log_statement = 'none';" \
+            -c "SELECT pg_reload_conf();"
+
       - name: Lint
         run: uv run ruff check --output-format=github .
 
@@ -61,6 +72,18 @@ jobs:
 
       - name: Tests
         run: uv run pytest
+
+      # RG-10 on the database side: the test suite writes canary strings into
+      # content columns and injects constraint violations; none of it may
+      # appear in the Postgres container log.
+      - name: Database log is content-free
+        if: always()
+        run: |
+          docker logs "${{ job.services.db.id }}" > db.log 2>&1
+          if grep -q "CANARY-SYNTH" db.log; then
+            echo "::error::canary found in the Postgres log"; exit 1
+          fi
+          echo "db log: $(wc -l < db.log) lines, no canary"
 
       - name: Dependency audit
         run: uv run pip-audit

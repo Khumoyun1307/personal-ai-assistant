@@ -329,6 +329,7 @@ If the conversation mode is **Ignore**, steps 2–7 store only metadata needed f
 - **Callback data** format: `<kind>:<token>:<op>` (≤ 64 bytes). `token` is a random 10-char base62 id stored on the target row (e.g., `actions.approval_token`). Handlers verify `from.id` is the owner of that row, the row state permits the op, and then answer the callback immediately (TF §5).
 - **Rendering:** HTML parse mode through a sanitizer (escape `& < >`; only supported tags); split on block boundaries ≤ 4096 chars (control chat only; business sends are never split — §6.8); Telegram `date_time` entities for times where useful; rich messages considered in R3.
 - **Progress:** typing indicator re-sent every ~4 s during long runs. A `sendMessageDraft` "Thinking…" placeholder (control chat only — TF §5) is deferred to M08.
+- **As built (S02.4) — the confirmation card:** a card is a `pending_inputs` row with a `token` (revision 0006; `accounts/service.py::create_card`), rendered with `telegram/control/cards.py::card_keyboard` and resolved by `claim_card`, which deletes the row under `FOR UPDATE` within the presser's own account — so a double tap, a stale, foreign or expired token all answer "no longer active". Several cards may be live at once; a `/command` cancels pending *text* questions (S01.3 precedence) but not cards, which expire after 24 h (retention sweep). The `callback_query` path (`inbox_handlers._callback` → `ControlDispatcher.dispatch_callback` → `handlers.handle_card_press`) runs in the singleton inbox processor, always answers the press and edits the card in place. First flows on it: the decline/revoke cards (`managed_delete`: Delete/Keep; `managed_mode`: Without AI/Stop observing).
 
 ### 6.8 Outbound gateway
 
@@ -999,6 +1000,7 @@ Custom retry strategy: bounded attempts (default 5), small exponential base (pro
 - Postgres runs with `log_error_verbosity=terse`, `log_min_error_statement=panic` and `log_statement=none`, so "DETAIL: Failing row contains …" never puts message text in the db container log.
 - In prod the app refuses to start if `OPENAI_LOG`, or the aiohttp, aiogram, httpx or SQLAlchemy loggers, are at DEBUG.
 - Third-party error tracking is not used initially (it would be a new processor). If adopted later: self-hosted or strictly scrubbed, and disclosed.
+- **As built (S02.4):** `tests/integration/test_log_hygiene.py` runs a full scenario plus injected failures (unique and NOT NULL violations, a deterministic error, a Telegram 400, a pydantic tool-argument failure, an LLM 400, a network error whose message carries the Bot API URL with the token), each with a canary, and asserts neither the canary nor the token reaches the application log (structlog output and stdlib records). The terse Postgres settings are asserted from inside the test database; CI sets them on its service container and greps the container log for the canary after the suite. `privacy/content_columns.py` is the checked registry of every `text`/`jsonb` column (content vs structural), compared with the live schema by a test.
 
 ### 14.5 Privacy policy
 

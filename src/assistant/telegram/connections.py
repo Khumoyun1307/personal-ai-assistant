@@ -40,6 +40,8 @@ from assistant.accounts.connections import (
     ResolutionKind,
     Source,
 )
+from assistant.accounts.models import Account
+from assistant.accounts.service import MANAGED_MODE_STOPPED, managed_mode
 from assistant.core.clock import Clock
 from assistant.core.errors import TransientError
 from assistant.core.jobs import CONNECTION_NOTIFY_TASK, JobScheduler
@@ -235,6 +237,12 @@ class ConnectionRegistry:
                 update_row_id=row.id,
                 connection_status=None if resolution.status is None else resolution.status.value,
             )
+            return Disposition.IGNORED
+        account = await session.get(Account, resolution.account_id)
+        if account is None or managed_mode(account) == MANAGED_MODE_STOPPED:
+            # The owner chose "stop observing" (FR-ONB-06): nothing further is
+            # stored, and the payload goes with the row.
+            logger.info("business_update_stopped", update_row_id=row.id)
             return Disposition.IGNORED
         return resolution
 
