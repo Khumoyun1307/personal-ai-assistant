@@ -1,0 +1,116 @@
+# Production (personal) deployment — ARCHITECTURE §15.4, §14.2.
+#
+#   docker compose -f deploy/compose.prod.yml up -d --build
+#
+# Run from the repository root on the server (/opt/assistant). Secrets come
+# from the server's .env (created once by runbooks/provision.md, chmod 600).
+# The database directory is a bind mount on the provider's encrypted block
+# volume; nothing publishes a port — long polling needs no inbound traffic.
+
+name: assistant-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-assistant}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-assistant}
+    # Terse errors keep "DETAIL: Failing row contains ..." (message text) out
+    # of the container log (ARCHITECTURE §14.4) — identical to compose.dev.yml.
+    command:
+      - postgres
+      - -c
+      - log_statement=none
+      - -c
+      - log_error_verbosity=terse
+      - -c
+      - log_min_error_statement=panic
+    volumes:
+      # PostgreSQL 18 images keep data in a major-version subdirectory, so the
+      # mount goes at /var/lib/postgresql (M00 F1). DATA_DIR must be on the
+      # encrypted block volume (runbooks/provision.md verifies it).
+      - ${DATA_DIR:?set DATA_DIR in .env (a directory on the encrypted volume)}/postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-assistant} -d ${POSTGRES_DB:-assistant}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    logging: *logging
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: prod
+    image: assistant:prod
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-assistant}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-assistant}
+    command: ["python", "-m", "assistant", "migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    logging: *logging
+
+  app:
+    image: assistant:prod
+    env_file: ../.env
+    environment:
+      APP_ENV: prod
+      LOG_FORMAT: json
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-assistant}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-assistant}
+      # The backup container writes its last-success marker here; the app's
+      # daily backup_check alerts the owner when it goes stale (§17).
+      BACKUP_STATUS_PATH: /backups/last_success
+    command: ["python", "-m", "assistant", "run"]
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    # Inside Compose's grace period: workers finish in-flight sends (§4.3).
+    stop_grace_period: 90s
+    healthcheck:
+      test: ["CMD", "python", "-m", "assistant", "healthcheck"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
+    volumes:
+      - backups:/backups:ro
+    logging: *logging
+
+  backup:
+    build:
+      context: .
+      dockerfile: backup/Dockerfile
+    image: assistant-backup:prod
+    env_file: ../.env
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER:-assistant}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-assistant}
+      AGE_RECIPIENT: ${AGE_RECIPIENT:?set AGE_RECIPIENT (the age public key) in .env}
+      BACKUP_REMOTE: ${BACKUP_REMOTE:-}
+      BACKUP_HOUR_UTC: ${BACKUP_HOUR_UTC:-02}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - backups:/backups
+    logging: *logging
+
+volumes:
+  backups:

@@ -38,6 +38,10 @@ class AlertKind(StrEnum):
     #: Connected, rights changed, disabled, reconnected (FR-ONB-07). The body is
     #: composed by `inbox.connection_alerts` from the registry's state.
     CONNECTION_CHANGE = "connection_change"
+    #: The backup sidecar has not recorded a success for more than a day (§17).
+    BACKUP_STALE = "backup_stale"
+    #: The database was restored from a backup and post-restore ran (§15.6).
+    RESTORE_NOTICE = "restore_notice"
 
 
 #: Owner-facing text per kind. Plain statements of fact (§6 invariant 11).
@@ -52,6 +56,16 @@ ALERT_TEXT: dict[AlertKind, str] = {
     ),
     AlertKind.BUDGET_THRESHOLD: "💰 This month's AI spend has reached {percent}% of the budget.",
     AlertKind.CONNECTION_CHANGE: "{body}",
+    AlertKind.BACKUP_STALE: (
+        "⚠️ No successful database backup for {hours} hours. Check the backup container "
+        "(runbooks/deploy.md) — until it works, a server loss would lose recent data."
+    ),
+    AlertKind.RESTORE_NOTICE: (
+        "♻️ The database was restored from a backup taken {backup_taken_at}. Everything "
+        "decided after that is undone: autonomy is paused, open approvals were cancelled, "
+        "and messages from the gap may be missing (it is recorded as a coverage gap). "
+        "Please check /status and re-apply any settings, consent or pause you changed since."
+    ),
 }
 
 
@@ -130,7 +144,12 @@ class OwnerAlerts:
         return (await session.execute(statement.limit(1))).first() is not None
 
     async def notify_all_owners(
-        self, kind: AlertKind, *, dedupe_key: str, cooldown: timedelta | None = None
+        self,
+        kind: AlertKind,
+        *,
+        dedupe_key: str,
+        cooldown: timedelta | None = None,
+        **values: int | str,
     ) -> int:
         """A deployment-level alert (e.g. ingestion stall) to every reachable owner."""
         async with transaction(self._session_factory) as uow:
@@ -143,7 +162,7 @@ class OwnerAlerts:
         sent = 0
         for account_id in account_ids:
             outcome = await self.notify_owner(
-                account_id, kind, dedupe_key=dedupe_key, cooldown=cooldown
+                account_id, kind, dedupe_key=dedupe_key, cooldown=cooldown, **values
             )
             sent += int(outcome.sent)
         return sent

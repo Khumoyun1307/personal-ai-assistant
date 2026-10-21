@@ -14,6 +14,7 @@ queue, lock and schedule. Job arguments are ids only (AGENTS §13).
 | `system.retry_stalled_jobs` | system | every 10 minutes |
 | `system.remove_old_jobs` | system | daily |
 | `system.heartbeat_ping` | system | every 5 minutes |
+| `system.backup_check` | system | daily |
 
 Periodic tasks carry a queueing lock so a slow run never piles up copies.
 """
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 from typing import Protocol
 
 from procrastinate import App, RetryStrategy
@@ -38,6 +40,7 @@ from assistant.core.jobs import (
     owner_control_lock,
 )
 from assistant.db.uow import transaction
+from assistant.inbox.backup_check import BackupReport, check_backup, deliver_restore_notice
 from assistant.inbox.connection_alerts import notify_connection_change
 from assistant.inbox.notify import AlertResult, OwnerAlerts
 from assistant.inbox.watchdog import STALL_AFTER, check_ingestion, poller_heartbeat_at
@@ -81,6 +84,7 @@ class JobHandlers:
     alerts: OwnerAlerts
     monthly_budget_usd: Decimal | None
     heartbeat_url: str | None
+    backup_status_path: Path | None = None
 
     async def owner_request(self, turn_id: int) -> RunOutcome:
         outcome = await self.owner_runtime.run(turn_id)
@@ -103,6 +107,13 @@ class JobHandlers:
         report = await check_ingestion(self.session_factory, self.clock, self.alerts)
         if report.stalled:
             logger.warning("ingestion_stalled", heartbeat_age_s=_seconds(report.heartbeat_age))
+        # A restore notice left by `post-restore` goes out with the first run.
+        if await deliver_restore_notice(self.session_factory, self.alerts):
+            logger.warning("restore_notice_delivered")
+
+    async def backup_check(self) -> BackupReport | None:
+        """Daily: alert when the backup sidecar has not succeeded for > 26 h."""
+        return await check_backup(self.clock, self.alerts, status_path=self.backup_status_path)
 
     async def reconcile_pending(self) -> int:
         async with transaction(self.session_factory) as uow:
@@ -218,3 +229,8 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
     )
     async def heartbeat_ping(timestamp: int) -> None:
         await handlers.heartbeat_ping()
+
+    @app.periodic(cron="23 4 * * *")
+    @app.task(name="system.backup_check", queue=QUEUE_SYSTEM, queueing_lock="system.backup_check")
+    async def backup_check(timestamp: int) -> None:
+        await handlers.backup_check()

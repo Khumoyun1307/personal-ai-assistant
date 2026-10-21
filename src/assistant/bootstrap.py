@@ -35,6 +35,7 @@ from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.metering import MeteredLLMClient
 from assistant.llm.openai_adapter import OpenAIClient
 from assistant.llm.port import LLMClient
+from assistant.privacy.post_restore import assert_not_restore_pending
 from assistant.process import InboxRole, PollerRole, WorkerRole, worker_heartbeat_probe
 from assistant.telegram.business import BusinessPipeline
 from assistant.telegram.connections import AiogramConnectionLookup, ConnectionRegistry
@@ -131,6 +132,11 @@ async def running_process(
     locks: list[AdvisoryLock] = []
 
     try:
+        # §15.6: a restored database must go through post-restore before any
+        # role runs — otherwise actions and schedules from before the dump
+        # would come back as executable.
+        async with session_factory() as session:
+            await assert_not_restore_pending(session)
         if roles & {"worker", "system"}:
             alerts = OwnerAlerts(session_factory, channel, clock)
             register_tasks(
@@ -147,6 +153,7 @@ async def running_process(
                         if settings.heartbeat_url is None
                         else settings.heartbeat_url.get_secret_value()
                     ),
+                    backup_status_path=settings.backup_status_path,
                 ),
             )
         async with jobs_app.open_async():

@@ -8,6 +8,7 @@ Values come from the environment, which Compose populates from the git-ignored
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
@@ -69,6 +70,10 @@ class Settings(BaseSettings):
 
     # --- Operations ----------------------------------------------------------
     heartbeat_url: SecretStr | None = None
+    #: Where the backup sidecar writes its last-success timestamp (production
+    #: Compose mounts the backups volume read-only at /backups). Empty disables
+    #: the daily backup_check alert (ARCHITECTURE §17).
+    backup_status_path: Path | None = None
 
     @field_validator(
         "test_database_url",
@@ -78,6 +83,7 @@ class Settings(BaseSettings):
         "llm_owner_request_effort",
         "privacy_policy_url",
         "heartbeat_url",
+        "backup_status_path",
         mode="before",
     )
     @classmethod

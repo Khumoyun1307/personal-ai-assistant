@@ -86,3 +86,24 @@ shell:
 hooks:
     git config core.hooksPath .githooks
     @Write-Host "Hooks installed (core.hooksPath=.githooks)."
+
+# ---------------------------------------------------------------- production
+# The server is reached over SSH as `deploy@<host>` (runbooks/provision.md);
+# the checkout lives in /opt/assistant and tracks `main` with a deploy key.
+prod_dir := "/opt/assistant"
+
+# Deploy the current `main` to the server: pull, rebuild, migrate, restart.
+deploy host:
+    ssh {{ host }} "cd {{ prod_dir }} && git pull --ff-only && docker compose -f deploy/compose.prod.yml up -d --build --remove-orphans && docker compose -f deploy/compose.prod.yml ps"
+
+# Tail the production app log (content-free by construction, AGENTS §9).
+prod-logs host:
+    ssh {{ host }} "cd {{ prod_dir }} && docker compose -f deploy/compose.prod.yml logs --tail=200 -f app"
+
+# Production health: containers, healthcheck, last backup.
+prod-status host:
+    ssh {{ host }} "cd {{ prod_dir }} && docker compose -f deploy/compose.prod.yml ps && docker compose -f deploy/compose.prod.yml exec app python -m assistant healthcheck && docker compose -f deploy/compose.prod.yml exec backup cat /backups/last_success"
+
+# Take a backup now (otherwise daily at BACKUP_HOUR_UTC).
+prod-backup host:
+    ssh {{ host }} "cd {{ prod_dir }} && docker compose -f deploy/compose.prod.yml exec backup backup.sh once"

@@ -35,7 +35,8 @@ FROM base AS prod
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY src/ ./src/
-# TODO(S01.1): COPY migrations/ and alembic.ini once they exist.
+COPY migrations/ ./migrations/
+COPY alembic.ini ./
 RUN uv sync --frozen --no-dev \
     && groupadd --system assistant \
     && useradd --system --gid assistant --home-dir /app assistant \
