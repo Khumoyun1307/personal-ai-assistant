@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from sqlalchemy import delete, select
@@ -32,6 +33,7 @@ from assistant.conversations.models import Contact, Conversation, Message
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.db.models import KEY_POLLER_HEARTBEAT
 from assistant.db.uow import transaction
+from assistant.inbox.backup_check import check_backup
 from assistant.inbox.models import InboundUpdate
 from assistant.inbox.notify import ALERT_TEXT, AlertKind, OwnerAlerts
 from assistant.inbox.watchdog import check_ingestion
@@ -431,3 +433,58 @@ async def test_message_content_is_purged_after_ninety_days_and_the_gap_recorded(
     assert fresh_conv is not None
     assert fresh_conv.summary_gap_before is None
     assert set(names) == {None, "Fresh Synthetic"}
+
+
+# ------------------------------------------------------------ backup check
+async def test_backup_check_is_disabled_without_a_status_path(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    channel = FakeChannel()
+    alerts = OwnerAlerts(factory, channel, clock)
+    assert await check_backup(clock, alerts, status_path=None) is None
+    assert channel.sends == []
+
+
+async def test_a_fresh_backup_marker_raises_nothing(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock, tmp_path: Path
+) -> None:
+    await owner(factory, clock)
+    marker = tmp_path / "last_success"
+    marker.write_text((NOW - timedelta(hours=3)).isoformat(), encoding="utf-8")
+    channel = FakeChannel()
+    report = await check_backup(clock, OwnerAlerts(factory, channel, clock), status_path=marker)
+    assert report is not None
+    assert report.stale is False
+    assert channel.sends == []
+
+
+@pytest.mark.parametrize("state", ["missing", "stale", "garbage"])
+async def test_a_missing_or_stale_backup_alerts_the_owner_once_a_day(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock, tmp_path: Path, state: str
+) -> None:
+    await owner(factory, clock)
+    marker = tmp_path / "last_success"
+    if state == "stale":
+        marker.write_text((NOW - timedelta(hours=30)).isoformat(), encoding="utf-8")
+    elif state == "garbage":
+        marker.write_text("not a timestamp", encoding="utf-8")
+    channel = FakeChannel()
+    alerts = OwnerAlerts(factory, channel, clock)
+
+    first = await check_backup(clock, alerts, status_path=marker)
+    second = await check_backup(clock, alerts, status_path=marker)
+    clock.advance(hours=24)
+    third = await check_backup(clock, alerts, status_path=marker)
+
+    assert first is not None
+    assert (first.stale, first.alerted) == (True, True)
+    assert second is not None
+    assert (second.stale, second.alerted) == (True, False)  # cooldown
+    assert third is not None
+    assert third.alerted is True
+    assert len(channel.sends) == 2
+    assert "No successful database backup" in channel.sends[0]
+    if state == "stale":
+        assert "for 30 hours" in channel.sends[0]
+    else:
+        assert "for unknown hours" in channel.sends[0]

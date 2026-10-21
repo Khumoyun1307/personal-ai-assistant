@@ -1,7 +1,7 @@
 """Command-line entrypoint: `python -m assistant <command>`.
 
-Commands: `healthcheck`, `migrate`, `inbox requeue|status`, and `run` (the
-long-running process, S01.5).
+Commands: `healthcheck`, `migrate`, `inbox requeue|status`, `run` (the
+long-running process, S01.5) and `post-restore` (after a backup restore, S02.5).
 """
 
 from __future__ import annotations
@@ -39,6 +39,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--id", type=int, default=None, help="one row id; default is every failed row"
     )
     inbox_sub.add_parser("status", help="show inbox counts by status")
+
+    restore = sub.add_parser(
+        "post-restore", help="make a restored database safe (ARCHITECTURE §15.6)"
+    )
+    restore.add_argument(
+        "--backup-taken-at",
+        required=True,
+        help="when the restored dump was taken (ISO 8601, UTC), e.g. 2026-10-21T02:00:00Z",
+    )
     return parser
 
 
@@ -164,6 +173,7 @@ def run(args: argparse.Namespace) -> int:
     from assistant.bootstrap import InstanceAlreadyRunningError, running_process
     from assistant.config import ConfigError, Settings
     from assistant.observability.logging import UnsafeLoggingError, configure_logging
+    from assistant.privacy.post_restore import RestorePendingError
 
     try:
         settings = Settings()  # type: ignore[call-arg]
@@ -187,10 +197,54 @@ def run(args: argparse.Namespace) -> int:
 
     try:
         return asyncio.run(main())
-    except (ConfigError, InstanceAlreadyRunningError) as error:
-        # Both messages name a setting or a condition, never a value.
+    except (ConfigError, InstanceAlreadyRunningError, RestorePendingError) as error:
+        # Each message names a setting or a condition, never a value.
         print(f"Cannot start: {error}", file=sys.stderr)
         return EXIT_FAILED
+
+
+def post_restore_command(args: argparse.Namespace) -> int:
+    """`post-restore --backup-taken-at <ts>` (ARCHITECTURE §15.6; runbooks/restore.md)."""
+    from datetime import UTC, datetime
+
+    from assistant.config import Settings
+    from assistant.core.clock import SystemClock
+    from assistant.db.engine import build_engine, build_session_factory
+    from assistant.privacy.post_restore import post_restore
+
+    try:
+        settings = Settings()  # type: ignore[call-arg]
+    except ValidationError as error:
+        print("Configuration invalid:", file=sys.stderr)
+        for item in error.errors(include_input=False, include_url=False):
+            location = ".".join(str(part) for part in item["loc"]) or "<settings>"
+            print(f"  {location.upper()}: {item['msg']}", file=sys.stderr)
+        return EXIT_FAILED
+    try:
+        taken_at = datetime.fromisoformat(args.backup_taken_at.replace("Z", "+00:00"))
+    except ValueError:
+        print("--backup-taken-at must be an ISO 8601 timestamp", file=sys.stderr)
+        return EXIT_FAILED
+    if taken_at.tzinfo is None:
+        taken_at = taken_at.replace(tzinfo=UTC)
+
+    async def run_it() -> int:
+        engine = build_engine(settings.database_url.get_secret_value())
+        try:
+            report = await post_restore(
+                build_session_factory(engine), SystemClock(), backup_taken_at=taken_at
+            )
+        finally:
+            await engine.dispose()
+        print(
+            f"OK: post-restore done — {report.accounts_paused} account(s) paused, "
+            f"{report.jobs_deleted} queued job(s) dropped, {report.gaps_recorded} coverage "
+            f"gap(s) recorded, retention swept {report.sweep.total} item(s). "
+            "restore_pending cleared; the owner is notified when the app starts."
+        )
+        return EXIT_OK
+
+    return asyncio.run(run_it())
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -203,6 +257,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _inbox(args)
     if args.command == "run":
         return run(args)
+    if args.command == "post-restore":
+        return post_restore_command(args)
     print(
         f"'{args.command}' is not implemented yet; see docs/IMPLEMENTATION_PLAN.md",
         file=sys.stderr,

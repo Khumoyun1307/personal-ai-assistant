@@ -5,7 +5,7 @@ control chat and a connected business bot on the owner's account. See
 [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md) for the vision and
 [AGENTS.md](AGENTS.md) for the rules every change must follow.
 
-**Status:** M00 (Foundation & Telegram reality check), slice S00.1.
+**Status:** M02 (Account connection & observation) — S02.1–S02.5 code complete; the production host and the R0 live test are next (docs/milestones/M02.md).
 
 ## Development
 
