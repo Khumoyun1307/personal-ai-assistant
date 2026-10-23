@@ -47,11 +47,19 @@ The owner develops on **Windows 11 + Docker Desktop (WSL2 backend)**. All Python
 | Apply migrations (from S01.1) | `just migrate` | `uv run python -m assistant migrate` |
 | Create a migration | — | `uv run alembic revision --autogenerate -m "<message>"` then review by hand |
 | Run the app | `just run` | `uv run python -m assistant run` |
-| Dependency audit | — | `uv run pip-audit` |
+| Dependency audit | `just audit` | `uv run pip-audit` |
+| Apply formatting and autofixes | `just fmt` | `uv run ruff check --fix . && uv run ruff format .` |
+| Shell in the dev container | `just shell` | — |
+| Stop dev stack and delete its volumes (dev database) | `just down-hard` | — |
+| M00 probe (dev bot only, §9) | `just probe <cmd>` | `python tools/probe/probe.py <cmd>` |
+| Sanitise a probe dump into fixtures (§9) | `just sanitize var/probe/<dump>` | `python tools/probe/sanitize.py` |
+| Deploy `main` to the production server | `just deploy <host>` | — (over SSH) |
+| Production log / status / backup now | `just prod-logs <host>` / `just prod-status <host>` / `just prod-backup <host>` | — (over SSH) |
+| Provision the Oracle VM; bootstrap it; push the production `.env` (from S02.6) | `just oci-provision` / `just prod-bootstrap <host>` / `just prod-env-push <host>` | — |
 
 Run an in-container command without a recipe from the host as `docker compose -f compose.dev.yml run --rm app <cmd>`.
 
-(These commands are created in M00 S00.1; `just migrate` exists from S01.1. Until then, the repository contains documentation only.)
+(These commands are created in M00 S00.1; `just migrate` exists from S01.1, `just run` from S01.2, the deploy/`prod-*` recipes from S02.5. The `oci-*`/`prod-bootstrap`/`prod-env-push` recipes are planned for S02.6 and do not exist until it merges; recipe arguments are fixed by that slice.)
 
 ## 5. Repository layout and layering
 
@@ -119,18 +127,19 @@ Every change must preserve these. Each invariant gets a named regression test in
 - Retention is implemented, not aspirational: new data classes need a retention rule and deletion cascade.
 - **Logs never contain** message text, captions, contact names/usernames, phone numbers, tokens, API keys, or Bot API URLs (they embed the token). Use internal ids. The redaction test must pass.
 - **Coding agents never read real Telegram content.** Do not open, print, grep or summarise `var/` dumps, backups, database rows with message content, or anything else holding real chat data. Fixtures are produced by a deterministic sanitiser (`tools/probe/sanitize.py`) that keeps an allow-list of structural fields and replaces every string, name, username, caption and file id. The agent writes the sanitiser and sees only its output. **This rule is absolute and is not waived by any authorization below:** permission to *run* a command is never permission to *read* content.
-- **Live runs need the owner's go-ahead.** Anything using a real `BOT_TOKEN` or LLM provider key (`just run` against a real bot, evals, provider spikes) runs only when the owner asked for that specific run. Never use the prod bot token in development.
-  - **Standing exception, granted by the owner on 2026-10-18 — M00 probe commands.** The agent may run `tools/probe/` commands (`me`, `listen`, `send`, `dm`, `edit`, `typing`, `delete`, `getfile`, `sendphoto`, `burst`, `connection`, `summary`) against the **dev/probe bot** without asking each time, to execute the LV protocol. Conditions, all of which must hold:
+- **Two bots (owner decision 2026-10-22, superseding the 2026-10-21 one-bot decision).** **Alviro** is the **production** bot: its token lives only in the server's `.env` and only the server polls it — never a laptop (one poller per token: a second `getUpdates` caller gets `409 Conflict` or steals updates and advances the offset, so production messages are lost to the server and real content lands on the laptop). The **dev bot** (neutral name, connected under Chat Automation to the owner's second account) is used for every local run: `just run`, probes, acceptance runs and the agent's checks. The local `.env` holds only the dev bot's token.
+- **Live runs need the owner's go-ahead.** Anything using a real `BOT_TOKEN` or LLM provider key (`just run` against a real bot, evals, provider spikes) runs only when the owner asked for that specific run. Never use the production (Alviro) token in development. A one-off, non-polling call with Alviro's token from a laptop (e.g. `probe getfile` for an LV re-check) needs a per-run owner go-ahead and never runs `listen` or any `getUpdates` call; production-only behaviours are checked on the server in planned windows (R0 session).
+  - **Standing exception, granted by the owner on 2026-10-18 — M00 probe commands** (from 2026-10-22: the dev bot). The agent may run `tools/probe/` commands (`me`, `listen`, `send`, `dm`, `edit`, `typing`, `delete`, `getfile`, `sendphoto`, `burst`, `connection`, `summary`) against the **dev bot** without asking each time, to execute the LV protocol. Conditions, all of which must hold:
     1. The probe's console output is content-free by default; `--verbose` prints real payloads and **an agent must never pass it**.
     2. The agent still never opens `var/probe/`. To learn what was captured it uses `probe summary` (counts, connection ids, error strings) or the sanitiser's output.
     3. Sends go only to chats in `PROBE_ALLOWED_CHAT_IDS`, and message text the agent writes is its own synthetic test text.
-    4. This covers the probe bot only. The prod bot, evals and provider spikes still need a per-run go-ahead; dev-bot runs of the app are covered by the next exception.
+    4. This covers the dev bot only. The production bot (Alviro), evals and provider spikes still need a per-run go-ahead; dev-bot runs of the app are covered by the next exception.
     5. Steps needing a human in the Telegram client (connecting, pausing, editing, deleting, tapping "Manage Bot") remain the owner's.
-  - **Standing exception, granted by the owner on 2026-10-19 — sanitiser and dev-bot checks.** The agent may, without asking each time:
+  - **Standing exception, granted by the owner on 2026-10-19 — sanitiser and dev-bot checks** (from 2026-10-22 the dev bot is the separate non-production bot above). The agent may, without asking each time:
     1. Run the fixture sanitiser (`just sanitize var/probe/<dump>`) to produce committable fixtures. It reads only the sanitiser's output, never the dump, and checks every string value in the output is synthetic before committing (the sanitiser is a safety net, not a substitute for looking).
     2. Run the app against the **dev bot and dev database** (`just migrate`, `just run`, `just healthcheck`, `inbox requeue`) to execute a milestone's manual integration checks and acceptance runs. The LLM calls such a run makes (the owner's control-chat messages, the agent's own synthetic control-chat test messages) are covered and stay within `LLM_MONTHLY_BUDGET_USD`; the run is reported in the milestone report.
     3. Change, through the rule change process (§2), the documentation that records these permissions.
-    Conditions 1–3 and 5 of the probe exception apply unchanged: content-free console and logs only, never reading `var/` or content-bearing database rows, sends only to allow-listed chats with the agent's own synthetic text, and client-side steps stay with the owner — the agent asks only when it genuinely needs the owner to act in or look at the Telegram client. Still **not** covered: the prod bot, eval runs that call a real model (their cost needs the owner's approval, §8), provider spikes, and pushing or merging (§15).
+    Conditions 1–3 and 5 of the probe exception apply unchanged: content-free console and logs only, never reading `var/` or content-bearing database rows, sends only to allow-listed chats with the agent's own synthetic text, and client-side steps stay with the owner — the agent asks only when it genuinely needs the owner to act in or look at the Telegram client. Still **not** covered: the production bot (Alviro) and the production server's database, eval runs that call a real model (their cost needs the owner's approval, §8), provider spikes, and pushing or merging (§15).
 - Local secrets live in `.env` at the repo root (git-ignored), loaded by Compose `env_file:`. `.env.example` (committed) lists every setting with placeholder values and is updated in the same change that adds a setting. The owner enters real values; never ask for secrets in chat. Never display secret values: do not `cat`/`type`/`Get-Content` `.env`, and do not run `docker compose config`, `env` or `printenv`. Verify configuration with `just healthcheck`, which reports missing or invalid settings by name only.
 - Secret settings use pydantic `SecretStr`. Never commit `.env`, tokens, keys, `var/`, probe dumps or database dumps, and never paste secrets into chat, issues or docs.
 - New external processors (AI, embeddings, transcription, error tracking, analytics) require: owner approval, consent text update, privacy policy update — before any data flows.
@@ -151,7 +160,7 @@ Every change must preserve these. Each invariant gets a named regression test in
 
 - Every code change adds or updates tests at the appropriate layer (unit / integration / contract / scenario — IMPLEMENTATION_PLAN §10).
 - Integration tests use a **real PostgreSQL 18** (the Compose `db` service locally; a service container in CI), never SQLite.
-- Tests never call real Telegram or real LLM APIs. Use `FakeTelegramSession`, `FakeLLM`, `FakeClock`. Real-API evaluations live in `evals/` and run manually.
+- Tests never call real Telegram or real LLM APIs. Use the fakes in `tests/fakes/` (`FakeTelegramSender`, `FakeUpdateSource`, `FakeLLM`, `FakeClock`, `FakeChannel`). Real-API evaluations live in `evals/` and run manually.
 - Any change touching sending, policy, classification, ingestion, or consent must keep the **mandatory regression suite** green (IMPLEMENTATION_PLAN §10) and add a test for the new behaviour.
 - Bug fixes start with a failing test.
 - Tests are deterministic: no sleeps for timing (use the fake clock), no reliance on wall-clock ordering.
