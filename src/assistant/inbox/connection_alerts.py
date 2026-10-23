@@ -171,5 +171,8 @@ async def notify_connection_change(
                 ttl=service.MANAGED_CONSENT_TTL,
                 prompt_message_id=result.message_id,
                 token=token,
+                # Marks the card as part of a notice: answering it keeps the
+                # notice's text (tier, rights) and only removes the buttons.
+                ref_id=event_id,
             )
     return result

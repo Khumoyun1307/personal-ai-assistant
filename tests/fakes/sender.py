@@ -17,6 +17,8 @@ class FakeTelegramSender:
     def __init__(self) -> None:
         self.sends: list[dict[str, Any]] = []
         self.edits: list[dict[str, Any]] = []
+        #: `editMessageReplyMarkup` calls (a card's buttons removed, text kept).
+        self.keyboard_edits: list[dict[str, Any]] = []
         self.actions: list[dict[str, Any]] = []
         self.answered_callbacks: list[dict[str, Any]] = []
         self.fail_with: Exception | None = None
@@ -65,6 +67,27 @@ class FakeTelegramSender:
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "text": text,
+                "business_connection_id": business_connection_id,
+            }
+        )
+        if self.fail_with is not None:
+            raise self.fail_with
+        return {"message_id": message_id}
+
+    async def edit_message_reply_markup(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        reply_markup: Any | None = None,
+        business_connection_id: str | None = None,
+    ) -> dict[str, Any]:
+        await self._observe()
+        self.keyboard_edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reply_markup": reply_markup,
                 "business_connection_id": business_connection_id,
             }
         )

@@ -101,6 +101,15 @@ class TelegramSender(Protocol):
         business_connection_id: str | None = None,
     ) -> dict[str, Any]: ...
 
+    async def edit_message_reply_markup(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        reply_markup: Any | None = None,
+        business_connection_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
     async def send_chat_action(self, *, chat_id: int, action: str) -> None: ...
 
     async def answer_callback_query(
@@ -197,6 +206,20 @@ class OutboundGateway:
             return self._classify_failure(error, account_id=target.account_id)
         return SendResult(ErrorClass.OK, message_id=message_id)
 
+    async def clear_control_keyboard(self, target: ControlChat, message_id: int) -> SendResult:
+        """Remove a control-chat card's buttons and keep its text — for a
+        card whose body says more than its question (the connection notice)."""
+        try:
+            await self._sender.edit_message_reply_markup(
+                chat_id=target.chat_id,
+                message_id=message_id,
+                reply_markup=None,
+                business_connection_id=None,
+            )
+        except Exception as error:
+            return self._classify_failure(error, account_id=target.account_id)
+        return SendResult(ErrorClass.OK, message_id=message_id)
+
     async def chat_action(self, target: ControlChat, action: str = "typing") -> None:
         """Typing indicator. Control chat only.
 
@@ -242,7 +265,7 @@ class OutboundGateway:
 class AiogramSender:
     """`TelegramSender` over an aiogram `Bot`. Constructed only by bootstrap.
 
-    The four allow-listed calls and nothing else. `parse_mode="HTML"` is set
+    The five allow-listed calls and nothing else. `parse_mode="HTML"` is set
     per call, because the renderer produces Telegram HTML; the bot's default
     stays unset so no other path can send HTML by accident.
     """
@@ -281,6 +304,22 @@ class AiogramSender:
             message_id=message_id,
             text=text,
             parse_mode="HTML",
+            reply_markup=reply_markup,
+            business_connection_id=business_connection_id,
+        )
+        return {"message_id": message_id}
+
+    async def edit_message_reply_markup(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        reply_markup: Any | None = None,
+        business_connection_id: str | None = None,
+    ) -> dict[str, Any]:
+        await self._bot.edit_message_reply_markup(
+            chat_id=chat_id,
+            message_id=message_id,
             reply_markup=reply_markup,
             business_connection_id=business_connection_id,
         )

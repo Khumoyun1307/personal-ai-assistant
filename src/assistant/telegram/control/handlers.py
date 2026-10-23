@@ -329,7 +329,13 @@ async def handle_revoke(
 
     Takes effect at once: the consent wrapper reads consent on every model
     call, so queued work re-checks and stops (§6 invariant 9).
+
+    Open consent cards close first: an Agree tapped later on a card shown
+    before the revoke must not grant again. Closing them before revoking
+    also orders a concurrent press (it holds the card's row lock) ahead of
+    the revoke, so a grant it commits is revoked here too.
     """
+    await service.close_cards(session, account_id=account.id, kind=service.MANAGED_CONSENT_CARD)
     revoked = await service.revoke_consent(
         session, account, kind=service.CONSENT_AI_CONTROL, clock=clock
     )
@@ -415,6 +421,9 @@ class _Settlement:
     #: A follow-up card already created in the transaction: `(card_id, kind,
     #: token, text, buttons)`.
     follow_up: tuple[int, str, str, str, list[tuple[str, str]]] | None = None
+    #: The card's message says more than its question (a connection notice):
+    #: only its buttons are removed, and `text` arrives as a new message.
+    keep_body: bool = False
 
 
 def _queue_settlement(
@@ -433,8 +442,10 @@ def _queue_settlement(
 
     async def announce(factory: async_sessionmaker[AsyncSession]) -> None:
         await gateway.answer_callback(press.callback_id, settlement.answer)
+        if settlement.keep_body and message_id is not None:
+            await gateway.clear_control_keyboard(target, message_id)
         if settlement.text is not None:
-            if message_id is None:
+            if message_id is None or settlement.keep_body:
                 await gateway.send_text(target, settlement.text)
             else:
                 await gateway.edit_control_text(target, message_id, settlement.text)
@@ -511,12 +522,16 @@ async def handle_card_press(
     if message_id is None:
         message_id = card.prompt_message_id
 
+    # A consent card that rides on a connection notice (its `ref_id` is the
+    # connection event) keeps the notice's text: tier, rights, advice.
+    in_notice = card.kind == service.MANAGED_CONSENT_CARD and card.ref_id is not None
     match (press.kind, press.op):
         case (k, "agree") if k == service.MANAGED_CONSENT_CARD:
             granted = await _grant_managed_consent(session, clock, account)
             settlement = _Settlement(
                 "Agreed" if granted else "Already agreed",
                 MANAGED_CONSENT_GRANTED_TEXT.format(processors=", ".join(AI_PROCESSORS)),
+                keep_body=in_notice,
             )
             note = "granted" if granted else "already_granted"
         case (k, "decline") if k == service.MANAGED_CONSENT_CARD:
@@ -528,6 +543,7 @@ async def handle_card_press(
                 settlement = _Settlement(
                     "Already agreed",
                     "You have already agreed. Send <code>/privacy revoke</code> to withdraw.",
+                    keep_body=in_notice,
                 )
                 note = "already_granted"
             else:
@@ -538,6 +554,7 @@ async def handle_card_press(
                     "Declined",
                     MANAGED_CONSENT_DECLINED_TEXT,
                     await _delete_choice_card(session, clock, account),
+                    keep_body=in_notice,
                 )
                 note = "declined"
         case (k, "delete") if k == MANAGED_DELETE_KIND:

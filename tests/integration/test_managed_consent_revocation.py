@@ -12,14 +12,18 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, OperationalError
 
-from assistant.accounts.models import AuditLogEntry, PendingInput
+from assistant.accounts import service
+from assistant.accounts.models import AuditLogEntry, BusinessConnectionEvent, PendingInput
 from assistant.accounts.service import ConsentMissingError, managed_mode
 from assistant.agent.persistence import DbConsentReader
 from assistant.conversations.models import Contact, Message
 from assistant.conversations.service import conversations_awaiting_ai
 from assistant.core.routing import Route
+from assistant.inbox.connection_alerts import notify_connection_change
+from assistant.inbox.notify import OwnerAlerts
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.port import LLMRequest, Provenance, TextItem
+from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM
 from tests.integration.business_env import (
     OWNER,
@@ -361,3 +365,107 @@ async def test_expired_cards_are_swept(env: Env) -> None:
     env.clock.advance(hours=25)
     report = await sweep_all(env.factory, env.clock)
     assert report.expired_inputs == 1
+
+
+# ------------------------------------------------------------ stale consent cards
+async def _consent_cards(env: Env) -> list[PendingInput]:
+    async with env.factory() as session:
+        return list(
+            (
+                await session.execute(
+                    select(PendingInput)
+                    .where(PendingInput.kind == "managed_consent")
+                    .order_by(PendingInput.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def _managed_granted(env: Env) -> bool:
+    async with env.factory() as session:
+        state = await service.active_consent(
+            session, await live_or_account_id(env), kind=service.CONSENT_AI_MANAGED
+        )
+    return state.granted
+
+
+async def test_revoke_closes_open_consent_cards_so_a_stale_agree_grants_nothing(
+    env: Env,
+) -> None:
+    """A consent card stays open for a day. Once the owner revokes, an Agree
+    on a card shown before the revoke must not re-grant `ai_managed` (§6
+    invariant 9: consent is given by a fresh, deliberate choice)."""
+    await seed(env)
+    await deliver(env, private_message(OWNER, "/privacy managed"))
+    await deliver(env, private_message(OWNER, "/privacy managed"))
+    first, stale = await _consent_cards(env)
+    await deliver(
+        env,
+        callback(f"managed_consent:{first.token}:agree", message_id=first.prompt_message_id),
+    )
+    assert await _managed_granted(env)
+
+    await deliver(env, private_message(OWNER, "/privacy revoke"))
+    assert await _consent_cards(env) == []
+
+    await deliver(
+        env,
+        callback(f"managed_consent:{stale.token}:agree", message_id=stale.prompt_message_id),
+    )
+    assert env.sender.answered_callbacks[-1]["text"] == "This button is no longer active."
+    assert not await _managed_granted(env)
+
+
+# ------------------------------------------------------------ the connection notice's card
+async def _notice_card(env: Env) -> PendingInput:
+    """The consent card carried by the connection notice, as the
+    `connections.notify_owner` job creates it."""
+    await connect(env)
+    async with env.factory() as session:
+        event_id = (
+            (
+                await session.execute(
+                    select(BusinessConnectionEvent.id).order_by(BusinessConnectionEvent.id.desc())
+                )
+            )
+            .scalars()
+            .first()
+        )
+    assert event_id is not None
+    alerts = OwnerAlerts(env.factory, FakeChannel(), env.clock)
+    assert (await notify_connection_change(env.factory, env.clock, alerts, event_id)).sent
+    return await live_card(env, "managed_consent")
+
+
+@pytest.mark.parametrize(
+    ("op", "outcome"),
+    [("agree", "Thank you — recorded"), ("decline", "nothing from your chats")],
+)
+async def test_answering_the_notice_card_keeps_the_notice_text(
+    env: Env, op: str, outcome: str
+) -> None:
+    """The notice states the tier, the rights and what to turn off; answering
+    its question must not overwrite that. Only the buttons go; the outcome
+    arrives as a new message."""
+    card = await _notice_card(env)
+    sends_before = len(env.sender.sends)
+
+    await press(env, "managed_consent", op)
+
+    assert env.sender.edits == []  # the notice body is never replaced
+    assert [k["message_id"] for k in env.sender.keyboard_edits] == [card.prompt_message_id]
+    assert env.sender.keyboard_edits[0]["reply_markup"] is None
+    new_texts = env.sender.texts[sends_before:]
+    assert outcome in new_texts[0]
+    assert (await _managed_granted(env)) is (op == "agree")
+    if op == "decline":
+        assert "Delete what I stored" in new_texts[-1]
+
+
+async def test_answering_a_privacy_managed_card_still_edits_it_in_place(env: Env) -> None:
+    await seed(env)
+    await grant_managed(env)
+    assert any("Thank you — recorded" in edit["text"] for edit in env.sender.edits)
+    assert env.sender.keyboard_edits == []

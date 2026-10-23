@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import callbacks
@@ -331,6 +331,21 @@ async def claim_card(
     if claimed.expires_at <= clock.now():
         return None
     return claimed
+
+
+async def close_cards(session: AsyncSession, *, account_id: int, kind: str) -> int:
+    """Delete every open card of `kind`: a later tap answers "no longer
+    active". One DELETE statement, so a press holding the card's row lock
+    (`claim_card`) finishes first and this transaction's later statements see
+    what it committed."""
+    result = await session.execute(
+        delete(PendingInput)
+        .where(PendingInput.account_id == account_id)
+        .where(PendingInput.kind == kind)
+        .where(PendingInput.token.is_not(None))
+        .execution_options(synchronize_session=False)
+    )
+    return int(getattr(result, "rowcount", 0) or 0)
 
 
 async def live_card(
