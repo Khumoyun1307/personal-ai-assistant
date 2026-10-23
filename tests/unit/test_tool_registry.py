@@ -144,6 +144,43 @@ class Nested(BaseModel):
     query: str
 
 
+#: Keywords kept out of tool schemas: constraints are validated by our own
+#: Pydantic validators, so the schema stays within plain strict mode.
+_UNUSED_KEYWORDS = {"format", "minLength", "maxLength", "minItems", "maxItems", "pattern"}
+
+
+def _keywords(node: Any) -> set[str]:
+    if isinstance(node, dict):
+        return set(node) | {k for value in node.values() for k in _keywords(value)}
+    if isinstance(node, list):
+        return {k for value in node for k in _keywords(value)}
+    return set()
+
+
+def test_every_registered_tool_schema_is_strict() -> None:
+    for definition in default_registry().all():
+        schema = definition.spec().parameters
+        assert schema["additionalProperties"] is False, definition.name
+        assert sorted(schema["required"]) == sorted(schema["properties"]), definition.name
+        assert not _keywords(schema) & _UNUSED_KEYWORDS, definition.name
+
+
+def test_the_confirmation_gate_covers_state_changes_in_tainted_runs_only() -> None:
+    configure = tool("set_thing", capability=CapabilityClass.CONFIGURE)
+    control = tool("stop_thing", capability=CapabilityClass.CONTROL)
+    read = tool()
+    assert configure.needs_confirmation(tainted=True)
+    assert control.needs_confirmation(tainted=True)
+    assert not configure.needs_confirmation(tainted=False)
+    assert not read.needs_confirmation(tainted=True)
+    # Calls that only reduce autonomy run even when tainted (§7.1)...
+    for name in ("pause_autonomy", "end_delegation", "cancel_action"):
+        assert not tool(name, capability=CapabilityClass.CONTROL).needs_confirmation(tainted=True)
+    # ...and resume_autonomy never runs from a model call.
+    resume = tool("resume_autonomy", capability=CapabilityClass.CONTROL)
+    assert resume.needs_confirmation(tainted=False)
+
+
 def test_schemas_satisfy_openai_strict_mode() -> None:
     schema = strict_schema(Nested)
 

@@ -38,6 +38,48 @@ TEXT_ONLY = "I can only read text messages for now."
 CALLBACK_EXPIRED = "This button is no longer active."
 
 
+#: Fields that mark a message as forwarded: `forward_origin` (Bot API 7.0+),
+#: the legacy `forward_*` fields older payloads carry, and channel
+#: auto-forwards (https://core.telegram.org/bots/api#message).
+_FORWARD_FIELDS = (
+    "forward_origin",
+    "forward_from",
+    "forward_from_chat",
+    "forward_sender_name",
+    "forward_date",
+)
+
+
+def _is_forwarded(payload: dict[str, Any]) -> bool:
+    return bool(payload.get("is_automatic_forward")) or any(
+        payload.get(name) is not None for name in _FORWARD_FIELDS
+    )
+
+
+def third_party_text(payload: dict[str, Any]) -> tuple[bool, str | None]:
+    """`(forwarded, quoted_text)` of an owner's control-chat message (§7.1 taint).
+
+    - Forwarded: the message text itself is the third party's. A quote inside
+      a forward belongs to the forward, so it is not kept separately.
+    - Quoted: `quote.text` counts when it comes from another chat
+      (`external_reply`) or from a forwarded message the owner replies to.
+      Quoting the assistant's or the owner's own message is not third-party.
+    - An `external_reply` without a quote carries no text we store
+      (`ExternalReplyInfo` has none), so it adds nothing to the context.
+    """
+    if _is_forwarded(payload):
+        return True, None
+    quote = payload.get("quote")
+    quote_text = quote.get("text") if isinstance(quote, dict) else None
+    if not isinstance(quote_text, str) or not quote_text.strip():
+        return False, None
+    replied = payload.get("reply_to_message")
+    from_elsewhere = payload.get("external_reply") is not None or (
+        isinstance(replied, dict) and _is_forwarded(replied)
+    )
+    return False, (quote_text if from_elsewhere else None)
+
+
 class RefusalLimiter:
     """At most one refusal per chat per window, and a global cap per window.
 
@@ -116,7 +158,11 @@ class ControlInboxHandlers:
         message_id = payload.get("message_id")
         if not isinstance(chat_id, int) or not isinstance(from_id, int):
             return
+        forwarded, quoted_text = third_party_text(payload)
         text = payload.get("text")
+        if not isinstance(text, str) and forwarded:
+            # A forwarded photo or document: its caption is the forwarded text.
+            text = payload.get("caption")
         if not isinstance(text, str) or not text.strip():
             await self._gateway.send_text(
                 ControlChat(account_id=row.account_id or 0, chat_id=chat_id), TEXT_ONLY
@@ -131,6 +177,8 @@ class ControlInboxHandlers:
                 text=text,
                 from_id=from_id,
                 received_at=row.received_at,
+                forwarded=forwarded,
+                quoted_text=quoted_text,
             ),
         )
 

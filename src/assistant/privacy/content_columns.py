@@ -21,6 +21,10 @@ CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         # Generated from `search_key` (revision 0007): purged with it.
         ("messages", "search_tsv"),
         ("control_turns", "text"),
+        # Text the owner quoted or replied to from another chat (S03.1).
+        ("control_turns", "quoted_text"),
+        # A held model call's arguments, until the owner decides (S03.1).
+        ("tool_confirmations", "args"),
         ("inbound_updates", "payload"),
     }
 )
@@ -64,6 +68,9 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("agent_run_steps", "tool_name"),
         ("agent_run_steps", "args_digest"),
         ("agent_run_steps", "status"),
+        ("tool_confirmations", "tool_call_id"),
+        ("tool_confirmations", "tool_name"),
+        ("tool_confirmations", "status"),
         ("llm_calls", "purpose"),
         ("llm_calls", "model"),
         ("llm_calls", "request_id"),

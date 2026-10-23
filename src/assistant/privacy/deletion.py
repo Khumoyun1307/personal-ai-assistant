@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
@@ -88,9 +88,20 @@ async def delete_managed_data(
             update(ControlTurn)
             .where(ControlTurn.account_id == account_id)
             .where(ControlTurn.contains_managed.is_(True))
-            .where(ControlTurn.text.is_not(None))
-            .values(text=None)
+            .where((ControlTurn.text.is_not(None)) | (ControlTurn.quoted_text.is_not(None)))
+            .values(text=None, quoted_text=None)
         )
+    )
+    # Held tool calls may carry managed text in their arguments (S03.1).
+    # Named by table: the model belongs to the agent layer (import-linter).
+    await session.execute(
+        text(
+            "UPDATE app.tool_confirmations SET args = NULL, "
+            "status = CASE WHEN status = 'pending' THEN 'expired' ELSE status END, "
+            "decided_at = COALESCE(decided_at, :now) "
+            "WHERE account_id = :account_id AND args IS NOT NULL"
+        ),
+        {"account_id": account_id, "now": clock.now()},
     )
     await session.execute(
         update(Conversation)

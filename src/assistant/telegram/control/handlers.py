@@ -18,8 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import connections, service
 from assistant.accounts.models import Account, PendingInput
+from assistant.agent import confirmations
+from assistant.agent.confirmations import OP_CONFIRM, OP_REJECT, TOOL_CONFIRM_CARD
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
+from assistant.core.jobs import APPLY_CONFIRMATION_TASK, JobScheduler, owner_control_lock
 from assistant.db.uow import after_commit, transaction
 from assistant.observability.status import StatusReport
 from assistant.privacy import deletion
@@ -59,6 +62,16 @@ class IncomingMessage:
     #: When Telegram delivered it to us (`inbound_updates.received_at`), for
     #: the acknowledgement-latency metric. None outside the inbox (tests).
     received_at: datetime | None = None
+    #: Forwarded from someone else: `text` is the third party's, never a
+    #: command (§6 invariant 3b).
+    forwarded: bool = False
+    #: Text quoted from another chat or from a forwarded message.
+    quoted_text: str | None = None
+
+    @property
+    def third_party(self) -> bool:
+        """The message carries third-party text: the run it starts is tainted."""
+        return self.forwarded or self.quoted_text is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -601,6 +614,68 @@ async def handle_card_press(
 
 
 CALLBACK_EXPIRED_TEXT = "This button is no longer active."
+
+TOOL_CONFIRMED_TEXT = "✅ Confirmed. Applying it now; I will tell you when it is done."
+TOOL_REJECTED_TEXT = "❌ Rejected. Nothing was changed."
+
+
+async def handle_tool_confirmation_press(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    scheduler: JobScheduler | None,
+    account: Account,
+    press: CardPress,
+) -> HandlerResult:
+    """Confirm / Reject on a held tool call (ARCHITECTURE §7.1, S03.1).
+
+    The owner's own tap needs no further card. The card is claimed once
+    (single-use token, owner-scoped), so a double tap is a no-op; the
+    confirmation moves `pending` → `confirmed` and its job is deferred in
+    this transaction, or `pending` → `rejected`. Telegram is told after the
+    commit (`_queue_settlement`)."""
+    card = await service.claim_card(session, account_id=account.id, token=press.token, clock=clock)
+    target = ControlChat(account_id=account.id, chat_id=press.chat_id)
+    message_id = press.message_id
+    if card is None or card.kind != TOOL_CONFIRM_CARD or card.ref_id is None:
+        _queue_settlement(
+            session, gateway, press, target, message_id, _Settlement(CALLBACK_EXPIRED_TEXT)
+        )
+        return HandlerResult(False, "card", None, note="no_longer_active")
+    if message_id is None:
+        message_id = card.prompt_message_id
+    approve = press.op == OP_CONFIRM
+    if press.op not in (OP_CONFIRM, OP_REJECT):
+        _queue_settlement(
+            session, gateway, press, target, message_id, _Settlement(CALLBACK_EXPIRED_TEXT)
+        )
+        return HandlerResult(False, "card", None, note="unknown_op")
+    moved = await confirmations.decide(
+        session, account_id=account.id, confirmation_id=card.ref_id, approve=approve, clock=clock
+    )
+    if not moved:
+        _queue_settlement(
+            session, gateway, press, target, message_id, _Settlement(CALLBACK_EXPIRED_TEXT)
+        )
+        return HandlerResult(False, "card", None, note="already_decided")
+    if approve:
+        if scheduler is None:
+            raise RuntimeError("a job scheduler is required to apply a confirmation")
+        connection = await session.connection()
+        raw = await connection.get_raw_connection()
+        await scheduler.defer(
+            APPLY_CONFIRMATION_TASK,
+            args={"confirmation_id": card.ref_id},
+            lock=owner_control_lock(account.id),
+            connection=raw.driver_connection,
+        )
+        settlement = _Settlement("Confirmed", TOOL_CONFIRMED_TEXT)
+        note = "confirmed"
+    else:
+        settlement = _Settlement("Rejected", TOOL_REJECTED_TEXT)
+        note = "rejected"
+    _queue_settlement(session, gateway, press, target, message_id, settlement)
+    return HandlerResult(True, "card", None, note=note)
 
 
 def local_time(value: datetime | None, timezone: str) -> str:

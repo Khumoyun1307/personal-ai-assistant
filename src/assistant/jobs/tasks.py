@@ -8,6 +8,7 @@ queue, lock and schedule. Job arguments are ids only (AGENTS §13).
 |---|---|---|
 | `agent.owner_request(turn_id)` | llm | lock `acct:{id}:control` (set at defer) |
 | `connections.notify_owner(event_id)` | system | deferred with the registry change (S02.1) |
+| `agent.apply_confirmation(confirmation_id)` | llm | lock `acct:{id}:control` (at defer) |
 | `system.ingestion_watchdog` | system | every minute |
 | `system.reconcile_pending` | system | every minute |
 | `system.retention_sweep` | system | hourly |
@@ -31,9 +32,11 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.agent.budget import check_budget_thresholds
+from assistant.agent.confirmations import ApplyOutcome
 from assistant.agent.runtime import RunOutcome
 from assistant.core.clock import Clock
 from assistant.core.jobs import (
+    APPLY_CONFIRMATION_TASK,
     CONNECTION_NOTIFY_TASK,
     OWNER_REQUEST_TASK,
     JobScheduler,
@@ -75,6 +78,10 @@ class OwnerRuntime(Protocol):
     async def run(self, turn_id: int) -> RunOutcome: ...
 
 
+class Applier(Protocol):
+    async def apply(self, confirmation_id: int) -> ApplyOutcome: ...
+
+
 @dataclass(frozen=True, slots=True)
 class JobHandlers:
     session_factory: async_sessionmaker[AsyncSession]
@@ -87,6 +94,14 @@ class JobHandlers:
     backup_status_path: Path | None = None
     #: An off-site remote is configured: the upload marker is checked too.
     backup_upload_required: bool = False
+    #: Runs held tool calls the owner confirmed (S03.1).
+    confirmation_applier: Applier | None = None
+
+    async def apply_confirmation(self, confirmation_id: int) -> ApplyOutcome:
+        if self.confirmation_applier is None:
+            logger.warning("confirmation_applier_missing", confirmation_id=confirmation_id)
+            return ApplyOutcome("skipped")
+        return await self.confirmation_applier.apply(confirmation_id)
 
     async def owner_request(self, turn_id: int) -> RunOutcome:
         outcome = await self.owner_runtime.run(turn_id)
@@ -151,6 +166,7 @@ class JobHandlers:
                 message_contents=report.message_contents,
                 contact_names=report.contact_names,
                 expired_inputs=report.expired_inputs,
+                tool_confirmations=report.tool_confirmations,
             )
         return report
 
@@ -177,6 +193,12 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
     @app.task(name=OWNER_REQUEST_TASK, queue=QUEUE_LLM, retry=OWNER_REQUEST_RETRY)
     async def owner_request(turn_id: int) -> None:
         await handlers.owner_request(turn_id)
+
+    @app.task(name=APPLY_CONFIRMATION_TASK, queue=QUEUE_LLM, retry=OWNER_REQUEST_RETRY)
+    async def apply_confirmation(confirmation_id: int) -> None:
+        # Lock `acct:{id}:control` is set at defer; a retry or redelivery is
+        # a no-op once the row has left `confirmed`.
+        await handlers.apply_confirmation(confirmation_id)
 
     @app.task(name=CONNECTION_NOTIFY_TASK, queue=QUEUE_SYSTEM, retry=NOTIFY_RETRY)
     async def connection_notify(event_id: int) -> None:

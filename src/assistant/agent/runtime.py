@@ -22,7 +22,7 @@ Nothing is held in a database transaction across an LLM or Telegram call.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -47,10 +47,11 @@ from assistant.agent.persistence import (
     month_start,
 )
 from assistant.agent.ports import ControlChannel
-from assistant.agent.tools.executor import StepRecorder, ToolExecutor
+from assistant.agent.tools.executor import StepRecorder, TaintRecorder, ToolExecutor
 from assistant.agent.tools.registry import (
     CapabilityTier,
     ToolContext,
+    ToolRefs,
     ToolRegistry,
     ToolServices,
 )
@@ -143,6 +144,10 @@ class _RunState:
     tokens: int = 0
     #: Whether anything managed reached the model; the reply inherits it.
     used_managed: bool = False
+    #: Third-party text is in the context (§7.1); persisted on `agent_runs`.
+    tainted: bool = False
+    #: Conversations/contacts the tool results drew on; written to the reply turn.
+    refs: ToolRefs = field(default_factory=ToolRefs)
     #: When the owner's message arrived, and how long until the typing indicator.
     received_at: datetime | None = None
     ack_latency_ms: int | None = None
@@ -205,16 +210,18 @@ class OwnerRequestRuntime:
                 account_id=state.account_id,
                 run_id=state.run_id,
                 run_type=RUN_TYPE,
-                tainted=False,
+                tainted=state.tainted,
                 services=ToolServices(
                     session_factory=self._session_factory,
                     clock=self._clock,
                     monthly_budget_usd=self._config.monthly_budget_usd,
+                    channel=self._channel,
                 ),
             ),
             offered=offered,
             record_step=self._step_recorder(state.account_id, state.run_id),
             clock=self._clock,
+            on_taint=self._taint_recorder(state),
         )
         return await self._loop(state, executor, prompt.label)
 
@@ -267,6 +274,9 @@ class OwnerRequestRuntime:
             context = build_owner_request(
                 prompt=prompt, account=account, history=history, turn=turn, now=self._clock.now()
             )
+            # Tainted from the start when the context already carries
+            # third-party text or managed content (§7.1, M03 D45).
+            run.tainted = context.tainted
             state = _RunState(
                 account_id=account_id,
                 chat_id=chat_id,
@@ -274,6 +284,7 @@ class OwnerRequestRuntime:
                 items=list(context.items),
                 instructions=context.instructions,
                 used_managed=any(item.provenance is Provenance.MANAGED for item in context.items),
+                tainted=context.tainted,
                 received_at=turn.created_at,
             )
             return _Started(
@@ -351,6 +362,7 @@ class OwnerRequestRuntime:
                     # All results of one turn go back together, before the next call.
                     results = await executor.execute_all(response.tool_calls)
                     state.items.extend(results)
+                    state.refs = executor.refs
                     if any(result.provenance is Provenance.MANAGED for result in results):
                         state.used_managed = True
                 case StopReason.COMPLETED:
@@ -382,6 +394,19 @@ class OwnerRequestRuntime:
             month_start(self._clock.now())
         )
         return spent >= limit
+
+    def _taint_recorder(self, state: _RunState) -> TaintRecorder:
+        """Persist the taint the moment it happens, not at the end of the run:
+        a crash mid-run must not leave a tainted run looking clean."""
+
+        async def record() -> None:
+            state.tainted = True
+            async with transaction(self._session_factory) as uow:
+                run = await AgentRunRepository(uow.session, state.account_id).get(state.run_id)
+                if run is not None:
+                    run.tainted = True
+
+        return record
 
     def _step_recorder(self, account_id: int, run_id: int) -> StepRecorder:
         async def record(tool_name: str, digest: str | None, status: str, latency_ms: int) -> None:
@@ -431,6 +456,9 @@ class OwnerRequestRuntime:
                     # content: excluded later if `ai_managed` is revoked.
                     contains_managed=state.used_managed,
                     run_id=state.run_id,
+                    # Which conversations/contacts the reply drew on, so a
+                    # deletion of one of them can find this turn (§10.4).
+                    refs=state.refs.as_json(),
                 )
             )
         logger.info(

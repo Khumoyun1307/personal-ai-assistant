@@ -6,7 +6,8 @@ Every data class the privacy policy names has a rule here, and the hourly
 | Data | Kept | Then |
 |---|---|---|
 | `inbound_updates.payload` | 7 days | payload cleared; the row stays as content-free metadata |
-| `control_turns.text` | 90 days | text cleared; the row stays (role, time, run link) |
+| `control_turns.text`, `quoted_text` | 90 days | texts cleared; the row stays |
+| `tool_confirmations.args` | until decided / 24 h | cleared (`expired` if undecided) |
 | `llm_calls`, `agent_runs` (+ steps), `audit_log` | 1 year | rows deleted (they carry no content) |
 | `business_connection_events` | 1 year | rows deleted (ids, rights, flags only) |
 | `foreign_connections` | 30 days after last seen | rows deleted (metadata of non-owners) |
@@ -43,6 +44,8 @@ CONTROL_TURN_TEXT_RETENTION = timedelta(days=90)
 MESSAGE_CONTENT_RETENTION = timedelta(days=90)
 ACCOUNTING_RETENTION = timedelta(days=365)
 FOREIGN_CONNECTION_RETENTION = timedelta(days=30)
+#: A held tool call waits as long as its confirmation card (`CARD_TTL`).
+TOOL_CONFIRMATION_TTL = timedelta(hours=24)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,11 +60,13 @@ class SweepReport:
     message_contents: int = 0
     contact_names: int = 0
     expired_inputs: int = 0
+    tool_confirmations: int = 0
 
     @property
     def total(self) -> int:
         return (
-            self.inbound_payloads
+            self.tool_confirmations
+            + self.inbound_payloads
             + self.control_turn_texts
             + self.llm_calls
             + self.agent_runs
@@ -105,10 +110,11 @@ async def sweep_all(session_factory: async_sessionmaker[AsyncSession], clock: Cl
             await uow.session.execute(
                 update(ControlTurn)
                 .where(ControlTurn.created_at < now - CONTROL_TURN_TEXT_RETENTION)
-                .where(ControlTurn.text.is_not(None))
-                .values(text=None)
+                .where((ControlTurn.text.is_not(None)) | (ControlTurn.quoted_text.is_not(None)))
+                .values(text=None, quoted_text=None)
             )
         )
+    confirmations = await sweep_tool_confirmations(session_factory, clock)
     accounting_cutoff = now - ACCOUNTING_RETENTION
     async with transaction(session_factory) as uow:
         # `llm_calls` and `agent_runs` belong to the agent layer, which a domain
@@ -162,7 +168,42 @@ async def sweep_all(session_factory: async_sessionmaker[AsyncSession], clock: Cl
         message_contents,
         contact_names,
         expired,
+        confirmations,
     )
+
+
+async def sweep_tool_confirmations(
+    session_factory: async_sessionmaker[AsyncSession], clock: Clock
+) -> int:
+    """Held tool calls (S03.1): a pending one expires with its card (24 h) and
+    loses its arguments; arguments of decided calls are cleared if anything
+    left them; rows go after a year with the run accounting. Named by table:
+    the model belongs to the agent layer (import-linter)."""
+    now = clock.now()
+    async with transaction(session_factory) as uow:
+        expired = _count(
+            await uow.session.execute(
+                text(
+                    "UPDATE app.tool_confirmations SET status = 'expired', args = NULL, "
+                    "decided_at = :now WHERE status = 'pending' AND created_at < :cutoff"
+                ),
+                {"now": now, "cutoff": now - TOOL_CONFIRMATION_TTL},
+            )
+        )
+        cleared = _count(
+            await uow.session.execute(
+                text(
+                    "UPDATE app.tool_confirmations SET args = NULL "
+                    "WHERE status IN ('applied', 'failed', 'rejected', 'expired') "
+                    "AND args IS NOT NULL"
+                )
+            )
+        )
+        await uow.session.execute(
+            text("DELETE FROM app.tool_confirmations WHERE created_at < :cutoff"),
+            {"cutoff": now - ACCOUNTING_RETENTION},
+        )
+    return expired + cleared
 
 
 async def sweep_message_content(

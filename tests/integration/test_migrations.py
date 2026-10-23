@@ -35,6 +35,7 @@ EXPECTED_TABLES = {
     "llm_calls",
     "pending_inputs",
     "system_state",
+    "tool_confirmations",
 }
 
 
@@ -171,6 +172,37 @@ def test_0007_search_vector_follows_the_key_and_reverses(scratch_url: str) -> No
         assert (
             conn.execute("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'").fetchone() is None
         )
+    run_alembic(scratch_url, "head")
+
+
+def test_0008_third_party_turns_and_tool_confirmations_reverse(scratch_url: str) -> None:
+    """S03.1: the two control-turn columns and `tool_confirmations` (unique per
+    run and call, status CHECK) come and go symmetrically."""
+    run_alembic(scratch_url, "head")
+    assert {"third_party", "quoted_text"} <= _columns(scratch_url, "control_turns")
+    assert "tool_confirmations" in tables_in(scratch_url, "app")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account = conn.execute(
+            "INSERT INTO app.accounts (telegram_user_id) VALUES (4343) RETURNING id"
+        ).fetchone()
+        assert account is not None
+        insert = (
+            "INSERT INTO app.tool_confirmations (account_id, tool_call_id, tool_name, status) "
+            "VALUES (%s, %s, 'synthetic', %s)"
+        )
+        conn.execute(insert, (account[0], "c1", "pending"))
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(insert, (account[0], "c2", "done"))
+        default = conn.execute(
+            "INSERT INTO app.control_turns (account_id, role) VALUES (%s, 'owner') "
+            "RETURNING third_party, quoted_text",
+            (account[0],),
+        ).fetchone()
+        assert default == (False, None)
+
+    run_alembic(scratch_url, "0007", down=True)
+    assert not {"third_party", "quoted_text"} & _columns(scratch_url, "control_turns")
+    assert "tool_confirmations" not in tables_in(scratch_url, "app")
     run_alembic(scratch_url, "head")
 
 

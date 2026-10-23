@@ -9,8 +9,10 @@ schema, so a new content column cannot slip in unclassified.
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 
+from assistant.accounts.service import record_control_turn
+from assistant.agent.models import ToolConfirmation
 from assistant.privacy.content_columns import CONTENT_COLUMNS, NON_CONTENT_COLUMNS
 from assistant.privacy.deletion import delete_managed_data
 from tests.integration.business_env import (
@@ -111,6 +113,41 @@ async def test_after_deletion_no_managed_content_remains_in_any_content_column(e
     assert report.contacts_cleared == 1
     assert report.payloads_cleared >= 3  # message, edit, deletion, connection
     assert await _columns_containing(env, CANARY) == []
+
+
+async def test_deletion_clears_quoted_text_and_held_tool_arguments(env: Env) -> None:
+    """S03.1 content columns: `control_turns.quoted_text` of a turn built on
+    managed content, and `tool_confirmations.args`, go with the rest."""
+    await connect(env)
+    await deliver(env, business_message(message_text=f"{CANARY} chat"))
+    account_id = await _account_id(env, OWNER)
+    async with env.factory() as session, session.begin():
+        await record_control_turn(
+            session,
+            account_id=account_id,
+            role="owner",
+            text=f"{CANARY} asked",
+            quoted_text=f"{CANARY} quoted",
+            contains_managed=True,
+        )
+        session.add(
+            ToolConfirmation(
+                account_id=account_id,
+                tool_call_id="call-1",
+                tool_name="synthetic_configure",
+                args={"note": f"{CANARY} held"},
+            )
+        )
+    before = await _columns_containing(env, CANARY)
+    assert {"app.control_turns.quoted_text", "app.tool_confirmations.args"} <= set(before)
+
+    async with env.factory() as session, session.begin():
+        await delete_managed_data(session, account_id=account_id, clock=env.clock)
+
+    assert await _columns_containing(env, CANARY) == []
+    async with env.factory() as session:
+        status = (await session.execute(select(ToolConfirmation.status))).scalar_one()
+    assert status == "expired"
 
 
 async def test_deletion_leaves_other_accounts_intact(migrated_url: str) -> None:

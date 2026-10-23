@@ -201,6 +201,10 @@ async def environment(
     async def notify_owner(event_id: int) -> None:  # deferred only
         return None
 
+    @app.task(name="agent.apply_confirmation", queue="llm")
+    async def apply_confirmation(confirmation_id: int) -> None:  # deferred only
+        return None
+
     scheduler = ProcrastinateScheduler(app)
     owners = owner_ids
     lookup = FakeLookup()

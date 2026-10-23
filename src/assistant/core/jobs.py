@@ -22,6 +22,9 @@ JobArgs = Mapping[str, int | str]
 #: jobs adapter that registers them.
 OWNER_REQUEST_TASK = "agent.owner_request"
 CONNECTION_NOTIFY_TASK = "connections.notify_owner"
+#: Runs a held tool call the owner confirmed (S03.1). Deferred with the
+#: owner's control lock, never scheduled (AGENTS §13).
+APPLY_CONFIRMATION_TASK = "agent.apply_confirmation"
 
 
 class JobScheduler(Protocol):

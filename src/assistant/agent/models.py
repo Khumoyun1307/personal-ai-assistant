@@ -2,13 +2,16 @@
 
 These tables exist to make model usage auditable and billable: what ran, which
 prompt version, how many tokens, what it cost. None of them store content —
-`agent_run_steps` keeps a digest of tool arguments, never the arguments.
+`agent_run_steps` keeps a digest of tool arguments, never the arguments. The
+one exception is `tool_confirmations.args`, held only until the owner decides
+(see the class).
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -21,7 +24,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import TIMESTAMP
+from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
 from assistant.db.base import Base, CreatedAt, IdPk
@@ -91,6 +94,46 @@ class AgentRunStep(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[CreatedAt]
+
+
+CONFIRMATION_STATUSES = ("pending", "confirmed", "applied", "failed", "rejected", "expired")
+
+
+class ToolConfirmation(Base):
+    """A model-initiated state change held for the owner's tap (§7.1, S03.1).
+
+    In a tainted run a `configure`/`control` call is not executed: its
+    validated arguments wait here and the owner gets a confirmation card.
+    Confirm → `agent.apply_confirmation` runs it once (`confirmed` →
+    `applied` / `failed`); Reject → `rejected`; no tap → `expired`.
+
+    CONTENT-BEARING: `args` (the model may have put contact text in them).
+    Nulled as soon as the call is decided, applied or expired (§10.4).
+    """
+
+    __tablename__ = "tool_confirmations"
+    __table_args__ = (
+        UniqueConstraint("run_id", "tool_call_id", name="uq_tool_confirmations_run_id_call_id"),
+        CheckConstraint(
+            "status IN " + str(CONFIRMATION_STATUSES).replace('"', "'"),
+            name="ck_tool_confirmations_status",
+        ),
+        Index("ix_tool_confirmations_account_id_status", "account_id", "status"),
+    )
+
+    id: Mapped[IdPk]
+    account_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app.accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    run_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("app.agent_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    tool_call_id: Mapped[str] = mapped_column(Text, nullable=False)
+    tool_name: Mapped[str] = mapped_column(Text, nullable=False)
+    args: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    created_at: Mapped[CreatedAt]
+    decided_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
 
 class LlmCall(Base):
