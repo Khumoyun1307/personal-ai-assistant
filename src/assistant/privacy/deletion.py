@@ -187,6 +187,9 @@ async def purge_conversation(
             .where(Message.conversation_id == conversation_id)
         )
     )
+    turns = await redact_turns_referring_to(
+        session, account_id=account_id, conversation_id=conversation_id, clock=clock
+    )
     contacts = _count(
         await session.execute(
             update(Contact)
@@ -202,4 +205,48 @@ async def purge_conversation(
         )
     )
     await session.flush()
-    return DeletionReport(messages, contacts, payloads, 0)
+    return DeletionReport(messages, contacts, payloads, turns)
+
+
+async def redact_turns_referring_to(
+    session: AsyncSession, *, account_id: int, conversation_id: int, clock: Clock
+) -> int:
+    """Clear control turns whose `refs` name this conversation or its contact
+    (an answer that quoted it, ARCHITECTURE §10.4), and the arguments of tool
+    calls held in the runs that wrote them. Returns the turns cleared.
+
+    Matched by jsonb containment on the two id lists the agent writes
+    (`{"conversation_ids": [...], "contact_ids": [...]}`)."""
+    contact_id = (
+        await session.execute(
+            select(Conversation.contact_id)
+            .where(Conversation.account_id == account_id)
+            .where(Conversation.id == conversation_id)
+        )
+    ).scalar_one_or_none()
+    refers = ControlTurn.refs.contains({"conversation_ids": [conversation_id]})
+    if contact_id is not None:
+        refers = refers | ControlTurn.refs.contains({"contact_ids": [contact_id]})
+    redacted = await session.execute(
+        update(ControlTurn)
+        .where(ControlTurn.account_id == account_id)
+        .where(refers)
+        .where((ControlTurn.text.is_not(None)) | (ControlTurn.quoted_text.is_not(None)))
+        .values(text=None, quoted_text=None)
+        .returning(ControlTurn.run_id)
+    )
+    rows = redacted.all()
+    run_ids = sorted({run_id for (run_id,) in rows if run_id is not None})
+    if run_ids:
+        # Named by table: the model belongs to the agent layer (import-linter).
+        await session.execute(
+            text(
+                "UPDATE app.tool_confirmations SET args = NULL, "
+                "status = CASE WHEN status = 'pending' THEN 'expired' ELSE status END, "
+                "decided_at = COALESCE(decided_at, :now) "
+                "WHERE account_id = :account_id AND run_id = ANY(:run_ids) "
+                "AND args IS NOT NULL"
+            ),
+            {"account_id": account_id, "run_ids": run_ids, "now": clock.now()},
+        )
+    return len(rows)

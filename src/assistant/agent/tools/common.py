@@ -13,11 +13,13 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
+from typing import Annotated, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from pydantic import AfterValidator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,13 +41,65 @@ COVERAGE_RULE = (
 )
 
 
+#: Dates a question can sensibly name; outside them the UTC conversion could
+#: overflow (`9999-12-31` + 1 day).
+MIN_DATE = date(2000, 1, 1)
+MAX_DATE = date(2100, 12, 31)
+#: Ids are Postgres `bigint`: anything outside would make the query fail.
+MAX_ID = 2**63 - 1
+
+_CURSOR = re.compile(r"^(\d{1,17})\.(\d{1,19})$")
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
 def parse_local_date(value: str | None) -> date | None:
-    """A `YYYY-MM-DD` string, or None. Raises ValueError otherwise."""
+    """A `YYYY-MM-DD` string within `MIN_DATE`..`MAX_DATE`, or None.
+    Raises ValueError otherwise."""
     if value is None:
         return None
     if len(value) != 10:
         raise ValueError("dates must be YYYY-MM-DD")
-    return date.fromisoformat(value)
+    parsed = date.fromisoformat(value)
+    if not MIN_DATE <= parsed <= MAX_DATE:
+        raise ValueError(f"dates must be between {MIN_DATE} and {MAX_DATE}")
+    return parsed
+
+
+def check_id(value: int | None) -> int | None:
+    """An id argument: None, or 1..2^63-1 (0 is not "no filter")."""
+    if value is not None and not 1 <= value <= MAX_ID:
+        raise ValueError("ids are positive 64-bit integers")
+    return value
+
+
+#: An optional id argument, validated by `check_id`.
+OptionalId = Annotated[int | None, AfterValidator(check_id)]
+
+
+def one(value: int | None) -> tuple[int, ...]:
+    """An optional id as a filter tuple (`()` = no filter; 0 is refused earlier)."""
+    return () if value is None else (value,)
+
+
+def encode_cursor(position: tuple[datetime, int] | None) -> str | None:
+    """An opaque page cursor: the oldest shown message's `(sent_at, id)`."""
+    if position is None:
+        return None
+    moment, message_id = position
+    micros = (moment - _EPOCH) // timedelta(microseconds=1)
+    return f"{micros}.{message_id}"
+
+
+def decode_cursor(value: str | None) -> tuple[datetime, int] | None:
+    """Strict inverse of `encode_cursor`; ValueError for anything else."""
+    if value is None:
+        return None
+    match = _CURSOR.fullmatch(value)
+    if match is None:
+        raise ValueError("cursor must be a next_cursor value returned earlier")
+    message_id = int(match.group(2))
+    check_id(message_id)
+    return _EPOCH + timedelta(microseconds=int(match.group(1))), message_id
 
 
 def zone(timezone: str) -> ZoneInfo:

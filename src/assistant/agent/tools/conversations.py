@@ -22,9 +22,13 @@ from assistant.accounts.models import Account
 from assistant.agent.tools.common import (
     COVERAGE_RULE,
     DIRECTION_LABELS,
+    OptionalId,
+    decode_cursor,
+    encode_cursor,
     local_time,
     message_text,
     name,
+    one,
     require_contacts,
 )
 from assistant.agent.tools.registry import (
@@ -64,6 +68,11 @@ def _text(max_length: int) -> AfterValidator:
     return AfterValidator(check)
 
 
+def _cursor(value: str | None) -> str | None:
+    decode_cursor(value)  # strict: only a next_cursor returned earlier
+    return value
+
+
 def _row(row: read.ConversationRow, timezone: str) -> dict[str, object]:
     return {
         "conversation_id": row.conversation_id,
@@ -96,7 +105,7 @@ class ListConversationsArgs(BaseModel):
     mode: Literal["observe", "assist", "ignore"] | None = Field(
         description="Only chats in this mode, or null."
     )
-    contact_id: int | None = Field(description="Only this contact's chat, or null.")
+    contact_id: OptionalId = Field(description="Only this contact's chat, or null.")
     awaiting_owner_reply: bool | None = Field(
         description="true: only chats where the contact wrote last (owner has not replied)."
     )
@@ -109,20 +118,18 @@ async def list_conversations_tool(ctx: ToolContext, args: ListConversationsArgs)
     services = ctx.services
     async with transaction(services.session_factory) as uow:
         account = await _account(ctx, uow.session)
-        await require_contacts(
-            uow.session, ctx.account_id, [args.contact_id] if args.contact_id else []
-        )
+        await require_contacts(uow.session, ctx.account_id, one(args.contact_id))
         since = (
             services.clock.now() - timedelta(days=args.active_within_days)
-            if args.active_within_days
+            if args.active_within_days is not None
             else None
         )
         rows = await read.list_conversations(
             uow.session,
             ctx.account_id,
             active_since=since,
-            modes=(args.mode,) if args.mode else (),
-            contact_ids=(args.contact_id,) if args.contact_id else (),
+            modes=(args.mode,) if args.mode is not None else (),
+            contact_ids=one(args.contact_id),
             awaiting_owner_reply=bool(args.awaiting_owner_reply),
             limit=args.limit or 20,
         )
@@ -161,10 +168,10 @@ LIST_CONVERSATIONS = ToolDefinition(
 class GetConversationArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    conversation_id: int | None = Field(description="The conversation, or null to use contact_id.")
-    contact_id: int | None = Field(description="The contact whose chat to read, or null.")
-    before_message_id: int | None = Field(
-        description="For older messages: the next_cursor of the previous page, or null."
+    conversation_id: OptionalId = Field(description="The conversation, or null to use contact_id.")
+    contact_id: OptionalId = Field(description="The contact whose chat to read, or null.")
+    cursor: Annotated[str | None, AfterValidator(_cursor)] = Field(
+        description="For older messages: next_cursor from the previous page, or null."
     )
     limit: Annotated[int | None, _bounded(1, read.MAX_PAGE)] = Field(
         description="How many messages, 1-50 (default 30), or null."
@@ -196,7 +203,7 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
             session,
             ctx.account_id,
             conversation_id,
-            before_message_id=args.before_message_id,
+            before=decode_cursor(args.cursor),
             limit=args.limit or 30,
         )
     tz = account.timezone
@@ -217,7 +224,7 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
                 }
                 for m in page.messages
             ],
-            "next_cursor": page.next_cursor,
+            "next_cursor": encode_cursor(page.next_cursor),
             "summary": None,
             "timezone": tz,
             "coverage": {
@@ -243,7 +250,7 @@ GET_CONVERSATION = ToolDefinition(
     description=(
         "Read the stored messages of one chat with another person, newest page first "
         "(each page oldest to newest), by conversation_id or contact_id. Use "
-        "next_cursor as before_message_id for older messages. Includes what the record "
+        "next_cursor as cursor for older messages. Includes what the record "
         "cannot contain (coverage start, deleted/expired messages, gaps)."
     ),
     args_model=GetConversationArgs,

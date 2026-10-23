@@ -98,7 +98,7 @@ async def test_a_tainted_run_still_reads_and_answers(env: Env) -> None:
                 args(
                     conversation_id=conversation_id,
                     contact_id=None,
-                    before_message_id=None,
+                    cursor=None,
                     limit=None,
                 ),
             )
@@ -142,7 +142,7 @@ async def test_contact_text_and_names_reach_the_model_only_wrapped(env: Env) -> 
                 args(
                     conversation_id=conversation_id,
                     contact_id=None,
-                    before_message_id=None,
+                    cursor=None,
                     limit=None,
                 ),
             )
@@ -192,16 +192,39 @@ async def test_the_reply_turn_records_the_conversations_and_contacts_it_drew_on(
 
 
 # ------------------------------------------------------------ AGENTS §8 tool tests
+SEARCH_ARGS: dict[str, Any] = {
+    "queries": ["x"],
+    "contact_id": None,
+    "conversation_id": None,
+    "since": None,
+    "until": None,
+    "limit": None,
+}
+LIST_ARGS: dict[str, Any] = {
+    "active_within_days": None,
+    "mode": None,
+    "contact_id": None,
+    "awaiting_owner_reply": None,
+    "limit": None,
+}
+GET_ARGS: dict[str, Any] = {
+    "conversation_id": None,
+    "contact_id": None,
+    "cursor": None,
+    "limit": None,
+}
+
+
 @pytest.mark.parametrize(
     ("tool", "arguments"),
     [
         (
             "get_conversation",
-            {"conversation_id": 1, "contact_id": 2, "before_message_id": None, "limit": None},
+            {"conversation_id": 1, "contact_id": 2, "cursor": None, "limit": None},
         ),
         (
             "get_conversation",
-            {"conversation_id": None, "contact_id": None, "before_message_id": None, "limit": None},
+            {"conversation_id": None, "contact_id": None, "cursor": None, "limit": None},
         ),
         (
             "search_messages",
@@ -259,6 +282,17 @@ async def test_the_reply_turn_records_the_conversations_and_contacts_it_drew_on(
         ),
         ("resolve_contact", {"name": "", "limit": None}),
         ("resolve_contact", {"name": "Kamola", "limit": None, "extra": 1}),
+        # L: dates that would overflow, ids outside bigint, 0 as "no filter".
+        ("search_messages", {**SEARCH_ARGS, "until": "9999-12-31"}),
+        ("search_messages", {**SEARCH_ARGS, "since": "0001-01-01"}),
+        ("search_messages", {**SEARCH_ARGS, "contact_id": 0}),
+        ("search_messages", {**SEARCH_ARGS, "conversation_id": 2**63}),
+        ("list_conversations", {**LIST_ARGS, "contact_id": 0}),
+        ("list_conversations", {**LIST_ARGS, "contact_id": -5}),
+        ("get_conversation", {**GET_ARGS, "conversation_id": 2**63}),
+        # J: a cursor that is not a next_cursor value.
+        ("get_conversation", {**GET_ARGS, "conversation_id": 1, "cursor": "12; DROP"}),
+        ("get_conversation", {**GET_ARGS, "conversation_id": 1, "cursor": "5"}),
     ],
 )
 async def test_schema_valid_but_semantically_invalid_arguments_are_refused(
@@ -302,9 +336,7 @@ async def test_another_accounts_ids_are_not_found(migrated_url: str) -> None:
                 (
                     "c1",
                     "get_conversation",
-                    args(
-                        conversation_id=theirs, contact_id=None, before_message_id=None, limit=None
-                    ),
+                    args(conversation_id=theirs, contact_id=None, cursor=None, limit=None),
                 ),
                 (
                     "c2",
@@ -396,9 +428,7 @@ async def test_rg11_an_injected_get_conversation_result_holds_a_configure_call(e
         (
             "c1",
             "get_conversation",
-            args(
-                conversation_id=conversation_id, contact_id=None, before_message_id=None, limit=None
-            ),
+            args(conversation_id=conversation_id, contact_id=None, cursor=None, limit=None),
         ),
     )
     [held] = results(fake.requests[2])[-1:]
@@ -454,7 +484,7 @@ async def test_rg11_taint_is_sequential_within_one_batch(env: Env) -> None:
                 args(
                     conversation_id=conversation_id,
                     contact_id=None,
-                    before_message_id=None,
+                    cursor=None,
                     limit=None,
                 ),
             ),
@@ -493,7 +523,7 @@ async def test_an_untainted_owner_request_runs_a_configure_call_directly(env: En
     )
     channel = FakeChannel()
     await runtime(env, fake, channel).run(turn)
-    assert results(fake.requests[1])[0]["status"] == "done"
+    assert results(fake.requests[1])[0]["status"] == "ok"
     assert await note_rows(env) == 1
     assert (await run_row(env)).tainted is False
 
@@ -513,9 +543,7 @@ async def test_confirm_applies_once_and_a_double_tap_is_a_no_op(env: Env) -> Non
         (
             "c1",
             "get_conversation",
-            args(
-                conversation_id=conversation_id, contact_id=None, before_message_id=None, limit=None
-            ),
+            args(conversation_id=conversation_id, contact_id=None, cursor=None, limit=None),
         ),
     )
     card = await _card(env)
@@ -545,9 +573,7 @@ async def test_reject_changes_nothing_and_clears_the_arguments(env: Env) -> None
         (
             "c1",
             "get_conversation",
-            args(
-                conversation_id=conversation_id, contact_id=None, before_message_id=None, limit=None
-            ),
+            args(conversation_id=conversation_id, contact_id=None, cursor=None, limit=None),
         ),
     )
     card = await _card(env)

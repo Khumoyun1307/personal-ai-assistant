@@ -12,9 +12,9 @@ import pytest
 from sqlalchemy import select, text
 
 from assistant.accounts.service import record_control_turn
-from assistant.agent.models import ToolConfirmation
+from assistant.agent.models import AgentRun, ToolConfirmation
 from assistant.privacy.content_columns import CONTENT_COLUMNS, NON_CONTENT_COLUMNS
-from assistant.privacy.deletion import delete_managed_data
+from assistant.privacy.deletion import delete_managed_data, purge_conversation
 from tests.integration.business_env import (
     OWNER,
     Env,
@@ -148,6 +148,72 @@ async def test_deletion_clears_quoted_text_and_held_tool_arguments(env: Env) -> 
     async with env.factory() as session:
         status = (await session.execute(select(ToolConfirmation.status))).scalar_one()
     assert status == "expired"
+
+
+async def test_purging_a_conversation_redacts_the_turns_that_referred_to_it(env: Env) -> None:
+    """`control_turns.refs` has a consumer: a purged chat takes the answers
+    that quoted it, and the held calls of those runs, with it (§10.4)."""
+    await connect(env)
+    await deliver(env, business_message(message_text=f"{CANARY} chat"))
+    account_id = await _account_id(env, OWNER)
+    async with env.factory() as session:
+        conversation_id, business_chat_id, contact_id = (
+            await session.execute(
+                text("SELECT id, business_chat_id, contact_id FROM app.conversations")
+            )
+        ).one()
+    async with env.factory() as session, session.begin():
+        run = AgentRun(
+            account_id=account_id, run_type="owner_request", model="gpt-6-luna", status="succeeded"
+        )
+        session.add(run)
+        await session.flush()
+        referring = await record_control_turn(
+            session,
+            account_id=account_id,
+            role="assistant",
+            text=f"{CANARY} answer",
+            refs={"conversation_ids": [conversation_id], "contact_ids": [contact_id]},
+        )
+        referring.run_id = run.id
+        by_contact = await record_control_turn(
+            session,
+            account_id=account_id,
+            role="assistant",
+            text=f"{CANARY} by contact",
+            refs={"conversation_ids": [], "contact_ids": [contact_id]},
+        )
+        unrelated = await record_control_turn(
+            session,
+            account_id=account_id,
+            role="assistant",
+            text="Synthetic unrelated",
+            refs={"conversation_ids": [conversation_id + 1000], "contact_ids": []},
+        )
+        session.add(
+            ToolConfirmation(
+                account_id=account_id,
+                run_id=run.id,
+                tool_call_id="c1",
+                tool_name="synthetic_configure",
+                args={"note": f"{CANARY} held"},
+            )
+        )
+    async with env.factory() as session, session.begin():
+        report = await purge_conversation(
+            session,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            business_chat_id=business_chat_id,
+            clock=env.clock,
+        )
+    assert report.control_turns_cleared == 2
+    async with env.factory() as session:
+        texts = dict((await session.execute(text("SELECT id, text FROM app.control_turns"))).all())
+    assert texts[referring.id] is None
+    assert texts[by_contact.id] is None
+    assert texts[unrelated.id] == "Synthetic unrelated"
+    assert await _columns_containing(env, CANARY) == []
 
 
 async def test_deletion_leaves_other_accounts_intact(migrated_url: str) -> None:

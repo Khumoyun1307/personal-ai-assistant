@@ -18,11 +18,13 @@ from sqlalchemy import select
 from assistant.accounts.models import Account
 from assistant.agent.tools.common import (
     DIRECTION_LABELS,
+    OptionalId,
     account_coverage,
     day_range,
     local_time,
     message_text,
     name,
+    one,
     parse_local_date,
     require_contacts,
     require_conversations,
@@ -76,10 +78,10 @@ class SearchMessagesArgs(BaseModel):
             "Uzbek Cyrillic, Russian and English where they differ."
         )
     )
-    contact_id: int | None = Field(
+    contact_id: OptionalId = Field(
         description="Only messages with this contact (from resolve_contact), or null."
     )
-    conversation_id: int | None = Field(description="Only this conversation, or null.")
+    conversation_id: OptionalId = Field(description="Only this conversation, or null.")
     since: Annotated[str | None, AfterValidator(_date)] = Field(
         description="First day to include, YYYY-MM-DD in the owner's timezone, or null."
     )
@@ -105,12 +107,8 @@ async def search_messages_tool(ctx: ToolContext, args: SearchMessagesArgs) -> To
         account = await session.get(Account, ctx.account_id)
         if account is None:
             raise LookupError("account")
-        await require_contacts(
-            session, ctx.account_id, [args.contact_id] if args.contact_id else []
-        )
-        await require_conversations(
-            session, ctx.account_id, [args.conversation_id] if args.conversation_id else []
-        )
+        await require_contacts(session, ctx.account_id, one(args.contact_id))
+        await require_conversations(session, ctx.account_id, one(args.conversation_id))
         start, end = day_range(
             parse_local_date(args.since), parse_local_date(args.until), account.timezone
         )
@@ -120,8 +118,8 @@ async def search_messages_tool(ctx: ToolContext, args: SearchMessagesArgs) -> To
             args.queries,
             now=services.clock.now(),
             filters=SearchFilters(
-                contact_ids=(args.contact_id,) if args.contact_id else (),
-                conversation_ids=(args.conversation_id,) if args.conversation_id else (),
+                contact_ids=one(args.contact_id),
+                conversation_ids=one(args.conversation_id),
                 since=start,
                 until=end,
             ),
