@@ -1,0 +1,21 @@
+# Overlay for deploy/smoke/backup-smoke.sh (CI and `just smoke-backup`).
+# Runs the production stack under a separate project name with a throwaway
+# env file of placeholder values: it never reads the repository's .env and
+# never touches a real data directory. `!override` replaces the base lists
+# (Compose ≥ 2.24.4: https://docs.docker.com/reference/compose-file/merge/).
+services:
+  db:
+    volumes: !override
+      - smoke-db:/var/lib/postgresql
+  migrate:
+    env_file: !override
+      - ${SMOKE_ENV_FILE:?set by backup-smoke.sh}
+  app:
+    env_file: !override
+      - ${SMOKE_ENV_FILE:?set by backup-smoke.sh}
+  backup:
+    env_file: !override
+      - ${SMOKE_ENV_FILE:?set by backup-smoke.sh}
+
+volumes:
+  smoke-db:

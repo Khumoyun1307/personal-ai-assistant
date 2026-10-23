@@ -66,7 +66,7 @@ migrate:
 run:
     {{ compose }} run --rm --service-ports app uv run python -m assistant run
 
-# Run the M00 Telegram probe (dev/probe bot; owner or agent per AGENTS §9; needs BOT_TOKEN in .env).
+# Run the M00 Telegram probe with the DEV bot's token in .env (never Alviro: Alviro is production and only the server polls it; owner or agent per AGENTS §9).
 probe *args:
     {{ run }} python tools/probe/probe.py {{ args }}
 
@@ -88,22 +88,77 @@ hooks:
     @Write-Host "Hooks installed (core.hooksPath=.githooks)."
 
 # ---------------------------------------------------------------- production
-# The server is reached over SSH as `deploy@<host>` (runbooks/provision.md);
-# the checkout lives in /opt/assistant and tracks `main` with a deploy key.
-prod_dir := "/opt/assistant"
+# Oracle Cloud host (runbooks/provision.md). Every recipe below runs its bash
+# script inside the official OCI CLI image (it ships bash, ssh, jq, python3),
+# so the host needs only Docker — on Windows, Linux or macOS alike. The
+# server is reached as `deploy@<ip>` with the agent key in var/cloud/ssh;
+# its checkout lives in /opt/assistant and tracks `main` (read-only deploy
+# key). Server-side steps are deploy/server.sh. Nothing prints a secret.
+oci_image := "ghcr.io/oracle/oci-cli:20261007"
+cloud_dir := justfile_directory() / "var" / "cloud"
+prod_env := justfile_directory() / "var" / "prod.env"
+repo_slug := "Khumoyun1307/personal-ai-assistant"
+_ops := 'docker run --rm -i --user 0 --mount "type=bind,src=' + justfile_directory() + ',dst=/work" --mount "type=bind,src=' + cloud_dir + ',dst=/cloud" -w /work -e CLOUD_DIR=/cloud'
+ops := _ops + " --entrypoint bash " + oci_image
+oci_ops := _ops + ' --mount "type=bind,src=' + cloud_dir / "oci" + ',dst=/oci,readonly" -e OCI_CLI_CONFIG_FILE=/oci/config --entrypoint bash ' + oci_image
+
+# Create or reconcile the Oracle Cloud resources (idempotent). Flags: --wait (retry capacity for hours), --dry-run.
+oci-provision email *flags:
+    {{ oci_ops }} deploy/oci/provision.sh --email "{{ email }}" {{ flags }}
+
+# Generate the backup key pair once (var/cloud/age-identity.txt); prints only the public key.
+prod-age-key:
+    docker build -q -t assistant-backup:prod deploy/backup
+    docker run --rm --user 0 --mount "type=bind,src={{ justfile_directory() }},dst=/work" --mount "type=bind,src={{ cloud_dir }},dst=/cloud" -e CLOUD_DIR=/cloud -w /work --entrypoint bash assistant-backup:prod deploy/oci/age-key.sh
+
+# Prepare the new host: cloud-init done, data volume mounted, read-only deploy key, checkout.
+prod-bootstrap ip:
+    {{ ops }} deploy/oci/bootstrap-host.sh {{ ip }} prepare
+    -gh repo deploy-key add "{{ cloud_dir }}/server-deploy-key.pub" --repo {{ repo_slug }} --title alviro-server
+    {{ ops }} deploy/oci/bootstrap-host.sh {{ ip }} clone
+
+# Assemble the server .env from var/prod.env + var/cloud/* and stream it to the server (mode 600).
+prod-env-push ip owner_ids:
+    {{ _ops }} --mount "type=bind,src={{ prod_env }},dst=/prod.env,readonly" -e PROD_ENV=/prod.env --entrypoint bash {{ oci_image }} deploy/oci/push-env.sh {{ ip }} --owner-ids {{ owner_ids }}
 
 # Deploy the current `main` to the server: pull, rebuild, migrate, restart.
-deploy host:
-    ssh {{ host }} "cd {{ prod_dir }} && git pull --ff-only && docker compose -f deploy/compose.prod.yml up -d --build --remove-orphans && docker compose -f deploy/compose.prod.yml ps"
+deploy ip:
+    {{ ops }} deploy/oci/ssh.sh {{ ip }} deploy
 
-# Tail the production app log (content-free by construction, AGENTS §9).
-prod-logs host:
-    ssh {{ host }} "cd {{ prod_dir }} && docker compose -f deploy/compose.prod.yml logs --tail=200 -f app"
+# The last production app log lines (content-free by construction, AGENTS §9).
+prod-logs ip lines="200":
+    {{ ops }} deploy/oci/ssh.sh {{ ip }} logs {{ lines }}
 
-# Production health: containers, healthcheck, last backup.
-prod-status host:
-    ssh {{ host }} "cd {{ prod_dir }} && docker compose -f deploy/compose.prod.yml ps && docker compose -f deploy/compose.prod.yml exec app python -m assistant healthcheck && docker compose -f deploy/compose.prod.yml exec backup cat /backups/last_success"
+# Production health: containers, healthcheck, backup and off-site upload markers, data dir.
+prod-status ip:
+    {{ ops }} deploy/oci/ssh.sh {{ ip }} status
 
-# Take a backup now (otherwise daily at BACKUP_HOUR_UTC).
-prod-backup host:
-    ssh {{ host }} "cd {{ prod_dir }} && docker compose -f deploy/compose.prod.yml exec backup backup.sh once"
+# Take a backup now (otherwise daily at BACKUP_HOUR_UTC). Exit 3: dump ok, off-site upload failed.
+prod-backup ip:
+    {{ ops }} deploy/oci/ssh.sh {{ ip }} backup
+
+# R0 acceptance verifier against the production database (tools/acceptance/r0-session.md).
+prod-verify-r0 ip *args:
+    {{ ops }} deploy/oci/ssh.sh {{ ip }} verify-r0 {{ args }}
+
+# Restore the newest dump into a scratch database with the offline key (var/cloud/age-identity.txt, streamed via stdin).
+prod-restore-test ip:
+    {{ _ops }} -e SSH_STDIN_FILE=/cloud/age-identity.txt --entrypoint bash {{ oci_image }} deploy/oci/ssh.sh {{ ip }} restore-test
+
+# Replace the production database with one dump (app stopped first; runbooks/restore.md §B).
+prod-restore ip file:
+    {{ _ops }} -e SSH_STDIN_FILE=/cloud/age-identity.txt --entrypoint bash {{ oci_image }} deploy/oci/ssh.sh {{ ip }} restore {{ file }}
+
+# Any other deploy/server.sh action: offsite-list, post-restore <ts>, app-stop, app-start, restart-timing, reboot.
+prod ip +args:
+    {{ ops }} deploy/oci/ssh.sh {{ ip }} {{ args }}
+
+# Backup smoke test of the production stack: separate Compose project, placeholder secrets, removed afterwards.
+[unix]
+smoke-backup:
+    bash deploy/smoke/backup-smoke.sh
+
+# Backup smoke test of the production stack: separate Compose project, placeholder secrets, removed afterwards.
+[windows]
+smoke-backup:
+    & "$env:ProgramFiles\Git\bin\bash.exe" deploy/smoke/backup-smoke.sh

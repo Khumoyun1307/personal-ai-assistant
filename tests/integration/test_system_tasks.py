@@ -488,3 +488,30 @@ async def test_a_missing_or_stale_backup_alerts_the_owner_once_a_day(
         assert "for 30 hours" in channel.sends[0]
     else:
         assert "for unknown hours" in channel.sends[0]
+
+
+async def test_a_stale_off_site_upload_alerts_once_a_day_while_a_remote_is_set(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock, tmp_path: Path
+) -> None:
+    await owner(factory, clock)
+    marker = tmp_path / "last_success"
+    marker.write_text((NOW - timedelta(hours=3)).isoformat(), encoding="utf-8")
+    (tmp_path / "last_upload_success").write_text(
+        (NOW - timedelta(hours=40)).isoformat(), encoding="utf-8"
+    )
+    channel = FakeChannel()
+    alerts = OwnerAlerts(factory, channel, clock)
+
+    first = await check_backup(clock, alerts, status_path=marker, upload_required=True)
+    second = await check_backup(clock, alerts, status_path=marker, upload_required=True)
+    unchecked = await check_backup(clock, alerts, status_path=marker)
+
+    assert first is not None
+    assert (first.stale, first.upload_stale, first.upload_alerted) == (False, True, True)
+    assert second is not None
+    assert second.upload_alerted is False  # cooldown
+    assert unchecked is not None
+    assert unchecked.upload_stale is None  # no remote configured: not checked
+    assert len(channel.sends) == 1
+    assert "off-site copy of the database backups" in channel.sends[0]
+    assert "for 40 hours" in channel.sends[0]

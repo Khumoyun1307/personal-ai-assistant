@@ -1,11 +1,17 @@
 # Production (personal) deployment — ARCHITECTURE §15.4, §14.2.
 #
-#   docker compose -f deploy/compose.prod.yml up -d --build
+#   docker compose --env-file .env -f deploy/compose.prod.yml up -d --build
 #
 # Run from the repository root on the server (/opt/assistant). Secrets come
-# from the server's .env (created once by runbooks/provision.md, chmod 600).
-# The database directory is a bind mount on the provider's encrypted block
-# volume; nothing publishes a port — long polling needs no inbound traffic.
+# from the server's .env (written by deploy/oci/push-env.sh, mode 600).
+# `--env-file .env` is required on every invocation: Compose's project
+# directory is deploy/ (the first -f file's directory), so without it the
+# ${...} interpolation below would look for deploy/.env and find nothing.
+# The `env_file:` entries load the same file into the containers; the
+# `environment:` entries below only add values derived from it (never a
+# pass-through that could override a value with an empty string).
+# The database directory is a bind mount on the encrypted block volume;
+# nothing publishes a port — long polling needs no inbound traffic.
 
 name: assistant-prod
 
@@ -70,6 +76,8 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-assistant}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-assistant}
       # The backup container writes its last-success marker here; the app's
       # daily backup_check alerts the owner when it goes stale (§17).
+      # The off-site upload marker (/backups/last_upload_success) sits next to
+      # it and is checked too while BACKUP_REMOTE (from .env) is set.
       BACKUP_STATUS_PATH: /backups/last_success
     command: ["python", "-m", "assistant", "run"]
     depends_on:
@@ -77,6 +85,10 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      # The backup container creates the shared volume first, so it is
+      # initialised from the backup image (owned by postgres, writable).
+      backup:
+        condition: service_started
     restart: unless-stopped
     # Inside Compose's grace period: workers finish in-flight sends (§4.3).
     stop_grace_period: 90s
@@ -92,18 +104,18 @@ services:
 
   backup:
     build:
-      context: .
-      dockerfile: backup/Dockerfile
+      # The Dockerfile COPYs backup.sh and restore.sh from its own directory.
+      context: ./backup
+      dockerfile: Dockerfile
     image: assistant-backup:prod
+    # AGE_RECIPIENT, BACKUP_REMOTE, BACKUP_HOUR_UTC and RCLONE_CONFIG_* come
+    # from here unchanged.
     env_file: ../.env
     environment:
       PGHOST: db
       PGUSER: ${POSTGRES_USER:-assistant}
-      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       PGDATABASE: ${POSTGRES_DB:-assistant}
-      AGE_RECIPIENT: ${AGE_RECIPIENT:?set AGE_RECIPIENT (the age public key) in .env}
-      BACKUP_REMOTE: ${BACKUP_REMOTE:-}
-      BACKUP_HOUR_UTC: ${BACKUP_HOUR_UTC:-02}
     depends_on:
       db:
         condition: service_healthy

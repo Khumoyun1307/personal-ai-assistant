@@ -10,6 +10,10 @@ Desktop (main account) and the second account (phone or web).
 Every message is **synthetic**: send the numbered lines exactly as written.
 The agent never reads message text; verification is by number and structure
 (`tools/acceptance/verify_r0.py`, which prints only numbers and states).
+On the server the agent runs it as `just prod-verify-r0 <ip> <args>` (the
+checkout's `tools/acceptance/` is mounted read-only into a one-off app
+container; the prod image itself ships only `src/`). Restart in 4.3 is
+`just prod <ip> restart-timing`.
 
 Timing: about 2 hours wall time, roughly 40 minutes of typing. Tick each
 line; tell the agent "checkpoint N done" at each checkpoint.
