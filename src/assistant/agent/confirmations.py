@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import html
 import json
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -59,15 +60,25 @@ OP_REJECT = "reject"
 #: refused rather than shown truncated, so the owner can never confirm
 #: something they did not see.
 CARD_ARGS_LIMIT = 600
-#: Bidirectional controls and invisible characters: shown as visible
-#: `\uXXXX` escapes on the card, so text cannot be reordered or hidden.
-_INVISIBLE = {
-    *range(0x202A, 0x202F),
-    *range(0x2066, 0x206A),
-    *range(0x200B, 0x2010),
-    0xFEFF,
-}
-_VISIBLE_ESCAPES = {code: f"\\u{code:04x}" for code in _INVISIBLE}
+#: Characters shown as visible `\uXXXX` / `\UXXXXXXXX` escapes on the card, so
+#: text can be neither reordered nor hidden: by category — format (Cf: bidi
+#: controls, zero-width, tags, word joiner, soft hyphen, …), control (Cc,
+#: C0 and C1), private use (Co), surrogates (Cs), unassigned (Cn) — plus the
+#: variation selectors and the blank Hangul fillers, which are letters or
+#: marks by category but render as nothing.
+_HIDDEN_CATEGORIES = frozenset({"Cf", "Cc", "Co", "Cs", "Cn"})
+_HIDDEN_EXTRA = frozenset(
+    {*range(0xFE00, 0xFE10), *range(0xE0100, 0xE01F0), 0x3164, 0x115F, 0x1160, 0xFFA0}
+)
+
+
+def _visible(char: str) -> str:
+    code = ord(char)
+    if code in _HIDDEN_EXTRA or unicodedata.category(char) in _HIDDEN_CATEGORIES:
+        return f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"
+    return char
+
+
 #: Tool statuses that mean the change was made. Anything else is not "done".
 SUCCESS_STATUSES = frozenset({"ok"})
 
@@ -75,6 +86,9 @@ SUCCESS_STATUSES = frozenset({"ok"})
 class ConfirmationStatus(StrEnum):
     PENDING = "pending"
     CONFIRMED = "confirmed"
+    #: Claimed by the applier, handler running. Left behind only if the job
+    #: is cancelled mid-way: the reconciler fails it and tells the owner.
+    APPLYING = "applying"
     APPLIED = "applied"
     FAILED = "failed"
     REJECTED = "rejected"
@@ -82,8 +96,9 @@ class ConfirmationStatus(StrEnum):
 
 
 def render_args(args: Mapping[str, Any]) -> str:
-    """Every field, in full, with invisible and bidi characters made visible."""
-    return json.dumps(dict(args), ensure_ascii=False, sort_keys=True).translate(_VISIBLE_ESCAPES)
+    """Every field, in full, with invisible, control and bidi characters made visible."""
+    rendered = json.dumps(dict(args), ensure_ascii=False, sort_keys=True)
+    return "".join(_visible(char) for char in rendered)
 
 
 def card_text(tool: ToolDefinition, args: Mapping[str, Any], *, tainted: bool) -> str:
@@ -106,6 +121,7 @@ def card_text(tool: ToolDefinition, args: Mapping[str, Any], *, tainted: bool) -
 _EXISTING = {
     ConfirmationStatus.PENDING: ("awaiting_confirmation", "already sent; not done yet"),
     ConfirmationStatus.CONFIRMED: ("confirmed", "the owner confirmed; it is being applied"),
+    ConfirmationStatus.APPLYING: ("confirmed", "the owner confirmed; it is being applied"),
     ConfirmationStatus.APPLIED: ("applied", "applied after the owner's confirmation"),
     ConfirmationStatus.FAILED: ("failed", "the owner confirmed but it failed"),
     ConfirmationStatus.REJECTED: ("rejected", "the owner rejected it; nothing changed"),
@@ -163,20 +179,45 @@ async def hold(
         ).scalar_one_or_none()
         if existing is not None:
             return _existing_outcome(existing)
-        same_change = (
-            await session.execute(
-                select(ToolConfirmation.id)
-                .where(ToolConfirmation.account_id == ctx.account_id)
-                .where(ToolConfirmation.tool_name == tool.name)
-                .where(ToolConfirmation.status == ConfirmationStatus.PENDING.value)
-                .where(ToolConfirmation.args == cast(dict(args), JSONB))
-                .limit(1)
+        same_changes = (
+            (
+                await session.execute(
+                    select(ToolConfirmation.id)
+                    .where(ToolConfirmation.account_id == ctx.account_id)
+                    .where(ToolConfirmation.tool_name == tool.name)
+                    .where(ToolConfirmation.status == ConfirmationStatus.PENDING.value)
+                    .where(ToolConfirmation.args == cast(dict(args), JSONB))
+                )
             )
-        ).scalar_one_or_none()
-        if same_change is not None:
-            return ToolOutcome(
-                "awaiting_confirmation",
-                {"card": "the same change already awaits the owner's tap; not done yet"},
+            .scalars()
+            .all()
+        )
+        for same_change in same_changes:
+            live = (
+                await session.execute(
+                    select(PendingInput.id)
+                    .where(PendingInput.account_id == ctx.account_id)
+                    .where(PendingInput.kind == TOOL_CONFIRM_CARD)
+                    .where(PendingInput.ref_id == same_change)
+                    .where(PendingInput.token.is_not(None))
+                    .where(PendingInput.expires_at > services.clock.now())
+                    .limit(1)
+                )
+            ).first()
+            if live is not None:
+                return ToolOutcome(
+                    "awaiting_confirmation",
+                    {"card": "the same change already awaits the owner's tap; not done yet"},
+                )
+            # Its card is gone (expired or never shown): nothing can confirm
+            # it any more, so it expires and a fresh card is sent below.
+            await _finish(
+                session,
+                ctx.account_id,
+                same_change,
+                ConfirmationStatus.EXPIRED,
+                services.clock,
+                only_from=ConfirmationStatus.PENDING,
             )
         inserted = await session.execute(
             insert(ToolConfirmation)
@@ -395,12 +436,12 @@ class ConfirmationApplier:
             if row is None or account is None:
                 return ApplyOutcome("skipped")
             tool_name, run_id, call_id = row.tool_name, row.run_id, row.tool_call_id
-            # The claim: confirmed → applied, exactly once.
+            # The claim: confirmed → applying, exactly once.
             moved = await _finish(
                 session,
                 account_id,
                 confirmation_id,
-                ConfirmationStatus.APPLIED,
+                ConfirmationStatus.APPLYING,
                 self._clock,
                 only_from=ConfirmationStatus.CONFIRMED,
             )
@@ -444,14 +485,15 @@ class ConfirmationApplier:
                     )
                     outcome = ToolOutcome("error", {"reason": "it failed", "uncertain": True})
         succeeded = outcome.status in SUCCESS_STATUSES
-        if not succeeded:
-            async with transaction(self._session_factory) as uow:
-                await uow.session.execute(
-                    update(ToolConfirmation)
-                    .where(ToolConfirmation.id == confirmation_id)
-                    .values(status=ConfirmationStatus.FAILED.value)
-                    .execution_options(synchronize_session=False)
-                )
+        final = ConfirmationStatus.APPLIED if succeeded else ConfirmationStatus.FAILED
+        async with transaction(self._session_factory) as uow:
+            await uow.session.execute(
+                update(ToolConfirmation)
+                .where(ToolConfirmation.id == confirmation_id)
+                .where(ToolConfirmation.status == ConfirmationStatus.APPLYING.value)
+                .values(status=final.value)
+                .execution_options(synchronize_session=False)
+            )
         text = self._report(tool_name, outcome, succeeded)
         if chat_id is not None:
             await self._channel.send(account_id=account_id, chat_id=chat_id, text=text)

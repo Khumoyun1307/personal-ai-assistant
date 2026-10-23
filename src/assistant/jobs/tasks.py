@@ -22,6 +22,7 @@ Periodic tasks carry a queueing lock so a slow run never piles up copies.
 
 from __future__ import annotations
 
+import html
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -45,10 +46,14 @@ from assistant.core.jobs import (
 from assistant.db.uow import transaction
 from assistant.inbox.backup_check import BackupReport, check_backup, deliver_restore_notice
 from assistant.inbox.connection_alerts import notify_connection_change
-from assistant.inbox.notify import AlertResult, OwnerAlerts
+from assistant.inbox.notify import AlertKind, AlertResult, OwnerAlerts
 from assistant.inbox.watchdog import STALL_AFTER, check_ingestion, poller_heartbeat_at
 from assistant.jobs.app import QUEUE_LLM, QUEUE_SYSTEM, STALLED_WORKER_TIMEOUT
-from assistant.jobs.reconcile import unapplied_confirmations, unqueued_owner_turns
+from assistant.jobs.reconcile import (
+    fail_interrupted_confirmations,
+    unapplied_confirmations,
+    unqueued_owner_turns,
+)
 from assistant.observability import heartbeat
 from assistant.observability.logging import get_logger
 from assistant.privacy.retention import SweepReport, sweep_all
@@ -153,11 +158,21 @@ class JobHandlers:
                     lock=owner_control_lock(account_id),
                     connection=await uow.raw_connection(),
                 )
+            interrupted = await fail_interrupted_confirmations(uow.session, self.clock.now())
         if lost:
             logger.warning("owner_turns_redeferred", count=len(lost))
         if unapplied:
             logger.warning("confirmations_redeferred", count=len(unapplied))
-        return len(lost) + len(unapplied)
+        for confirmation_id, account_id, tool_name in interrupted:
+            # After the commit: the row is `failed` whether or not this arrives.
+            logger.warning("confirmation_interrupted", confirmation_id=confirmation_id)
+            await self.alerts.notify_owner(
+                account_id,
+                AlertKind.CONFIRMATION_INTERRUPTED,
+                dedupe_key=f"confirmation:{confirmation_id}:interrupted",
+                tool=html.escape(tool_name),
+            )
+        return len(lost) + len(unapplied) + len(interrupted)
 
     async def retention_sweep(self) -> SweepReport:
         report = await sweep_all(self.session_factory, self.clock)

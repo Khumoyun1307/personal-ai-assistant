@@ -9,6 +9,7 @@ tools exist (S03.3).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -57,12 +58,15 @@ class SetNoteArgs(BaseModel):
 #: Notes that make the test tool misbehave, for the applier's failure paths.
 NOTE_EXPLODE = "explode"
 NOTE_ODD_STATUS = "odd-status"
+NOTE_CANCEL = "cancel"
 
 
 async def set_note(ctx: ToolContext, args: SetNoteArgs) -> ToolOutcome:
     """A state change: one content-free audit row per execution."""
     if args.note == NOTE_EXPLODE:
         raise RuntimeError("synthetic handler failure")
+    if args.note == NOTE_CANCEL:
+        raise asyncio.CancelledError  # a shutdown mid-way
     if args.note == NOTE_ODD_STATUS:
         return ToolOutcome("awaiting_approval")
     async with transaction(ctx.services.session_factory) as uow:

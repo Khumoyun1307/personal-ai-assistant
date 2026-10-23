@@ -6,8 +6,8 @@ later tap cannot turn into a change (§6 invariants 3b, 11). Synthetic text.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -19,17 +19,20 @@ from assistant.agent.confirmations import CARD_ARGS_LIMIT, card_text, render_arg
 from assistant.agent.models import ToolConfirmation
 from assistant.agent.tools.registry import ToolContext, ToolServices
 from assistant.core.channel import Delivery
-from assistant.jobs.reconcile import unapplied_confirmations
+from assistant.inbox.notify import OwnerAlerts
+from assistant.jobs.tasks import JobHandlers
 from assistant.llm.port import LLMRequest, ToolResultItem
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response, tool_response
 from tests.integration.agent_env import (
+    NOTE_CANCEL,
     NOTE_EXPLODE,
     NOTE_ODD_STATUS,
     SET_NOTE,
     applier,
     args,
     ask,
+    note_rows,
     one_id,
     runtime,
 )
@@ -140,6 +143,47 @@ def test_the_card_shows_every_field_with_invisible_characters_made_visible() -> 
     assert render_args({"note": "a" * 50}).count("a") == 50
 
 
+#: Review item 2: every invisible/format/control/private-use/unassigned
+#: character, not a deny-list of a few.
+HIDDEN = [
+    "\U000e0041",  # tag LATIN CAPITAL A (Cf)
+    "\U000e007f",  # cancel tag
+    "⁠",  # word joiner
+    "⁤",  # invisible plus
+    "؜",  # arabic letter mark
+    "­",  # soft hyphen
+    "️",  # variation selector 16
+    "\U000e0100",  # variation selector 17
+    "ㅤ",  # hangul filler
+    "ᅟ",
+    "ᅠ",
+    "ﾠ",
+    "\u0085",  # C1 control (NEL)
+    "\u009b",  # C1 control (CSI)
+    "\x07",  # C0 control
+    "",  # private use
+    "\U000f0000",  # supplementary private use
+    "͸",  # unassigned
+    "‮",
+    "​",
+    "﻿",
+]
+
+
+@pytest.mark.parametrize("char", HIDDEN)
+def test_no_invisible_or_control_character_reaches_the_card(char: str) -> None:
+    shown = card_text(SET_NOTE, {"note": f"pay{char}evil"}, tainted=True)
+    assert char not in shown
+    assert f"\\u{ord(char):04x}" in shown or f"\\U{ord(char):08x}" in shown
+    assert "pay" in shown
+    assert "evil" in shown
+
+
+def test_ordinary_text_in_any_script_is_shown_as_is() -> None:
+    shown = render_args({"note": "Salom, Камола! oʻzbek ✓ 漢字"})
+    assert shown == json.dumps({"note": "Salom, Камола! oʻzbek ✓ 漢字"}, ensure_ascii=False)
+
+
 def test_an_untainted_card_does_not_claim_other_peoples_text() -> None:
     assert "other people" not in card_text(SET_NOTE, {"note": "x"}, tainted=False)
     assert "other people" in card_text(SET_NOTE, {"note": "x"}, tainted=True)
@@ -194,39 +238,113 @@ async def test_an_ambiguous_card_send_expires_the_card_and_tells_the_model(env: 
     assert cards == []
 
 
-async def test_a_retried_owner_turn_does_not_send_a_second_card_for_the_same_change(
-    env: Env,
-) -> None:
-    _, channel = await held_call(env, "synthetic")
-    cards_before = sum(1 for b in channel.buttons if b)
-    # A new run (e.g. the owner asks again) proposing the identical change.
-    turn = await ask(env, "Note it again")
-    fake2 = FakeLLM(
-        tool_response(("d1", "test_set_note", args(note="synthetic"))), text_response("ok")
+FORWARD = {"forward_origin": {"type": "hidden_user", "date": T_BASE, "sender_user_name": "N"}}
+
+
+async def forwarded_note_run(env: Env, channel: FakeChannel, call_id: str) -> dict[str, Any]:
+    """A run tainted by its OWN forwarded turn (independent of reply taint)."""
+    turn = await ask(env, "Synthetic forwarded request", **FORWARD)
+    fake = FakeLLM(
+        tool_response((call_id, "test_set_note", args(note="synthetic"))), text_response("ok")
     )
-    await runtime(env, fake2, channel).run(turn)
-    [again] = results(fake2.requests[1])
-    assert again["status"] == "awaiting_confirmation"
-    assert sum(1 for b in channel.buttons if b) == cards_before
+    await runtime(env, fake, channel).run(turn)
+    [held] = results(fake.requests[1])
+    return held
+
+
+async def cards(env: Env) -> list[PendingInput]:
+    async with env.factory() as session:
+        return list(
+            (await session.execute(select(PendingInput).where(PendingInput.kind == "tool_confirm")))
+            .scalars()
+            .all()
+        )
+
+
+async def test_the_same_pending_change_from_another_run_reuses_its_live_card(env: Env) -> None:
+    await connect(env)
+    channel = FakeChannel()
+    first = await forwarded_note_run(env, channel, "a1")
+    second = await forwarded_note_run(env, channel, "b1")
+    assert (first["status"], second["status"]) == ("awaiting_confirmation",) * 2
+    assert len(await cards(env)) == 1
     async with env.factory() as session:
         assert len((await session.execute(select(ToolConfirmation))).scalars().all()) == 1
 
 
-# ------------------------------------------------------------ C: lost apply jobs
-async def test_a_confirmed_call_whose_job_was_lost_is_re_deferred(env: Env) -> None:
-    await held_call(env, "synthetic")
+async def test_a_pending_change_whose_card_is_gone_gets_a_new_card(env: Env) -> None:
+    """Review item 5: never 'awaiting a tap' with nothing to tap."""
+    await connect(env)
+    channel = FakeChannel()
+    await forwarded_note_run(env, channel, "a1")
+    async with env.factory() as session, session.begin():
+        await session.execute(text("DELETE FROM app.pending_inputs WHERE kind = 'tool_confirm'"))
+    again = await forwarded_note_run(env, channel, "b1")
+    assert again["status"] == "awaiting_confirmation"
+    assert len(await cards(env)) == 1
+    async with env.factory() as session:
+        statuses = sorted((await session.execute(select(ToolConfirmation.status))).scalars().all())
+    assert statuses == ["expired", "pending"]
+
+
+# ------------------------------------------------------------ C, 7: lost and interrupted applies
+def handlers(env: Env, channel: FakeChannel) -> JobHandlers:
+    assert env.scheduler is not None
+
+    class NoRuntime:
+        async def run(self, turn_id: int) -> Any:
+            raise AssertionError("not used")
+
+    return JobHandlers(
+        session_factory=env.factory,
+        clock=env.clock,
+        scheduler=env.scheduler,
+        owner_runtime=NoRuntime(),
+        alerts=OwnerAlerts(env.factory, channel, env.clock),
+        monthly_budget_usd=None,
+        heartbeat_url=None,
+        confirmation_applier=applier(env, channel),
+    )
+
+
+async def test_a_confirmed_call_whose_job_was_lost_is_re_deferred_and_applied(env: Env) -> None:
+    _, channel = await held_call(env, "synthetic")
     confirmation_id = await confirm(env)
     async with env.factory() as session, session.begin():
+        # The job vanished (e.g. a dump restored without it).
         await session.execute(
-            # The job vanished (e.g. a dump restored without it).
             text(
                 "DELETE FROM procrastinate.procrastinate_jobs "
                 "WHERE task_name = 'agent.apply_confirmation'"
             )
         )
-    async with env.factory() as session:
-        assert await unapplied_confirmations(session, env.clock.now()) == []
-        later = env.clock.now() + timedelta(minutes=5)
-        found = await unapplied_confirmations(session, later)
-    assert [row[0] for row in found] == [confirmation_id]
-    assert "agent.apply_confirmation" not in await job_names(env)
+    jobs = handlers(env, channel)
+    await jobs.reconcile_pending()
+    assert "agent.apply_confirmation" not in await job_names(env)  # inside the grace period
+
+    env.clock.advance(minutes=5)
+    await jobs.reconcile_pending()
+    assert (await job_names(env)).count("agent.apply_confirmation") == 1
+    assert (await jobs.apply_confirmation(confirmation_id)).status == "applied"
+    assert await note_rows(env) == 1
+    await jobs.reconcile_pending()  # nothing left to re-defer
+    assert (await job_names(env)).count("agent.apply_confirmation") == 1
+
+
+async def test_an_apply_cancelled_mid_way_is_failed_and_the_owner_told(env: Env) -> None:
+    """Review item 7: a CancelledError after the claim leaves `applying`, and
+    the reconciler fails it and tells the owner; it is never 'applied'."""
+    _, channel = await held_call(env, NOTE_CANCEL)
+    confirmation_id = await confirm(env)
+    with pytest.raises(asyncio.CancelledError):
+        await applier(env, channel).apply(confirmation_id)
+    assert (await status_of(env))[0] == "applying"
+
+    jobs = handlers(env, channel)
+    await jobs.reconcile_pending()
+    assert (await status_of(env))[0] == "applying"  # still inside the grace period
+    env.clock.advance(minutes=15)
+    await jobs.reconcile_pending()
+    assert await status_of(env) == ("failed", None)
+    assert "interrupted" in channel.sends[-1]
+    assert (await applier(env, channel).apply(confirmation_id)).status == "skipped"

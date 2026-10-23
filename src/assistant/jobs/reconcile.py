@@ -80,6 +80,32 @@ async def unapplied_confirmations(session: AsyncSession, now: datetime) -> list[
     return [(int(row[0]), int(row[1])) for row in result.all()]
 
 
+#: A claimed (`applying`) call should finish within seconds; after this it was
+#: cut off (a cancelled job) and its outcome is unknown.
+APPLYING_TIMEOUT = timedelta(minutes=10)
+
+_INTERRUPTED_CONFIRMATIONS = text(
+    """
+    UPDATE app.tool_confirmations
+    SET status = 'failed', args = NULL
+    WHERE status = 'applying' AND decided_at < :older_than
+    RETURNING id, account_id, tool_name
+    """
+)
+
+
+async def fail_interrupted_confirmations(
+    session: AsyncSession, now: datetime
+) -> list[tuple[int, int, str]]:
+    """Fail calls left `applying` (cut off mid-way); `(id, account_id, tool)`
+    so the owner can be told. Conditional: a row that finished meanwhile is
+    untouched."""
+    result = await session.execute(
+        _INTERRUPTED_CONFIRMATIONS, {"older_than": now - APPLYING_TIMEOUT}
+    )
+    return [(int(row[0]), int(row[1]), str(row[2])) for row in result.all()]
+
+
 async def unqueued_owner_turns(session: AsyncSession, now: datetime) -> list[tuple[int, int]]:
     """`(turn_id, account_id)` pairs that need their job re-deferred."""
     result = await session.execute(
