@@ -14,6 +14,9 @@
 justfile  text eol=lf
 Dockerfile text eol=lf
 .githooks/* text eol=lf
+# Frozen evaluation datasets: MANIFEST.sha256 hashes the exact bytes.
+*.jsonl   text eol=lf
+*.sha256  text eol=lf
 
 # uv resolves the lock file itself; keep it out of diffs and merges.
 uv.lock   text eol=lf -diff linguist-generated
