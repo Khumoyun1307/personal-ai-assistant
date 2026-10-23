@@ -5,7 +5,9 @@ LV-01…LV-19 (TELEGRAM_FEASIBILITY §11) against real accounts.
 
 > It needs a real `BOT_TOKEN`, and `var/probe/` will hold real chat content.
 > The owner, or a coding agent under the standing exception in AGENTS §9
-> (granted 2026-10-18; dev/probe bot only), runs it. Agents never pass
+> (granted 2026-10-18; **dev bot only** — from 2026-10-22 the separate,
+> neutrally named dev bot connected to the second account; never Alviro, the
+> production bot, which only the server polls), runs it. Agents never pass
 > `--verbose` and never read `var/probe/`; they see only `probe summary` and
 > what `sanitize.py` produces. Steps that need a human in the Telegram client
 > remain the owner's.
@@ -52,7 +54,13 @@ deliverable for LV-04, LV-08 and LV-16, so run the failing cases deliberately
 rather than avoiding them.
 
 Only one process may poll a token at a time. **Stop `just probe listen` before
-`just run`**, or the second poller gets HTTP 409.
+`just run`**, or the second poller gets HTTP 409 (or takes the other poller's
+updates). For the same reason the probe never runs `listen` with Alviro's
+token: the production server polls it. A one-off, non-polling call with
+Alviro's token (e.g. `getfile` for the LV-11 7-day re-check — file ids are
+per bot, so it must be Alviro's; due ≥ 2026-10-25 19:33 UTC) needs a per-run
+owner go-ahead (AGENTS §9) and the token is removed from the laptop
+afterwards.
 
 The `just probe` recipe passes its arguments unquoted to the container, so
 message text must be a single token (`LV08-synthetic-send`, not `"LV-08 send"`);

@@ -1,11 +1,17 @@
 # R0 live session script (M02 acceptance; PRD §21 R0, IMPLEMENTATION_PLAN §4)
 
-**Setup:** the production deployment runs (S02.5); the prod bot **Alviro** is
-connected to the **main account** with the second account inside the Chat
-Automation scope and **Reply** granted; the dev/probe bot is connected to the
-**second account** (ARCHITECTURE §15.3). The agent runs `just prod-logs` and
-the verification tool; the owner holds the phone (main account), Telegram
-Desktop (main account) and the second account (phone or web).
+**Setup (two bots, owner decision 2026-10-22; ARCHITECTURE §15.3):** the
+session runs on the **production server** (Oracle, S02.5/S02.6). The
+production bot **Alviro** is polled only by the server and is connected to the
+**main account** with the second account inside the Chat Automation scope and
+**Reply** granted. The **dev bot** is connected to the **second account** —
+that is the development setup, used here only in Part 5. The agent verifies
+Parts 0–4 server-side and content-free only: `just prod-logs <host>`,
+`just prod-status <host>` and `verify_r0.py` run inside the server's app
+container. **Nothing on the laptop polls or calls Alviro during the session**
+(one poller per token: a local `getUpdates` would take production updates
+from the server). The owner holds the phone (main account), Telegram Desktop
+(main account) and the second account (phone or web).
 
 Every message is **synthetic**: send the numbered lines exactly as written.
 The agent never reads message text; verification is by number and structure
@@ -116,10 +122,14 @@ Then from the second account send `R0-022 After edits and deletions`.
 `processed_at − date` < 5 s over the session) and, at the very end, NFR-03
 (stop the app for 16 minutes; the heartbeat monitor must alert within 15).
 
-## Part 5 — the deferred LV-08 half (probe bot on the second account, 5 min)
+## Part 5 — the deferred LV-08 half (dev bot on the second account, 5 min)
 
-On the dev connection the **second account is the owner** and the **main
-account is the contact**. With `just probe listen` running (agent):
+This part uses the **dev bot only** — never Alviro's token, so the server's
+production poller is untouched. The laptop `.env` holds only the dev bot's
+token; the dev app (`just run`) is stopped so the probe is the dev bot's only
+poller. On the dev connection the **second account is the owner** and the
+**main account is the contact**. With `just probe listen` running (agent,
+content-free console, never `--verbose`):
 
 1. Second account (owner) sends one message to the main account. Agent:
    `just probe send <conn> <main chat id> LV08-reopen-1` → expected
@@ -132,8 +142,11 @@ account is the contact**. With `just probe listen` running (agent):
 
 Precondition: the chat has had no contact message for 24 h on that
 connection (the agent checks with `probe summary` before step 1; otherwise
-this part moves to the next day). The agent records the results in
-TF §12 (LV-08 reopen half, LV-15 add-on).
+this part moves to the next day). If the owner wants the reopen half
+observed on Alviro's own connection instead, it is not done from the laptop:
+it waits for a planned server window with the server's poller stopped and a
+per-run owner go-ahead (AGENTS §9). The agent records the results in
+TF §12 (LV-08 reopen half, LV-15 add-on) — as owner-executed live results.
 
 ## Part 6 — close
 
