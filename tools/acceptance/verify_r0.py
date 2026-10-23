@@ -7,9 +7,11 @@ numbers, counts, directions and timings reach the console (AGENTS §9).
     python tools/acceptance/verify_r0.py --expect 1-60 --deleted 9,10,19 \
         --edited 2,17 --missing-expected 23,28 --no-text 12,14,15,16
 
-Run inside the app container (prod: `docker compose -f deploy/compose.prod.yml
-exec app python tools/acceptance/verify_r0.py …`). Exit 0 when every check
-passes, 1 otherwise. Outside `src/`, never imported by it (AGENTS §5).
+Prod: `just prod-verify-r0 <ip> --expect 1-16 …` — the prod image ships only
+src/, so deploy/server.sh mounts the checkout's tools/acceptance/ read-only
+into a one-off app container (`compose run --rm --no-deps`). Dev: inside the
+dev container. Exit 0 when every check passes, 1 otherwise. Outside `src/`,
+never imported by it (AGENTS §5).
 """
 
 from __future__ import annotations
