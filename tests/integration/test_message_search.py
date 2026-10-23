@@ -7,6 +7,7 @@ with `pg_trgm`. All text is synthetic.
 
 from __future__ import annotations
 
+import random
 import re
 import unicodedata
 from datetime import timedelta
@@ -18,7 +19,7 @@ from sqlalchemy import select, text, update
 from assistant.conversations.models import Message
 from assistant.memory import search_index
 from assistant.memory.retrieval import SearchFilters, search_messages
-from assistant.memory.search import NORMALIZER_VERSION, normalize
+from assistant.memory.search import NORMALIZER_VERSION, normalize, query_terms
 from tests.integration.business_env import (
     CONTACT,
     OTHER_CONTACT,
@@ -149,6 +150,54 @@ async def test_a_typo_still_matches_through_trigrams(env: Env) -> None:
     assert await find(env, "uchrashuvv") == ["Uchrashuv joyini o'zgartirdik"]
 
 
+@pytest.mark.parametrize(
+    ("stored", "query"),
+    [
+        ("Жду тебя у входа", "zhdu"),
+        ("zhdu tebya u vkhoda", "жду"),
+        ("Его не было дома", "ego"),
+        ("Вы придёте завтра?", "vy pridyote"),
+        ("Хорошо, договорились", "khorosho"),
+        ("horosho, dogovorilis", "хорошо"),
+        ("Бугун иш кўп", "kup"),
+        ("Raxmat, oka", "rahmat"),
+        ("Rahmat, oka", "raxmat"),
+    ],
+)
+async def test_typed_spellings_of_short_words_match(env: Env, stored: str, query: str) -> None:
+    """Russian typed in Latin and Uzbek typed on a Russian keyboard (D54):
+    short words that trigram similarity cannot rescue."""
+    await connect(env)
+    await say(env, stored)
+    await say(env, "Boshqa sintetik xabar")
+    assert await find(env, query) == [stored]
+
+
+async def test_write_and_query_sides_tokenize_identically(env: Env) -> None:
+    """Every query term of a text is a lexeme of that text's stored vector,
+    for random Latin/Cyrillic/apostrophe text (write/query symmetry, N).
+    `.` and `-` are left out on purpose: Postgres keeps `15.00` and `-5` as
+    one lexeme (a known asymmetry for numbers, recorded in M03.md)."""
+    alphabet = (
+        "abcdefghijklmnopqrstuvwxyz0123456789 ,?!'ʻʼ‘’`´ʹʽ′ꞌˈˊˋöğşçñİ"
+        "абвгдеёжзийклмнопрстуфхцчшщъыьэюяўқғҳ"
+    )
+    rng = random.Random(20261023)
+    samples = ["".join(rng.choice(alphabet) for _ in range(rng.randint(1, 40))) for _ in range(150)]
+    async with env.factory() as session:
+        for sample in samples:
+            key = normalize(sample)
+            lexemes = set(
+                (
+                    await session.execute(
+                        text("SELECT lexeme FROM unnest(to_tsvector('simple', :k))"), {"k": key}
+                    )
+                ).scalars()
+            )
+            for term in query_terms(sample):
+                assert any(lexeme.startswith(term) for lexeme in lexemes), (sample, term)
+
+
 # ------------------------------------------------------------ ranking
 async def test_ranking_prefers_all_words_then_newer(env: Env) -> None:
     await connect(env)
@@ -178,6 +227,21 @@ async def test_no_all_word_match_falls_back_to_any_word(env: Env) -> None:
         )
     assert [hit.text for hit in result.hits] == ["Kontrakt imzolandi"]
     assert result.relaxed is True
+
+
+async def test_a_weak_trigram_hit_does_not_suppress_the_any_word_fallback(env: Env) -> None:
+    """M: AND found no row on words (at most a trigram near-miss), so the OR
+    pass runs and the word match is reported as relaxed."""
+    await connect(env)
+    await say(env, "Kontrakt imzolandi")
+    await say(env, "Kontraktlar haqida")
+    async with env.factory() as session:
+        result = await search_messages(
+            session, await account_id(env), ["kontrakt bekor"], now=env.clock.now()
+        )
+    assert {hit.text for hit in result.hits} == {"Kontrakt imzolandi", "Kontraktlar haqida"}
+    assert result.relaxed is True
+    assert all(hit.word_match for hit in result.hits)
 
 
 async def test_variants_are_merged_by_best_score(env: Env) -> None:

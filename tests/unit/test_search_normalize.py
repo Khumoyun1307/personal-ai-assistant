@@ -19,7 +19,9 @@ from assistant.memory.search import (
     guess_lang,
     normalize,
     query_terms,
+    spelling_variants,
     stem_variants,
+    term_alternatives,
 )
 
 
@@ -186,16 +188,66 @@ def test_light_uzbek_stem_variants(term: str, expected: set[str]) -> None:
     assert stem_variants(term)[0] == term
 
 
+def _groups(tsquery: str | None, joiner: str) -> list[set[str]]:
+    assert tsquery is not None
+    return [
+        {alt.strip().removesuffix(":*") for alt in group.strip("() ").split("|")}
+        for group in tsquery.split(joiner)
+    ]
+
+
 def test_build_tsquery_and_or_modes() -> None:
-    assert build_tsquery(["salom", "ertaga"], "and") == "(salom:*) & (ertaga:* | erta:*)"
-    assert build_tsquery(["salom", "ertaga"], "or") == "(salom:*) | (ertaga:* | erta:*)"
-    assert build_tsquery(["yurak"]) == "(yurak:* | yurag:*)"
+    salom, ertaga = _groups(build_tsquery(["salom", "ertaga"], "and"), "&")
+    assert {"salom"} <= salom
+    assert {"ertaga", "erta"} <= ertaga
+    assert len(_groups(build_tsquery(["salom", "ertaga"], "or"), "|")[0]) >= 1
+    assert " | " in (build_tsquery(["salom", "ertaga"], "or") or "")
+    [yurak] = _groups(build_tsquery(["yurak"]), "&")
+    assert {"yurak", "yurag"} <= yurak
 
 
 def test_build_tsquery_drops_anything_but_plain_terms() -> None:
-    assert build_tsquery(["ok", "a&b", "x:*", "!", ""]) == "(ok:*)"
+    [ok] = _groups(build_tsquery(["ok", "a&b", "x:*", "!", ""]), "&")
+    assert "ok" in ok
+    assert all(alt.isalnum() for alt in ok)
     assert build_tsquery([]) is None
     assert build_tsquery(["&"]) is None
+
+
+@pytest.mark.parametrize(
+    ("typed", "stored"),
+    [
+        ("zhdu", "жду"),  # zh / j
+        ("ego", "его"),  # initial e / ye
+        ("vy", "вы"),  # y / i
+        ("khorosho", "хорошо"),  # kh / x
+        ("kup", "кўп"),  # Uzbek on a Russian keyboard: у for ў
+        ("raxmat", "rahmat"),  # x / h
+        ("kalesan", "qalesan"),  # k / q
+    ],
+)
+def test_typed_spellings_reach_the_stored_key_both_ways(typed: str, stored: str) -> None:
+    """Query-side alternatives (D54): each spelling's terms include the other's key."""
+    assert normalize(stored) in term_alternatives(normalize(typed))
+    assert normalize(typed) in term_alternatives(normalize(stored))
+
+
+def test_spelling_alternatives_are_bounded() -> None:
+    assert len(term_alternatives("qishloqlarimizdagi")) <= 24
+    assert spelling_variants("salom")[0] == "salom"
+
+
+@pytest.mark.parametrize(
+    "variant",
+    ["oꞌzbekiston", "oˈzbekiston", "oˊzbekiston", "oˋzbekiston", "oʹzbekiston", "o^zbekiston"],
+)
+def test_apostrophe_lookalike_modifier_letters_are_dropped(variant: str) -> None:
+    assert normalize(variant) == "ozbekiston"
+
+
+def test_dotted_capital_i_casefolds_without_a_stray_combining_dot() -> None:
+    assert normalize("İstanbul") == "istanbul"
+    assert normalize("İ").isascii()
 
 
 # ------------------------------------------------------------ tagging

@@ -11,8 +11,11 @@ same question in Latin, Cyrillic, Russian and English), merged by best score:
 - score = 0.7 · `ts_rank_cd` (normalized to [0, 1)) + 0.3 · `word_similarity`
   + a small recency bonus, so a fuzzy hit never outranks a real word match
   by much, and among equals the newer message wins;
-- all words must match first (AND); a query that finds nothing that way is
-  retried with any word (OR).
+- all words must match first (AND); when no variant matched on all its words
+  (only weak trigram hits, or nothing), any word will do (OR), and the
+  result says so (`relaxed`).
+- query terms carry typed-spelling alternatives (zh/j, kh/x, y/i, …) on
+  the query side only (`memory/search.py::term_alternatives`).
 
 Every value reaches Postgres as a bound parameter. The tsquery string is
 built from `[a-z0-9]+` terms only (`memory/search.py`), so it cannot carry
@@ -77,6 +80,8 @@ class SearchHit:
     sent_at: datetime
     text: str | None
     score: float
+    #: Matched on words (`search_tsv @@ tsquery`), not only by trigrams.
+    word_match: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +104,8 @@ def _statement(
 ) -> Select[Any]:
     query = func.to_tsquery(_SIMPLE, literal(tsquery)) if tsquery is not None else None
     trigram = literal(key).op("<%")(Message.search_key)
-    matched = trigram if query is None else or_(Message.search_tsv.op("@@")(query), trigram)
+    words = Message.search_tsv.op("@@")(query) if query is not None else literal(False)
+    matched = trigram if query is None else or_(words, trigram)
     ts_rank = (
         func.coalesce(func.ts_rank_cd(Message.search_tsv, query, 32), 0.0)
         if query is not None
@@ -144,6 +150,7 @@ def _statement(
             Message.sent_at,
             Message.text,
             score,
+            func.coalesce(words, False).label("word_match"),
         )
         .join(Conversation, Conversation.id == Message.conversation_id)
         .where(and_(*conditions))
@@ -182,6 +189,7 @@ async def _run(
             sent_at=row[4],
             text=row[5],
             score=float(row[6]),
+            word_match=bool(row[7]),
         )
         for row in rows
     ]
@@ -229,8 +237,11 @@ async def search_messages(
 
     await collect("and")
     relaxed = False
-    if not best:
+    if not any(hit.word_match for hit in best.values()):
+        # No variant matched on all its words (at most weak trigram hits):
+        # any word will do. Trigram-only hits of the AND pass are kept.
+        before = set(best)
         await collect("or")
-        relaxed = bool(best)
+        relaxed = bool(set(best) - before) or any(hit.word_match for hit in best.values())
     ranked = sorted(best.values(), key=lambda h: (-h.score, -h.sent_at.timestamp(), -h.message_id))
     return SearchResult(hits=tuple(ranked[:limit]), searched=tuple(variants), relaxed=relaxed)

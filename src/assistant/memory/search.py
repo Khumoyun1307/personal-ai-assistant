@@ -40,8 +40,25 @@ NORMALIZER_VERSION = 2
 #: Every apostrophe-like character Telegram clients and keyboards produce
 #: (TF §8). Removed before NFKC as well as after: NFKC turns the acute accent
 #: (´) into a space plus a combining mark, which would split the word.
-_APOSTROPHE_CHARS = "ʻʼ‘’'`´ʹʽ′‛"
+_APOSTROPHE_CHARS = "ʻʼ‘’'`´ʹʽ′‛ꞌˈˊˋ"
 _DROP_APOSTROPHES = str.maketrans(dict.fromkeys(_APOSTROPHE_CHARS, None))
+#: Spacing modifier letters (U+02B0–U+02FF) are apostrophe and accent
+#: lookalikes in Latin text; with modifier symbols (category Sk) and the
+#: combining dot that casefolding `İ` leaves behind, they are dropped too.
+_COMBINING_DOT_ABOVE = "̇"
+
+
+def _drop_modifiers(text: str) -> str:
+    return "".join(
+        char
+        for char in text
+        if not (
+            0x02B0 <= ord(char) <= 0x02FF
+            or char == _COMBINING_DOT_ABOVE
+            or unicodedata.category(char) == "Sk"
+        )
+    )
+
 
 #: Latin letters of other orthographies people type Uzbek with.
 _LATIN_FOLDS = str.maketrans(
@@ -125,9 +142,9 @@ def _transliterate(text: str) -> str:
 
 def normalize(text: str) -> str:
     """The canonical search form of `text`. Pure, deterministic, versioned."""
-    folded = text.translate(_DROP_APOSTROPHES)
+    folded = _drop_modifiers(text.translate(_DROP_APOSTROPHES))
     folded = unicodedata.normalize("NFKC", folded).casefold()
-    folded = folded.translate(_DROP_APOSTROPHES)
+    folded = _drop_modifiers(folded.translate(_DROP_APOSTROPHES))
     folded = _transliterate(folded).translate(_LATIN_FOLDS)
     return _WHITESPACE.sub(" ", folded).strip()
 
@@ -178,6 +195,55 @@ def stem_variants(term: str) -> list[str]:
     return list(variants)
 
 
+#: Query-side spelling alternatives (M03 D54). The key keeps one spelling;
+#: people type the others: Russian in Latin (zhdu, khorosho, vy, ego) against
+#: the Uzbek-table key of Cyrillic (жду → jdu, хорошо → xorosho, вы → vi,
+#: его → yego), and Uzbek on a Russian keyboard (куп for кўп → kup vs kop;
+#: raxmat/rahmat; k for q). Each rule is applied to every occurrence, one
+#: rule at a time, in both directions. The write side never changes, so the
+#: two sides stay symmetric; these only widen what a query term may match.
+_SPELLING_RULES: tuple[tuple[str, str], ...] = (
+    ("zh", "j"),
+    ("j", "zh"),
+    ("kh", "x"),
+    ("x", "kh"),
+    ("x", "h"),
+    ("h", "x"),
+    ("y", "i"),
+    ("i", "y"),
+    ("q", "k"),
+    ("k", "q"),
+    ("u", "o"),
+    ("o", "u"),
+)
+#: Cap on alternatives per term, so a long word cannot blow up the tsquery.
+_MAX_ALTERNATIVES = 24
+
+
+def spelling_variants(term: str) -> list[str]:
+    """`term` and its typed-spelling alternatives (query side only)."""
+    variants: dict[str, None] = {term: None}
+    for source, target in _SPELLING_RULES:
+        if source in term:
+            variants.setdefault(term.replace(source, target), None)
+    if term.startswith("ye"):
+        variants.setdefault(term[1:], None)  # yego → ego
+    elif term.startswith("e"):
+        variants.setdefault("y" + term, None)  # ego → yego
+    return list(variants)
+
+
+def term_alternatives(term: str) -> list[str]:
+    """Every prefix a query term may match: stems, then spellings of each."""
+    out: dict[str, None] = {}
+    for stem in stem_variants(term):
+        for variant in spelling_variants(stem):
+            out.setdefault(variant, None)
+            if len(out) >= _MAX_ALTERNATIVES:
+                return list(out)
+    return list(out)
+
+
 def build_tsquery(terms: Sequence[str], mode: TsqueryMode = "and") -> str | None:
     """A `to_tsquery('simple', …)` string: each term's variants as prefixes,
     OR-ed together; terms joined by `&` (all words) or `|` (any word).
@@ -189,7 +255,7 @@ def build_tsquery(terms: Sequence[str], mode: TsqueryMode = "and") -> str | None
     for term in terms:
         if not _TERM.fullmatch(term):
             continue
-        alternatives = " | ".join(f"{variant}:*" for variant in stem_variants(term))
+        alternatives = " | ".join(f"{variant}:*" for variant in term_alternatives(term))
         groups.append(f"({alternatives})")
     if not groups:
         return None
