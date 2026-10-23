@@ -32,11 +32,12 @@ POLICY_VERSION = "v3"
 #: (SEC-02). A new processor needs a new consent, not just a new entry here.
 AI_PROCESSORS: tuple[str, ...] = ("OpenAI",)
 
-#: Card kind for the managed-conversation consent question (Agree / Decline
-#: buttons — never a free-text answer, so an unrelated message can never be
-#: read as a decision), and how long it stays open: it is asked when the
-#: connection arrives, which the owner may not see for a while. A decline is
-#: also respected for this long: a reconnect does not ask again.
+#: Card kind for the managed-conversation consent question (Turn on / Not now
+#: buttons, callback ops `agree` / `decline` — never a free-text answer, so an
+#: unrelated message can never be read as a decision), and how long it stays
+#: open: it is asked when the connection arrives, which the owner may not see
+#: for a while. A decline is also respected for this long: a reconnect does
+#: not ask again.
 MANAGED_CONSENT_CARD = "managed_consent"
 MANAGED_CONSENT_TTL = timedelta(hours=24)
 

@@ -368,7 +368,15 @@ async def test_managed_consent_is_asked_and_recorded_with_the_policy_and_process
     await deliver(env, connection_update())
 
     await deliver(env, private_message(OWNER, "/privacy managed"))
-    assert "OpenAI" in env.sender.sends[-1]["text"]
+    question = env.sender.sends[-1]
+    assert question["text"].startswith("<b>Let Alviro's AI agent work with these chats?</b>")
+    assert "The text is processed by OpenAI" in question["text"]
+    assert "You can turn it off any time with /privacy." in question["text"]
+    keyboard = question["reply_markup"]
+    labels = [b.text for row in keyboard.inline_keyboard for b in row]
+    assert labels == ["Turn on", "Not now"]
+    ops = [b.callback_data.rsplit(":", 1)[-1] for row in keyboard.inline_keyboard for b in row]
+    assert ops == ["agree", "decline"]  # only the labels changed, not the callback data
     await press(env, "managed_consent", "agree")
 
     state = await managed_consent(env)
@@ -383,7 +391,7 @@ async def test_declining_managed_consent_grants_nothing(env: Env) -> None:
 
     assert not (await managed_consent(env)).granted
     # The question card is edited to the answer; the deletion card follows (S02.4).
-    assert any("nothing from your chats" in edit["text"] for edit in env.sender.edits)
+    assert any("Not now." in edit["text"] for edit in env.sender.edits)
     assert "Delete what I stored" in env.sender.texts[-1]
 
 

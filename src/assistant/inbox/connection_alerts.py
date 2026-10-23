@@ -7,7 +7,7 @@ by event id — so a re-run job, or an event processed twice, pages once.
 
 When a connection becomes live and managed-conversation consent is not yet
 given, the notice also asks for it (J1 step 5, FR-ONB-05b) as a card with
-Agree / Decline buttons. The card is recorded only after the notice was
+Turn on / Not now buttons. The card is recorded only after the notice was
 delivered; a reconnect does not ask again while a card is open or within a
 day of a decline; and no free-text message is ever read as the answer.
 Consent is asked, never assumed (§6 invariant 9).
@@ -44,31 +44,39 @@ TIER_TEXT: dict[Tier, str] = {
 
 VISIBILITY = "I see the chats you included from now on. I cannot see older history."
 
+#: The managed-consent question (FR-ONB-05b; wording approved by the owner
+#: 2026-10-23, M02 D58). The same text on the connection notice and on
+#: `/privacy managed`. `{processors}` names who the text goes to (SEC-02).
 MANAGED_CONSENT_QUESTION = (
-    "<b>One more question.</b> To summarize these chats and help you with them, I "
-    "need to send their text to <b>{processors}</b>. Until you agree, nothing from "
-    "them is sent to any AI provider.\n\n"
-    "Tap <b>Agree</b> or <b>Decline</b> below. "
-    "You can change this later with /privacy."
+    "<b>Let Alviro's AI agent work with these chats?</b>\n\n"
+    "When this is on, Alviro's AI agent reads new messages in the chats you connected "
+    "so it can summarise them, find things for you and answer your questions about "
+    "them. The text is processed by {processors} and isn't used to train their "
+    "models. You can turn it off any time with /privacy.\n\n"
+    "When it's off, Alviro still tracks which chats are connected and when messages "
+    "arrive, but doesn't read them."
 )
-#: When the question is already open, or was declined within a day.
+#: Button labels and their callback ops. Only the labels are owner-facing; the
+#: ops (`agree` / `decline`) are what card presses are matched on.
+MANAGED_CONSENT_BUTTONS: tuple[tuple[str, str], ...] = (
+    ("Turn on", "agree"),
+    ("Not now", "decline"),
+)
+#: When the question is already open, or was answered "Not now" within a day.
 MANAGED_CONSENT_STILL_OPEN = (
-    "My question about AI for these chats is still open above. Nothing from them "
-    "is sent to any AI provider until you agree."
+    "The question above about letting Alviro's AI agent work with these chats is "
+    "still open. Until you tap <b>Turn on</b>, the AI agent doesn't read them."
 )
 MANAGED_CONSENT_DECLINED_NOTE = (
-    "You declined AI for these chats, so nothing from them is sent to any AI "
-    "provider. Send <code>/privacy managed</code> if you change your mind."
+    "You chose <b>Not now</b> for Alviro's AI agent in these chats, so it doesn't "
+    "read them. Send <code>/privacy managed</code> to turn it on."
 )
 
 
 def consent_buttons(token: str) -> list[Button]:
-    """Agree / Decline for a `managed_consent` card (§6.7)."""
+    """Turn on / Not now for a `managed_consent` card (§6.7)."""
     kind = service.MANAGED_CONSENT_CARD
-    return [
-        Button("Agree", encode(kind, token, "agree")),
-        Button("Decline", encode(kind, token, "decline")),
-    ]
+    return [Button(label, encode(kind, token, op)) for label, op in MANAGED_CONSENT_BUTTONS]
 
 
 def _rights_note(rights: list[str]) -> str:

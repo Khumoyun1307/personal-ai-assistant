@@ -441,7 +441,7 @@ async def _notice_card(env: Env) -> PendingInput:
 
 @pytest.mark.parametrize(
     ("op", "outcome"),
-    [("agree", "Thank you — recorded"), ("decline", "nothing from your chats")],
+    [("agree", "Turned on."), ("decline", "Not now.")],
 )
 async def test_answering_the_notice_card_keeps_the_notice_text(
     env: Env, op: str, outcome: str
@@ -467,5 +467,5 @@ async def test_answering_the_notice_card_keeps_the_notice_text(
 async def test_answering_a_privacy_managed_card_still_edits_it_in_place(env: Env) -> None:
     await seed(env)
     await grant_managed(env)
-    assert any("Thank you — recorded" in edit["text"] for edit in env.sender.edits)
+    assert any("Turned on." in edit["text"] for edit in env.sender.edits)
     assert env.sender.keyboard_edits == []
