@@ -188,7 +188,7 @@ async def test_the_status_tool_reports_the_same_facts_as_the_command(env: Env) -
     assert outcome.data["consent"] == {
         "control_chat": True,
         "managed_chats": False,
-        "policy_version": "v3",
+        "policy_version": "v4",
     }
 
 

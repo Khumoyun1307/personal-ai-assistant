@@ -48,6 +48,9 @@ class AlertKind(StrEnum):
     RESTORE_NOTICE = "restore_notice"
     #: A change the owner confirmed was cut off while being applied (S03.1).
     CONFIRMATION_INTERRUPTED = "confirmation_interrupted"
+    #: The privacy policy changed since the owner consented (AGENTS §16; policy
+    #: v4). Sent once per version by `inbox.policy_notice`.
+    POLICY_UPDATED = "policy_updated"
 
 
 #: Owner-facing text per kind. Plain statements of fact (§6 invariant 11).
@@ -86,6 +89,12 @@ ALERT_TEXT: dict[AlertKind, str] = {
         "⚠️ A change you confirmed (<code>{tool}</code>) was interrupted while it was being "
         "applied. It may or may not have taken effect; please check before asking again. "
         "I am not counting it as done."
+    ),
+    AlertKind.POLICY_UPDATED: (
+        "📄 <b>Alviro's privacy policy was updated (version {version}):</b> {change}. "
+        "{link}\n\n"
+        "Your current choices stay as they are. If you don't agree, send "
+        "<code>/privacy revoke</code> to stop all AI processing."
     ),
 }
 

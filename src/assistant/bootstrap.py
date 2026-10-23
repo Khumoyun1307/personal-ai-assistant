@@ -179,6 +179,7 @@ async def running_process(
                     ),
                     backup_status_path=settings.backup_status_path,
                     backup_upload_required=settings.backup_remote is not None,
+                    privacy_policy_url=settings.privacy_policy_url,
                     confirmation_applier=build_confirmation_applier(
                         settings, session_factory, channel, clock
                     ),

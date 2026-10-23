@@ -381,7 +381,7 @@ async def test_managed_consent_is_asked_and_recorded_with_the_policy_and_process
 
     state = await managed_consent(env)
     assert state.granted
-    assert (state.policy_version, state.processors) == ("v3", ("OpenAI",))
+    assert (state.policy_version, state.processors) == ("v4", ("OpenAI",))
 
 
 async def test_declining_managed_consent_grants_nothing(env: Env) -> None:

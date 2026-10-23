@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Version** | **v4 (draft)** — plain-language rewrite; names where data is hosted (Oracle Cloud, US East — Ashburn) and introduces encrypted backups (on the server + Backblaze B2, EU) with how long deleted data can remain in them |
-| **Status** | **Draft 2026-10-23, not published.** Owner go-ahead to publish given 2026-10-23. v3 stays the published text at https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19 until v4 is published there, which happens **before the production server holds real data and takes its first backup**. |
+| **Status** | **Draft 2026-10-23, not published yet.** Owner go-ahead to publish given 2026-10-23. **Code is at v4** (`POLICY_VERSION = "v4"`, M02 D59: existing consents stay valid; owners who consented under v3 get a one-time update notice with the link and `/privacy revoke` as the opt-out). The lead publishes this text at https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19 after that change merges, and **before the production server holds real data and takes its first backup**; v3 stays the published text until then. |
 | **Last updated** | 2026-10-23 |
 | **Previous** | v3 — deletion and "stop observing", published 2026-10-21; v2 — control chat + managed chats, published 2026-10-19; v1 — control chat only, published 2026-10-18 (see git history of this file) |
 

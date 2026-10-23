@@ -47,6 +47,7 @@ from assistant.db.uow import transaction
 from assistant.inbox.backup_check import BackupReport, check_backup, deliver_restore_notice
 from assistant.inbox.connection_alerts import notify_connection_change
 from assistant.inbox.notify import AlertKind, AlertResult, OwnerAlerts
+from assistant.inbox.policy_notice import deliver_policy_update_notices
 from assistant.inbox.watchdog import STALL_AFTER, check_ingestion, poller_heartbeat_at
 from assistant.jobs.app import QUEUE_LLM, QUEUE_SYSTEM, STALLED_WORKER_TIMEOUT
 from assistant.jobs.reconcile import (
@@ -102,6 +103,8 @@ class JobHandlers:
     backup_status_path: Path | None = None
     #: An off-site remote is configured: the upload marker is checked too.
     backup_upload_required: bool = False
+    #: Linked from the policy-update notice (AGENTS §16).
+    privacy_policy_url: str | None = None
 
     async def apply_confirmation(self, confirmation_id: int) -> ApplyOutcome:
         return await self.confirmation_applier.apply(confirmation_id)
@@ -130,6 +133,11 @@ class JobHandlers:
         # A restore notice left by `post-restore` goes out with the first run.
         if await deliver_restore_notice(self.session_factory, self.alerts):
             logger.warning("restore_notice_delivered")
+        # A policy bump that widens processing is announced once (AGENTS §16).
+        if await deliver_policy_update_notices(
+            self.session_factory, self.clock, self.alerts, policy_url=self.privacy_policy_url
+        ):
+            logger.info("policy_update_notice_delivered")
 
     async def backup_check(self) -> BackupReport | None:
         """Daily: alert when the dump (or the off-site upload) is older than 26 h."""
