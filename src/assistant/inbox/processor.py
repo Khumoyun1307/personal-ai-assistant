@@ -39,6 +39,7 @@ from assistant.core.routing import (
     RouteDecision,
     Router,
 )
+from assistant.db.uow import discard_after_commit, run_after_commit
 from assistant.inbox.models import InboundUpdate
 from assistant.observability.logging import get_logger
 
@@ -215,46 +216,60 @@ class InboxProcessor:
                 decision = self._router(row.payload or {})
                 return await self._record_failure(session, row, decision, type(error).__name__)
 
-        async with self._session_factory() as session, session.begin():
-            row = await session.get(InboundUpdate, row_id, with_for_update=True)
-            if row is None or row.status != "pending":
-                return "deferred"
-
-            payload = row.payload or {}
-            decision = self._router(payload)
-            handler = self._handlers.get(decision.route, _noop_handler)
+        async with self._session_factory() as session:
             try:
-                # A savepoint: whatever a failing handler wrote is rolled back
-                # before the failure is counted, so a half-written row never
-                # commits, and a SQL error does not abort the transaction the
-                # attempt counter needs.
-                async with session.begin_nested():
-                    disposition = await handler(session, row, decision)
-            except Exception as error:
-                if _is_transient(error):
-                    # Leave pending, do NOT burn an attempt — otherwise an
-                    # outage dead-letters the whole backlog.
-                    logger.warning(
-                        "inbox_transient_error",
-                        update_row_id=row_id,
-                        exc_type=type(error).__name__,
-                    )
-                    raise
-                # The rollback expired `row`; reload it under the lock we hold
-                # (an expired attribute cannot lazy-load in async code).
-                await session.refresh(row)
-                return await self._record_failure(session, row, decision, type(error).__name__)
-
-            status = (
-                disposition.value if disposition is not None else self._status_for(decision.route)
-            )
-            row.status = status
-            row.processed_at = self._clock.now()
-            if decision.clears_payload or disposition in CLEAR_PAYLOAD_DISPOSITIONS:
-                # Same transaction as the status change: a crash between the
-                # two would leave content we have no basis to hold.
-                row.payload = None
+                async with session.begin():
+                    status = await self._process_locked(session, row_id)
+            except BaseException:
+                discard_after_commit(session)
+                raise
+            # Telegram calls a handler queued with `after_commit` (e.g. a card
+            # press's edits) run only now: never under the row locks the
+            # transaction held, and never for a rolled-back attempt that the
+            # retry would announce a second time (AGENTS §13).
+            await run_after_commit(session, self._session_factory)
             return status
+
+    async def _process_locked(self, session: AsyncSession, row_id: int) -> str:
+        row = await session.get(InboundUpdate, row_id, with_for_update=True)
+        if row is None or row.status != "pending":
+            return "deferred"
+
+        payload = row.payload or {}
+        decision = self._router(payload)
+        handler = self._handlers.get(decision.route, _noop_handler)
+        try:
+            # A savepoint: whatever a failing handler wrote is rolled back
+            # before the failure is counted, so a half-written row never
+            # commits, and a SQL error does not abort the transaction the
+            # attempt counter needs.
+            async with session.begin_nested():
+                disposition = await handler(session, row, decision)
+        except Exception as error:
+            # Whatever the failed attempt queued to announce is void.
+            discard_after_commit(session)
+            if _is_transient(error):
+                # Leave pending, do NOT burn an attempt — otherwise an
+                # outage dead-letters the whole backlog.
+                logger.warning(
+                    "inbox_transient_error",
+                    update_row_id=row_id,
+                    exc_type=type(error).__name__,
+                )
+                raise
+            # The rollback expired `row`; reload it under the lock we hold
+            # (an expired attribute cannot lazy-load in async code).
+            await session.refresh(row)
+            return await self._record_failure(session, row, decision, type(error).__name__)
+
+        status = disposition.value if disposition is not None else self._status_for(decision.route)
+        row.status = status
+        row.processed_at = self._clock.now()
+        if decision.clears_payload or disposition in CLEAR_PAYLOAD_DISPOSITIONS:
+            # Same transaction as the status change: a crash between the
+            # two would leave content we have no basis to hold.
+            row.payload = None
+        return status
 
     @staticmethod
     def _status_for(route: Route) -> str:

@@ -33,8 +33,8 @@ from tests.integration.business_env import (
     connect,
     conversation,
     deliver,
+    grant_managed,
     job_names,
-    private_message,
 )
 
 pytestmark = pytest.mark.integration
@@ -90,8 +90,7 @@ async def test_granting_managed_consent_releases_flagged_conversations(env: Env)
     async with env.factory() as session:
         assert await conversations_awaiting_ai(session, account.id) == []
 
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "yes"))
+    await grant_managed(env)
 
     conv = await conversation(env)
     assert conv is not None

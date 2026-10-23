@@ -7,12 +7,58 @@ or Telegram call (AGENTS §13).
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from types import TracebackType
 from typing import Any, Self
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from assistant.observability.logging import get_logger
+
+logger = get_logger(__name__)
+
+#: Work that must run only once the transaction has committed — typically a
+#: Telegram call that reports a state change (AGENTS §13: never hold a row
+#: lock across a network call; a rolled-back transaction must not have told
+#: anyone anything). It gets a session factory for its own short follow-up
+#: transactions.
+AfterCommit = Callable[[async_sessionmaker[AsyncSession]], Awaitable[None]]
+
+_AFTER_COMMIT_KEY = "assistant.after_commit"
+
+
+def after_commit(session: AsyncSession, action: AfterCommit) -> None:
+    """Queue `action` to run after `session`'s transaction commits.
+
+    Discarded on rollback. Only transactions run by `UnitOfWork` or the inbox
+    processor execute these; anywhere else they would silently never run, so
+    callers must be on one of those paths.
+    """
+    session.info.setdefault(_AFTER_COMMIT_KEY, []).append(action)
+
+
+def discard_after_commit(session: AsyncSession) -> None:
+    """Drop queued actions (the transaction, or the part that queued them,
+    was rolled back)."""
+    session.info.pop(_AFTER_COMMIT_KEY, None)
+
+
+async def run_after_commit(
+    session: AsyncSession, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Run the actions queued on `session`, in order, after its commit.
+
+    Each runs at most once: a failure is logged (type only, §14.4) and the
+    rest still run; nothing is retried, because the committed state must not
+    be re-announced twice (§6 invariant 6 for control-chat cards).
+    """
+    actions: list[AfterCommit] = session.info.pop(_AFTER_COMMIT_KEY, [])
+    for action in actions:
+        try:
+            await action(session_factory)
+        except Exception as error:
+            logger.error("after_commit_failed", exc_type=type(error).__name__)
 
 
 class UnitOfWork:
@@ -40,14 +86,20 @@ class UnitOfWork:
         traceback: TracebackType | None,
     ) -> None:
         session = self.session
+        committed = False
         try:
             if exc_type is None:
                 await session.commit()
+                committed = True
             else:
                 await session.rollback()
         finally:
             await session.close()
             self._session = None
+            if not committed:
+                discard_after_commit(session)
+        if committed:
+            await run_after_commit(session, self._session_factory)
 
     async def flush(self) -> None:
         """Send pending changes so server-generated ids become available."""

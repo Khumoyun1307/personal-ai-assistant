@@ -23,7 +23,9 @@ from assistant.accounts.models import (
     Account,
     BusinessConnection,
     BusinessConnectionEvent,
+    ControlTurn,
     ForeignConnection,
+    PendingInput,
 )
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.core.errors import TransientError
@@ -39,13 +41,16 @@ from tests.integration.business_env import (
     connection_row,
     connection_update,
     count,
+    decline_managed,
     deliver,
     environment,
     events,
+    grant_managed,
     inbound,
     notify_jobs,
     onboard,
     payload_is_sql_null,
+    press,
     private_message,
 )
 
@@ -364,7 +369,7 @@ async def test_managed_consent_is_asked_and_recorded_with_the_policy_and_process
 
     await deliver(env, private_message(OWNER, "/privacy managed"))
     assert "OpenAI" in env.sender.sends[-1]["text"]
-    await deliver(env, private_message(OWNER, "yes"))
+    await press(env, "managed_consent", "agree")
 
     state = await managed_consent(env)
     assert state.granted
@@ -374,12 +379,37 @@ async def test_managed_consent_is_asked_and_recorded_with_the_policy_and_process
 async def test_declining_managed_consent_grants_nothing(env: Env) -> None:
     await onboard(env)
     await deliver(env, connection_update())
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "no"))
+    await decline_managed(env)
 
     assert not (await managed_consent(env)).granted
-    assert any("nothing from your chats" in sent for sent in env.sender.texts)
-    assert "Delete what I stored" in env.sender.texts[-1]  # S02.4: the deletion card follows
+    # The question card is edited to the answer; the deletion card follows (S02.4).
+    assert any("nothing from your chats" in edit["text"] for edit in env.sender.edits)
+    assert "Delete what I stored" in env.sender.texts[-1]
+
+
+async def test_an_unrelated_message_is_never_taken_as_an_answer(env: Env) -> None:
+    """S02.6: the question is a card. A message typed while it is open — an
+    ordinary request, or even "yes"/"no" meant for something else — neither
+    grants nor declines, and is handled as what it is."""
+    await onboard(env)
+    await deliver(env, connection_update())
+    await deliver(env, private_message(OWNER, "/privacy managed"))
+    sends_before = len(env.sender.sends)
+
+    for text in ("what did I miss today?", "no", "yes"):
+        await deliver(env, private_message(OWNER, text))
+
+    assert not (await managed_consent(env)).granted
+    assert all("Delete what I stored" not in s["text"] for s in env.sender.sends[sends_before:])
+    async with env.factory() as session:
+        card = (
+            await session.execute(
+                select(PendingInput).where(PendingInput.kind == "managed_consent")
+            )
+        ).scalar_one()
+        turns = (await session.execute(select(ControlTurn))).scalars().all()
+    assert card.token is not None  # still open, still tappable
+    assert len(turns) == 3  # each message went to the assistant as a turn
 
 
 async def test_managed_consent_is_not_asked_before_a_connection_exists(env: Env) -> None:
@@ -395,8 +425,7 @@ async def test_managed_consent_is_not_asked_before_a_connection_exists(env: Env)
 async def test_privacy_shows_both_consents_and_revoke_withdraws_both(env: Env) -> None:
     await onboard(env)
     await deliver(env, connection_update())
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "yes"))
+    await grant_managed(env)
 
     await deliver(env, private_message(OWNER, "/privacy"))
     shown = env.sender.sends[-1]["text"]
