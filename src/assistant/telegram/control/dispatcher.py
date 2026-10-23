@@ -131,11 +131,8 @@ class ControlDispatcher:
             if result.note == "granted":
                 await self._activate_pending_connection(session, account)
             return DispatchOutcome(result, account.id)
-        if pending is not None and pending.kind == service.PENDING_MANAGED_CONSENT:
-            result = await handlers.handle_managed_consent_reply(
-                session, self._gateway, self._clock, message, account
-            )
-            return DispatchOutcome(result, account.id)
+        # The managed-conversation consent is a card (Agree / Decline), never
+        # a text question: a plain message is never read as that answer.
 
         # Rule 4: free text. Record the turn and queue the agent run in the
         # SAME transaction: a crash between the two can lose neither, and a

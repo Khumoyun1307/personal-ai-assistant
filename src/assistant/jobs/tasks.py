@@ -85,6 +85,8 @@ class JobHandlers:
     monthly_budget_usd: Decimal | None
     heartbeat_url: str | None
     backup_status_path: Path | None = None
+    #: An off-site remote is configured: the upload marker is checked too.
+    backup_upload_required: bool = False
 
     async def owner_request(self, turn_id: int) -> RunOutcome:
         outcome = await self.owner_runtime.run(turn_id)
@@ -112,8 +114,13 @@ class JobHandlers:
             logger.warning("restore_notice_delivered")
 
     async def backup_check(self) -> BackupReport | None:
-        """Daily: alert when the backup sidecar has not succeeded for > 26 h."""
-        return await check_backup(self.clock, self.alerts, status_path=self.backup_status_path)
+        """Daily: alert when the dump (or the off-site upload) is older than 26 h."""
+        return await check_backup(
+            self.clock,
+            self.alerts,
+            status_path=self.backup_status_path,
+            upload_required=self.backup_upload_required,
+        )
 
     async def reconcile_pending(self) -> int:
         async with transaction(self.session_factory) as uow:

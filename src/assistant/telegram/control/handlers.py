@@ -14,12 +14,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import connections, service
-from assistant.accounts.models import Account
+from assistant.accounts.models import Account, PendingInput
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
+from assistant.db.uow import after_commit, transaction
 from assistant.observability.status import StatusReport
 from assistant.privacy import deletion
 from assistant.telegram.control.cards import card_keyboard
@@ -185,8 +186,16 @@ MANAGED_CONSENT_TEXT = (
     "their text to <b>{processors}</b>. Nothing is sent anywhere else, and it is "
     "not used to train any model. Until you agree, nothing from those chats is "
     "sent to any AI provider.\n\n"
-    "Reply <b>yes</b> to agree, or anything else to decline. "
+    "Tap <b>Agree</b> or <b>Decline</b> below. "
     "You can revoke this at any time with <code>/privacy revoke</code>."
+)
+MANAGED_CONSENT_GRANTED_TEXT = (
+    "Thank you — recorded. From now on I may send the text of the chats you "
+    "included to {processors} when I work on them for you."
+)
+MANAGED_CONSENT_DECLINED_TEXT = (
+    "Understood — nothing from your chats with other people will be sent to an "
+    "AI provider. Send <code>/privacy managed</code> if you change your mind."
 )
 
 
@@ -213,39 +222,37 @@ async def handle_managed_consent_request(
             "I will ask you then.",
         )
         return HandlerResult(True, "managed_consent", result, note="not_connected")
-    await service.set_pending_input(
+    # A card, not a text question: only a tap on Agree or Decline decides, so
+    # an unrelated message can never be taken as an answer (S02.6).
+    card = await service.create_card(
         session,
         account_id=account.id,
-        kind=service.PENDING_MANAGED_CONSENT,
+        kind=service.MANAGED_CONSENT_CARD,
         clock=clock,
         ttl=service.MANAGED_CONSENT_TTL,
-        prompt_message_id=message.telegram_message_id,
     )
+    assert card.token is not None
     result = await gateway.send_text(
-        target, MANAGED_CONSENT_TEXT.format(processors=", ".join(AI_PROCESSORS))
+        target,
+        MANAGED_CONSENT_TEXT.format(processors=", ".join(AI_PROCESSORS)),
+        keyboard=card_keyboard(
+            service.MANAGED_CONSENT_CARD,
+            card.token,
+            [("Agree", "agree"), ("Decline", "decline")],
+        ),
     )
+    if result.ok:
+        card.prompt_message_id = result.message_id
+    else:
+        await session.delete(card)  # never shown: nothing to press
+    await session.flush()
     return HandlerResult(True, "managed_consent", result, note="requested")
 
 
-async def handle_managed_consent_reply(
-    session: AsyncSession,
-    gateway: OutboundGateway,
-    clock: Clock,
-    message: IncomingMessage,
-    account: Account,
-) -> HandlerResult:
-    """The owner's answer to the managed-conversation consent question."""
-    target = ControlChat(account_id=account.id, chat_id=message.chat_id)
-    agreed = message.text.strip().lower() in AGREEMENT_WORDS
-    await service.clear_pending_input(session, account_id=account.id)
-    if not agreed:
-        result = await gateway.send_text(
-            target,
-            "Understood — nothing from your chats with other people will be sent to an "
-            "AI provider. Send <code>/privacy managed</code> if you change your mind.",
-        )
-        await offer_managed_data_choices(session, gateway, clock, account, message.chat_id)
-        return HandlerResult(True, "managed_consent", result, note="declined")
+async def _grant_managed_consent(session: AsyncSession, clock: Clock, account: Account) -> bool:
+    """Record `ai_managed` (FR-ONB-05b). False if it was already active."""
+    if (await service.active_consent(session, account.id, kind=service.CONSENT_AI_MANAGED)).granted:
+        return False
     await service.grant_consent(
         session,
         account,
@@ -256,12 +263,7 @@ async def handle_managed_consent_reply(
     )
     # Agreeing again lifts a "stop observing" choice made earlier.
     await service.set_managed_mode(session, account, service.MANAGED_MODE_OBSERVE)
-    result = await gateway.send_text(
-        target,
-        "Thank you — recorded. From now on I may send the text of the chats you "
-        f"included to {', '.join(AI_PROCESSORS)} when I work on them for you.",
-    )
-    return HandlerResult(True, "managed_consent", result, note="granted")
+    return True
 
 
 async def handle_help(
@@ -327,7 +329,13 @@ async def handle_revoke(
 
     Takes effect at once: the consent wrapper reads consent on every model
     call, so queued work re-checks and stops (§6 invariant 9).
+
+    Open consent cards close first: an Agree tapped later on a card shown
+    before the revoke must not grant again. Closing them before revoking
+    also orders a concurrent press (it holds the card's row lock) ahead of
+    the revoke, so a grant it commits is revoked here too.
     """
+    await service.close_cards(session, account_id=account.id, kind=service.MANAGED_CONSENT_CARD)
     revoked = await service.revoke_consent(
         session, account, kind=service.CONSENT_AI_CONTROL, clock=clock
     )
@@ -358,6 +366,7 @@ DELETE_CARD_TEXT = (
     "included under Chat Automation. It cannot be undone. Summaries and settings "
     "in this chat stay."
 )
+DELETE_CARD_BUTTONS = [("Delete", "delete"), ("Keep", "keep")]
 MODE_CARD_TEXT = (
     "<b>How should I continue?</b>\n\n"
     "<b>Without AI</b> — I keep observing your included chats for coverage and "
@@ -395,39 +404,96 @@ async def offer_managed_data_choices(
     result = await gateway.send_text(
         ControlChat(account_id=account.id, chat_id=chat_id),
         DELETE_CARD_TEXT,
-        keyboard=card_keyboard(
-            MANAGED_DELETE_KIND, card.token, [("Delete", "delete"), ("Keep", "keep")]
-        ),
+        keyboard=card_keyboard(MANAGED_DELETE_KIND, card.token, DELETE_CARD_BUTTONS),
     )
     card.prompt_message_id = result.message_id
     await session.flush()
     return result
 
 
-async def _offer_mode_choice(
+@dataclass(frozen=True, slots=True)
+class _Settlement:
+    """What a resolved card press tells the owner, decided inside the
+    transaction and sent only after it commits."""
+
+    answer: str
+    text: str | None = None
+    #: A follow-up card already created in the transaction: `(card_id, kind,
+    #: token, text, buttons)`.
+    follow_up: tuple[int, str, str, str, list[tuple[str, str]]] | None = None
+    #: The card's message says more than its question (a connection notice):
+    #: only its buttons are removed, and `text` arrives as a new message.
+    keep_body: bool = False
+
+
+def _queue_settlement(
     session: AsyncSession,
     gateway: OutboundGateway,
-    clock: Clock,
-    account: Account,
-    chat_id: int,
-) -> SendResult:
-    """Card B: continue without AI, or stop observing."""
+    press: CardPress,
+    target: ControlChat,
+    message_id: int | None,
+    settlement: _Settlement,
+) -> None:
+    """Every Telegram call of a card press runs after the commit (AGENTS §13):
+    no row lock is held while Telegram answers, and a transaction that fails
+    and is retried has announced nothing, so the retry announces exactly once.
+    A crash between commit and send loses the announcement, never the effect:
+    at most once, like every control-chat card (§6 invariant 6)."""
+
+    async def announce(factory: async_sessionmaker[AsyncSession]) -> None:
+        await gateway.answer_callback(press.callback_id, settlement.answer)
+        if settlement.keep_body and message_id is not None:
+            await gateway.clear_control_keyboard(target, message_id)
+        if settlement.text is not None:
+            if message_id is None or settlement.keep_body:
+                await gateway.send_text(target, settlement.text)
+            else:
+                await gateway.edit_control_text(target, message_id, settlement.text)
+        if settlement.follow_up is not None:
+            card_id, kind, token, text, buttons = settlement.follow_up
+            result = await gateway.send_text(
+                target, text, keyboard=card_keyboard(kind, token, buttons)
+            )
+            async with transaction(factory) as uow:
+                card = await uow.session.get(PendingInput, card_id)
+                if card is not None:
+                    if result.ok:
+                        card.prompt_message_id = result.message_id
+                    else:
+                        # Never shown: nothing can press it.
+                        await uow.session.delete(card)
+
+    after_commit(session, announce)
+
+
+async def _delete_choice_card(
+    session: AsyncSession, clock: Clock, account: Account
+) -> tuple[int, str, str, str, list[tuple[str, str]]]:
+    """Card A (delete or keep what was stored), created now and sent after
+    the commit — the follow-up of a declined consent card."""
+    card = await service.create_card(
+        session, account_id=account.id, kind=MANAGED_DELETE_KIND, clock=clock
+    )
+    assert card.token is not None
+    return (card.id, MANAGED_DELETE_KIND, card.token, DELETE_CARD_TEXT, DELETE_CARD_BUTTONS)
+
+
+async def _mode_choice_card(
+    session: AsyncSession, clock: Clock, account: Account
+) -> tuple[int, str, str, str, list[tuple[str, str]]]:
+    """Card B (continue without AI, or stop observing), created now and sent
+    after the commit."""
     card = await service.create_card(
         session, account_id=account.id, kind=MANAGED_MODE_KIND, clock=clock
     )
     assert card.token is not None
-    result = await gateway.send_text(
-        ControlChat(account_id=account.id, chat_id=chat_id),
+    return (
+        card.id,
+        MANAGED_MODE_KIND,
+        card.token,
         MODE_CARD_TEXT,
-        keyboard=card_keyboard(
-            MANAGED_MODE_KIND,
-            card.token,
-            [("Without AI", "observe"), ("Stop observing", "stop")],
-        ),
+        [("Without AI", "observe"), ("Stop observing", "stop")],
     )
-    card.prompt_message_id = result.message_id
-    await session.flush()
-    return result
 
 
 async def handle_card_press(
@@ -441,56 +507,97 @@ async def handle_card_press(
 
     `claim_card` is scoped to the pressing owner's account and deletes the
     row under a lock, so a stale, foreign, expired or double tap all end as
-    "no longer active" (§6 invariant 12; S01.3 primitives).
+    "no longer active" (§6 invariant 12; S01.3 primitives). The database work
+    happens here; what the owner is told is queued for after the commit
+    (`_queue_settlement`), so the result carries no `SendResult`.
     """
     card = await service.claim_card(session, account_id=account.id, token=press.token, clock=clock)
-    if card is None or card.kind != press.kind:
-        await gateway.answer_callback(press.callback_id, CALLBACK_EXPIRED_TEXT)
-        return HandlerResult(False, "card", None, note="no_longer_active")
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
-    message_id = press.message_id if press.message_id is not None else card.prompt_message_id
+    message_id = press.message_id
+    if card is None or card.kind != press.kind:
+        _queue_settlement(
+            session, gateway, press, target, message_id, _Settlement(CALLBACK_EXPIRED_TEXT)
+        )
+        return HandlerResult(False, "card", None, note="no_longer_active")
+    if message_id is None:
+        message_id = card.prompt_message_id
 
-    async def settle(text: str, answer: str) -> SendResult | None:
-        await gateway.answer_callback(press.callback_id, answer)
-        if message_id is None:
-            return await gateway.send_text(target, text)
-        return await gateway.edit_control_text(target, message_id, text)
-
+    # A consent card that rides on a connection notice (its `ref_id` is the
+    # connection event) keeps the notice's text: tier, rights, advice.
+    in_notice = card.kind == service.MANAGED_CONSENT_CARD and card.ref_id is not None
     match (press.kind, press.op):
+        case (k, "agree") if k == service.MANAGED_CONSENT_CARD:
+            granted = await _grant_managed_consent(session, clock, account)
+            settlement = _Settlement(
+                "Agreed" if granted else "Already agreed",
+                MANAGED_CONSENT_GRANTED_TEXT.format(processors=", ".join(AI_PROCESSORS)),
+                keep_body=in_notice,
+            )
+            note = "granted" if granted else "already_granted"
+        case (k, "decline") if k == service.MANAGED_CONSENT_CARD:
+            state = await service.active_consent(
+                session, account.id, kind=service.CONSENT_AI_MANAGED
+            )
+            if state.granted:
+                # Agreed meanwhile (another card): revoking is /privacy revoke.
+                settlement = _Settlement(
+                    "Already agreed",
+                    "You have already agreed. Send <code>/privacy revoke</code> to withdraw.",
+                    keep_body=in_notice,
+                )
+                note = "already_granted"
+            else:
+                await service.record_managed_consent_declined(
+                    session, account_id=account.id, clock=clock
+                )
+                settlement = _Settlement(
+                    "Declined",
+                    MANAGED_CONSENT_DECLINED_TEXT,
+                    await _delete_choice_card(session, clock, account),
+                    keep_body=in_notice,
+                )
+                note = "declined"
         case (k, "delete") if k == MANAGED_DELETE_KIND:
             report = await deletion.delete_managed_data(session, account_id=account.id, clock=clock)
-            result = await settle(
+            settlement = _Settlement(
+                "Deleted",
                 f"🗑 Deleted: {report.messages} message(s), {report.contacts_cleared} "
                 f"contact name(s), {report.payloads_cleared} raw update(s).",
-                "Deleted",
+                await _mode_choice_card(session, clock, account),
             )
-            await _offer_mode_choice(session, gateway, clock, account, press.chat_id)
-            return HandlerResult(True, "card", result, note="deleted")
+            note = "deleted"
         case (k, "keep") if k == MANAGED_DELETE_KIND:
-            result = await settle("Kept. Nothing was deleted.", "Kept")
-            await _offer_mode_choice(session, gateway, clock, account, press.chat_id)
-            return HandlerResult(True, "card", result, note="kept")
+            settlement = _Settlement(
+                "Kept",
+                "Kept. Nothing was deleted.",
+                await _mode_choice_card(session, clock, account),
+            )
+            note = "kept"
         case (k, "observe") if k == MANAGED_MODE_KIND:
             await service.set_managed_mode(session, account, service.MANAGED_MODE_OBSERVE)
-            result = await settle(
+            settlement = _Settlement(
+                "Observing without AI",
                 "👀 I keep observing your included chats for coverage and visibility. "
                 "Nothing is sent to an AI provider. Send <code>/privacy managed</code> "
                 "to change that.",
-                "Observing without AI",
             )
-            return HandlerResult(True, "card", result, note="observe")
+            note = "observe"
         case (k, "stop") if k == MANAGED_MODE_KIND:
             await service.set_managed_mode(session, account, service.MANAGED_MODE_STOPPED)
-            result = await settle(
+            settlement = _Settlement(
+                "Stopped",
                 "⏹ Stopped. I store nothing further from your included chats. To "
                 "disconnect me completely, remove me under Settings → Chat Automation. "
                 "Send <code>/privacy managed</code> to start observing again.",
-                "Stopped",
             )
-            return HandlerResult(True, "card", result, note="stopped")
+            note = "stopped"
         case _:
-            await gateway.answer_callback(press.callback_id, CALLBACK_EXPIRED_TEXT)
+            _queue_settlement(
+                session, gateway, press, target, message_id, _Settlement(CALLBACK_EXPIRED_TEXT)
+            )
             return HandlerResult(False, "card", None, note="unknown_op")
+    _queue_settlement(session, gateway, press, target, message_id, settlement)
+    return HandlerResult(True, "card", None, note=note)
 
 
 CALLBACK_EXPIRED_TEXT = "This button is no longer active."
@@ -768,7 +875,6 @@ __all__ = [
     "describe_unknown_command",
     "handle_consent_reply",
     "handle_help",
-    "handle_managed_consent_reply",
     "handle_managed_consent_request",
     "handle_privacy",
     "handle_revoke",

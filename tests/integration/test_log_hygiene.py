@@ -27,6 +27,7 @@ from assistant.agent.tools.registry import default_registry
 from assistant.config import Settings
 from assistant.core.routing import Route
 from assistant.inbox.processor import DeterministicError
+from assistant.jobs.app import build_app
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.metering import MeteredLLMClient
 from assistant.llm.port import LLMError, LLMErrorKind
@@ -45,6 +46,7 @@ from tests.integration.business_env import (
     connect,
     deleted_messages,
     deliver,
+    press,
     private_message,
 )
 
@@ -96,7 +98,10 @@ async def test_rg10_full_scenario_logs_are_content_free(
     await deliver(env, private_message(OWNER, "/start bizChat7000000005"))
     await deliver(env, private_message(OWNER, f"/start bizChat{CANARY}"))
     await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, f"no {CANARY}"))
+    await deliver(env, private_message(OWNER, f"no {CANARY}"))  # free text, not an answer
+    await press(env, "managed_consent", "decline")
+    await press(env, "managed_delete", "delete")
+    await press(env, "managed_mode", "stop")
     await deliver(env, private_message(OWNER, f"/settings timezone {CANARY}"))
     get_logger("tests").info("scenario_done", conversation_id=1)
 
@@ -194,6 +199,56 @@ async def test_injected_failures_never_log_the_canary_or_the_token(
     get_logger("tests").warning("injection_done", exc_type="TelegramTransientError")
 
     _assert_clean(json_logs.readouterr().out, caplog.records)
+
+
+async def test_library_logs_and_job_failures_are_redacted_too(
+    migrated_url: str, json_logs: pytest.CaptureFixture[str]
+) -> None:
+    """S02.6: stdlib logging (procrastinate, asyncio, aiogram) used to bypass
+    the redaction chain and reach Python's last-resort handler, `str(exc)`
+    and traceback included. Now it is rendered by the same chain: the record
+    appears, the canary and the token do not."""
+    leak = f"{CANARY} https://api.telegram.org/bot{TOKEN}/getUpdates"
+
+    # 1. A real job failure in a real worker, the exception carrying both.
+    app = build_app(migrated_url)
+
+    @app.task(name="tests.exploding_job", queue="system")
+    async def exploding_job(row_id: int) -> None:
+        raise ValueError(leak)
+
+    async with app.open_async():
+        await exploding_job.defer_async(row_id=1)
+        await app.run_worker_async(
+            queues=["system"], wait=False, install_signal_handlers=False, listen_notify=False
+        )
+
+    # 2. Library loggers as they really write: aiogram's %-style error with
+    #    the exception as an argument, asyncio's pre-formatted message with the
+    #    exception's repr, and a warning that quotes a URL.
+    try:
+        raise RuntimeError(leak)
+    except RuntimeError as error:
+        exc = error
+    logging.getLogger("aiogram.dispatcher").error(
+        "Failed to fetch updates - %s: %s", type(exc).__name__, exc
+    )
+    logging.getLogger("asyncio").error(
+        f"Task exception was never retrieved\nexception={exc!r}",  # noqa: G004 - as asyncio does
+        exc_info=exc,
+    )
+    logging.getLogger("aiogram.event").warning(f"retrying after {leak}")  # noqa: G004
+
+    output = json_logs.readouterr().out
+    assert CANARY not in output
+    assert TOKEN not in output
+    assert "/bot" not in output
+    assert '"logger": "aiogram.dispatcher"' in output
+    assert "Failed to fetch updates - %s: %s" in output  # the template survives
+    assert '"logger": "asyncio"' in output
+    assert '"exc_type": "RuntimeError"' in output
+    assert '"logger": "aiogram.event"' in output
+    assert '"logger": "procrastinate.' in output  # the job failure was logged, redacted
 
 
 async def test_postgres_runs_with_terse_error_logging(env: Env) -> None:

@@ -19,7 +19,7 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from assistant.accounts.models import BusinessConnection, BusinessConnectionEvent
+from assistant.accounts.models import BusinessConnection, BusinessConnectionEvent, PendingInput
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.core.routing import Route
 from assistant.db.engine import build_engine, build_session_factory
@@ -219,6 +219,7 @@ async def environment(
             Route.REFUSED: control.refused,
             Route.CONNECTION: registry.connection,
             Route.BUSINESS: pipeline.handle,
+            Route.IGNORED: pipeline.on_ignored,
         },
         preparers={Route.BUSINESS: registry.prepare},
         dead_letter_hooks={Route.BUSINESS: pipeline.on_dead_letter},
@@ -236,6 +237,58 @@ async def deliver(env: Env, *updates: dict[str, Any]) -> None:
     async with transaction(env.factory) as uow:
         await write_batch(uow.session, bot_id=env.bot_id, updates=list(updates))
     await env.processor.process_batch()
+
+
+def callback(
+    data: str | None, *, from_id: int = OWNER, message_id: int | None = 1, chat_id: int = OWNER
+) -> dict[str, Any]:
+    """A `callback_query` (a button press on a control-chat card)."""
+    body: dict[str, Any] = {
+        "id": f"cb-{next_update_id()}",
+        "from": {"id": from_id, "is_bot": False, "first_name": "Synthetic"},
+        "chat_instance": "synthetic",
+    }
+    if data is not None:
+        body["data"] = data
+    if message_id is not None:
+        body["message"] = {
+            "message_id": message_id,
+            "date": T_BASE,
+            "chat": {"id": chat_id, "type": "private"},
+        }
+    return {"update_id": next_update_id(), "callback_query": body}
+
+
+async def live_card(env: Env, kind: str) -> PendingInput:
+    """The one open card of `kind` (fails if there is none or several)."""
+    async with env.factory() as session:
+        return (
+            await session.execute(
+                select(PendingInput)
+                .where(PendingInput.kind == kind)
+                .where(PendingInput.token.is_not(None))
+            )
+        ).scalar_one()
+
+
+async def press(env: Env, kind: str, op: str, **kwargs: Any) -> dict[str, Any]:
+    """Press `op` on the open card of `kind`, as the owner."""
+    card = await live_card(env, kind)
+    update = callback(f"{kind}:{card.token}:{op}", message_id=card.prompt_message_id, **kwargs)
+    await deliver(env, update)
+    return update
+
+
+async def grant_managed(env: Env) -> None:
+    """`/privacy managed`, then Agree on its card (FR-ONB-05b)."""
+    await deliver(env, private_message(OWNER, "/privacy managed"))
+    await press(env, "managed_consent", "agree")
+
+
+async def decline_managed(env: Env) -> None:
+    """`/privacy managed`, then Decline on its card."""
+    await deliver(env, private_message(OWNER, "/privacy managed"))
+    await press(env, "managed_consent", "decline")
 
 
 async def onboard(env: Env) -> None:

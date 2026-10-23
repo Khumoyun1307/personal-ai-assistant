@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     #: Compose mounts the backups volume read-only at /backups). Empty disables
     #: the daily backup_check alert (ARCHITECTURE §17).
     backup_status_path: Path | None = None
+    #: The backup sidecar's rclone remote (e.g. `b2:<bucket>`). The app only
+    #: needs to know whether one is configured: then backup_check also alerts
+    #: when the off-site upload marker goes stale.
+    backup_remote: str | None = None
 
     @field_validator(
         "test_database_url",
@@ -84,6 +88,7 @@ class Settings(BaseSettings):
         "privacy_policy_url",
         "heartbeat_url",
         "backup_status_path",
+        "backup_remote",
         mode="before",
     )
     @classmethod

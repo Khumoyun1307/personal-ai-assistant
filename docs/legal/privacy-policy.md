@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Version** | v3 — adds deletion of stored managed-chat data and the "stop observing" choice (no new processing) |
-| **Status** | Published 2026-10-21 (plan approved by the owner 2026-10-21) at the same URL as v1/v2: https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19 (Telegraph keeps the original slug; the page title says v3). |
-| **Last updated** | 2026-10-21 |
-| **Previous** | v2 — control chat + managed chats, published 2026-10-19; v1 — control chat only, published 2026-10-18 (see git history of this file) |
+| **Version** | **v4 (draft)** — names where data is hosted (Oracle Cloud, Frankfurt) and introduces encrypted backups (local + Backblaze B2, EU) with how long deleted data can survive in them |
+| **Status** | **Draft 2026-10-22, not published.** v3 stays the published text at https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19 until the owner publishes v4 (owner step), which must happen **before the production server holds real data and takes its first backup** (Session A). |
+| **Last updated** | 2026-10-22 |
+| **Previous** | v3 — deletion and "stop observing", published 2026-10-21; v2 — control chat + managed chats, published 2026-10-19; v1 — control chat only, published 2026-10-18 (see git history of this file) |
 
 Everything between the two `---` lines below is the published text. Change it
 only with a version bump (AGENTS §16); a change that widens processing needs an
@@ -16,7 +16,7 @@ an AI provider without it.
 
 ---
 
-## Personal AI assistant — privacy policy (v3)
+## Personal AI assistant — privacy policy (v4)
 
 This is a personal assistant bot, run by its owner for their own use. There is one user, the owner, and "you" below means the owner. This version covers your private chat with the bot (the control chat) and the chats you choose to include when you connect the bot to your account under Telegram's Chat Automation (managed chats).
 
@@ -33,6 +33,10 @@ This is a personal assistant bot, run by its owner for their own use. There is o
 
 Deletion happens automatically, every hour.
 
+## Where it is kept, and backups
+
+Everything above is stored on one server rented from Oracle Cloud in Frankfurt, Germany, on a disk that Oracle encrypts. Once a day the server makes a backup of the database and encrypts it on the server before storing it; only the owner holds the key that can decrypt it, and that key is not on the server. The encrypted backups are kept on the server and, as a second copy, at Backblaze B2 in the EU, which receives only the encrypted files and cannot read them. 14 daily and 4 weekly backups are kept, so the oldest is about five weeks old. Anything deleted — by the hourly clean-up, by a deletion in Telegram, or with the **Delete** button — can remain inside older backups until they are rotated out, at most 35 days later. Backups are used only to recover the assistant after a failure.
+
 ## The people you talk to
 
 Your managed chats contain messages written by other people. The assistant stores them, as described above, only because you included those chats; it uses them only to help you. It never writes to anyone on its own initiative: in this version it does not send anything into your managed chats at all.
@@ -43,6 +47,8 @@ If someone who is not you writes to the bot directly, they get one fixed reply s
 
 - OpenAI (model gpt-6-luna) — receives the text of your control-chat conversation when you ask the assistant something, and only after you have agreed to it. Text from your managed chats is sent to OpenAI only after you have separately agreed to that, and only when the assistant works on those chats for you. OpenAI does not use API data to train its models, and data sharing is turned off in this account. OpenAI keeps abuse-monitoring logs, which can include prompts and replies, for up to 30 days. The assistant tells OpenAI not to store responses, so nothing else is kept there. OpenAI's terms: https://developers.openai.com/api/docs/guides/your-data
 - Telegram — carries every message, under Telegram's own privacy policy.
+- Oracle Cloud — hosts the server and its encrypted disk (Frankfurt, Germany). It runs the machine; it is not given the content to process.
+- Backblaze B2 — stores the encrypted backup copies (EU). It receives ciphertext only.
 
 There is no other recipient: no analytics, no error-tracking service, no advertising. No message is ever used to train or evaluate any AI model, or sent to feedback programmes, file-upload or batch services.
 
@@ -65,7 +71,7 @@ You can withdraw both at any time by sending /privacy revoke to the bot, and giv
 ## Limitations, stated plainly
 
 - Messages already delivered stay in your Telegram chat history and in the other person's; this policy covers what the assistant stores, not what Telegram shows.
-- There are no backups yet. When backups are introduced, deleted data may survive in them until they rotate out, and this policy will say for how long.
+- Deleted data can survive in encrypted backups for at most 35 days (see "Where it is kept, and backups").
 
 ## Changes
 
@@ -85,3 +91,4 @@ This is a personal deployment: the operator is the owner. Questions about it go 
    owner go-ahead to publish: 2026-10-19; published the same day (page edited in place).
 4. @BotFather registration: same URL, no change needed.
 5. v3 (2026-10-21, M02 S02.4): deletion of stored managed-chat data and the "stop observing" choice become available from inside the bot; no new processing, so no opt-out notice is required (AGENTS §16).
+6. v4 drafted 2026-10-22 (M02 S02.6; owner decisions D38/D39): hosting on Oracle Cloud (Frankfurt) and encrypted backups, kept locally and at Backblaze B2 (EU, ciphertext only), for at most 35 days. This **widens** what is kept (copies, including of deleted data, for up to 35 days, at two infrastructure providers), so per AGENTS §16 it needs an owner notice with opt-out before it takes effect: for this single-owner deployment, the owner's go-ahead to publish v4 before the first production backup. Not yet published; `POLICY_VERSION` in code is unchanged until then.

@@ -27,6 +27,7 @@ from tests.integration.business_env import (
     connect,
     deleted_messages,
     deliver,
+    grant_managed,
     onboard,
     private_message,
 )
@@ -102,8 +103,7 @@ async def test_status_reports_gaps_and_the_caveat(env: Env) -> None:
 
 async def test_status_reports_consent_autonomy_and_spend(env: Env) -> None:
     await connect(env)
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "yes"))
+    await grant_managed(env)
     await deliver(env, private_message(OWNER, "/pause"))
     shown = await _status(env)
     assert "Included chats: granted" in shown

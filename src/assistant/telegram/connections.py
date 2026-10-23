@@ -230,6 +230,13 @@ class ConnectionRegistry:
         if resolution.kind is ResolutionKind.UNKNOWN:
             # Telegram could not tell us whose it is: fail closed.
             return Disposition.IGNORED
+        account = await session.get(Account, resolution.account_id)
+        if account is None or account.telegram_user_id not in self._owner_ids:
+            # An owner removed from the allowlist keeps their account and
+            # connection rows, but their traffic is no longer ours to store
+            # (§6 invariant 12): treated exactly like a foreign connection.
+            logger.warning("business_update_not_allowlisted", update_row_id=row.id)
+            return Disposition.REJECTED
         row.account_id = resolution.account_id
         if not resolution.is_live:
             logger.info(
@@ -238,8 +245,7 @@ class ConnectionRegistry:
                 connection_status=None if resolution.status is None else resolution.status.value,
             )
             return Disposition.IGNORED
-        account = await session.get(Account, resolution.account_id)
-        if account is None or managed_mode(account) == MANAGED_MODE_STOPPED:
+        if managed_mode(account) == MANAGED_MODE_STOPPED:
             # The owner chose "stop observing" (FR-ONB-06): nothing further is
             # stored, and the payload goes with the row.
             logger.info("business_update_stopped", update_row_id=row.id)

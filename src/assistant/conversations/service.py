@@ -86,6 +86,8 @@ class DeletionOutcome:
     conversation_id: int | None
     purged_message_ids: tuple[int, ...] = ()
     tombstoned_telegram_ids: tuple[int, ...] = ()
+    #: The conversation is in Ignore mode: the update's payload is not kept.
+    metadata_only: bool = False
 
 
 # ------------------------------------------------------------------ helpers
@@ -402,12 +404,19 @@ async def _message_for_update(
 
 # ------------------------------------------------------------ record_deletion
 async def record_deletion(
-    session: AsyncSession, *, account_id: int, event: ObservedDeletion, clock: Clock
+    session: AsyncSession,
+    *,
+    account_id: int,
+    event: ObservedDeletion,
+    clock: Clock,
+    tombstones: bool = True,
 ) -> DeletionOutcome:
     """Step 6 of §6.5: purge content, keep tombstones, clear linked payloads.
 
     The payload never says who deleted, or whether it was for both sides
-    (TF §12 LV-07), so nothing here attributes the deletion.
+    (TF §12 LV-07), so nothing here attributes the deletion. `tombstones=False`
+    purges what exists without writing rows for ids never stored — for the
+    dead-letter fallback when storage is off (§6 invariant 7).
     """
     conversation = await _find_conversation(
         session, account_id=account_id, business_chat_id=event.business_chat_id
@@ -416,7 +425,9 @@ async def record_deletion(
         # Nothing stored for this chat: nothing to purge, nothing to remember.
         return DeletionOutcome(None)
     now = clock.now()
-    ids = list(event.telegram_message_ids)
+    # Telegram may list an id more than once; two tombstones for one id
+    # would violate the unique key and dead-letter the deletion.
+    ids = list(dict.fromkeys(event.telegram_message_ids))
     purged = await session.execute(
         update(Message)
         .where(Message.conversation_id == conversation.id)
@@ -436,7 +447,7 @@ async def record_deletion(
     rows = purged.all()
     purged_ids = tuple(int(row[0]) for row in rows)
     seen = {row[1] for row in rows if row[1] is not None}
-    missing = tuple(i for i in ids if i not in seen)
+    missing = tuple(i for i in ids if i not in seen) if tombstones else ()
     for telegram_id in missing:
         # A message we never stored: the tombstone stops a late requeue of
         # its original update from storing content that is gone for the owner.
@@ -466,7 +477,9 @@ async def record_deletion(
         purged=len(purged_ids),
         tombstoned=len(missing),
     )
-    return DeletionOutcome(conversation.id, purged_ids, missing)
+    return DeletionOutcome(
+        conversation.id, purged_ids, missing, metadata_only=conversation.mode == "ignore"
+    )
 
 
 # -------------------------------------------------------- ingest failures
@@ -558,6 +571,73 @@ async def resolve_ingest_failure(
         if conversation is not None and conversation.autonomy_paused_reason == PAUSE_INGEST_ERROR:
             conversation.autonomy_paused_reason = None
             conversation.updated_at = clock.now()
+
+
+# ------------------------------------------------------------ bot chats
+async def is_bot_chat(session: AsyncSession, *, account_id: int, business_chat_id: int) -> bool:
+    """A chat already recognised as one with a third-party bot (FR-OBS-04):
+    nothing from it is stored, whoever writes and whatever its mode."""
+    result = await session.execute(
+        select(Contact.is_bot)
+        .join(Conversation, Conversation.contact_id == Contact.id)
+        .where(Conversation.account_id == account_id)
+        .where(Conversation.business_chat_id == business_chat_id)
+    )
+    return result.scalar_one_or_none() is True
+
+
+async def mark_bot_chat(
+    session: AsyncSession, *, account_id: int, business_chat_id: int, clock: Clock
+) -> int | None:
+    """A bot answered in this chat (§6.5 `ignored_bot_chat`).
+
+    A private `Chat` carries no `is_bot`, so the owner's own messages to a
+    bot are stored until the bot's first answer reveals it (M02 D37). Then
+    the contact is marked a bot, the conversation goes to Ignore, and what was
+    stored from it is purged. A chat we never stored stays unknown: no row is
+    created for it (RG-02). Returns the conversation id, or None."""
+    conversation = await _find_conversation(
+        session, account_id=account_id, business_chat_id=business_chat_id
+    )
+    if conversation is None:
+        return None
+    contact = await session.get(Contact, conversation.contact_id, with_for_update=True)
+    if contact is not None and contact.is_bot and conversation.mode == "ignore":
+        return conversation.id  # already recognised
+    # Imported here: privacy depends on this package's models, not the reverse.
+    from assistant.privacy.deletion import purge_conversation
+
+    report = await purge_conversation(
+        session,
+        account_id=account_id,
+        conversation_id=conversation.id,
+        business_chat_id=business_chat_id,
+        clock=clock,
+    )
+    if contact is not None:
+        contact.is_bot = True
+        contact.updated_at = clock.now()
+    conversation.mode = "ignore"
+    conversation.pending_ai_since = None
+    conversation.updated_at = clock.now()
+    session.add(
+        AuditLogEntry(
+            account_id=account_id,
+            at=clock.now(),
+            actor="system",
+            event="bot_chat",
+            subject_type="conversation",
+            subject_id=conversation.id,
+            details={"messages": report.messages, "payloads_cleared": report.payloads_cleared},
+        )
+    )
+    logger.info(
+        "bot_chat_recognised",
+        conversation_id=conversation.id,
+        purged=report.messages,
+        payloads_cleared=report.payloads_cleared,
+    )
+    return conversation.id
 
 
 # ------------------------------------------------------------ consent hook

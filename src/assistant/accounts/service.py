@@ -10,11 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import callbacks
-from assistant.accounts.models import Account, Consent, ControlTurn, PendingInput
+from assistant.accounts.models import Account, AuditLogEntry, Consent, ControlTurn, PendingInput
 from assistant.core.clock import Clock
 
 #: How long the control chat waits for an answer before giving up on it.
@@ -32,10 +32,12 @@ POLICY_VERSION = "v3"
 #: (SEC-02). A new processor needs a new consent, not just a new entry here.
 AI_PROCESSORS: tuple[str, ...] = ("OpenAI",)
 
-#: Pending-input kind for the managed-conversation consent question, and how
-#: long it stays open: it is asked when the connection arrives, which the owner
-#: may not see for a while.
-PENDING_MANAGED_CONSENT = "managed_consent"
+#: Card kind for the managed-conversation consent question (Agree / Decline
+#: buttons — never a free-text answer, so an unrelated message can never be
+#: read as a decision), and how long it stays open: it is asked when the
+#: connection arrives, which the owner may not see for a while. A decline is
+#: also respected for this long: a reconnect does not ask again.
+MANAGED_CONSENT_CARD = "managed_consent"
 MANAGED_CONSENT_TTL = timedelta(hours=24)
 
 
@@ -279,18 +281,21 @@ async def create_card(
     ref_id: int | None = None,
     prompt_message_id: int | None = None,
     ttl: timedelta = CARD_TTL,
+    token: str | None = None,
 ) -> PendingInput:
     """A confirmation card's state: one row, one unguessable token (§6.7).
 
     Unlike a text question, several cards may be live at once, and a command
-    does not cancel them. `claim_card` resolves one exactly once.
+    does not cancel them. `claim_card` resolves one exactly once. `token` is
+    given when the card's message was sent first and the card is recorded
+    only once it is known to have arrived.
     """
     card = PendingInput(
         account_id=account_id,
         kind=kind,
         ref_id=ref_id,
         prompt_message_id=prompt_message_id,
-        token=callbacks.new_token(),
+        token=token or callbacks.new_token(),
         expires_at=clock.now() + ttl,
     )
     session.add(card)
@@ -326,6 +331,67 @@ async def claim_card(
     if claimed.expires_at <= clock.now():
         return None
     return claimed
+
+
+async def close_cards(session: AsyncSession, *, account_id: int, kind: str) -> int:
+    """Delete every open card of `kind`: a later tap answers "no longer
+    active". One DELETE statement, so a press holding the card's row lock
+    (`claim_card`) finishes first and this transaction's later statements see
+    what it committed."""
+    result = await session.execute(
+        delete(PendingInput)
+        .where(PendingInput.account_id == account_id)
+        .where(PendingInput.kind == kind)
+        .where(PendingInput.token.is_not(None))
+        .execution_options(synchronize_session=False)
+    )
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
+async def live_card(
+    session: AsyncSession, *, account_id: int, kind: str, clock: Clock
+) -> PendingInput | None:
+    """An unexpired card of this kind, if one is open."""
+    result = await session.execute(
+        select(PendingInput)
+        .where(PendingInput.account_id == account_id)
+        .where(PendingInput.kind == kind)
+        .where(PendingInput.token.is_not(None))
+        .where(PendingInput.expires_at > clock.now())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+#: Audit event for a declined managed-conversation consent (content-free).
+EVENT_MANAGED_CONSENT_DECLINED = "managed_consent_declined"
+
+
+async def record_managed_consent_declined(
+    session: AsyncSession, *, account_id: int, clock: Clock
+) -> None:
+    session.add(
+        AuditLogEntry(
+            account_id=account_id,
+            at=clock.now(),
+            actor="owner",
+            event=EVENT_MANAGED_CONSENT_DECLINED,
+        )
+    )
+    await session.flush()
+
+
+async def managed_consent_declined_since(
+    session: AsyncSession, *, account_id: int, since: datetime
+) -> bool:
+    result = await session.execute(
+        select(AuditLogEntry.id)
+        .where(AuditLogEntry.account_id == account_id)
+        .where(AuditLogEntry.event == EVENT_MANAGED_CONSENT_DECLINED)
+        .where(AuditLogEntry.at >= since)
+        .limit(1)
+    )
+    return result.first() is not None
 
 
 async def sweep_expired_cards(session: AsyncSession, clock: Clock) -> int:

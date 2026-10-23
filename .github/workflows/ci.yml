@@ -1,5 +1,7 @@
-# Ready for when a GitHub remote exists (ARCHITECTURE §16). The local workflow
-# (`just check`) does not depend on it.
+# Runs on every push to main and every pull request of
+# github.com/Khumoyun1307/personal-ai-assistant (ARCHITECTURE §16). The local
+# Definition-of-Done gate (`just check`) mirrors the `check` job; the deploy
+# jobs mirror `just smoke-backup` and the arm64 builds for the Oracle A1 host.
 name: CI
 
 on:
@@ -87,3 +89,52 @@ jobs:
 
       - name: Dependency audit
         run: uv run pip-audit
+
+  # Deployment scripts and the backup path of deploy/compose.prod.yml (S02.6).
+  deploy-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Shellcheck
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt koalaman/shellcheck:v0.11.0 \
+            -x -P SCRIPTDIR $(git ls-files '*.sh') .githooks/pre-commit
+
+      # Production compose with placeholder secrets: backup.sh once, decrypt
+      # with a throwaway age key, pg_restore into a scratch database, failure
+      # and off-site sync semantics. Uses the default Docker builder, so it
+      # runs in its own job (buildx below switches builders).
+      - name: Backup smoke test
+        run: bash deploy/smoke/backup-smoke.sh
+
+  # The production host is an Oracle A1 (arm64) VM; prove both images build
+  # for it as well as for amd64. Nothing is pushed (no registry).
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-qemu-action@v4
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: App image (prod target), amd64 + arm64
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: prod
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+
+      - name: Backup image, amd64 + arm64
+        uses: docker/build-push-action@v7
+        with:
+          context: deploy/backup
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha,scope=backup
+          cache-to: type=gha,mode=max,scope=backup

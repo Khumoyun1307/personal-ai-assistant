@@ -6,8 +6,11 @@ state, composes the notice and sends it through `OwnerAlerts`, deduplicated
 by event id — so a re-run job, or an event processed twice, pages once.
 
 When a connection becomes live and managed-conversation consent is not yet
-given, the notice also asks for it (J1 step 5) and opens a pending input for
-the answer. Consent is asked, never assumed (§6 invariant 9).
+given, the notice also asks for it (J1 step 5, FR-ONB-05b) as a card with
+Agree / Decline buttons. The card is recorded only after the notice was
+delivered; a reconnect does not ask again while a card is open or within a
+day of a decline; and no free-text message is ever read as the answer.
+Consent is asked, never assumed (§6 invariant 9).
 """
 
 from __future__ import annotations
@@ -15,8 +18,10 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import service
+from assistant.accounts.callbacks import encode, new_token
 from assistant.accounts.connections import Change, Tier, connection_for_account, unused_rights
 from assistant.accounts.models import Account, BusinessConnectionEvent
+from assistant.core.channel import Button
 from assistant.core.clock import Clock
 from assistant.db.uow import transaction
 from assistant.inbox.notify import AlertKind, AlertResult, OwnerAlerts
@@ -43,9 +48,27 @@ MANAGED_CONSENT_QUESTION = (
     "<b>One more question.</b> To summarize these chats and help you with them, I "
     "need to send their text to <b>{processors}</b>. Until you agree, nothing from "
     "them is sent to any AI provider.\n\n"
-    "Reply <b>yes</b> to agree, or anything else to decline. "
+    "Tap <b>Agree</b> or <b>Decline</b> below. "
     "You can change this later with /privacy."
 )
+#: When the question is already open, or was declined within a day.
+MANAGED_CONSENT_STILL_OPEN = (
+    "My question about AI for these chats is still open above. Nothing from them "
+    "is sent to any AI provider until you agree."
+)
+MANAGED_CONSENT_DECLINED_NOTE = (
+    "You declined AI for these chats, so nothing from them is sent to any AI "
+    "provider. Send <code>/privacy managed</code> if you change your mind."
+)
+
+
+def consent_buttons(token: str) -> list[Button]:
+    """Agree / Decline for a `managed_consent` card (§6.7)."""
+    kind = service.MANAGED_CONSENT_CARD
+    return [
+        Button("Agree", encode(kind, token, "agree")),
+        Button("Decline", encode(kind, token, "decline")),
+    ]
 
 
 def _rights_note(rights: list[str]) -> str:
@@ -110,22 +133,46 @@ async def notify_connection_change(
         # owner should read the current truth.
         body = compose(change, Tier(connection.capability_tier), list(connection.rights))
         live = change in (Change.CONNECTED, Change.ACTIVATED, Change.RECONNECTED)
+        token: str | None = None
         if live and await _managed_consent_missing(session, account.id):
-            await service.set_pending_input(
+            if await service.live_card(
+                session, account_id=account.id, kind=service.MANAGED_CONSENT_CARD, clock=clock
+            ):
+                body += "\n\n" + MANAGED_CONSENT_STILL_OPEN
+            elif await service.managed_consent_declined_since(
                 session,
                 account_id=account.id,
-                kind=service.PENDING_MANAGED_CONSENT,
-                clock=clock,
-                ttl=service.MANAGED_CONSENT_TTL,
-            )
-            body += "\n\n" + MANAGED_CONSENT_QUESTION.format(
-                processors=", ".join(service.AI_PROCESSORS)
-            )
+                since=clock.now() - service.MANAGED_CONSENT_TTL,
+            ):
+                body += "\n\n" + MANAGED_CONSENT_DECLINED_NOTE
+            else:
+                # The card is recorded only once the question has arrived
+                # (below): a failed send leaves nothing open.
+                token = new_token()
+                body += "\n\n" + MANAGED_CONSENT_QUESTION.format(
+                    processors=", ".join(service.AI_PROCESSORS)
+                )
         account_id = account.id
 
-    return await alerts.notify_owner(
+    result = await alerts.notify_owner(
         account_id,
         AlertKind.CONNECTION_CHANGE,
         dedupe_key=f"connection_event:{event_id}",
+        buttons=consent_buttons(token) if token is not None else (),
         body=body,
     )
+    if token is not None and result.sent:
+        async with transaction(session_factory) as uow:
+            await service.create_card(
+                uow.session,
+                account_id=account_id,
+                kind=service.MANAGED_CONSENT_CARD,
+                clock=clock,
+                ttl=service.MANAGED_CONSENT_TTL,
+                prompt_message_id=result.message_id,
+                token=token,
+                # Marks the card as part of a notice: answering it keeps the
+                # notice's text (tier, rights) and only removes the buttons.
+                ref_id=event_id,
+            )
+    return result

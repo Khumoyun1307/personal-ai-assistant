@@ -11,10 +11,32 @@ MSYS_NO_PATHCONV=1
 MSYS2_ARG_CONV_EXCL="*"
 export MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL
 
+# In a linked worktree, /repo/.git is a file naming a host path that does not
+# exist inside the container, and gitleaks would report "not a git
+# repository", scan nothing and exit 0. So the repository's common git
+# directory is mounted too and GIT_DIR/GIT_WORK_TREE point at this
+# worktree's own index; a plain checkout is scanned exactly as before.
+git_dir=$(git rev-parse --path-format=absolute --git-dir)
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+
 echo "pre-commit: scanning staged changes for secrets (gitleaks)"
 set +e
-docker run --rm -v "${repo_root}:/repo" "${gitleaks_image}" \
-    git --staged --redact --no-banner /repo
+if [ "${git_dir}" = "${common_dir}" ]; then
+    docker run --rm -v "${repo_root}:/repo" "${gitleaks_image}" \
+        git --staged --redact --no-banner /repo
+else
+    case "${git_dir}" in
+        "${common_dir}"/*) ;;
+        *)
+            echo "pre-commit: worktree git dir is outside the common git dir; cannot scan. Commit aborted." >&2
+            exit 1
+            ;;
+    esac
+    worktree_git_dir=${git_dir#"${common_dir}"/}
+    docker run --rm -v "${repo_root}:/repo" -v "${common_dir}:/gitcommon" \
+        -e GIT_DIR="/gitcommon/${worktree_git_dir}" -e GIT_WORK_TREE=/repo \
+        "${gitleaks_image}" git --staged --redact --no-banner /repo
+fi
 gitleaks_status=$?
 set -e
 
