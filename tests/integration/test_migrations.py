@@ -89,6 +89,91 @@ def test_downgrade_then_upgrade_round_trips(scratch_url: str) -> None:
     assert tables_in(scratch_url, "app") >= EXPECTED_TABLES
 
 
+def _seed_message(url: str, search_key: str | None) -> None:
+    with psycopg.connect(libpq(url), autocommit=True) as conn:
+        account = conn.execute(
+            "INSERT INTO app.accounts (telegram_user_id) VALUES (4242) "
+            "ON CONFLICT (telegram_user_id) DO UPDATE SET status = accounts.status RETURNING id"
+        ).fetchone()
+        assert account is not None
+        contact = conn.execute(
+            "INSERT INTO app.contacts (account_id, telegram_user_id) VALUES (%s, 77) "
+            "ON CONFLICT ON CONSTRAINT uq_contacts_account_id_telegram_user_id "
+            "DO UPDATE SET is_bot = false RETURNING id",
+            (account[0],),
+        ).fetchone()
+        assert contact is not None
+        conversation = conn.execute(
+            "INSERT INTO app.conversations (account_id, business_chat_id, contact_id) "
+            "VALUES (%s, 77, %s) "
+            "ON CONFLICT ON CONSTRAINT uq_conversations_account_id_business_chat_id "
+            "DO UPDATE SET mode = conversations.mode RETURNING id",
+            (account[0], contact[0]),
+        ).fetchone()
+        assert conversation is not None
+        conn.execute(
+            "INSERT INTO app.messages (account_id, conversation_id, direction, sent_at, "
+            "content_type, text, search_key) VALUES (%s, %s, 'contact', now(), 'text', %s, %s)",
+            (account[0], conversation[0], search_key, search_key),
+        )
+
+
+def _columns(url: str, table: str) -> set[str]:
+    with psycopg.connect(libpq(url)) as conn:
+        rows = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'app' AND table_name = %s",
+            (table,),
+        ).fetchall()
+    return {row[0] for row in rows}
+
+
+def _indexes(url: str, table: str) -> set[str]:
+    with psycopg.connect(libpq(url)) as conn:
+        rows = conn.execute(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = 'app' AND tablename = %s",
+            (table,),
+        ).fetchall()
+    return {row[0] for row in rows}
+
+
+def test_0007_search_vector_follows_the_key_and_reverses(scratch_url: str) -> None:
+    """S03.1: `search_tsv` is generated (existing rows too), NULL with a NULL
+    key, indexed by GIN, with a trigram GIN on the key; downgrade removes all."""
+    run_alembic(scratch_url, "base")
+    run_alembic(scratch_url, "0006")
+    _seed_message(scratch_url, "ozbekiston galaba")
+    run_alembic(scratch_url, "0007")
+
+    assert "search_tsv" in _columns(scratch_url, "messages")
+    assert {"ix_messages_search_tsv", "ix_messages_search_key_trgm"} <= _indexes(
+        scratch_url, "messages"
+    )
+    _seed_message(scratch_url, None)
+    with psycopg.connect(libpq(scratch_url)) as conn:
+        rows = conn.execute(
+            "SELECT search_key, search_tsv::text FROM app.messages ORDER BY id"
+        ).fetchall()
+        assert rows == [("ozbekiston galaba", "'galaba':2 'ozbekiston':1"), (None, None)]
+        matched = conn.execute(
+            "SELECT count(*) FROM app.messages "
+            "WHERE search_tsv @@ to_tsquery('simple', 'ozbek:*') "
+            "AND word_similarity('galaba', search_key) > 0.9"
+        ).fetchone()
+        assert matched == (1,)
+
+    run_alembic(scratch_url, "0006", down=True)
+    assert "search_tsv" not in _columns(scratch_url, "messages")
+    assert not {"ix_messages_search_tsv", "ix_messages_search_key_trgm"} & _indexes(
+        scratch_url, "messages"
+    )
+    with psycopg.connect(libpq(scratch_url)) as conn:
+        assert (
+            conn.execute("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'").fetchone() is None
+        )
+    run_alembic(scratch_url, "head")
+
+
 def test_identity_primary_keys_reject_a_client_supplied_id(scratch_url: str) -> None:
     """`GENERATED ALWAYS` means a client cannot collide with the generator."""
     run_alembic(scratch_url, "head")

@@ -30,13 +30,16 @@ def alembic_config() -> Config:
     return config
 
 
-def run_alembic(url: str, target: str) -> None:
-    """Run a migration against `url`. Sync on purpose: env.py owns the loop."""
+def run_alembic(url: str, target: str, *, down: bool = False) -> None:
+    """Run a migration against `url`. Sync on purpose: env.py owns the loop.
+
+    `base` always downgrades; any other target upgrades unless `down`.
+    """
     previous = os.environ.get("ALEMBIC_DATABASE_URL")
     os.environ["ALEMBIC_DATABASE_URL"] = url
     try:
-        if target == "base":
-            command.downgrade(alembic_config(), "base")
+        if target == "base" or down:
+            command.downgrade(alembic_config(), target)
         else:
             command.upgrade(alembic_config(), target)
     finally:

@@ -35,7 +35,7 @@ async def _text_columns(env: Env) -> list[tuple[str, str, str]]:
             text(
                 "SELECT table_schema, table_name, column_name FROM information_schema.columns "
                 "WHERE table_schema IN ('app', 'procrastinate') "
-                "AND data_type IN ('text', 'jsonb', 'character varying', 'json') "
+                "AND data_type IN ('text', 'jsonb', 'character varying', 'json', 'tsvector') "
                 "ORDER BY 1, 2, 3"
             )
         )
@@ -49,7 +49,8 @@ async def _columns_containing(env: Env, needle: str) -> list[str]:
             found = await session.execute(
                 text(
                     f'SELECT 1 FROM "{schema}"."{table}" '  # noqa: S608 - catalogue identifiers
-                    f'WHERE "{column}"::text LIKE :needle LIMIT 1'
+                    # ILIKE: search keys hold the canary case-folded.
+                    f'WHERE "{column}"::text ILIKE :needle LIMIT 1'
                 ),
                 {"needle": f"%{needle}%"},
             )
@@ -97,6 +98,8 @@ async def test_after_deletion_no_managed_content_remains_in_any_content_column(e
     await deliver(env, deleted_messages(message_ids=[2]))
     before = await _columns_containing(env, CANARY)
     assert "app.messages.text" in before
+    assert "app.messages.search_key" in before
+    assert "app.messages.search_tsv" in before
     assert "app.contacts.display_name" in before
     assert "app.inbound_updates.payload" in before
 
