@@ -590,3 +590,7 @@ async def test_a_stale_off_site_upload_alerts_once_a_day_while_a_remote_is_set(
     assert len(channel.sends) == 1
     assert "off-site copy of the database backups" in channel.sends[0]
     assert "for 40 hours" in channel.sends[0]
+    # An outage longer than BACKUP_MAX_REMOTE_DELETE days leaves the sync
+    # refused until it is run once by hand: the alert has to say so.
+    assert "refused on purpose" in channel.sends[0]
+    assert "restore.md §C" in channel.sends[0]

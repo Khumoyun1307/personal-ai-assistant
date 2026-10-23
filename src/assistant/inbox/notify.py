@@ -69,7 +69,10 @@ ALERT_TEXT: dict[AlertKind, str] = {
     AlertKind.BACKUP_UPLOAD_STALE: (
         "⚠️ The off-site copy of the database backups has not been updated for {hours} "
         "hours. Backups are still kept on the server, but a server loss would lose them; "
-        "check the backup container (runbooks/restore.md)."
+        "check the backup container (runbooks/restore.md). If uploads failed for more "
+        "than about a week, the next sync is refused on purpose — it would delete more "
+        "old off-site dumps than the guard allows — and stays refused until it is run "
+        "once by hand (runbooks/restore.md §C)."
     ),
     AlertKind.RESTORE_NOTICE: (
         "♻️ The database was restored from a backup taken {backup_taken_at}. Everything "

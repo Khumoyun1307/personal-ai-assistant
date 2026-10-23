@@ -35,6 +35,8 @@ Rules:
   heartbeat monitor is still receiving pings.
 - A `backup_upload_stale` alert means dumps are produced but no longer reach
   B2: run `just prod-backup <ip>` and read its log lines (`off-site sync of
-  … failed` / `… refused`); see `restore.md` §C for the delete guard.
+  … failed` / `… refused`); see `restore.md` §C for the delete guard —
+  after an outage of more than `BACKUP_MAX_REMOTE_DELETE` days (default 7)
+  every later sync is refused until the one-off override is run.
 - Reboots are planned (unattended upgrades never reboot on their own):
   `just prod <ip> reboot`, then `just prod-status <ip>`.

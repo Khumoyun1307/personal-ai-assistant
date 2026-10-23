@@ -85,3 +85,15 @@ upload marker, and the app's daily `backup_check` alerts the owner that the
 off-site copy is stale. If the larger deletion is intended (for example the
 owner asked for everything older to go), run it once with
 `dc exec -e BACKUP_MAX_REMOTE_DELETE=100 backup backup.sh upload`.
+
+**After a long upload outage the guard stays tripped.** While uploads fail,
+local rotation keeps deleting one daily dump per day (and a weekly one per
+week) that is still off-site. Once the outage has lasted more than
+`BACKUP_MAX_REMOTE_DELETE` days (default 7), catching up would delete more
+than that many remote dumps, so every later sync is refused, the hourly
+retries keep failing, and the `backup_upload_stale` alert repeats — this does
+not clear by itself. When the cause of the outage is fixed (and this is not a
+rebuilt host with an empty `/backups`, the case above), check with
+`just prod <ip> offsite-list` that the remote holds only older dumps than the
+local `daily/`, then run the one-off override above; the next scheduled sync
+is back to normal.
