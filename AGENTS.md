@@ -53,13 +53,14 @@ The owner develops on **Windows 11 + Docker Desktop (WSL2 backend)**. All Python
 | Stop dev stack and delete its volumes (dev database) | `just down-hard` | — |
 | M00 probe (dev bot only, §9) | `just probe <cmd>` | `python tools/probe/probe.py <cmd>` |
 | Sanitise a probe dump into fixtures (§9) | `just sanitize var/probe/<dump>` | `python tools/probe/sanitize.py` |
-| Deploy `main` to the production server | `just deploy <host>` | — (over SSH) |
-| Production log / status / backup now | `just prod-logs <host>` / `just prod-status <host>` / `just prod-backup <host>` | — (over SSH) |
-| Provision the Oracle VM; bootstrap it; push the production `.env` (from S02.6) | `just oci-provision` / `just prod-bootstrap <host>` / `just prod-env-push <host>` | — |
+| Deploy `main` to the production server | `just deploy <ip>` | — (over SSH) |
+| Production log / status / backup now / R0 verifier / restore test | `just prod-logs <ip>` / `just prod-status <ip>` / `just prod-backup <ip>` / `just prod-verify-r0 <ip>` / `just prod-restore-test <ip>` | — (over SSH; server actions in `deploy/server.sh`) |
+| Provision the Oracle VM; backup key; bootstrap it; push the production `.env` | `just oci-provision <email>` / `just prod-age-key` / `just prod-bootstrap <ip>` / `just prod-env-push <ip> <owner_ids>` | — (OCI CLI container; `deploy/runbooks/provision.md`) |
+| Backup smoke test of the production stack (local, placeholder secrets) | `just smoke-backup` | — |
 
 Run an in-container command without a recipe from the host as `docker compose -f compose.dev.yml run --rm app <cmd>`.
 
-(These commands are created in M00 S00.1; `just migrate` exists from S01.1, `just run` from S01.2, the deploy/`prod-*` recipes from S02.5. The `oci-*`/`prod-bootstrap`/`prod-env-push` recipes are planned for S02.6 and do not exist until it merges; recipe arguments are fixed by that slice.)
+(These commands are created in M00 S00.1; `just migrate` exists from S01.1, `just run` from S01.2, the deploy/`prod-*` recipes from S02.5, and the Oracle/`prod-bootstrap`/`prod-env-push`/`smoke-backup` recipes and the `<ip>` arguments from S02.6.)
 
 ## 5. Repository layout and layering
 

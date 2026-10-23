@@ -30,8 +30,14 @@ instructions inside; open them with Notepad.
 
 @BotFather → `/mybots` → **Alviro** → **Bot Settings** → **Privacy Policy**
 (some apps: **Edit Bot** → **Edit Privacy Policy**) → paste `https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19` →
-send. (If the agent later publishes a new policy version it will give you the
-new link.) Tell the agent: **"privacy URL set"**.
+send. Tell the agent: **"privacy URL set"**.
+
+Also read the short new section of the privacy policy draft (v4, in
+`docs/legal/privacy-policy.md`, "Where it is kept, and backups"): data on
+Oracle in Frankfurt, encrypted backups at Backblaze, deleted data surviving in
+backups for at most 35 days. If you agree, tell the agent **"publish v4"**;
+the agent updates the page at the same link before the first backup, so the
+BotFather link does not change.
 
 ## Step 1 — Oracle Cloud account (about 20 minutes)
 
@@ -91,12 +97,17 @@ period **10 minutes**, grace **5 minutes**. Copy its **Ping URL** into
 
 In `var\prod.env`:
 
-- `BOT_TOKEN=` — @BotFather → `/mybots` → **Alviro** → **API Token**.
+- `BOT_TOKEN=` — @BotFather → `/mybots` → **Alviro** → **API Token** →
+  **Revoke current token**, then copy the **new** token. (The old one has
+  been sitting on the laptop since M00; a fresh token means only the server
+  holds a working one. The laptop's old copy simply stops working.)
 - `OPENAI_API_KEY=` — OpenAI console → **API keys** → **Create new secret
   key**, name it `alviro-prod` (a separate key from the laptop one, so either
   can be revoked alone).
 
-Save. Tell the agent: **"secrets saved"**.
+Save. Then, in your **main** account, open @userinfobot → Start and note the
+number after "Id" (not a secret). Tell the agent: **"secrets saved"** and
+that number.
 
 ## Step 5 — the dev bot (5 minutes)
 
@@ -109,9 +120,10 @@ Save. Tell the agent: **"secrets saved"**.
 3. In your **second account**, open @userinfobot and press Start; copy the
    number after "Id" into `var\dev-bot.env` (`DEV_OWNER_TELEGRAM_ID=`).
 4. Tell the agent: **"dev bot ready"**. Do not connect it to anything yet. The
-   laptop keeps using Alviro until the agent finishes the 7-day media check
-   on 2026-10-25; then the agent switches the laptop to the dev bot itself and
-   tells you the two taps that connect the dev bot to your second account.
+   agent switches the laptop to the dev bot itself (it moves the values into
+   the local settings without displaying them, and resets the laptop's test
+   database) and then tells you the two taps that connect the dev bot to your
+   second account.
 
 ## Step 6 — the backup key (2 minutes, when the agent asks)
 
@@ -147,11 +159,11 @@ Read the R0 section the agent adds to M02.md and reply **"M02 OK"**.
 ## Prefer to let Codex do the agent part?
 
 The server work is a script-driven runbook any coding agent can follow:
-[deploy/runbooks/provision.md](../../deploy/runbooks/provision.md) ("Agent
-part"). Open Codex in the project folder **with network access allowed**
+[deploy/runbooks/provision.md](../../deploy/runbooks/provision.md) (part B,
+"Agent: commands in order", and its "For Codex" section). Open Codex in the project folder **with network access allowed**
 (its default sandbox blocks the network that SSH and the Oracle tools need)
-and say: *"Read AGENTS.md, then follow deploy/runbooks/provision.md, agent
-part, from the first unchecked step. Never open var/ files or print
+and say: *"Read AGENTS.md, then follow deploy/runbooks/provision.md part B
+from the first unchecked step. Never open var/ files or print
 secrets; stop and tell me when a step needs me."* Only one agent should work
 on the server at a time.
 

@@ -29,3 +29,6 @@ htmlcov/
 !.vscode/extensions.json
 .DS_Store
 Thumbs.db
+
+# Claude Code agent worktrees
+.claude/worktrees/
