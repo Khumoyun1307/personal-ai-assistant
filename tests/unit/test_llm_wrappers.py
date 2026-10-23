@@ -7,11 +7,13 @@ recording zero requests is the proof.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
 
 from assistant.accounts.service import ConsentMissingError, ConsentState
+from assistant.config import Settings
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.metering import MeteredLLMClient, estimate_cost
 from assistant.llm.port import CallRecord, LLMRequest, Provenance, TextItem, Usage
@@ -74,6 +76,50 @@ async def test_consent_must_name_this_processor() -> None:
     with pytest.raises(ConsentMissingError, match="OpenAI"):
         await client.complete(request())
 
+    assert inner.requests == []
+
+
+async def test_a_route_configured_to_a_processor_not_named_in_the_consent_raises(
+    clean_env: None,
+) -> None:
+    """S03.1 / M03 D48: `LLM_ROUTE_SUMMARIZE_MODEL` pointed at another
+    provider's model must stop before anything is sent, even with managed
+    consent for OpenAI."""
+    settings = Settings(
+        database_url="postgresql+psycopg://u:p@db/x",  # type: ignore[arg-type]
+        llm_route_summarize_model="claude-synthetic-1",
+        _env_file=None,  # type: ignore[call-arg]
+    )
+    routes = settings.model_routes
+    assert routes.model_for("owner_request") == "gpt-6-luna"
+    assert routes.model_for("summarize") == "claude-synthetic-1"
+    assert routes.processor_for("summarize") == "Anthropic"
+
+    inner = FakeLLM(text_response("never"))
+    client = ConsentGatedLLMClient(inner, Consents(ai_control=("OpenAI",), ai_managed=("OpenAI",)))
+    routed = replace(
+        request(Provenance.MANAGED), purpose="summarize", model=routes.model_for("summarize")
+    )
+
+    with pytest.raises(ConsentMissingError, match="Anthropic"):
+        await client.complete(routed)
+    assert inner.requests == []
+
+
+async def test_a_model_with_no_known_processor_is_refused() -> None:
+    inner = FakeLLM(text_response("never"))
+    client = ConsentGatedLLMClient(inner, Consents(ai_control=("OpenAI",)))
+    with pytest.raises(ConsentMissingError, match="no known processor"):
+        await client.complete(replace(request(), model="mystery-model"))
+    assert inner.requests == []
+
+
+async def test_consent_naming_only_the_routes_processor_is_not_enough_for_this_adapter() -> None:
+    """Consent for Anthropic does not let the OpenAI adapter serve a Claude model."""
+    inner = FakeLLM(text_response("never"))
+    client = ConsentGatedLLMClient(inner, Consents(ai_control=("Anthropic",)))
+    with pytest.raises(ConsentMissingError, match="not by 'OpenAI'"):
+        await client.complete(replace(request(), model="claude-synthetic-1"))
     assert inner.requests == []
 
 

@@ -74,7 +74,7 @@ def build_llm_client(
 
 def agent_config(settings: Settings) -> AgentConfig:
     return AgentConfig(
-        model=settings.llm_default_model,
+        model=settings.model_routes.model_for("owner_request"),
         effort=settings.llm_owner_request_effort,
         monthly_budget_usd=settings.llm_monthly_budget_usd,
         enabled_flags=settings.feature_flags,

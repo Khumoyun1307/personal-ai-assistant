@@ -16,7 +16,9 @@ PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 
 #: Run type → active prompt version.
 ACTIVE: dict[str, str] = {
-    "owner_request": "v1",
+    # v2 (S03.1): chat tools, citing sources, coverage honesty, query
+    # variants, awaiting_confirmation. v1 stays: retained runs reference it.
+    "owner_request": "v2",
 }
 
 

@@ -223,9 +223,17 @@ class ToolRegistry:
 
 def default_registry() -> ToolRegistry:
     """Every tool the product has. The catalogue is ARCHITECTURE §8.2."""
+    from assistant.agent.tools.conversations import (
+        GET_CONVERSATION,
+        LIST_CONVERSATIONS,
+        RESOLVE_CONTACT,
+    )
+    from assistant.agent.tools.search import SEARCH_MESSAGES
     from assistant.agent.tools.status import GET_STATUS
 
-    return ToolRegistry([GET_STATUS])
+    return ToolRegistry(
+        [GET_STATUS, SEARCH_MESSAGES, RESOLVE_CONTACT, GET_CONVERSATION, LIST_CONVERSATIONS]
+    )
 
 
 def strict_schema(model: type[BaseModel]) -> dict[str, Any]:
