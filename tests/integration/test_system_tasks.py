@@ -462,6 +462,7 @@ async def test_held_tool_calls_expire_and_lose_their_arguments(
             ("old-pending", "pending", timedelta(hours=25)),
             ("fresh-pending", "pending", timedelta(hours=1)),
             ("decided", "rejected", timedelta(hours=1)),
+            ("stuck-confirmed", "confirmed", timedelta(hours=26)),
         ):
             uow.session.add(
                 ToolConfirmation(
@@ -471,6 +472,7 @@ async def test_held_tool_calls_expire_and_lose_their_arguments(
                     args={"note": "Synthetic held text"},
                     status=status,
                     created_at=NOW - age,
+                    decided_at=NOW - age + timedelta(minutes=1) if status != "pending" else None,
                 )
             )
     report = await sweep_all(factory, clock)
@@ -483,8 +485,9 @@ async def test_held_tool_calls_expire_and_lose_their_arguments(
         "old-pending": ("expired", None),
         "fresh-pending": ("pending", {"note": "Synthetic held text"}),
         "decided": ("rejected", None),
+        "stuck-confirmed": ("failed", None),
     }
-    assert report.tool_confirmations == 2
+    assert report.tool_confirmations == 3
 
 
 # ------------------------------------------------- retention: managed content

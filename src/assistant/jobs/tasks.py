@@ -48,7 +48,7 @@ from assistant.inbox.connection_alerts import notify_connection_change
 from assistant.inbox.notify import AlertResult, OwnerAlerts
 from assistant.inbox.watchdog import STALL_AFTER, check_ingestion, poller_heartbeat_at
 from assistant.jobs.app import QUEUE_LLM, QUEUE_SYSTEM, STALLED_WORKER_TIMEOUT
-from assistant.jobs.reconcile import unqueued_owner_turns
+from assistant.jobs.reconcile import unapplied_confirmations, unqueued_owner_turns
 from assistant.observability import heartbeat
 from assistant.observability.logging import get_logger
 from assistant.privacy.retention import SweepReport, sweep_all
@@ -91,16 +91,14 @@ class JobHandlers:
     alerts: OwnerAlerts
     monthly_budget_usd: Decimal | None
     heartbeat_url: str | None
+    #: Runs held tool calls the owner confirmed (S03.1). Required: a worker
+    #: that could not apply an owner's confirmed change must not start.
+    confirmation_applier: Applier
     backup_status_path: Path | None = None
     #: An off-site remote is configured: the upload marker is checked too.
     backup_upload_required: bool = False
-    #: Runs held tool calls the owner confirmed (S03.1).
-    confirmation_applier: Applier | None = None
 
     async def apply_confirmation(self, confirmation_id: int) -> ApplyOutcome:
-        if self.confirmation_applier is None:
-            logger.warning("confirmation_applier_missing", confirmation_id=confirmation_id)
-            return ApplyOutcome("skipped")
         return await self.confirmation_applier.apply(confirmation_id)
 
     async def owner_request(self, turn_id: int) -> RunOutcome:
@@ -147,9 +145,19 @@ class JobHandlers:
                     lock=owner_control_lock(account_id),
                     connection=await uow.raw_connection(),
                 )
+            unapplied = await unapplied_confirmations(uow.session, self.clock.now())
+            for confirmation_id, account_id in unapplied:
+                await self.scheduler.defer(
+                    APPLY_CONFIRMATION_TASK,
+                    args={"confirmation_id": confirmation_id},
+                    lock=owner_control_lock(account_id),
+                    connection=await uow.raw_connection(),
+                )
         if lost:
             logger.warning("owner_turns_redeferred", count=len(lost))
-        return len(lost)
+        if unapplied:
+            logger.warning("confirmations_redeferred", count=len(unapplied))
+        return len(lost) + len(unapplied)
 
     async def retention_sweep(self) -> SweepReport:
         report = await sweep_all(self.session_factory, self.clock)

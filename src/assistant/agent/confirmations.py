@@ -31,8 +31,8 @@ from enum import StrEnum
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import select, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import cast, select, update
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import callbacks, service
@@ -55,8 +55,21 @@ logger = get_logger(__name__)
 TOOL_CONFIRM_CARD = "tool_confirm"
 OP_CONFIRM = "confirm"
 OP_REJECT = "reject"
-#: How much of the arguments the card shows the owner.
-_CARD_ARGS_LIMIT = 600
+#: The card shows the arguments in full; a call whose arguments do not fit is
+#: refused rather than shown truncated, so the owner can never confirm
+#: something they did not see.
+CARD_ARGS_LIMIT = 600
+#: Bidirectional controls and invisible characters: shown as visible
+#: `\uXXXX` escapes on the card, so text cannot be reordered or hidden.
+_INVISIBLE = {
+    *range(0x202A, 0x202F),
+    *range(0x2066, 0x206A),
+    *range(0x200B, 0x2010),
+    0xFEFF,
+}
+_VISIBLE_ESCAPES = {code: f"\\u{code:04x}" for code in _INVISIBLE}
+#: Tool statuses that mean the change was made. Anything else is not "done".
+SUCCESS_STATUSES = frozenset({"ok"})
 
 
 class ConfirmationStatus(StrEnum):
@@ -68,18 +81,41 @@ class ConfirmationStatus(StrEnum):
     EXPIRED = "expired"
 
 
-def card_text(tool: ToolDefinition, args: Mapping[str, Any]) -> str:
+def render_args(args: Mapping[str, Any]) -> str:
+    """Every field, in full, with invisible and bidi characters made visible."""
+    return json.dumps(dict(args), ensure_ascii=False, sort_keys=True).translate(_VISIBLE_ESCAPES)
+
+
+def card_text(tool: ToolDefinition, args: Mapping[str, Any], *, tainted: bool) -> str:
     """What the owner is asked. Owner-facing only (the control chat), HTML-escaped."""
-    shown = json.dumps(dict(args), ensure_ascii=False, sort_keys=True)
-    if len(shown) > _CARD_ARGS_LIMIT:
-        shown = shown[:_CARD_ARGS_LIMIT] + "…"
+    why = (
+        "This request included text from other people, so I need your tap before changing anything."
+        if tainted
+        else "This change needs your tap: I never do it on my own."
+    )
     return (
-        "<b>Confirm a change?</b>\n\n"
-        "This request included text from other people, so I need your tap before "
-        f"changing anything.\n\nAction: <code>{html.escape(tool.name)}</code>\n"
-        f"Details: <code>{html.escape(shown)}</code>\n\n"
+        f"<b>Confirm a change?</b>\n\n{why}\n\n"
+        f"Action: <code>{html.escape(tool.name)}</code>\n"
+        f"Details: <code>{html.escape(render_args(args))}</code>\n\n"
         "Nothing has been changed yet."
     )
+
+
+#: What the model is told about a call already held (a repeated call id or
+#: the same change still waiting from an earlier run).
+_EXISTING = {
+    ConfirmationStatus.PENDING: ("awaiting_confirmation", "already sent; not done yet"),
+    ConfirmationStatus.CONFIRMED: ("confirmed", "the owner confirmed; it is being applied"),
+    ConfirmationStatus.APPLIED: ("applied", "applied after the owner's confirmation"),
+    ConfirmationStatus.FAILED: ("failed", "the owner confirmed but it failed"),
+    ConfirmationStatus.REJECTED: ("rejected", "the owner rejected it; nothing changed"),
+    ConfirmationStatus.EXPIRED: ("not_executed", "the card expired; nothing changed"),
+}
+
+
+def _existing_outcome(status: str) -> ToolOutcome:
+    state, note = _EXISTING.get(ConfirmationStatus(status), ("not_executed", "nothing changed"))
+    return ToolOutcome(state, {"card": note})
 
 
 def card_buttons(token: str) -> tuple[Button, ...]:
@@ -92,18 +128,56 @@ def card_buttons(token: str) -> tuple[Button, ...]:
 async def hold(
     ctx: ToolContext, tool: ToolDefinition, call_id: str, args: Mapping[str, Any]
 ) -> ToolOutcome:
-    """Hold one call for the owner's tap. Idempotent on `(run_id, call_id)`."""
+    """Hold one call for the owner's tap.
+
+    Idempotent on `(run_id, call_id)`: a repeated call reports the existing
+    row's real state. The same change still pending from an earlier run (a
+    retried owner turn has a new run id) reuses that card instead of sending
+    a second confirmable one. A card whose send failed or is uncertain is
+    expired at once, so no later tap can apply it.
+    """
     services = ctx.services
     channel = services.channel
     if channel is None:
         # No way to ask: fail closed (§6 invariant 7).
         return ToolOutcome("not_executed", {"reason": "confirmation is not available"})
+    if len(render_args(args)) > CARD_ARGS_LIMIT:
+        # The owner must see everything they confirm; truncating would let
+        # them approve a payload they never saw (invariant 3b).
+        return ToolOutcome(
+            "not_executed", {"reason": "the change is too large to show on a confirmation card"}
+        )
     delivered: dict[str, bool] = {}
     async with transaction(services.session_factory) as uow:
         session = uow.session
         account = await session.get(Account, ctx.account_id)
         if account is None or account.control_chat_id is None:
             return ToolOutcome("not_executed", {"reason": "the owner cannot be reached"})
+        existing = (
+            await session.execute(
+                select(ToolConfirmation.status).where(
+                    ToolConfirmation.run_id == ctx.run_id,
+                    ToolConfirmation.tool_call_id == call_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return _existing_outcome(existing)
+        same_change = (
+            await session.execute(
+                select(ToolConfirmation.id)
+                .where(ToolConfirmation.account_id == ctx.account_id)
+                .where(ToolConfirmation.tool_name == tool.name)
+                .where(ToolConfirmation.status == ConfirmationStatus.PENDING.value)
+                .where(ToolConfirmation.args == cast(dict(args), JSONB))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if same_change is not None:
+            return ToolOutcome(
+                "awaiting_confirmation",
+                {"card": "the same change already awaits the owner's tap; not done yet"},
+            )
         inserted = await session.execute(
             insert(ToolConfirmation)
             .values(
@@ -120,10 +194,8 @@ async def hold(
         )
         confirmation_id = inserted.scalar_one_or_none()
         if confirmation_id is None:
-            # The same call again (a retried job): one card is enough.
-            return ToolOutcome(
-                "awaiting_confirmation", {"card": "already sent to the owner; not done yet"}
-            )
+            # Raced with the same call: report what that one is.
+            return ToolOutcome("awaiting_confirmation", {"card": "already sent; not done yet"})
         card = await service.create_card(
             session,
             account_id=ctx.account_id,
@@ -132,22 +204,30 @@ async def hold(
             ref_id=confirmation_id,
         )
         assert card.token is not None
-        text = card_text(tool, args)
+        text = card_text(tool, args, tainted=ctx.tainted)
         buttons = card_buttons(card.token)
         chat_id = account.control_chat_id
         card_id = card.id
 
         async def send_card(factory: async_sessionmaker[AsyncSession]) -> None:
-            result = await channel.send(
-                account_id=ctx.account_id, chat_id=chat_id, text=text, buttons=buttons
-            )
-            delivered["ok"] = result.ok
+            ok = False
+            message_id: int | None = None
+            try:
+                result = await channel.send(
+                    account_id=ctx.account_id, chat_id=chat_id, text=text, buttons=buttons
+                )
+                ok, message_id = result.ok, result.message_id
+            except Exception as error:
+                # Ambiguous: the card may or may not be on screen. It is
+                # expired below, so a tap on it can never apply anything.
+                logger.error("tool_card_send_failed", exc_type=type(error).__name__)
+            delivered["ok"] = ok
             async with transaction(factory) as follow_up:
                 row = await follow_up.session.get(PendingInput, card_id)
                 if row is None:
                     return
-                if result.ok:
-                    row.prompt_message_id = result.message_id
+                if ok:
+                    row.prompt_message_id = message_id
                 else:
                     # Never shown: nothing can press it, so nothing will apply.
                     await follow_up.session.delete(row)
@@ -171,7 +251,11 @@ async def hold(
     )
     if not delivered.get("ok", False):
         return ToolOutcome(
-            "not_executed", {"reason": "the confirmation card could not be delivered"}
+            "not_executed",
+            {
+                "reason": "the confirmation card could not be delivered; nothing will be "
+                "changed, and a card that may have arrived anyway no longer works"
+            },
         )
     return ToolOutcome(
         "awaiting_confirmation",
@@ -261,13 +345,23 @@ async def account_of_confirmation(session: AsyncSession, confirmation_id: int) -
 @dataclass(frozen=True, slots=True)
 class ApplyOutcome:
     status: str
-    """`applied`, `failed`, or `skipped` (not confirmed, already applied, unknown)."""
+    """`applied` (the tool returned a status in `SUCCESS_STATUSES`), `failed`
+    (anything else, including an exception), or `skipped` (not confirmed,
+    already applied, unknown)."""
     tool: str | None = None
     tool_status: str | None = None
 
 
 TEXT_APPLIED = "✅ Done: <code>{tool}</code> ({status})."
 TEXT_FAILED = "⚠️ I could not apply <code>{tool}</code>: {reason}. Nothing was changed."
+TEXT_UNCERTAIN = (
+    "⚠️ <code>{tool}</code> failed with an internal error. It may not have been applied; "
+    "please check before asking again."
+)
+TEXT_NOT_DONE = (
+    "⚠️ <code>{tool}</code> ended as <code>{status}</code>, which is not a confirmed "
+    "success. I am not counting it as done."
+)
 
 
 class ConfirmationApplier:
@@ -339,7 +433,18 @@ class ConfirmationApplier:
                     outcome = await tool.handler(context, parsed)
                 except LookupError:
                     outcome = ToolOutcome("error", {"reason": "not found"})
-        if outcome.is_error:
+                except Exception as error:
+                    # The row is already claimed `applied`: whatever went
+                    # wrong, it must end `failed` and the owner must hear it
+                    # (§6 invariant 11). Type only in the log (§14.4).
+                    logger.error(
+                        "tool_confirmation_handler_failed",
+                        confirmation_id=confirmation_id,
+                        exc_type=type(error).__name__,
+                    )
+                    outcome = ToolOutcome("error", {"reason": "it failed", "uncertain": True})
+        succeeded = outcome.status in SUCCESS_STATUSES
+        if not succeeded:
             async with transaction(self._session_factory) as uow:
                 await uow.session.execute(
                     update(ToolConfirmation)
@@ -347,14 +452,7 @@ class ConfirmationApplier:
                     .values(status=ConfirmationStatus.FAILED.value)
                     .execution_options(synchronize_session=False)
                 )
-            text = TEXT_FAILED.format(
-                tool=html.escape(tool_name),
-                reason=html.escape(str(outcome.data.get("reason", "an error"))),
-            )
-        else:
-            text = TEXT_APPLIED.format(
-                tool=html.escape(tool_name), status=html.escape(outcome.status)
-            )
+        text = self._report(tool_name, outcome, succeeded)
         if chat_id is not None:
             await self._channel.send(account_id=account_id, chat_id=chat_id, text=text)
         logger.info(
@@ -363,6 +461,20 @@ class ConfirmationApplier:
             confirmation_id=confirmation_id,
             tool=tool_name,
             call_id_present=bool(call_id),
-            status="failed" if outcome.is_error else "applied",
+            status="applied" if succeeded else "failed",
         )
-        return ApplyOutcome("failed" if outcome.is_error else "applied", tool_name, outcome.status)
+        return ApplyOutcome("applied" if succeeded else "failed", tool_name, outcome.status)
+
+    @staticmethod
+    def _report(tool_name: str, outcome: ToolOutcome, succeeded: bool) -> str:
+        """Done only for an explicit success status; never blur the rest (inv. 11)."""
+        tool = html.escape(tool_name)
+        if succeeded:
+            return TEXT_APPLIED.format(tool=tool, status=html.escape(outcome.status))
+        if outcome.data.get("uncertain"):
+            return TEXT_UNCERTAIN.format(tool=tool)
+        if outcome.is_error:
+            return TEXT_FAILED.format(
+                tool=tool, reason=html.escape(str(outcome.data.get("reason", "an error")))
+            )
+        return TEXT_NOT_DONE.format(tool=tool, status=html.escape(outcome.status))

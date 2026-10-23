@@ -190,6 +190,18 @@ async def sweep_tool_confirmations(
                 {"now": now, "cutoff": now - TOOL_CONFIRMATION_TTL},
             )
         )
+        # Confirmed but never applied for a day (the worker was down and the
+        # reconciler's window passed): fail it rather than act on day-old
+        # intent, and drop the arguments.
+        expired += _count(
+            await uow.session.execute(
+                text(
+                    "UPDATE app.tool_confirmations SET status = 'failed', args = NULL "
+                    "WHERE status = 'confirmed' AND decided_at < :cutoff"
+                ),
+                {"cutoff": now - TOOL_CONFIRMATION_TTL},
+            )
+        )
         cleared = _count(
             await uow.session.execute(
                 text(

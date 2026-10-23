@@ -54,8 +54,17 @@ class SetNoteArgs(BaseModel):
     note: str = Field(description="A synthetic note.")
 
 
+#: Notes that make the test tool misbehave, for the applier's failure paths.
+NOTE_EXPLODE = "explode"
+NOTE_ODD_STATUS = "odd-status"
+
+
 async def set_note(ctx: ToolContext, args: SetNoteArgs) -> ToolOutcome:
     """A state change: one content-free audit row per execution."""
+    if args.note == NOTE_EXPLODE:
+        raise RuntimeError("synthetic handler failure")
+    if args.note == NOTE_ODD_STATUS:
+        return ToolOutcome("awaiting_approval")
     async with transaction(ctx.services.session_factory) as uow:
         uow.session.add(
             AuditLogEntry(
@@ -66,7 +75,7 @@ async def set_note(ctx: ToolContext, args: SetNoteArgs) -> ToolOutcome:
                 details={"length": len(args.note)},
             )
         )
-    return ToolOutcome("done")
+    return ToolOutcome("ok")
 
 
 #: Test-only: a `configure` tool, registered only in `registry_with_note_tool()`.
