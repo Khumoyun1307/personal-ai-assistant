@@ -221,9 +221,16 @@ def test_0009_tainted_reply_flag_and_applying_state_reverse(scratch_url: str) ->
             "VALUES (%s, 'z1', 'synthetic', 'applying')",
             (account[0],),
         )
-        conn.execute("DELETE FROM app.tool_confirmations WHERE tool_call_id = 'z1'")
+    # The `applying` row is kept: the downgrade must turn it `failed` (its
+    # outcome is unknown) rather than trip the narrower CHECK (review 3 gap b).
     run_alembic(scratch_url, "0008", down=True)
     assert "from_tainted_run" not in _columns(scratch_url, "control_turns")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        kept = conn.execute(
+            "SELECT status FROM app.tool_confirmations WHERE tool_call_id = 'z1'"
+        ).fetchone()
+        assert kept == ("failed",)
+        conn.execute("DELETE FROM app.tool_confirmations WHERE tool_call_id = 'z1'")
     with (
         psycopg.connect(libpq(scratch_url), autocommit=True) as conn,
         pytest.raises(psycopg.errors.CheckViolation),
