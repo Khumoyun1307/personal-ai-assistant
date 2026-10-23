@@ -111,7 +111,9 @@ block volume `alviro-data` attached at `/dev/oracleoci/oraclevdb`, budget
 in `var/cloud/oci-state.env`).
 - *Out of host capacity in every availability domain* → run
   `just oci-provision <owner-email> --wait` in the background (retries with
-  backoff up to 12 h, one status line per round) and report back.
+  backoff up to 12 h, one status line per round) and report back. HTTP 429
+  (*TooManyRequests*) is retried the same way; if the launch had already
+  been accepted, the existing instance is picked up instead of a second one.
 - *Authentication failed* → stop; hand back to A3. *Home region is not
   eu-frankfurt-1* → stop; the owner decides (it cannot be changed).
 - *In-transit encryption rejected* for the shape/image → re-run with

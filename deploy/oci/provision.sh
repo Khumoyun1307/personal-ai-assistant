@@ -24,7 +24,9 @@
 #
 # "Out of host capacity" (common for A1 in busy regions) is retried across
 # the availability domains with bounded backoff; --wait keeps retrying for up
-# to WAIT_HOURS (default 12) and is meant to run in the background.
+# to WAIT_HOURS (default 12) and is meant to run in the background. HTTP 429
+# (TooManyRequests, which long --wait runs can trigger) is retried the same
+# way, after checking that no instance was launched meanwhile.
 # Output: status lines, names, OCIDs and the public IP only (AGENTS §9).
 set -euo pipefail
 
@@ -205,7 +207,8 @@ mapfile -t ads < <(q 'data[].name' iam availability-domain list -c "$tenancy" | 
 instance="$(by_name "$INSTANCE_NAME" compute instance list -c "$comp")"
 launch_once() {
   # One attempt per availability domain. 0 = launched, 2 = out of capacity
-  # everywhere, 1 = any other error (not retried).
+  # everywhere, 3 = rate limited (HTTP 429 TooManyRequests; the round stops
+  # there), 1 = any other error (not retried).
   local ad out
   for ad in "${ads[@]}"; do
     if out="$(oci compute instance launch -c "$comp" --availability-domain "$ad" \
@@ -226,6 +229,10 @@ launch_once() {
       log "out of host capacity in $ad"
       continue
     fi
+    if grep -qi 'TooManyRequests\|"status": 429' "$workdir/err"; then
+      log "rate limited (HTTP 429) in $ad"
+      return 3
+    fi
     log "launch failed in $ad: $(head -c 300 "$workdir/err" | tr '\n' ' ')"
     return 1
   done
@@ -242,11 +249,24 @@ if [ -z "$instance" ]; then
     launch_once || rc=$?
     [ "$rc" -eq 0 ] && break
     [ "$rc" -eq 1 ] && die "instance launch failed (not a capacity error)"
-    if [ "$wait_mode" -eq 0 ] && [ "$attempts" -ge 3 ]; then
-      die "out of host capacity in every availability domain after $attempts rounds; re-run with --wait to keep trying"
+    reason="no capacity"
+    if [ "$rc" -eq 3 ]; then
+      # A 429 can also come from the --wait-for-state polling after the
+      # launch was accepted: pick that instance up, never launch a second.
+      instance="$(by_name "$INSTANCE_NAME" compute instance list -c "$comp")"
+      if [ -n "$instance" ]; then
+        log "instance $INSTANCE_NAME $instance was launched before the 429; waiting for RUNNING"
+        oci compute instance get --instance-id "$instance" \
+          --wait-for-state RUNNING --max-wait-seconds 1200 > /dev/null
+        break
+      fi
+      reason="rate limited (HTTP 429)"
     fi
-    [ "$(date +%s)" -ge "$deadline" ] && die "still out of capacity after ${WAIT_HOURS} h"
-    log "round $attempts: no capacity; next try in ${delay}s"
+    if [ "$wait_mode" -eq 0 ] && [ "$attempts" -ge 3 ]; then
+      die "launch still failing ($reason) after $attempts rounds; re-run with --wait to keep trying"
+    fi
+    [ "$(date +%s)" -ge "$deadline" ] && die "launch still failing ($reason) after ${WAIT_HOURS} h"
+    log "round $attempts: $reason; next try in ${delay}s"
     sleep "$delay"
     # Backoff 60 s → 120 s → … capped at 15 min.
     delay=$((delay * 2 > 900 ? 900 : delay * 2))
