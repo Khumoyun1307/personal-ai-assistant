@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import ColumnElement, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
@@ -77,8 +77,9 @@ class ConversationPage:
     #: Oldest first.
     messages: tuple[PageMessage, ...]
     coverage: Coverage
-    #: Pass as `before_message_id` for the next (older) page; None at the start.
-    next_cursor: int | None
+    #: Pass as `before` for the next (older) page; None at the start. The
+    #: position of the oldest message shown: `(sent_at, message id)`.
+    next_cursor: tuple[datetime, int] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,11 +221,14 @@ async def conversation_page(
     account_id: int,
     conversation_id: int,
     *,
-    before_message_id: int | None = None,
+    before: tuple[datetime, int] | None = None,
     limit: int = 30,
 ) -> ConversationPage:
     """One page of a conversation's retained messages, newest page first.
 
+    Keyset pagination on `(sent_at, id)`, the order the page is read in, so
+    a message whose id is out of step with its date (a re-queued dead
+    letter: a new id for an old message) is neither skipped nor repeated.
     Raises `LookupError` for an id that is unknown or another account's.
     """
     limit = max(1, min(limit, MAX_PAGE))
@@ -249,8 +253,8 @@ async def conversation_page(
         .where(Message.sent_at.is_not(None))
         .where((Message.text.is_not(None)) | (Message.media.is_not(None)))
     )
-    if before_message_id is not None:
-        statement = statement.where(Message.id < before_message_id)
+    if before is not None:
+        statement = statement.where(tuple_(Message.sent_at, Message.id) < tuple_(*before))
     rows = list(
         (
             await session.execute(
@@ -279,7 +283,9 @@ async def conversation_page(
         conversation=_row(conversation, contact, counts.get(conversation.id, 0)),
         messages=messages,
         coverage=await _coverage(session, account_id, conversation),
-        next_cursor=rows[-1].id if more and rows else None,
+        next_cursor=(rows[-1].sent_at, rows[-1].id)  # type: ignore[arg-type]  # NOT NULL above
+        if more and rows
+        else None,
     )
 
 
@@ -320,6 +326,47 @@ async def contact_directory(session: AsyncSession, account_id: int) -> list[Dire
             )
         )
     return entries
+
+
+async def is_managed_origin(
+    session: AsyncSession,
+    account_id: int,
+    *,
+    user_ids: Sequence[int] = (),
+    chat_ids: Sequence[int] = (),
+    names: Sequence[str] = (),
+) -> bool:
+    """Whether forwarded or quoted text came from one of the account's managed
+    chats: its sender is a known contact, its chat a known conversation, or a
+    hidden sender's name equals a contact's name (§6 invariant 9). Unknown
+    origins are not managed: there is nothing stored to match them with."""
+    ids = list({*user_ids, *chat_ids})
+    if ids:
+        by_contact = await session.execute(
+            select(Contact.id)
+            .where(Contact.account_id == account_id)
+            .where(Contact.telegram_user_id.in_(ids))
+            .limit(1)
+        )
+        if by_contact.first() is not None:
+            return True
+        by_chat = await session.execute(
+            select(Conversation.id)
+            .where(Conversation.account_id == account_id)
+            .where(Conversation.business_chat_id.in_(ids))
+            .limit(1)
+        )
+        if by_chat.first() is not None:
+            return True
+    wanted = {normalize(name) for name in names if normalize(name)}
+    if wanted:
+        known = await session.execute(
+            select(Contact.display_name)
+            .where(Contact.account_id == account_id)
+            .where(Contact.display_name.is_not(None))
+        )
+        return any(normalize(str(value)) in wanted for (value,) in known.all())
+    return False
 
 
 # ------------------------------------------------------------ name matching

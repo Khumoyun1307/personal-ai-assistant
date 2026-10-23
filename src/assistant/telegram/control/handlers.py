@@ -67,6 +67,11 @@ class IncomingMessage:
     forwarded: bool = False
     #: Text quoted from another chat or from a forwarded message.
     quoted_text: str | None = None
+    #: Who the forwarded/quoted text came from (user ids, chat ids, the
+    #: names of hidden users), to recognise managed-chat content.
+    origin_user_ids: frozenset[int] = frozenset()
+    origin_chat_ids: frozenset[int] = frozenset()
+    origin_names: frozenset[str] = frozenset()
 
     @property
     def third_party(self) -> bool:

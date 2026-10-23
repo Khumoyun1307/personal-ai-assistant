@@ -108,10 +108,32 @@ async def test_a_page_is_oldest_first_with_a_cursor_to_older_messages(env: Env) 
         assert [m.text for m in first.messages] == ["line 2", "line 3", "line 4"]
         assert first.next_cursor is not None
         older = await conversation_page(
-            session, await account_id(env), conv, before_message_id=first.next_cursor, limit=3
+            session, await account_id(env), conv, before=first.next_cursor, limit=3
         )
     assert [m.text for m in older.messages] == ["line 0", "line 1"]
     assert older.next_cursor is None
+
+
+async def test_paging_follows_dates_even_when_ids_are_out_of_order(env: Env) -> None:
+    """J: a message stored late (a re-queued dead letter: new id, old date)
+    is neither skipped nor repeated — the cursor is (sent_at, id)."""
+    await connect(env)
+    for minute in (10, 20, 30, 40):
+        await say(env, f"line {minute}", minutes=minute)
+    await say(env, "line 5 (stored last)", minutes=5)
+    conv = await conversation_id(env, CONTACT)
+    seen: list[str] = []
+    cursor = None
+    async with env.factory() as session:
+        for _ in range(5):
+            page = await conversation_page(
+                session, await account_id(env), conv, before=cursor, limit=2
+            )
+            seen = [m.text or "" for m in page.messages] + seen
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+    assert seen == ["line 5 (stored last)", "line 10", "line 20", "line 30", "line 40"]
 
 
 async def test_a_page_reports_deleted_messages_in_its_coverage(env: Env) -> None:

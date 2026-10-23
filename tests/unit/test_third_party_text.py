@@ -9,7 +9,7 @@ import pytest
 
 from assistant.accounts.models import ControlTurn
 from assistant.agent.context import carries_third_party, render_turn
-from assistant.telegram.control.inbox_handlers import third_party_text
+from assistant.telegram.control.inbox_handlers import third_party_origins, third_party_text
 
 ORIGIN = {"type": "user", "date": 1792354000, "sender_user": {"id": 5, "is_bot": False}}
 
@@ -65,6 +65,20 @@ def test_a_quote_inside_a_forward_belongs_to_the_forward() -> None:
     assert third_party_text(payload) == (True, None)
 
 
+def test_origins_name_every_sender_and_chat_the_text_came_from() -> None:
+    users, chats, names = third_party_origins(
+        message(
+            forward_origin={"type": "user", "date": 1, "sender_user": {"id": 5, "is_bot": False}},
+            forward_from_chat={"id": -100, "type": "channel"},
+            external_reply={
+                "origin": {"type": "hidden_user", "date": 1, "sender_user_name": "Hidden"},
+                "chat": {"id": 9, "type": "private"},
+            },
+        )
+    )
+    assert (users, chats, names) == ({5}, {-100, 9}, {"Hidden"})
+
+
 def turn(**kwargs: Any) -> ControlTurn:
     values: dict[str, Any] = {
         "role": "owner",
@@ -98,6 +112,7 @@ def test_plain_and_assistant_turns_are_unchanged() -> None:
 
 
 def test_third_party_or_managed_turns_taint() -> None:
+    assert carries_third_party(turn(role="assistant", third_party=True))  # D
     assert not carries_third_party(turn())
     assert carries_third_party(turn(third_party=True))
     assert carries_third_party(turn(quoted_text="x"))

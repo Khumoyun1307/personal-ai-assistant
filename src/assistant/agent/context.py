@@ -40,6 +40,7 @@ def build_owner_request(
     history: list[ControlTurn],
     turn: ControlTurn,
     now: datetime,
+    managed_allowed: bool = False,
 ) -> OwnerRequestContext:
     profile = [
         "Owner profile:",
@@ -58,20 +59,43 @@ def build_owner_request(
         for past in history
         if past.text
     ]
-    items.append(
-        TextItem(
+    if turn.contains_managed and not managed_allowed:
+        # The owner forwarded or quoted a message from one of their managed
+        # chats, without `ai_managed`: its text must not reach the model
+        # (§6 invariant 9). The model is told, so it can say so honestly.
+        current = TextItem("user", withheld_turn(turn), Provenance.OWNER_CONTROL)
+    else:
+        current = TextItem(
             role="user",
             text=render_turn(turn) or "",
             provenance=Provenance.MANAGED if turn.contains_managed else Provenance.OWNER_CONTROL,
         )
-    )
+    items.append(current)
     tainted = any(carries_third_party(t) for t in [*history, turn])
     return OwnerRequestContext(instructions=instructions, items=tuple(items), tainted=tainted)
 
 
+WITHHELD_FORWARD = (
+    "(The owner forwarded a message from one of their chats with other people. Its text "
+    "is withheld: the owner has not agreed to AI processing of those chats. Say so, and "
+    "mention /privacy managed.)"
+)
+WITHHELD_QUOTE = (
+    "(The owner quoted a message from one of their chats with other people; the quote is "
+    "withheld: the owner has not agreed to AI processing of those chats.)"
+)
+
+
+def withheld_turn(turn: ControlTurn) -> str:
+    if turn.quoted_text is not None:
+        return f"{turn.text or ''}\n\n{WITHHELD_QUOTE}"
+    return WITHHELD_FORWARD
+
+
 def carries_third_party(turn: ControlTurn) -> bool:
     """Whether a turn brings third-party text or managed content into the
-    context: such a run starts tainted (§7.1, M03 D45)."""
+    context: such a run starts tainted (§7.1, M03 D45). An assistant turn
+    carries `third_party` when the run that wrote it was tainted."""
     return bool(turn.third_party or turn.quoted_text is not None or turn.contains_managed)
 
 

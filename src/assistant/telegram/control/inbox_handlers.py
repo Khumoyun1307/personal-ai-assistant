@@ -80,6 +80,50 @@ def third_party_text(payload: dict[str, Any]) -> tuple[bool, str | None]:
     return False, (quote_text if from_elsewhere else None)
 
 
+def _origin(origin: Any, users: set[int], chats: set[int], names: set[str]) -> None:
+    """Collect who a `MessageOrigin` names (user, hidden user, chat, channel)."""
+    if not isinstance(origin, dict):
+        return
+    for key, bucket in (("sender_user", users), ("sender_chat", chats), ("chat", chats)):
+        value = origin.get(key)
+        if isinstance(value, dict) and isinstance(value.get("id"), int):
+            bucket.add(value["id"])
+    hidden = origin.get("sender_user_name")
+    if isinstance(hidden, str) and hidden.strip():
+        names.add(hidden)
+
+
+def third_party_origins(payload: dict[str, Any]) -> tuple[set[int], set[int], set[str]]:
+    """`(user_ids, chat_ids, hidden_names)` the forwarded or quoted text came
+    from, so the dispatcher can tell whether it is managed-chat content
+    (§6 invariant 9, M03 D53)."""
+    users: set[int] = set()
+    chats: set[int] = set()
+    names: set[str] = set()
+    sources = [payload]
+    replied = payload.get("reply_to_message")
+    if isinstance(replied, dict):
+        sources.append(replied)
+    for source in sources:
+        _origin(source.get("forward_origin"), users, chats, names)
+        sender = source.get("forward_from")
+        if isinstance(sender, dict) and isinstance(sender.get("id"), int):
+            users.add(sender["id"])
+        chat = source.get("forward_from_chat")
+        if isinstance(chat, dict) and isinstance(chat.get("id"), int):
+            chats.add(chat["id"])
+        hidden = source.get("forward_sender_name")
+        if isinstance(hidden, str) and hidden.strip():
+            names.add(hidden)
+    external = payload.get("external_reply")
+    if isinstance(external, dict):
+        _origin(external.get("origin"), users, chats, names)
+        chat = external.get("chat")
+        if isinstance(chat, dict) and isinstance(chat.get("id"), int):
+            chats.add(chat["id"])
+    return users, chats, names
+
+
 class RefusalLimiter:
     """At most one refusal per chat per window, and a global cap per window.
 
@@ -159,6 +203,11 @@ class ControlInboxHandlers:
         if not isinstance(chat_id, int) or not isinstance(from_id, int):
             return
         forwarded, quoted_text = third_party_text(payload)
+        users, chats, names = (
+            third_party_origins(payload)
+            if forwarded or quoted_text is not None
+            else (set(), set(), set())
+        )
         text = payload.get("text")
         if not isinstance(text, str) and forwarded:
             # A forwarded photo or document: its caption is the forwarded text.
@@ -179,6 +228,9 @@ class ControlInboxHandlers:
                 received_at=row.received_at,
                 forwarded=forwarded,
                 quoted_text=quoted_text,
+                origin_user_ids=frozenset(users),
+                origin_chat_ids=frozenset(chats),
+                origin_names=frozenset(names),
             ),
         )
 

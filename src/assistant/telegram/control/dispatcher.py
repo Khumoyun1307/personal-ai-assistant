@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts import callbacks, connections, service
 from assistant.accounts.models import Account
 from assistant.agent.confirmations import TOOL_CONFIRM_CARD
-from assistant.conversations import visibility
+from assistant.conversations import read, visibility
 from assistant.core.clock import Clock
 from assistant.core.jobs import (
     CONNECTION_NOTIFY_TASK,
@@ -155,6 +155,17 @@ class ControlDispatcher:
             created_at=message.received_at,
             third_party=message.third_party,
             quoted_text=message.quoted_text,
+            # Forwarded/quoted text from one of the owner's managed chats is
+            # managed content: it needs `ai_managed` to reach a model and is
+            # cleared by managed-data deletion (§6 invariant 9, M03 D53).
+            contains_managed=message.third_party
+            and await read.is_managed_origin(
+                session,
+                account.id,
+                user_ids=tuple(message.origin_user_ids),
+                chat_ids=tuple(message.origin_chat_ids),
+                names=tuple(message.origin_names),
+            ),
         )
         if self._scheduler is None:
             logger.warning("owner_turn_not_queued", account_id=account.id, turn_id=turn.id)

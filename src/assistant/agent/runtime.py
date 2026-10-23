@@ -56,6 +56,7 @@ from assistant.agent.tools.registry import (
     ToolServices,
 )
 from assistant.core.clock import Clock
+from assistant.core.model_routes import processor_for_model
 from assistant.db.uow import transaction
 from assistant.llm.port import (
     InputItem,
@@ -254,7 +255,14 @@ class OwnerRequestRuntime:
             control = await active_consent(session, account_id, kind=CONSENT_AI_CONTROL)
             if not control.granted:
                 return _Started(account_id, chat_id, no_consent=True)
-            managed = await active_consent(session, account_id, kind=CONSENT_AI_MANAGED)
+            managed_state = await active_consent(session, account_id, kind=CONSENT_AI_MANAGED)
+            # Defence in depth behind the consent wrapper: managed tools and
+            # managed history only when the consent names the processor that
+            # serves this route's model (§14.3, M03 D48).
+            managed_ok = (
+                managed_state.granted
+                and processor_for_model(self._config.model) in managed_state.processors
+            )
             over_budget = await self._over_budget(session, account_id)
             run = AgentRunRepository(session, account_id).add(
                 AgentRun(
@@ -269,10 +277,15 @@ class OwnerRequestRuntime:
             )
             await session.flush()
             history = await ControlTurnRepository(session, account_id).recent_before(
-                turn_id, limit=OWNER_HISTORY_TURNS, include_managed=managed.granted
+                turn_id, limit=OWNER_HISTORY_TURNS, include_managed=managed_ok
             )
             context = build_owner_request(
-                prompt=prompt, account=account, history=history, turn=turn, now=self._clock.now()
+                prompt=prompt,
+                account=account,
+                history=history,
+                turn=turn,
+                now=self._clock.now(),
+                managed_allowed=managed_ok,
             )
             # Tainted from the start when the context already carries
             # third-party text or managed content (§7.1, M03 D45).
@@ -291,7 +304,7 @@ class OwnerRequestRuntime:
                 account_id,
                 chat_id,
                 state=state,
-                managed_consent=managed.granted,
+                managed_consent=managed_ok,
                 over_budget=over_budget,
             )
 
@@ -455,6 +468,11 @@ class OwnerRequestRuntime:
                     # A reply built from managed content is itself managed
                     # content: excluded later if `ai_managed` is revoked.
                     contains_managed=state.used_managed,
+                    # A reply from a tainted run may restate third-party text
+                    # (an injection paraphrased by the model): it taints later
+                    # runs that include it, even after the original turn has
+                    # left the history window (§7.1).
+                    third_party=state.tainted,
                     run_id=state.run_id,
                     # Which conversations/contacts the reply drew on, so a
                     # deletion of one of them can find this turn (§10.4).
