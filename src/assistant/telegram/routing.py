@@ -19,6 +19,8 @@ from assistant.core.routing import CLEAR_PAYLOAD, Route, RouteDecision
 __all__ = [
     "BUSINESS_KINDS",
     "CLEAR_PAYLOAD",
+    "REASON_BOT_COUNTERPART",
+    "REASON_BOT_MIRROR",
     "Route",
     "RouteDecision",
     "route_update",
@@ -29,6 +31,11 @@ __all__ = [
 BUSINESS_KINDS: frozenset[str] = frozenset(
     {"business_message", "edited_business_message", "deleted_business_messages"}
 )
+
+#: Reasons for ignoring business traffic, distinguished because a bot
+#: counterpart's message still teaches us something (the chat is a bot chat).
+REASON_BOT_MIRROR = "bot chat mirror"
+REASON_BOT_COUNTERPART = "bot counterpart"
 
 
 def update_kind(update: dict[str, Any]) -> str:
@@ -68,10 +75,20 @@ def route_update(
         chat = _chat(payload)
         chat_id = chat.get("id")
         sender = _sender(payload)
-        if chat_id == bot_id or sender.get("is_bot") is True:
-            # Mirror of the owner's own chat with a bot, or a bot counterpart:
-            # ignoring these is the loop guard (TF §3.2).
-            return RouteDecision(Route.IGNORED, kind, "bot chat mirror", chat_id=chat_id)
+        if chat_id == bot_id:
+            # Mirror of the owner's own chat with this bot: ignoring it is the
+            # loop guard (TF §3.2).
+            return RouteDecision(Route.IGNORED, kind, REASON_BOT_MIRROR, chat_id=chat_id)
+        if sender.get("is_bot") is True:
+            # A third-party bot answering: ignored too. The business pipeline's
+            # IGNORED hook uses it to recognise the chat (FR-OBS-04).
+            return RouteDecision(
+                Route.IGNORED,
+                kind,
+                REASON_BOT_COUNTERPART,
+                chat_id=chat_id,
+                from_id=sender.get("id"),
+            )
         return RouteDecision(
             Route.BUSINESS,
             kind,

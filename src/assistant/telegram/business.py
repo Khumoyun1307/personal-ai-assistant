@@ -28,6 +28,7 @@ from assistant.observability.logging import get_logger
 from assistant.telegram.connections import ConnectionRegistry, business_connection_id
 from assistant.telegram.normalize import normalize
 from assistant.telegram.payload import chat_of, optional_timestamp
+from assistant.telegram.routing import REASON_BOT_COUNTERPART
 
 logger = get_logger(__name__)
 
@@ -57,6 +58,13 @@ class BusinessPipeline:
         )
         if isinstance(event, IgnoredUpdate):
             logger.info("business_update_ignored", update_row_id=row.id, reason=event.reason.value)
+            return Disposition.IGNORED
+        if await service.is_bot_chat(
+            session, account_id=account_id, business_chat_id=event.business_chat_id
+        ):
+            # A recognised third-party bot chat: nothing from it is stored,
+            # including the owner's own messages to the bot (FR-OBS-04).
+            logger.info("business_update_ignored", update_row_id=row.id, reason="bot_chat")
             return Disposition.IGNORED
         if isinstance(event, ObservedDeletion):
             outcome = await service.record_deletion(
@@ -88,6 +96,30 @@ class BusinessPipeline:
         )
         return None
 
+    async def on_ignored(
+        self, session: AsyncSession, row: InboundUpdate, decision: RouteDecision
+    ) -> Disposition | None:
+        """The IGNORED route's handler. The row ends `ignored` with its payload
+        cleared whatever happens here; the only thing done is learning from a
+        third-party bot's answer that its chat is a bot chat (§6.5, FR-OBS-04).
+        Only on the owner's live connection, and with no network call: an
+        unknown connection id is not bootstrapped for an update we discard."""
+        if decision.reason != REASON_BOT_COUNTERPART or decision.kind not in MESSAGE_KINDS:
+            return None
+        body = (row.payload or {}).get(decision.kind)
+        if not isinstance(body, dict) or chat_of(body).get("type") != "private":
+            return None
+        chat_id = decision.chat_id
+        if not isinstance(chat_id, int) or isinstance(chat_id, bool):
+            return None
+        verdict = await self._registry.gate_business(session, row, decision)
+        if isinstance(verdict, Disposition) or verdict.account_id is None:
+            return None
+        await service.mark_bot_chat(
+            session, account_id=verdict.account_id, business_chat_id=chat_id, clock=self._clock
+        )
+        return None
+
     async def on_dead_letter(
         self, session: AsyncSession, row: InboundUpdate, decision: RouteDecision
     ) -> None:
@@ -108,6 +140,8 @@ class BusinessPipeline:
         chat_id = chat_of(body).get("id")
         if not isinstance(chat_id, int) or isinstance(chat_id, bool):
             return
+        if await service.is_bot_chat(session, account_id=account_id, business_chat_id=chat_id):
+            return  # a recognised bot chat keeps no rows, failed or not
         if decision.kind == "deleted_business_messages":
             ids = body.get("message_ids")
             if isinstance(ids, list):

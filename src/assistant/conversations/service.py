@@ -560,6 +560,73 @@ async def resolve_ingest_failure(
             conversation.updated_at = clock.now()
 
 
+# ------------------------------------------------------------ bot chats
+async def is_bot_chat(session: AsyncSession, *, account_id: int, business_chat_id: int) -> bool:
+    """A chat already recognised as one with a third-party bot (FR-OBS-04):
+    nothing from it is stored, whoever writes and whatever its mode."""
+    result = await session.execute(
+        select(Contact.is_bot)
+        .join(Conversation, Conversation.contact_id == Contact.id)
+        .where(Conversation.account_id == account_id)
+        .where(Conversation.business_chat_id == business_chat_id)
+    )
+    return result.scalar_one_or_none() is True
+
+
+async def mark_bot_chat(
+    session: AsyncSession, *, account_id: int, business_chat_id: int, clock: Clock
+) -> int | None:
+    """A bot answered in this chat (§6.5 `ignored_bot_chat`).
+
+    A private `Chat` carries no `is_bot`, so the owner's own messages to a
+    bot are stored until the bot's first answer reveals it (M02 D37). Then
+    the contact is marked a bot, the conversation goes to Ignore, and what was
+    stored from it is purged. A chat we never stored stays unknown: no row is
+    created for it (RG-02). Returns the conversation id, or None."""
+    conversation = await _find_conversation(
+        session, account_id=account_id, business_chat_id=business_chat_id
+    )
+    if conversation is None:
+        return None
+    contact = await session.get(Contact, conversation.contact_id, with_for_update=True)
+    if contact is not None and contact.is_bot and conversation.mode == "ignore":
+        return conversation.id  # already recognised
+    # Imported here: privacy depends on this package's models, not the reverse.
+    from assistant.privacy.deletion import purge_conversation
+
+    report = await purge_conversation(
+        session,
+        account_id=account_id,
+        conversation_id=conversation.id,
+        business_chat_id=business_chat_id,
+        clock=clock,
+    )
+    if contact is not None:
+        contact.is_bot = True
+        contact.updated_at = clock.now()
+    conversation.mode = "ignore"
+    conversation.pending_ai_since = None
+    conversation.updated_at = clock.now()
+    session.add(
+        AuditLogEntry(
+            account_id=account_id,
+            at=clock.now(),
+            actor="system",
+            event="bot_chat",
+            subject_type="conversation",
+            subject_id=conversation.id,
+            details={"messages": report.messages, "payloads_cleared": report.payloads_cleared},
+        )
+    )
+    logger.info(
+        "bot_chat_recognised",
+        conversation_id=conversation.id,
+        purged=report.messages,
+        payloads_cleared=report.payloads_cleared,
+    )
+    return conversation.id
+
+
 # ------------------------------------------------------------ consent hook
 async def conversations_awaiting_ai(session: AsyncSession, account_id: int) -> list[int]:
     """Conversations with unprocessed content — empty unless `ai_managed`

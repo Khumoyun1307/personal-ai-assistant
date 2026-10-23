@@ -219,6 +219,7 @@ async def environment(
             Route.REFUSED: control.refused,
             Route.CONNECTION: registry.connection,
             Route.BUSINESS: pipeline.handle,
+            Route.IGNORED: pipeline.on_ignored,
         },
         preparers={Route.BUSINESS: registry.prepare},
         dead_letter_hooks={Route.BUSINESS: pipeline.on_dead_letter},

@@ -8,6 +8,7 @@ lookup and the sender are fakes. Covers the S02.2 test list
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from sqlalchemy import select, text
@@ -70,6 +71,103 @@ async def test_rg02_mirrored_bot_chats_are_ignored(
     assert await count(env, Contact) == 0
     assert await count(env, Conversation) == 0
     assert await count(env, Message) == 0
+
+
+# ------------------------------------------------------------ third-party bot chats
+BOT_CHAT = 7000000007
+
+
+def _bot_reply(**kwargs: Any) -> dict[str, Any]:
+    return business_message(
+        chat_id=BOT_CHAT,
+        from_id=BOT_CHAT,
+        sender_is_bot=True,
+        message_text="synthetic bot reply",
+        **kwargs,
+    )
+
+
+async def test_a_bot_answer_marks_the_chat_and_purges_what_was_stored(env: Env) -> None:
+    """FR-OBS-04: a private `Chat` has no `is_bot`, so the owner's first
+    messages to a third-party bot are stored like any chat. The bot's first
+    answer reveals it: the contact becomes a bot, the conversation goes to
+    Ignore, and everything stored from it is purged (§6.5)."""
+    await connect(env)
+    first = business_message(
+        chat_id=BOT_CHAT, from_id=OWNER, message_text="synthetic /start", username="synthbot"
+    )
+    await deliver(env, first)
+    assert len(await messages(env, BOT_CHAT)) == 1
+
+    reply = _bot_reply()
+    await deliver(env, reply)
+
+    row = await inbound(env, reply)
+    assert row.status == "ignored"
+    assert await payload_is_sql_null(env, reply)
+    assert await payload_is_sql_null(env, first)
+    assert await messages(env, BOT_CHAT) == []
+    bot = await contact(env, BOT_CHAT)
+    assert bot is not None
+    assert bot.is_bot is True
+    assert (bot.display_name, bot.username) == (None, None)
+    conv = await conversation(env, BOT_CHAT)
+    assert conv is not None
+    assert conv.mode == "ignore"
+    assert conv.pending_ai_since is None
+    async with env.factory() as session:
+        audits = (
+            (await session.execute(select(AuditLogEntry).where(AuditLogEntry.event == "bot_chat")))
+            .scalars()
+            .all()
+        )
+    assert len(audits) == 1
+
+
+async def test_later_messages_in_a_known_bot_chat_are_ignored(env: Env) -> None:
+    await connect(env)
+    await deliver(env, business_message(chat_id=BOT_CHAT, from_id=OWNER, message_text="a"))
+    await deliver(env, _bot_reply())
+    await _set_mode(env, "observe", BOT_CHAT)  # even if the mode is changed later
+
+    later = business_message(chat_id=BOT_CHAT, from_id=OWNER, message_text="synthetic b")
+    edit = business_message(chat_id=BOT_CHAT, from_id=OWNER, message_text="c", edit=True)
+    deletion = deleted_messages(chat_id=BOT_CHAT, message_ids=[1, 2])
+    for update in (later, edit, deletion):
+        await deliver(env, update)
+        assert (await inbound(env, update)).status == "ignored"
+        assert await payload_is_sql_null(env, update)
+    assert await messages(env, BOT_CHAT) == []
+    conv = await conversation(env, BOT_CHAT)
+    assert conv is not None
+    assert conv.last_owner_msg_at is not None  # only the first, pre-recognition message
+
+
+async def test_a_bot_answer_does_not_touch_other_chats(env: Env) -> None:
+    await connect(env)
+    await deliver(env, business_message(message_text="synthetic contact"))
+    await deliver(env, business_message(chat_id=BOT_CHAT, from_id=OWNER, message_text="a"))
+    await deliver(env, _bot_reply())
+
+    assert len(await messages(env, CONTACT)) == 1
+    person = await contact(env, CONTACT)
+    assert person is not None
+    assert person.is_bot is False
+    assert person.display_name == "Synthetic"
+
+
+async def test_a_bot_answer_on_a_stopped_or_foreign_connection_changes_nothing(env: Env) -> None:
+    await connect(env)
+    await deliver(env, business_message(chat_id=BOT_CHAT, from_id=OWNER, message_text="a"))
+    foreign = _bot_reply(connection_id="synthetic-unknown")
+    await deliver(env, foreign)
+
+    assert (await inbound(env, foreign)).status == "ignored"
+    assert await payload_is_sql_null(env, foreign)
+    assert len(await messages(env, BOT_CHAT)) == 1
+    bot = await contact(env, BOT_CHAT)
+    assert bot is not None
+    assert bot.is_bot is False
 
 
 # ------------------------------------------------------------ storage
