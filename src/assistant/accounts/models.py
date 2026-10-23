@@ -203,9 +203,14 @@ class ControlTurn(Base):
     #: True when the owner's message carries third-party text: it was
     #: forwarded (then `text` itself is the third party's), or it quotes or
     #: replies to a message from another chat (`quoted_text`). On an
-    #: assistant turn: the run that wrote it was tainted (it may restate such
-    #: text). A run that sees such a turn is tainted (§6 invariant 3b, §7.1).
+    #: assistant turn: the run that wrote it was tainted by its OWN inputs
+    #: (it may restate such text). A run that sees such a turn is tainted
+    #: (§6 invariant 3b, §7.1).
     third_party: Mapped[bool] = mapped_column(nullable=False, server_default=sql_text("false"))
+    #: An assistant reply written by a tainted run, for whatever reason (own
+    #: or inherited taint). Always shown to the model as untrusted; it taints
+    #: later runs only if `third_party` is set too, so taint decays (D56).
+    from_tainted_run: Mapped[bool] = mapped_column(nullable=False, server_default=sql_text("false"))
     #: The quoted or replied-to third-party text, so the agent understands
     #: what the owner refers to. CONTENT-BEARING.
     quoted_text: Mapped[str | None] = mapped_column(Text, nullable=True)

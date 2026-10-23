@@ -62,6 +62,8 @@ class ToolExecutor:
     on_taint: TaintRecorder = _no_taint_recorder
     #: Conversations and contacts the results drew on (for `control_turns.refs`).
     refs: ToolRefs = field(default_factory=ToolRefs)
+    #: A result in this run carried contact-authored text.
+    saw_untrusted: bool = False
     _done: dict[str, ToolResultItem] = field(default_factory=dict)
 
     @property
@@ -81,10 +83,14 @@ class ToolExecutor:
         latency_ms = int((self.clock.now() - started).total_seconds() * 1000)
         await self.record_step(call.name, digest, outcome.status, latency_ms)
         self.refs = self.refs | outcome.refs
-        if outcome.taints and not self.context.tainted:
-            self.context = replace(self.context, tainted=True)
-            await self.on_taint()
-            logger.info("agent_run_tainted", run_id=self.context.run_id, tool=call.name)
+        if outcome.taints:
+            # This run's OWN input carried third-party text (D56): its reply
+            # will taint later runs, even if the run was already tainted.
+            self.saw_untrusted = True
+            if not self.context.tainted:
+                self.context = replace(self.context, tainted=True)
+                await self.on_taint()
+                logger.info("agent_run_tainted", run_id=self.context.run_id, tool=call.name)
         result = ToolResultItem(
             call_id=call.call_id,
             output=json.dumps({"status": outcome.status, **outcome.data}, default=str),

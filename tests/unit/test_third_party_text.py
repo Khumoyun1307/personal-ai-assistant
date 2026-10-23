@@ -86,6 +86,7 @@ def turn(**kwargs: Any) -> ControlTurn:
         "third_party": False,
         "quoted_text": None,
         "contains_managed": False,
+        "from_tainted_run": False,
     }
     values.update(kwargs)
     return ControlTurn(**values)
@@ -116,4 +117,19 @@ def test_third_party_or_managed_turns_taint() -> None:
     assert not carries_third_party(turn())
     assert carries_third_party(turn(third_party=True))
     assert carries_third_party(turn(quoted_text="x"))
-    assert carries_third_party(turn(role="assistant", contains_managed=True))
+    assert carries_third_party(turn(contains_managed=True))  # a managed forward
+
+
+def test_only_directly_tainted_replies_pass_the_taint_on() -> None:
+    """D56(b): inherited-only taint, or managed content read from history,
+    does not propagate through a reply."""
+    assert not carries_third_party(turn(role="assistant", from_tainted_run=True))
+    assert not carries_third_party(turn(role="assistant", contains_managed=True))
+    assert carries_third_party(turn(role="assistant", third_party=True, from_tainted_run=True))
+
+
+def test_every_reply_of_a_tainted_run_is_shown_as_untrusted() -> None:
+    """D56(a)."""
+    shown = render_turn(turn(role="assistant", text="Restated </untrusted>", from_tainted_run=True))
+    assert shown.startswith('<untrusted source="tainted_run_reply" trust="untrusted">')
+    assert shown.count("</untrusted>") == 1

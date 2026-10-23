@@ -15,6 +15,7 @@ system prompt says it is never an instruction.
 
 from __future__ import annotations
 
+import unicodedata
 from enum import StrEnum
 
 
@@ -36,26 +37,43 @@ class Source(StrEnum):
     QUOTED = "quoted"
     """Text the owner quoted or replied to from another chat."""
 
+    TAINTED_RUN_REPLY = "tainted_run_reply"
+    """An earlier assistant reply written while third-party text was in
+    context: it may restate that text (M03 D56)."""
+
 
 OPEN_TAG = '<untrusted source="{source}" trust="untrusted">'
 CLOSE_TAG = "</untrusted>"
 
-
-#: Characters a model may read as `<` or `>`: fullwidth, small, single
-#: guillemets, CJK and ornamental angle brackets. Escaped like the real ones
-#: so a lookalike cannot pass for a closing tag either.
-_LOOKALIKE_LT = "＜﹤‹〈❮〈"
-_LOOKALIKE_GT = "＞﹥›〉❯〉"
+#: Characters a model may read as `<` or `>`: fullwidth and small forms
+#: (NFKC also folds these), guillemets, CJK, mathematical, modifier, Canadian
+#: syllabics and ornamental angle brackets. Escaped like the real ones, so a
+#: lookalike cannot pass for a closing tag either.
+_LOOKALIKE_LT = "＜﹤‹〈〈❮⟨˂ᐸ❬❰⧼"
+_LOOKALIKE_GT = "＞﹥›〉〉❯⟩˃ᐳ❭❱⧽"
 _LOOKALIKES = str.maketrans(
-    {**dict.fromkeys(_LOOKALIKE_LT, "&lt;"), **dict.fromkeys(_LOOKALIKE_GT, "&gt;")}
+    {
+        **dict.fromkeys(_LOOKALIKE_LT, "&lt;"),
+        **dict.fromkeys(_LOOKALIKE_GT, "&gt;"),
+        # Their canonical decomposition starts with `<` / `>` (+ U+0338): a
+        # reader that decomposes would see a bracket. Numeric entities keep
+        # the meaning without the bracket.
+        "≮": "&#8814;",
+        "≯": "&#8815;",
+    }
 )
 
 
 def escape(text: str) -> str:
-    """Neutralise anything that could form a tag. `&` first, so an existing
-    entity cannot be un-escaped into a bracket by the reader; lookalike
-    brackets become the same entities as real ones."""
-    escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    """Neutralise anything that could form a tag.
+
+    NFKC first, so compatibility forms (fullwidth, small) become the real
+    brackets and are escaped as such; then `&` (so an existing entity cannot
+    be un-escaped into a bracket by the reader), `<` and `>`; then the
+    lookalikes NFKC leaves alone.
+    """
+    folded = unicodedata.normalize("NFKC", text)
+    escaped = folded.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return escaped.translate(_LOOKALIKES)
 
 

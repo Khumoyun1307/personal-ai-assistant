@@ -31,6 +31,9 @@ class OwnerRequestContext:
     items: tuple[TextItem, ...]
     #: The context already carries third-party text or managed content.
     tainted: bool = False
+    #: ...and it is in the current turn itself (not only inherited from
+    #: history): the reply will taint later runs (D56).
+    directly_tainted: bool = False
 
 
 def build_owner_request(
@@ -71,8 +74,11 @@ def build_owner_request(
             provenance=Provenance.MANAGED if turn.contains_managed else Provenance.OWNER_CONTROL,
         )
     items.append(current)
-    tainted = any(carries_third_party(t) for t in [*history, turn])
-    return OwnerRequestContext(instructions=instructions, items=tuple(items), tainted=tainted)
+    direct = carries_third_party(turn)
+    tainted = direct or any(carries_third_party(t) for t in history)
+    return OwnerRequestContext(
+        instructions=instructions, items=tuple(items), tainted=tainted, directly_tainted=direct
+    )
 
 
 WITHHELD_FORWARD = (
@@ -93,18 +99,27 @@ def withheld_turn(turn: ControlTurn) -> str:
 
 
 def carries_third_party(turn: ControlTurn) -> bool:
-    """Whether a turn brings third-party text or managed content into the
-    context: such a run starts tainted (§7.1, M03 D45). An assistant turn
-    carries `third_party` when the run that wrote it was tainted."""
+    """Whether a turn taints a run that includes it (§7.1, M03 D45, D56).
+
+    An owner turn: it carries forwarded/quoted text or managed content. An
+    assistant reply: only when the run that wrote it was tainted by its OWN
+    inputs (`third_party`); a reply tainted only by inherited history does
+    not pass the taint on, so taint decays once its source leaves the window.
+    """
+    if turn.role != "owner":
+        return bool(turn.third_party)
     return bool(turn.third_party or turn.quoted_text is not None or turn.contains_managed)
 
 
 def render_turn(turn: ControlTurn) -> str:
     """A control turn as the model sees it. Third-party text is wrapped as
     untrusted: a forwarded message entirely, a quote next to the owner's own
-    words (§7.3)."""
+    words (§7.3), and every reply written by a tainted run (it may restate
+    such text; D56(a))."""
     text = turn.text or ""
     if turn.role != "owner":
+        if turn.from_tainted_run or turn.third_party:
+            return wrap(text, Source.TAINTED_RUN_REPLY) or ""
         return text
     if turn.quoted_text is not None:
         quote = wrap(turn.quoted_text, Source.QUOTED)

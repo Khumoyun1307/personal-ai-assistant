@@ -206,6 +206,35 @@ def test_0008_third_party_turns_and_tool_confirmations_reverse(scratch_url: str)
     run_alembic(scratch_url, "head")
 
 
+def test_0009_tainted_reply_flag_and_applying_state_reverse(scratch_url: str) -> None:
+    """Review round 2: `control_turns.from_tainted_run` and the `applying`
+    confirmation state come and go symmetrically."""
+    run_alembic(scratch_url, "head")
+    assert "from_tainted_run" in _columns(scratch_url, "control_turns")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account = conn.execute(
+            "INSERT INTO app.accounts (telegram_user_id) VALUES (4646) RETURNING id"
+        ).fetchone()
+        assert account is not None
+        conn.execute(
+            "INSERT INTO app.tool_confirmations (account_id, tool_call_id, tool_name, status) "
+            "VALUES (%s, 'z1', 'synthetic', 'applying')",
+            (account[0],),
+        )
+        conn.execute("DELETE FROM app.tool_confirmations WHERE tool_call_id = 'z1'")
+    run_alembic(scratch_url, "0008", down=True)
+    assert "from_tainted_run" not in _columns(scratch_url, "control_turns")
+    with (
+        psycopg.connect(libpq(scratch_url), autocommit=True) as conn,
+        pytest.raises(psycopg.errors.CheckViolation),
+    ):
+        conn.execute(
+            "INSERT INTO app.tool_confirmations (account_id, tool_call_id, tool_name, status) "
+            "SELECT id, 'z2', 'synthetic', 'applying' FROM app.accounts LIMIT 1"
+        )
+    run_alembic(scratch_url, "head")
+
+
 def test_identity_primary_keys_reject_a_client_supplied_id(scratch_url: str) -> None:
     """`GENERATED ALWAYS` means a client cannot collide with the generator."""
     run_alembic(scratch_url, "head")

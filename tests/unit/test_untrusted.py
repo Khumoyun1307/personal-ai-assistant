@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -54,6 +56,28 @@ def test_lookalike_brackets_are_escaped_too(text: str) -> None:
     inner = wrapped.removeprefix('<untrusted source="contact" trust="untrusted">')
     inner = inner.removesuffix(CLOSE_TAG)
     assert not set(inner) & set(LOOKALIKES + "<>")
+
+
+#: Review item 3: more brackets a reader may take for < or >.
+WIDER = "⟨⟩˂˃ᐸᐳ❬❭❰❱⧼⧽≮≯"
+
+
+@given(
+    st.text(
+        alphabet=st.sampled_from(list(WIDER + LOOKALIKES + "</untrusted>abc̸")),
+        max_size=60,
+    )
+)
+def test_no_bracket_survives_even_after_the_reader_normalizes(text: str) -> None:
+    wrapped = wrap(text, Source.CONTACT)
+    assert wrapped is not None
+    inner = wrapped.removeprefix('<untrusted source="contact" trust="untrusted">')
+    inner = inner.removesuffix(CLOSE_TAG)
+    for form in ("NFC", "NFD", "NFKC", "NFKD"):
+        folded = unicodedata.normalize(form, inner)
+        assert "<" not in folded
+        assert ">" not in folded
+    assert not set(inner) & set(WIDER + LOOKALIKES)
 
 
 def test_a_fullwidth_closing_tag_is_neutralised() -> None:

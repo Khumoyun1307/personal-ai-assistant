@@ -147,6 +147,10 @@ class _RunState:
     used_managed: bool = False
     #: Third-party text is in the context (§7.1); persisted on `agent_runs`.
     tainted: bool = False
+    #: ...through this run's OWN inputs (the current turn or a tool result),
+    #: not only inherited from history: only then does the reply pass the
+    #: taint on to later runs (D56).
+    directly_tainted: bool = False
     #: Conversations/contacts the tool results drew on; written to the reply turn.
     refs: ToolRefs = field(default_factory=ToolRefs)
     #: When the owner's message arrived, and how long until the typing indicator.
@@ -298,6 +302,7 @@ class OwnerRequestRuntime:
                 instructions=context.instructions,
                 used_managed=any(item.provenance is Provenance.MANAGED for item in context.items),
                 tainted=context.tainted,
+                directly_tainted=context.directly_tainted,
                 received_at=turn.created_at,
             )
             return _Started(
@@ -376,6 +381,7 @@ class OwnerRequestRuntime:
                     results = await executor.execute_all(response.tool_calls)
                     state.items.extend(results)
                     state.refs = executor.refs
+                    state.directly_tainted = state.directly_tainted or executor.saw_untrusted
                     if any(result.provenance is Provenance.MANAGED for result in results):
                         state.used_managed = True
                 case StopReason.COMPLETED:
@@ -469,10 +475,12 @@ class OwnerRequestRuntime:
                     # content: excluded later if `ai_managed` is revoked.
                     contains_managed=state.used_managed,
                     # A reply from a tainted run may restate third-party text
-                    # (an injection paraphrased by the model): it taints later
-                    # runs that include it, even after the original turn has
-                    # left the history window (§7.1).
-                    third_party=state.tainted,
+                    # (an injection paraphrased by the model): it is always
+                    # shown as untrusted later, and it taints later runs only
+                    # when this run's own inputs carried such text, so taint
+                    # decays once its source leaves the window (§7.1, D56).
+                    third_party=state.directly_tainted,
+                    from_tainted_run=state.tainted,
                     run_id=state.run_id,
                     # Which conversations/contacts the reply drew on, so a
                     # deletion of one of them can find this turn (§10.4).

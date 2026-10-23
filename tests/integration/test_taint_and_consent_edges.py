@@ -12,7 +12,7 @@ from assistant.accounts import service
 from assistant.accounts.models import ControlTurn
 from assistant.agent.models import AgentRun
 from assistant.llm.port import LLMRequest, ToolResultItem
-from assistant.privacy.deletion import delete_managed_data
+from assistant.privacy.deletion import delete_managed_data, purge_conversation
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response, tool_response
 from tests.integration.agent_env import args, ask, note_rows, one_id, request_texts, runtime
@@ -50,41 +50,63 @@ async def latest_run(env: Env) -> AgentRun:
 
 
 # ------------------------------------------------------------ D
-async def test_a_tainted_runs_reply_keeps_later_runs_tainted(
+HIDDEN_FORWARD = {"type": "hidden_user", "date": T_BASE, "sender_user_name": "Nobody"}
+
+
+async def replies(env: Env) -> list[ControlTurn]:
+    async with env.factory() as session:
+        rows = await session.execute(
+            select(ControlTurn).where(ControlTurn.role == "assistant").order_by(ControlTurn.id)
+        )
+        return list(rows.scalars().all())
+
+
+async def note_run(env: Env, question: str, reply: str = "ok") -> tuple[FakeLLM, AgentRun]:
+    turn = await ask(env, question)
+    fake = FakeLLM(tool_response(("c1", "test_set_note", args(note="pwned"))), text_response(reply))
+    await runtime(env, fake, FakeChannel()).run(turn)
+    return fake, await latest_run(env)
+
+
+async def test_a_directly_tainted_runs_reply_still_taints_the_next_run(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D: the reply of a tainted run carries the taint, so a later run is
-    tainted even when the forwarded turn has left the history window."""
+    """D56(b): taint from a run's OWN input propagates through its reply."""
     await connect(env)
-    first = await ask(
-        env,
-        "Synthetic forwarded instruction",
-        forward_origin={"type": "hidden_user", "date": T_BASE, "sender_user_name": "Nobody"},
-    )
+    first = await ask(env, "Synthetic forwarded instruction", forward_origin=HIDDEN_FORWARD)
     await runtime(env, FakeLLM(text_response("I read it.")), FakeChannel()).run(first)
-    async with env.factory() as session:
-        reply = (
-            (
-                await session.execute(
-                    select(ControlTurn)
-                    .where(ControlTurn.role == "assistant")
-                    .order_by(ControlTurn.id)
-                )
-            )
-            .scalars()
-            .first()
-        )
-    assert reply is not None
-    assert reply.third_party is True
+    [reply] = await replies(env)
+    assert (reply.third_party, reply.from_tainted_run) == (True, True)
 
-    # Only the reply is still in the window; the forwarded turn is not.
-    monkeypatch.setattr("assistant.agent.runtime.OWNER_HISTORY_TURNS", 1)
-    second = await ask(env, "Now note it")
-    fake = FakeLLM(tool_response(("c1", "test_set_note", args(note="pwned"))), text_response("ok"))
-    await runtime(env, fake, FakeChannel()).run(second)
-    assert (await latest_run(env)).tainted is True
+    monkeypatch.setattr("assistant.agent.runtime.OWNER_HISTORY_TURNS", 1)  # only the reply
+    fake, run = await note_run(env, "Now note it")
+    assert run.tainted is True
     assert results(fake.requests[1])[0]["status"] == "awaiting_confirmation"
     assert await note_rows(env) == 0
+
+
+async def test_inherited_taint_decays_once_the_source_leaves_the_window(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D56: a reply tainted only by history does not taint further runs; it
+    is still shown to the model as untrusted (a)."""
+    await connect(env)
+    first = await ask(env, "Synthetic forwarded instruction", forward_origin=HIDDEN_FORWARD)
+    await runtime(env, FakeLLM(text_response("I read it.")), FakeChannel()).run(first)
+    monkeypatch.setattr("assistant.agent.runtime.OWNER_HISTORY_TURNS", 1)
+
+    second = await ask(env, "Tell me more")
+    await runtime(env, FakeLLM(text_response("SYNTH-INHERITED reply")), FakeChannel()).run(second)
+    assert (await latest_run(env)).tainted is True  # inherited from the first reply
+    inherited = (await replies(env))[-1]
+    assert (inherited.third_party, inherited.from_tainted_run) == (False, True)
+
+    fake, run = await note_run(env, "Note it now")
+    assert run.tainted is False  # the chain decayed
+    assert results(fake.requests[1])[0]["status"] == "ok"
+    assert await note_rows(env) == 1
+    shown = request_texts(fake.requests[0])
+    assert '<untrusted source="tainted_run_reply" trust="untrusted">SYNTH-INHERITED reply' in shown
 
 
 # ------------------------------------------------------------ I
@@ -104,6 +126,13 @@ async def test_managed_tools_need_a_consent_naming_the_routes_processor(env: Env
             processors=["SomeOtherProvider"],
             clock=env.clock,
         )
+        await service.record_control_turn(
+            session,
+            account_id=account[0].id,
+            role="assistant",
+            text="CANARY-SYNTH-I1 an earlier answer built from managed chats",
+            contains_managed=True,
+        )
     turn = await ask(env, "What did they say?")
     fake = FakeLLM(text_response("I cannot read your chats."))
     await runtime(env, fake, FakeChannel()).run(turn)
@@ -111,6 +140,9 @@ async def test_managed_tools_need_a_consent_naming_the_routes_processor(env: Env
     assert offered.isdisjoint(
         {"search_messages", "resolve_contact", "get_conversation", "list_conversations"}
     )
+    # Managed history is excluded too, not only the tools.
+    assert "CANARY-SYNTH-I1" not in request_texts(fake.requests[0])
+    assert not fake.requests[0].contains_managed()
 
 
 # ------------------------------------------------------------ O
@@ -183,6 +215,41 @@ async def test_a_forward_from_an_unknown_sender_is_not_managed(env: Env) -> None
         turn = await session.get(ControlTurn, turn_id)
     assert turn is not None
     assert (turn.third_party, turn.contains_managed) == (True, False)
+
+
+async def test_purging_the_chat_redacts_a_managed_forward_from_its_contact(env: Env) -> None:
+    """Review item 4: a managed forward records which conversation/contact it
+    came from (`refs`), so purging that chat redacts it."""
+    await connect(env)
+    await deliver(env, business_message(message_text="Synthetic chat line"))
+    turn_id = await ask(env, f"{CANARY} forwarded line", **FORWARD_FROM_CONTACT)
+    async with env.factory() as session:
+        conversation_id, business_chat_id, contact_id = (
+            await session.execute(
+                text("SELECT id, business_chat_id, contact_id FROM app.conversations")
+            )
+        ).one()
+        turn = await session.get(ControlTurn, turn_id)
+    assert turn is not None
+    assert turn.refs == {"conversation_ids": [conversation_id], "contact_ids": [contact_id]}
+    account_id = await one_id(
+        env, "SELECT id FROM app.accounts WHERE telegram_user_id = :o", o=OWNER
+    )
+    async with env.factory() as session, session.begin():
+        await purge_conversation(
+            session,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            business_chat_id=business_chat_id,
+            clock=env.clock,
+        )
+    async with env.factory() as session:
+        value = (
+            await session.execute(
+                text("SELECT text FROM app.control_turns WHERE id = :i"), {"i": turn_id}
+            )
+        ).scalar_one()
+    assert value is None
 
 
 async def test_managed_data_deletion_clears_managed_forwards(env: Env) -> None:

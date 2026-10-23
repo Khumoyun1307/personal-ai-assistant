@@ -96,7 +96,15 @@ class AgentRunStep(Base):
     created_at: Mapped[CreatedAt]
 
 
-CONFIRMATION_STATUSES = ("pending", "confirmed", "applied", "failed", "rejected", "expired")
+CONFIRMATION_STATUSES = (
+    "pending",
+    "confirmed",
+    "applying",
+    "applied",
+    "failed",
+    "rejected",
+    "expired",
+)
 
 
 class ToolConfirmation(Base):

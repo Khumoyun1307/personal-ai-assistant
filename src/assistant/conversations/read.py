@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import ColumnElement, func, select, tuple_
+from sqlalchemy import ColumnElement, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
@@ -328,45 +328,90 @@ async def contact_directory(session: AsyncSession, account_id: int) -> list[Dire
     return entries
 
 
-async def is_managed_origin(
+@dataclass(frozen=True, slots=True)
+class ManagedOrigin:
+    """Which of the account's conversations and contacts a forwarded or
+    quoted text came from. Empty = not managed content."""
+
+    conversation_ids: tuple[int, ...] = ()
+    contact_ids: tuple[int, ...] = ()
+
+    @property
+    def managed(self) -> bool:
+        return bool(self.conversation_ids or self.contact_ids)
+
+    def as_refs(self) -> dict[str, list[int]]:
+        """The `control_turns.refs` shape, so deletion can find the turn."""
+        return {
+            "conversation_ids": sorted(self.conversation_ids),
+            "contact_ids": sorted(self.contact_ids),
+        }
+
+
+async def managed_origin(
     session: AsyncSession,
     account_id: int,
     *,
     user_ids: Sequence[int] = (),
     chat_ids: Sequence[int] = (),
     names: Sequence[str] = (),
-) -> bool:
-    """Whether forwarded or quoted text came from one of the account's managed
-    chats: its sender is a known contact, its chat a known conversation, or a
-    hidden sender's name equals a contact's name (§6 invariant 9). Unknown
-    origins are not managed: there is nothing stored to match them with."""
+) -> ManagedOrigin:
+    """The managed chats forwarded or quoted text came from: its sender is a
+    known contact, its chat a known conversation, or a hidden sender's name
+    equals a contact's name (§6 invariant 9). Unknown origins are not managed:
+    there is nothing stored to match them with."""
     ids = list({*user_ids, *chat_ids})
+    contacts: set[int] = set()
     if ids:
-        by_contact = await session.execute(
-            select(Contact.id)
-            .where(Contact.account_id == account_id)
-            .where(Contact.telegram_user_id.in_(ids))
-            .limit(1)
+        contacts |= set(
+            (
+                await session.execute(
+                    select(Contact.id)
+                    .where(Contact.account_id == account_id)
+                    .where(Contact.telegram_user_id.in_(ids))
+                )
+            ).scalars()
         )
-        if by_contact.first() is not None:
-            return True
-        by_chat = await session.execute(
-            select(Conversation.id)
-            .where(Conversation.account_id == account_id)
-            .where(Conversation.business_chat_id.in_(ids))
-            .limit(1)
-        )
-        if by_chat.first() is not None:
-            return True
     wanted = {normalize(name) for name in names if normalize(name)}
     if wanted:
         known = await session.execute(
-            select(Contact.display_name)
+            select(Contact.id, Contact.display_name)
             .where(Contact.account_id == account_id)
             .where(Contact.display_name.is_not(None))
         )
-        return any(normalize(str(value)) in wanted for (value,) in known.all())
-    return False
+        contacts |= {
+            int(contact_id) for contact_id, value in known.all() if normalize(str(value)) in wanted
+        }
+    conditions = []
+    if ids:
+        conditions.append(Conversation.business_chat_id.in_(ids))
+    if contacts:
+        conditions.append(Conversation.contact_id.in_(contacts))
+    conversations: set[int] = set()
+    if conditions:
+        conversations = set(
+            (
+                await session.execute(
+                    select(Conversation.id)
+                    .where(Conversation.account_id == account_id)
+                    .where(or_(*conditions))
+                )
+            ).scalars()
+        )
+        contacts |= (
+            set(
+                (
+                    await session.execute(
+                        select(Conversation.contact_id)
+                        .where(Conversation.account_id == account_id)
+                        .where(Conversation.id.in_(conversations))
+                    )
+                ).scalars()
+            )
+            if conversations
+            else set()
+        )
+    return ManagedOrigin(tuple(sorted(conversations)), tuple(sorted(contacts)))
 
 
 # ------------------------------------------------------------ name matching

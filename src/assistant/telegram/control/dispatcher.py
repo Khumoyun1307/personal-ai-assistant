@@ -146,6 +146,17 @@ class ControlDispatcher:
         # SAME transaction: a crash between the two can lose neither, and a
         # rollback leaves neither (M00 spike E1). One account's turns run one
         # at a time, in order (lock `acct:{id}:control`).
+        origin = (
+            await read.managed_origin(
+                session,
+                account.id,
+                user_ids=tuple(message.origin_user_ids),
+                chat_ids=tuple(message.origin_chat_ids),
+                names=tuple(message.origin_names),
+            )
+            if message.third_party
+            else read.ManagedOrigin()
+        )
         turn = await service.record_control_turn(
             session,
             account_id=account.id,
@@ -156,16 +167,11 @@ class ControlDispatcher:
             third_party=message.third_party,
             quoted_text=message.quoted_text,
             # Forwarded/quoted text from one of the owner's managed chats is
-            # managed content: it needs `ai_managed` to reach a model and is
-            # cleared by managed-data deletion (§6 invariant 9, M03 D53).
-            contains_managed=message.third_party
-            and await read.is_managed_origin(
-                session,
-                account.id,
-                user_ids=tuple(message.origin_user_ids),
-                chat_ids=tuple(message.origin_chat_ids),
-                names=tuple(message.origin_names),
-            ),
+            # managed content: it needs `ai_managed` to reach a model, and is
+            # cleared by managed-data deletion and by purging that chat, which
+            # finds it through `refs` (§6 invariant 9, M03 D53).
+            contains_managed=origin.managed,
+            refs=origin.as_refs() if origin.managed else None,
         )
         if self._scheduler is None:
             logger.warning("owner_turn_not_queued", account_id=account.id, turn_id=turn.id)
