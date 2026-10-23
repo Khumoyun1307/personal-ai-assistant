@@ -27,8 +27,10 @@ from assistant.memory.search import (
 )
 
 
-def test_version_two_is_the_ascii_canonical_form() -> None:
-    assert NORMALIZER_VERSION == 2
+def test_version_three_is_the_idempotent_ascii_canonical_form() -> None:
+    """v2 was the ASCII form; v3 composes again after the stray-dot drop and
+    folds to a fixed point (S03.1 review 3 item 4), forcing a reindex."""
+    assert NORMALIZER_VERSION == 3
 
 
 # ------------------------------------------------------------ apostrophes
@@ -148,7 +150,19 @@ _ALPHABET = st.sampled_from(
 )
 
 
-@given(st.text(alphabet=_ALPHABET, max_size=40))
+#: The idempotence alphabet adds what composes or decomposes: combining
+#: marks, the dotted capital I and precomposed letters with accents.
+_COMBINING_ALPHABET = st.sampled_from(
+    list("abcdefghijklmnopqrstuvwxyzOGŞÇÑöğşçñōŏóǵ0123456789 .")
+    + list("абвгдеёжзийклмнопрстуфхцчшщъыьэюяўқғҳЎҚҒҲЕ")
+    + list("ʻʼ‘’'`´ʹʽ′")
+    + list("İıÍíÖŌŎÓĞǴżėǰ")
+    + ["\u0300", "\u0301", "\u0302", "\u0303", "\u0304", "\u0306", "\u0307", "\u0308"]
+    + ["\u030c", "\u0327", "\u0328", "\u0338", "\u034f", "\u0653", "\u3099"]
+)
+
+
+@given(st.text(alphabet=_COMBINING_ALPHABET, max_size=40))
 def test_normalize_is_idempotent(text: str) -> None:
     once = normalize(text)
     assert normalize(once) == once
@@ -281,6 +295,14 @@ def test_apostrophe_lookalike_modifier_letters_are_dropped(variant: str) -> None
 def test_dotted_capital_i_casefolds_without_a_stray_combining_dot() -> None:
     assert normalize("İstanbul") == "istanbul"
     assert normalize("İ").isascii()
+
+
+@pytest.mark.parametrize("text", ["İ\u0301", "ў\u0308", "ö\u0301", "o\u0308\u0301", "İ\u0308"])
+def test_composing_after_the_folds_is_idempotent(text: str) -> None:
+    """Review 3 item 4: a mark left after the stray-dot drop or a fold composes
+    on the next pass; normalize must already return that fixed point."""
+    once = normalize(text)
+    assert normalize(once) == once
 
 
 @pytest.mark.parametrize(("decomposed", "composed"), [("ż", "ż"), ("ė", "ė")])

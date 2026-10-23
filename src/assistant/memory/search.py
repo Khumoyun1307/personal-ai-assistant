@@ -35,7 +35,7 @@ import unicodedata
 from collections.abc import Sequence
 from typing import Literal
 
-NORMALIZER_VERSION = 2
+NORMALIZER_VERSION = 3
 
 #: Every apostrophe-like character Telegram clients and keyboards produce
 #: (TF §8). Removed before NFKC as well as after: NFKC turns the acute accent
@@ -141,13 +141,35 @@ def _transliterate(text: str) -> str:
     return "".join(out)
 
 
-def normalize(text: str) -> str:
-    """The canonical search form of `text`. Pure, deterministic, versioned."""
+#: More than enough: each pass that changes anything removes a non-ASCII
+#: character or composes two into one.
+_MAX_PASSES = 4
+
+
+def _fold(text: str) -> str:
     folded = _drop_modifiers(text.translate(_DROP_APOSTROPHES))
     folded = unicodedata.normalize("NFKC", folded).casefold()
     folded = _drop_modifiers(folded.translate(_DROP_APOSTROPHES)).replace(_STRAY_DOT, "i")
+    # Dropping the stray dot can leave a mark that now composes with the
+    # `i` (`İ` + U+0301 → í): compose again before the letter folds see it.
+    folded = unicodedata.normalize("NFC", folded)
     folded = _transliterate(folded).translate(_LATIN_FOLDS)
     return _WHITESPACE.sub(" ", folded).strip()
+
+
+def normalize(text: str) -> str:
+    """The canonical search form of `text`. Pure, deterministic, versioned.
+
+    Idempotent: a fold can expose a new composition (`ў` + U+0308 → `o` +
+    U+0308 → `ö` → `o`), so folding repeats until nothing changes (v3).
+    """
+    folded = _fold(text)
+    for _ in range(_MAX_PASSES):
+        again = _fold(folded)
+        if again == folded:
+            break
+        folded = again
+    return folded
 
 
 # ------------------------------------------------------------------- queries
