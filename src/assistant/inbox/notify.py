@@ -40,6 +40,9 @@ class AlertKind(StrEnum):
     CONNECTION_CHANGE = "connection_change"
     #: The backup sidecar has not recorded a success for more than a day (§17).
     BACKUP_STALE = "backup_stale"
+    #: Backups are produced but have not reached off-site storage for more
+    #: than a day (§15.4); only checked while an off-site remote is configured.
+    BACKUP_UPLOAD_STALE = "backup_upload_stale"
     #: The database was restored from a backup and post-restore ran (§15.6).
     RESTORE_NOTICE = "restore_notice"
 
@@ -59,6 +62,11 @@ ALERT_TEXT: dict[AlertKind, str] = {
     AlertKind.BACKUP_STALE: (
         "⚠️ No successful database backup for {hours} hours. Check the backup container "
         "(runbooks/deploy.md) — until it works, a server loss would lose recent data."
+    ),
+    AlertKind.BACKUP_UPLOAD_STALE: (
+        "⚠️ The off-site copy of the database backups has not been updated for {hours} "
+        "hours. Backups are still kept on the server, but a server loss would lose them; "
+        "check the backup container (runbooks/restore.md)."
     ),
     AlertKind.RESTORE_NOTICE: (
         "♻️ The database was restored from a backup taken {backup_taken_at}. Everything "

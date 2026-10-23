@@ -154,6 +154,7 @@ async def running_process(
                         else settings.heartbeat_url.get_secret_value()
                     ),
                     backup_status_path=settings.backup_status_path,
+                    backup_upload_required=settings.backup_remote is not None,
                 ),
             )
         async with jobs_app.open_async():
