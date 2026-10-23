@@ -564,7 +564,7 @@ Fixes from the M02 review plus the Oracle/B2/two-bot setup. Owned by the lead; r
 | RG-08 | Managed content never reaches FakeLLM/the LLM without consent (including via tool results and control-turn history) (invariant 9) | S02.2 (tool round trip scripted in S02.6; extended in S03.1) |
 | RG-09 | No cross-conversation content in draft prompts (invariant 4) | S04.2 |
 | RG-10 | Logs content-free | S00.1 (extended in S02.4; library loggers and job failures in S02.6) |
-| RG-11 | A tainted owner run changes no state without an owner tap (invariant 3b) | S03.1 (extended in S03.3, S04.4) |
+| RG-11 | A tainted owner run changes no state without an owner tap (invariant 3b) — `test_conversation_tools.py::test_rg11_an_injected_get_conversation_result_holds_a_configure_call`, `::test_rg11_an_injected_search_messages_result_holds_a_configure_call`, `::test_rg11_taint_is_sequential_within_one_batch`, `::test_rg11_a_forwarded_owner_message_taints_the_run` | S03.1 (extended in S03.3, S04.4) |
 | RG-12 | An edit or delete targeting an owner or contact message is refused by both policy and gateway (invariant 14) | S04.4 |
 | RG-13 | Never claims to be human (invariant 13) | S06.2 |
 | RG-14 | Disclosure present when required (first in session and after 24 h idle) (invariant 13) | S06.2 |
