@@ -6,9 +6,12 @@ Two writers and one reader:
   ago. Messages dated inside an outage longer than Telegram's 24 h retention
   may be gone for good (`possible`); a shorter one only delayed them.
 - `record_ingest_failure` lives in `service.py` (a dead letter is `definite`).
-- `caveat` — the one-line warning `/status` and summaries show while a
-  conversation is paused by an ingest error or a possible/definite gap is
-  unresolved (FR-OBS-05, §6 invariant 11: never report a gap as coverage).
+- `caveat` — the one-line warning shown while a conversation is paused by an
+  ingest error or a possible/definite gap is unresolved (FR-OBS-05, §6
+  invariant 11: never report a gap as coverage). `summarize` (search answers)
+  counts every unresolved gap; `/status` (`observability.status`) counts only
+  those `status_gap_filter` keeps: recent outage/restore gaps, and dead-letter
+  gaps of any age.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
@@ -30,6 +33,25 @@ TELEGRAM_UPDATE_RETENTION = timedelta(hours=24)
 OUTAGE_MARGIN = timedelta(minutes=10)
 #: Shorter outages are not worth a row: the watchdog already alerted.
 OUTAGE_MIN = timedelta(minutes=3)
+
+#: `/status` warns about an outage or restore gap only while its risk window
+#: ended less than this long ago (owner, 2026-10-23, M02 D57): after a week
+#: the warning is noise on every `/status`. Unresolved dead-letter gaps and
+#: ingest pauses show until resolved, whatever their age. Answers about a date
+#: range (summaries, catch-up) use date-range overlap instead, not this.
+STATUS_GAP_WINDOW = timedelta(days=7)
+
+
+def status_gap_filter(now: datetime) -> ColumnElement[bool]:
+    """The unresolved `possible`/`definite` gaps `/status` reports at `now`."""
+    return and_(
+        CoverageGap.resolved_at.is_(None),
+        CoverageGap.certainty.in_(["possible", "definite"]),
+        or_(
+            CoverageGap.kind == "dead_letter",
+            CoverageGap.at_risk_to >= now - STATUS_GAP_WINDOW,
+        ),
+    )
 
 
 async def record_outage(

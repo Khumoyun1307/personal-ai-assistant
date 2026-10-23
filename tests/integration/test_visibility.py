@@ -15,6 +15,7 @@ from sqlalchemy import select, text
 from assistant.accounts.models import Account
 from assistant.agent.tools.registry import ToolContext, ToolServices
 from assistant.agent.tools.status import GetStatusArgs, get_status
+from assistant.conversations.models import CoverageGap
 from assistant.observability.status import build_status
 from assistant.telegram.control.handlers import IncomingMessage
 from tests.integration.business_env import (
@@ -99,6 +100,61 @@ async def test_status_reports_gaps_and_the_caveat(env: Env) -> None:
     assert "1 definite and 0 possible coverage gap(s)" in shown
     assert "could not be processed and are paused" in shown
     assert "failed: 1" in shown
+
+
+async def _seed_outage_gap(env: Env, *, ended_days_ago: float) -> None:
+    """A `possible` outage gap whose risk window ended `ended_days_ago` ago."""
+    account = await _account(env)
+    ended = env.clock.now() - timedelta(days=ended_days_ago)
+    async with env.factory() as session, session.begin():
+        session.add(
+            CoverageGap(
+                account_id=account.id,
+                conversation_id=None,
+                kind="outage",
+                certainty="possible",
+                at_risk_from=ended - timedelta(hours=2),
+                at_risk_to=ended,
+                created_at=env.clock.now(),
+            )
+        )
+
+
+async def test_status_no_longer_warns_about_an_outage_gap_that_ended_8_days_ago(
+    env: Env,
+) -> None:
+    """D57: outage/restore gaps stop showing in /status 7 days after their
+    risk window ended; summaries keep using them by date range."""
+    await connect(env)
+    await _seed_outage_gap(env, ended_days_ago=8)
+    shown = await _status(env)
+    assert "Latest gap" not in shown
+    assert "coverage gap(s)" not in shown
+    report = await _report(env)
+    assert report.coverage.unresolved_possible == 0
+    assert report.coverage_caveat is None
+
+
+async def test_status_still_warns_about_an_outage_gap_that_ended_6_days_ago(env: Env) -> None:
+    await connect(env)
+    await _seed_outage_gap(env, ended_days_ago=6)
+    shown = await _status(env)
+    assert "Latest gap (possible)" in shown
+    assert "0 definite and 1 possible coverage gap(s)" in shown
+
+
+async def test_status_warns_about_an_unresolved_dead_letter_gap_regardless_of_age(
+    env: Env,
+) -> None:
+    await connect(env)
+    poison = business_message(message_text="synthetic poison", extra={"message_id": None})
+    for _ in range(3):
+        await deliver(env, poison)
+    env.clock.advance(days=30)
+    shown = await _status(env)
+    assert "Latest gap (definite)" in shown
+    assert "1 definite and 0 possible coverage gap(s)" in shown
+    assert "could not be processed and are paused" in shown
 
 
 async def test_status_reports_consent_autonomy_and_spend(env: Env) -> None:
