@@ -14,7 +14,10 @@ ARCHITECTURE §10.1 and `privacy/content_columns.py`, purged with
 `search_key` (§10.4). Adding a STORED generated column rewrites `messages`
 once; at personal scale that is seconds.
 
-Hand-written and reviewed (AGENTS §12). Downgrade is symmetric.
+Hand-written and reviewed (AGENTS §12). Downgrade is symmetric and drops
+`pg_trgm`: it assumes this revision installed the extension and nothing else
+in the database uses it (true for this app's dedicated database; a shared
+database with other trigram users must not be downgraded past 0007).
 
 Revision ID: 0007
 Revises: 0006

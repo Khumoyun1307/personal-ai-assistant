@@ -148,6 +148,21 @@ def test_feature_flags_default_off_and_parse_from_a_list(clean_env: None) -> Non
     )
 
 
+def test_a_route_model_without_a_known_processor_is_refused_by_name(clean_env: None) -> None:
+    """Healthcheck and startup refuse a model no processor serves (S03.1 P)."""
+    with pytest.raises(ValidationError) as caught:
+        _settings(llm_route_summarize_model="mystery-model-1")
+    messages = [item["msg"] for item in caught.value.errors(include_input=False)]
+    assert any("LLM_ROUTE_SUMMARIZE_MODEL" in message for message in messages)
+    assert not any("mystery-model-1" in message for message in messages)
+
+
+def test_known_processor_models_are_accepted_per_route(clean_env: None) -> None:
+    settings = _settings(llm_route_summarize_model="gpt-6-sol", llm_route_triage_model="")
+    assert settings.model_routes.model_for("summarize") == "gpt-6-sol"
+    assert settings.model_routes.model_for("triage") == "gpt-6-luna"
+
+
 def test_owner_request_effort_defaults_to_low_and_blank_sends_none(clean_env: None) -> None:
     assert _settings().llm_owner_request_effort == "low"
     assert _settings(llm_owner_request_effort="").llm_owner_request_effort is None

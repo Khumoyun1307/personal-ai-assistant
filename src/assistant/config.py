@@ -14,7 +14,7 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from assistant.core.model_routes import ModelRoutes
+from assistant.core.model_routes import ModelRoutes, processor_for_model
 
 AppEnv = Literal["dev", "prod"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -164,6 +164,21 @@ class Settings(BaseSettings):
         if not value:
             raise ValueError("llm_default_model must not be empty")
         return value
+
+    @model_validator(mode="after")
+    def _every_route_has_a_known_processor(self) -> Self:
+        """A model no processor serves would only fail later, at the consent
+        wrapper, on every call; refuse it at startup and in `healthcheck`,
+        naming the setting (never its value)."""
+        settings = {"LLM_DEFAULT_MODEL": self.llm_default_model} | {
+            f"LLM_ROUTE_{run_type.upper()}_MODEL": model
+            for run_type in ROUTE_RUN_TYPES
+            if (model := getattr(self, f"llm_route_{run_type}_model"))
+        }
+        unknown = [name for name, model in settings.items() if processor_for_model(model) is None]
+        if unknown:
+            raise ValueError(f"no known processor serves the model in: {', '.join(unknown)}")
+        return self
 
     @model_validator(mode="after")
     def _production_requirements(self) -> Self:

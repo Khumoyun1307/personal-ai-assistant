@@ -39,6 +39,56 @@ def _set_stored_version(url: str, version: int) -> None:
         engine.dispose()
 
 
+def _reset(url: str, *, with_message: bool) -> None:
+    engine = create_engine(url, hide_parameters=True)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("TRUNCATE app.accounts CASCADE"))
+            if not with_message:
+                return
+            account = conn.execute(
+                text("INSERT INTO app.accounts (telegram_user_id) VALUES (4545) RETURNING id")
+            ).scalar_one()
+            contact = conn.execute(
+                text(
+                    "INSERT INTO app.contacts (account_id, telegram_user_id) "
+                    "VALUES (:a, 77) RETURNING id"
+                ),
+                {"a": account},
+            ).scalar_one()
+            conversation = conn.execute(
+                text(
+                    "INSERT INTO app.conversations (account_id, business_chat_id, contact_id) "
+                    "VALUES (:a, 77, :c) RETURNING id"
+                ),
+                {"a": account, "c": contact},
+            ).scalar_one()
+            conn.execute(
+                text(
+                    "INSERT INTO app.messages (account_id, conversation_id, direction, sent_at, "
+                    "content_type, text, search_key) VALUES (:a, :c, 'contact', now(), 'text', "
+                    "'Synthetic', 'synthetic')"
+                ),
+                {"a": account, "c": conversation},
+            )
+    finally:
+        engine.dispose()
+
+
+def test_a_fresh_install_without_messages_does_not_warn(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    migrated_url: str,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", migrated_url)
+    monkeypatch.chdir("/")
+    _reset(migrated_url, with_message=False)
+    _set_stored_version(migrated_url, 1)
+    assert main(["healthcheck"]) == EXIT_OK
+    assert "WARNING" not in capsys.readouterr().out
+
+
 def test_healthcheck_warns_until_the_search_keys_are_reindexed(
     clean_env: None,
     monkeypatch: pytest.MonkeyPatch,
@@ -47,6 +97,7 @@ def test_healthcheck_warns_until_the_search_keys_are_reindexed(
 ) -> None:
     monkeypatch.setenv("DATABASE_URL", migrated_url)
     monkeypatch.chdir("/")
+    _reset(migrated_url, with_message=True)
     _set_stored_version(migrated_url, 1)
 
     assert main(["healthcheck"]) == EXIT_OK  # a warning, not a failure
@@ -59,6 +110,7 @@ def test_healthcheck_warns_until_the_search_keys_are_reindexed(
 
     assert main(["healthcheck"]) == EXIT_OK
     assert "WARNING" not in capsys.readouterr().out
+    _reset(migrated_url, with_message=False)
 
 
 def test_normalizer_warning_only_for_an_older_stored_version() -> None:

@@ -64,7 +64,8 @@ async def _check_database(database_url: str) -> int | None:
     """Open a connection and run `SELECT 1`. Raises on failure.
 
     Returns the stored search-normalizer version, or None when the schema is
-    not migrated yet (no `system_state` table or no row).
+    not migrated yet (no `system_state` table or no row) or when no message
+    holds text (a fresh install: there is nothing to re-key).
     """
     from sqlalchemy import text
     from sqlalchemy.exc import ProgrammingError
@@ -85,9 +86,16 @@ async def _check_database(database_url: str) -> int | None:
                         )
                     )
                 ).scalar_one_or_none()
+                keyed = (
+                    await connection.execute(
+                        text("SELECT EXISTS (SELECT 1 FROM app.messages WHERE text IS NOT NULL)")
+                    )
+                ).scalar_one()
             except ProgrammingError:
                 return None
-            return None if value is None else int(value)
+            if value is None or not keyed:
+                return None
+            return int(value)
     finally:
         await engine.dispose()
 
