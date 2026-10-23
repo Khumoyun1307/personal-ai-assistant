@@ -43,7 +43,25 @@ services:
       # PostgreSQL 18 images keep data in a major-version subdirectory, so the
       # mount goes at /var/lib/postgresql (M00 F1). DATA_DIR must be on the
       # encrypted block volume (runbooks/provision.md verifies it).
-      - ${DATA_DIR:?set DATA_DIR in .env (a directory on the encrypted volume)}/postgres:/var/lib/postgresql
+      # Long syntax with create_host_path: false — the short syntax would
+      # create a missing source, so an unmounted volume would give Postgres
+      # an empty directory on the boot disk to initialise a new, empty
+      # cluster in (migrate would build the schema, the app would consume
+      # Telegram's queued updates into it, and backups of it would rotate
+      # the real dumps out). Both sources live on the volume only: without
+      # it, the container cannot be created or started.
+      - type: bind
+        source: ${DATA_DIR:?set DATA_DIR in .env (a directory on the encrypted volume)}/postgres
+        target: /var/lib/postgresql
+        bind:
+          create_host_path: false
+      # Written by bootstrap-host.sh on the volume (§15.4 mount guard).
+      - type: bind
+        source: ${DATA_DIR:?set DATA_DIR in .env (a directory on the encrypted volume)}/.alviro-data-volume
+        target: /etc/alviro-data-volume
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-assistant} -d ${POSTGRES_DB:-assistant}"]
       interval: 10s

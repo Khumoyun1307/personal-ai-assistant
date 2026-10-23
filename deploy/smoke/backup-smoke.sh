@@ -5,7 +5,9 @@
 #
 # Brings up db (+ migrate) from deploy/compose.prod.yml under the separate
 # project `alviro-smoke` with placeholder secrets and a throwaway age key,
-# then checks: backup.sh once produces an encrypted dump in the postgres-owned
+# then checks: without the data volume (no postgres directory or no
+# sentinel) server.sh refuses and Compose creates no db container and no
+# directory (§15.4 mount guard); backup.sh once produces an encrypted dump in the postgres-owned
 # volume; it decrypts and pg_restores into a scratch database with the same
 # tables; a failing pg_dump records nothing; off-site sync mirrors rotation
 # (deletes included), honours the --max-delete guard, and an upload failure
@@ -32,8 +34,28 @@ dc() {
   docker compose -p "$project" --env-file "$SMOKE_ENV_FILE" \
     -f deploy/compose.prod.yml -f deploy/smoke/compose.smoke.yml "$@"
 }
+# The mount-guard check uses the production db definition unchanged (no
+# smoke overlay for it), with DATA_DIR at a scratch path in the Docker
+# daemon's filesystem: /tmp there is reached as /dtmp from helper
+# containers, and Compose runs from a pinned CLI container so the bind
+# source is resolved exactly as on the Linux server.
+guard="$tmp/guard"
+cli_image="docker:28.5.1-cli"
+gdir="/tmp/$project-guard-$$"
+dgdir="/dtmp/${gdir#/tmp/}"
+daemon_sh() { docker run --rm -v /tmp:/dtmp "$cli_image" sh -c "$1"; }
+gdc() {
+  docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "$(host_path "$root"):/repo:ro" -v "$(host_path "$guard"):/guard:ro" -w /repo \
+    "$cli_image" docker compose -p "$project-guard" --env-file /guard/guard.env \
+    -f deploy/compose.prod.yml -f /guard/guard.yml "$@"
+}
 cleanup() {
   dc down -v --remove-orphans > /dev/null 2>&1 || true
+  if [ -f "$guard/guard.yml" ]; then
+    gdc down -v --remove-orphans > /dev/null 2>&1 || true
+    daemon_sh "rm -rf $dgdir" > /dev/null 2>&1 || true
+  fi
   rm -rf -- "$tmp"
 }
 trap cleanup EXIT
@@ -68,6 +90,49 @@ BACKUP_REMOTE=
 EOF
 dc build migrate backup > /dev/null
 ok "app (prod target) and backup images built"
+
+step "data-volume guard (ARCHITECTURE §15.4): no volume, nothing starts"
+mkdir -p "$guard/repo/deploy" "$guard/unmounted"
+cp deploy/server.sh "$guard/repo/deploy/server.sh"
+printf 'DATA_DIR=%s\n' "$guard/unmounted" > "$guard/repo/.env"
+for action in deploy status backup app-start; do
+  rc=0
+  out="$(bash "$guard/repo/deploy/server.sh" "$action" < /dev/null 2>&1)" || rc=$?
+  [ "$rc" -eq 1 ] && [[ "$out" == *"refusing to run '$action'"* ]] \
+    || fail "server.sh $action without the data volume exited $rc"
+done
+ok "server.sh refuses deploy, status, backup and app-start without the sentinel"
+# DATA_DIR is a path in the Docker daemon's own filesystem, as on the server
+# (Docker Desktop's Windows path sharing creates missing bind sources itself,
+# so a Windows path would not test what the server does).
+cp "$tmp/smoke.env" "$guard/smoke.env"
+sed "s|^DATA_DIR=.*|DATA_DIR=$gdir|" "$tmp/smoke.env" > "$guard/guard.env"
+cat > "$guard/guard.yml" << 'EOF'
+services:
+  migrate:
+    env_file: !override
+      - /guard/smoke.env
+  app:
+    env_file: !override
+      - /guard/smoke.env
+  backup:
+    env_file: !override
+      - /guard/smoke.env
+EOF
+daemon_sh "mkdir -p $dgdir"
+# An unmounted volume: DATA_DIR is an empty directory on the boot disk.
+gdc create db > /dev/null 2>&1 && fail "db container created with no postgres directory"
+daemon_sh "test ! -e $dgdir/postgres" || fail "compose created the missing postgres directory"
+# A postgres directory but no sentinel: still not the volume.
+daemon_sh "mkdir $dgdir/postgres"
+gdc create db > /dev/null 2>&1 && fail "db container created without the sentinel"
+daemon_sh "test ! -e $dgdir/.alviro-data-volume" || fail "compose created the missing sentinel"
+# Control: with both present the same definition is accepted (created only,
+# never started — no cluster is initialised here).
+daemon_sh "echo smoke-sentinel > $dgdir/.alviro-data-volume"
+gdc create db > /dev/null 2>&1 || fail "db container not created although the volume looks mounted"
+gdc rm -f db > /dev/null 2>&1 || true
+ok "compose creates no db container (and no directory) without the volume's postgres dir and sentinel"
 
 step "database and migrations"
 dc up -d --wait db > /dev/null

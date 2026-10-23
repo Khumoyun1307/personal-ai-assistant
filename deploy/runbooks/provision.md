@@ -129,8 +129,13 @@ cloud-init (a few minutes on first boot), then checks: `arch: aarch64`,
 Ubuntu 24.04, Docker + Compose versions, `Status: active` (ufw),
 `passwordauthentication no permitrootlogin no`, chrony/fail2ban/
 unattended-upgrades/docker active, `swap: none`; formats the block volume
-only if it holds no filesystem, mounts it at `/mnt/data` (fstab by UUID,
-`nofail`), verifies it is the 50 GiB attached volume and not the boot disk;
+only if `blkid -p` and `wipefs` find no signature at all (any probe error
+stops instead), mounts it at `/mnt/data` (fstab by UUID, `nofail`),
+verifies it is the 50 GiB attached volume and not the boot disk, makes
+Docker wait for the mount (`docker.service` drop-in
+`RequiresMountsFor=/mnt/data`, echoed as `docker.service waits for:
+/mnt/data`) and writes the sentinel `/mnt/data/.alviro-data-volume` that
+the stack and `deploy/server.sh` require (ARCHITECTURE §15.4 mount guard);
 creates a read-only GitHub deploy key on the server (the repo is private),
 adds it with `gh repo deploy-key add` (read-only is gh's default; "already
 in use" on a re-run is fine), and clones `main` into `/opt/assistant`.
@@ -146,7 +151,16 @@ Any `ERROR:` line → stop and report it.
 polls Alviro (the laptop's `.env` holds the dev bot's token). Then
 `just deploy <ip>` → `compose ps`: `db` healthy, `migrate` exited 0, `app`
 healthy, `backup` up. Then `just prod-status <ip>`: healthcheck OK,
-`data dir: /dev/sdX /mnt/data`.
+`data dir: /dev/sdX /mnt/data (sentinel present)`.
+
+*Data volume not mounted* (`ERROR: … the data volume is not mounted` or
+`… .alviro-data-volume is missing`, from any `just prod-*`/`just deploy`,
+typically after a reboot): Docker has not started, by design, and nothing
+has run against the boot disk. Check in the OCI console that `alviro-data`
+is attached, then on the server `sudo mount /mnt/data && sudo systemctl
+start docker` and `just prod-status <ip>`. Never create the sentinel or
+`/mnt/data/postgres` by hand on an unmounted `/mnt/data`: that disables the
+guard and lets Postgres start an empty cluster on the boot disk.
 
 **B7. Post-deploy checks** (IMPLEMENTATION_PLAN S02.5; record results with
 dates in the milestone report):

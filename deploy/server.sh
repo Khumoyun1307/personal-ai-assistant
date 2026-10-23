@@ -18,6 +18,9 @@
 #
 # Every compose call passes `--env-file .env`: the project directory is
 # deploy/, so the root .env would otherwise not be used for interpolation.
+# Every action that starts, inspects or restores the stack first checks the
+# data volume (require_data_volume) and refuses, exit 1, without it; logs,
+# offsite-list, app-stop and reboot work regardless.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -30,27 +33,57 @@ compose() { docker compose --env-file .env -f deploy/compose.prod.yml "$@"; }
 # shellcheck disable=SC2016  # expanded inside the db container
 db_client() { compose exec -T db sh -c 'c="$1"; shift; exec "$c" -U "$POSTGRES_USER" "$@"' sh "$@"; }
 
+# Mount guard (ARCHITECTURE §15.4): nothing starts, backs up, restores or
+# reports a healthy stack unless the data volume is mounted at DATA_DIR.
+# DATA_DIR is the only value this shell reads from .env (it is no secret).
+# The sentinel is written on the volume by bootstrap-host.sh, so a bare
+# mountpoint directory on the boot disk never passes.
+data_dir="$(sed -n 's/^DATA_DIR=//p' .env | tail -n 1)"
+data_dir="${data_dir%\"}"
+data_dir="${data_dir#\"}"
+data_volume_problem() {
+  if [ -z "$data_dir" ]; then
+    echo "DATA_DIR is not set in .env"
+  elif [ "$(findmnt -no TARGET --target "$data_dir" 2> /dev/null)" = "/" ]; then
+    echo "$data_dir is on the root filesystem: the data volume is not mounted"
+  elif [ ! -f "$data_dir/.alviro-data-volume" ]; then
+    echo "$data_dir/.alviro-data-volume is missing: $data_dir is not the data volume"
+  fi
+}
+require_data_volume() {
+  local problem
+  problem="$(data_volume_problem)"
+  if [ -n "$problem" ]; then
+    echo "ERROR: $problem; refusing to run '$action' (runbooks/provision.md: data volume)" >&2
+    exit 1
+  fi
+}
+
 action="${1:-}"
 shift || true
 case "$action" in
   deploy)
+    require_data_volume
     git pull --ff-only --quiet
     echo "at $(git log -1 --format='%h %cs')"
     # Re-exec so the steps below come from the version just pulled.
     exec bash deploy/server.sh _up
     ;;
   _up)
+    require_data_volume
     compose up -d --build --remove-orphans
     compose ps
     ;;
   status)
+    # First, because nothing below means anything without the volume.
+    require_data_volume
+    printf 'data dir: %s (sentinel present)\n' "$(findmnt -no SOURCE,TARGET --target "$data_dir/postgres")"
     compose ps
     compose exec -T app python -m assistant healthcheck
     for marker in last_success last_upload_success; do
       printf '%s: %s\n' "$marker" \
         "$(compose exec -T backup cat "/backups/$marker" 2> /dev/null || echo never)"
     done
-    printf 'data dir: %s\n' "$(findmnt -no SOURCE,TARGET --target /mnt/data/postgres)"
     # Oracle may reclaim an Always Free A1 instance whose 7-day p95 CPU,
     # network and memory use are all below 20% (runbooks/provision.md §C).
     free -m | awk '/^Mem:/ { printf "memory: %d of %d MiB used (%d%%)\n", $3, $2, 100 * $3 / $2 }'
@@ -60,6 +93,7 @@ case "$action" in
     compose logs --no-color --tail="${1:-200}" app
     ;;
   backup)
+    require_data_volume
     compose exec -T backup backup.sh once
     ;;
   offsite-list)
@@ -68,6 +102,7 @@ case "$action" in
       'for d in daily weekly; do echo "$d/:"; rclone lsf "$BACKUP_REMOTE/$d" --files-only; done'
     ;;
   restore-test)
+    require_data_volume
     # runbooks/restore.md §A. The identity is read from this script's stdin
     # and passed straight through to age (restore.sh, AGE_IDENTITY_FILE=-):
     # it is never written to the server's disk or into a container.
@@ -105,6 +140,7 @@ case "$action" in
     echo "restore_test dropped"
     ;;
   restore)
+    require_data_volume
     # runbooks/restore.md §B: replace the production database with one dump.
     # The identity arrives on stdin (as in restore-test); the app must be
     # stopped first so nothing sends while the database is replaced.
@@ -134,15 +170,18 @@ case "$action" in
     echo "next: post-restore --backup-taken-at ${stamp:0:4}-${stamp:4:2}-${stamp:6:2}T${stamp:9:2}:${stamp:11:2}:${stamp:13:2}Z"
     ;;
   post-restore)
+    require_data_volume
     compose run --rm --no-deps -T app python -m assistant post-restore --backup-taken-at "${1:?timestamp}"
     ;;
   app-stop)
     compose stop app
     ;;
   app-start)
+    require_data_volume
     compose up -d app
     ;;
   restart-timing)
+    require_data_volume
     start="$(date +%s)"
     compose restart app > /dev/null
     until compose exec -T app python -m assistant healthcheck > /dev/null 2>&1; do
@@ -156,6 +195,7 @@ case "$action" in
     sudo systemctl reboot
     ;;
   verify-r0)
+    require_data_volume
     # tools/ is not in the prod image (it stays outside src/, AGENTS §5): the
     # checkout's copy is mounted read-only into a one-off app container.
     compose run --rm --no-deps -T \

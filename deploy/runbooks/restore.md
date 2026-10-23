@@ -70,6 +70,15 @@ database" check.
 Provision a fresh host (`provision.md` B2–B5), then, **before the first
 backup runs** (it is daily at `BACKUP_HOUR_UTC`):
 
+0. If the old `alviro-data` block volume survived, attach it instead of a
+   new one: `prepare` never formats a device with any signature, keeps its
+   data and writes the sentinel only once the volume is verified mounted.
+   The database on it is then intact: skip steps 1–3 and run `just deploy
+   <ip>`. Either way, every `deploy/server.sh` action that starts, backs up
+   or restores the stack refuses until the volume is mounted with its
+   sentinel (`just prod-status <ip>` → `sentinel present`; ARCHITECTURE
+   §15.4 mount guard).
+
 1. On the server: `dc build && dc up -d db backup` — **not** the app: an app
    polling into the empty database would consume the updates Telegram has
    queued (up to 24 h), which the restore would then overwrite.
