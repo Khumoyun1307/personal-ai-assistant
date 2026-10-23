@@ -3,7 +3,8 @@
 #
 #   bootstrap-host.sh <ip> prepare   cloud-init finished, Docker works, data
 #                                    volume formatted (first time only) and
-#                                    mounted at /mnt/data, server deploy key
+#                                    mounted at /mnt/data (Docker waits for
+#                                    it; sentinel file on it), server deploy key
 #   (host)  gh repo deploy-key add var/cloud/server-deploy-key.pub  (read-only)
 #   bootstrap-host.sh <ip> clone     checkout of main in /opt/assistant
 #
@@ -52,22 +53,59 @@ root_disk="$(lsblk -no PKNAME "$root_src" | head -n 1)"
 size="$(lsblk -bdno SIZE "$real")"
 [ "$size" = "$((DATA_GB * 1024 * 1024 * 1024))" ] \
   || { echo "ERROR: $dev is $size bytes, expected ${DATA_GB} GiB" >&2; exit 1; }
-if ! blkid -p "$real" > /dev/null 2>&1; then
-  # Only a device with no filesystem and no partition table is formatted.
-  mkfs.ext4 -q -L alviro-data "$real"
-  echo "formatted $real (ext4, label alviro-data)"
-fi
+# Format only a device that is provably blank. `blkid -p` exits 0 when it
+# finds any signature (filesystem, partition table, RAID, LVM), 2 when it
+# finds none, and anything else on an error (8: ambivalent probe) — an error
+# is never taken to mean "blank".
+probe=0
+blkid -p "$real" > /dev/null 2>&1 || probe=$?
+case "$probe" in
+  0) ;;
+  2)
+    # A second opinion: wipefs lists every signature it knows of.
+    sigs="$(wipefs --no-act --noheadings "$real")" \
+      || { echo "ERROR: wipefs could not probe $real; not formatting" >&2; exit 1; }
+    [ -z "$sigs" ] || { echo "ERROR: $real carries a signature blkid missed; not formatting" >&2; exit 1; }
+    [ -z "$(findmnt -rno TARGET -S "$real")" ] || { echo "ERROR: $real is mounted; not formatting" >&2; exit 1; }
+    # No -F, and no terminal to answer from: if mke2fs still finds anything
+    # it asks "Proceed anyway?", reads end-of-file and gives up.
+    mkfs.ext4 -q -L alviro-data "$real" < /dev/null
+    echo "formatted $real (ext4, label alviro-data)"
+    ;;
+  *) echo "ERROR: blkid could not probe $real (exit $probe); not formatting" >&2; exit 1 ;;
+esac
 [ "$(blkid -s TYPE -o value "$real")" = "ext4" ] || { echo "ERROR: $real holds no ext4 filesystem" >&2; exit 1; }
 uuid="$(blkid -s UUID -o value "$real")"
 mkdir -p /mnt/data
 if ! grep -q "^UUID=$uuid " /etc/fstab; then
+  # nofail: a missing volume must not stop the host from booting (SSH stays
+  # reachable); Docker waits for the mount instead (drop-in below).
   echo "UUID=$uuid /mnt/data ext4 defaults,nofail,noatime 0 2" >> /etc/fstab
-  systemctl daemon-reload
 fi
+# Docker starts only once /mnt/data is mounted (and is stopped if it is
+# unmounted): without the volume, Postgres would initialise an empty cluster
+# on the boot disk and the app would poll Telegram into it.
+install -d -m 0755 /etc/systemd/system/docker.service.d
+cat > /etc/systemd/system/docker.service.d/10-alviro-data.conf <<'UNIT'
+# Written by deploy/oci/bootstrap-host.sh (ARCHITECTURE §15.4).
+[Unit]
+RequiresMountsFor=/mnt/data
+UNIT
+systemctl daemon-reload
 mountpoint -q /mnt/data || mount /mnt/data
 [ "$(findmnt -no SOURCE /mnt/data)" = "$real" ] || { echo "ERROR: /mnt/data is not on $real" >&2; exit 1; }
+# The sentinel lives on the volume itself, so it is visible only while the
+# volume is mounted. compose.prod.yml bind-mounts it into the db container
+# and deploy/server.sh checks it: neither runs against a bare /mnt/data.
+sentinel=/mnt/data/.alviro-data-volume
+if [ ! -f "$sentinel" ]; then
+  printf 'alviro-data volume, ext4 UUID %s\n' "$uuid" > "$sentinel"
+  chmod 0444 "$sentinel"
+  echo "sentinel $sentinel written"
+fi
 install -d -m 0700 -o 999 -g 999 /mnt/data/postgres
-echo "data: /mnt/data on $real ($((size / 1024 / 1024 / 1024)) GiB, OCI block volume, encrypted at rest), postgres dir ready"
+echo "data: /mnt/data on $real ($((size / 1024 / 1024 / 1024)) GiB, OCI block volume, encrypted at rest), postgres dir and sentinel ready"
+echo "docker.service waits for: $(systemctl show -p RequiresMountsFor --value docker.service)"
 REMOTE
 
   log "server deploy key for GitHub (read-only)"
