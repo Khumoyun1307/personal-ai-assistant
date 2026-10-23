@@ -60,6 +60,11 @@ _LOOKALIKES = str.maketrans(
         # the meaning without the bracket.
         "≮": "&#8814;",
         "≯": "&#8815;",
+        # COMBINING LONG SOLIDUS OVERLAY: the one combining character that
+        # composes with `<` or `>` (checked over all of Unicode). Leading the
+        # inner text, it would turn the opening tag's `>` into ≯ for a reader
+        # that normalizes to NFC/NFKC.
+        "\u0338": "&#824;",
     }
 )
 
@@ -68,9 +73,13 @@ def escape(text: str) -> str:
     """Neutralise anything that could form a tag.
 
     NFKC first, so compatibility forms (fullwidth, small) become the real
-    brackets and are escaped as such; then `&` (so an existing entity cannot
-    be un-escaped into a bracket by the reader), `<` and `>`; then the
-    lookalikes NFKC leaves alone.
+    characters and are escaped as such. This matters for the ampersand: the
+    fullwidth and small ampersands (U+FF06, U+FE60) are not in the lookalike
+    table, and without the fold one of them followed by `lt;` would read as
+    `<` to a reader that NFKC-normalizes and then decodes entities.
+    Then `&` (so an existing entity cannot be un-escaped into a bracket by
+    the reader), `<` and `>`; then the lookalikes NFKC leaves alone, and
+    U+0338.
     """
     folded = unicodedata.normalize("NFKC", text)
     escaped = folded.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
