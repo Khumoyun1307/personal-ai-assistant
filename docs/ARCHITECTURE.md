@@ -84,7 +84,7 @@ The host needs **no inbound ports** besides SSH while long polling is used (ADR-
 | Testing | pytest, pytest-asyncio, real Postgres from the Compose `db` service locally and a Postgres service container in CI (each test session creates a throwaway database from a migrated template), hypothesis (state machines) | — | Real Postgres in integration tests; fakes for Telegram/LLM. |
 | Quality | ruff (lint+format), mypy (strict on `src/`), import-linter (layer contracts), pip-audit | pyright | Standard, enforceable. |
 | Containers | Docker, Docker Compose; `python:3.14-slim` base | Kubernetes, PaaS | One host; owner knows Docker. |
-| Hosting (personal) | One small **EU VM**: **Oracle Cloud Always Free**, Frankfurt, `VM.Standard.A1.Flex` ARM64 1 OCPU / 6 GB (owner decision 2026-10-22, §15.5); off-site backups on **Backblaze B2** (EU Central) | DigitalOcean Basic 2 GB (previous default), Hetzner CX23, Google e2-micro (rejected), Railway, Fly.io | $0, full control of sensitive data, polling needs no inbound ports (ADR-15). |
+| Hosting (personal) | One small VM: **Oracle Cloud Always Free**, US East (Ashburn, `us-ashburn-1`; planned Frankfurt, amended 2026-10-23), `VM.Standard.A1.Flex` ARM64 1 OCPU / 6 GB (owner decision 2026-10-22, §15.5); off-site backups on **Backblaze B2** (EU Central) | DigitalOcean Basic 2 GB (previous default), Hetzner CX23, Google e2-micro (rejected), Railway, Fly.io | $0, full control of sensitive data, polling needs no inbound ports (ADR-15). |
 | HTTP framework | **None initially**; FastAPI when webhooks/Mini App/OAuth arrive | aiohttp (aiogram's) | Avoid an unused surface (ADR-14). |
 
 All versions are pinned in `uv.lock`; upgrades are deliberate, tested, and recorded.
@@ -1073,7 +1073,7 @@ deploy/
 
 | Item | Choice |
 |---|---|
-| Region | Home region Frankfurt (`eu-frankfurt-1`) |
+| Region | Home region US East Ashburn (`us-ashburn-1`), permanent. Amended 2026-10-23: Frankfurt was planned 2026-10-22, but the owner created the account in Ashburn. Server and database are in the US; encrypted backups are in the EU (B2); latency to Telegram's EU data centres is slightly higher, irrelevant for long polling |
 | Shape | `VM.Standard.A1.Flex` **ARM64**, 1 OCPU / 6 GB RAM — right-sized so memory use stays above Oracle's 20 % idle threshold |
 | OS / disks | Ubuntu 24.04; 50 GB boot volume + **50 GB block volume** for Postgres data (Oracle encrypts block volumes at rest — TQ-05) |
 | Ingress | SSH only |
@@ -1179,7 +1179,7 @@ CI (GitHub Actions): ruff, mypy, import-linter, pip-audit, unit + integration + 
 | ADR-12 | Tenant model: `account_id` everywhere; single shared bot; allowlist | Proposed | Multi-user path without rewrite. |
 | ADR-13 | Linux-based development runtime (Compose `app` container on Docker Desktop's WSL2 backend; Dev Container optional) | Proposed | psycopg async on Windows; dev/prod parity. |
 | ADR-14 | No HTTP framework until needed; FastAPI then | Proposed | Avoid unused surface. |
-| ADR-15 | Single EU VM with Docker Compose: **Oracle Cloud Always Free** (Frankfurt, A1 ARM64 1 OCPU / 6 GB, block volume, PAYG + $1 budget alert); off-site backups on Backblaze B2 (EU) | Accepted 2026-10-22 (owner; replaces the DigitalOcean default) | $0, control, simplicity; provider-neutral stack. Risks: idle reclamation and no SLA (§15.5); paid VM before public launch (M09). |
+| ADR-15 | Single VM with Docker Compose: **Oracle Cloud Always Free** (A1 ARM64 1 OCPU / 6 GB, block volume, PAYG + $1 budget alert; region planned Frankfurt, **amended 2026-10-23: US East Ashburn, `us-ashburn-1`**, permanent); off-site backups on Backblaze B2 (EU) | Accepted 2026-10-22 (owner; replaces the DigitalOcean default) | $0, control, simplicity; provider-neutral stack. Risks: idle reclamation and no SLA (§15.5); paid VM before public launch (M09). |
 | ADR-16 | Evaluation and test data are synthetic/hand-written; never real chats | Proposed | Telegram §4.3/Content Licensing. |
 
 ---

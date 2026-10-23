@@ -8,7 +8,7 @@
 # /work. Idempotent: every resource is looked up by display name first and
 # only created when absent, so it is safe to re-run after any failure.
 #
-# Creates, in the home region (must be eu-frankfurt-1):
+# Creates, in the home region (must be us-ashburn-1, the owner's home region):
 #   compartment  alviro
 #   VCN          alviro-vcn 10.0.0.0/16, internet gateway alviro-igw,
 #                route table alviro-rt (0.0.0.0/0 → igw), security list
@@ -33,7 +33,7 @@ set -euo pipefail
 # shellcheck source=deploy/oci/lib.sh
 . "$(dirname "$0")/lib.sh"
 
-REGION_EXPECTED="eu-frankfurt-1"
+REGION_EXPECTED="us-ashburn-1"
 COMPARTMENT_NAME="alviro"
 INSTANCE_NAME="alviro"
 SHAPE="VM.Standard.A1.Flex"

@@ -1,20 +1,24 @@
 # M02 — the owner's guide to finishing the milestone
 
-*Written for the owner, in plain language. Last updated 2026-10-22. The agent
+*Written for the owner, in plain language. Last updated 2026-10-23. The agent
 keeps this in step with [M02.md](M02.md). Do the steps in order and send the
-agent the short phrase at the end of each step. Steps 1–5 can be done in any
-order, on the same day.*
+agent the short phrase at the end of each step. Steps 0–5 are **done** (2026-10-23, see below); what remains is the backup key (step 6), the `/status` tap (step 7), Session B (step 8) and the review (step 9).*
 
 ## Where things stand
 
 - All five M02 slices are built and merged. A review on 2026-10-22 found bugs
   in the deploy and backup scripts (the backup image did not even build) and
   a few smaller code issues; the agent is fixing them now (slice S02.6).
-- Decisions of 2026-10-22: **Oracle Cloud free tier** (Frankfurt) runs the
-  bot; **Backblaze B2** keeps the encrypted off-site backups (a different
+- Decisions of 2026-10-22: **Oracle Cloud free tier** runs the
+  bot (planned Frankfurt; **amended 2026-10-23: the account's home region is US
+  East, Ashburn**, permanent — the server is in the US, backups stay in the EU); **Backblaze B2** keeps the encrypted off-site backups (a different
   company, so one account problem cannot lose both copies);
   **two bots** — **Alviro is production** and runs only on the server, a new
   **dev bot** is for tests on the laptop with your second account.
+- Done 2026-10-23, do not repeat: Oracle account + Pay As You Go + API key
+  (verified, `us-ashburn-1`), Backblaze B2, healthchecks heartbeat, production
+  secrets (Alviro token revoked and reissued, prod OpenAI key), the dev bot,
+  Alviro connected under Chat Automation.
 - Already done, do not repeat: the M00 live tests (except the LV-08 "reopen"
   half), the closed-window test, privacy policy v3, the M00 review.
 - Everything below that is not marked "you" is done by the agent with
@@ -34,16 +38,20 @@ send. Tell the agent: **"privacy URL set"**.
 
 Also read the short new section of the privacy policy draft (v4, in
 `docs/legal/privacy-policy.md`, "Where it is kept, and backups"): data on
-Oracle in Frankfurt, encrypted backups at Backblaze, deleted data surviving in
+Oracle in US East (Ashburn), encrypted backups at Backblaze, deleted data surviving in
 backups for at most 35 days. If you agree, tell the agent **"publish v4"**;
 the agent updates the page at the same link before the first backup, so the
 BotFather link does not change.
 
-## Step 1 — Oracle Cloud account (about 20 minutes)
+## Step 1 — Oracle Cloud account — DONE 2026-10-23 (kept for reference)
+
+Done: account in **US East (Ashburn), `us-ashburn-1`**, Pay As You Go, API key
+verified. The steps below are history.
 
 1. Open <https://www.oracle.com/cloud/free/> → **Start for free**.
-2. Fill in email, country, name. When asked for the **Home Region**, choose
-   **Germany Central (Frankfurt)**. This cannot be changed later.
+2. Fill in email, country, name. When asked for the **Home Region**, the plan
+   was Frankfurt; the owner's account ended up in **US East (Ashburn)**. It
+   cannot be changed later.
 3. Card check: a **Visa or Mastercard** (Oracle shows a small temporary hold
    that is released; local-only cards are often refused — if yours is,
    tell the agent).
@@ -55,22 +63,26 @@ BotFather link does not change.
    Why: Oracle may switch off *free-only* servers it thinks are idle, and our
    bot is idle most of the time. Free resources stay $0 after the upgrade;
    the agent adds a **$1 budget alert** so any charge at all emails you.
-6. **API key for the agent**: profile icon (top right) → **My profile** →
-   **API keys** → **Add API key** → **Generate API key pair** → **Download
-   private key** → **Add**.
+6. **API key for the agent**: Profile menu → **User settings** → **Tokens and
+   keys** tab (or Resources → API keys) → **Add API key** → **Generate API key
+   pair** → **Download private key** → **Add**
+   ([Oracle docs](https://docs.oracle.com/en-us/iaas/Content/Identity/access/to_upload_an_API_signing_key.htm)).
    - Save the downloaded file as `var\cloud\oci\oci_api_key.pem`.
    - Oracle now shows a **Configuration file preview**. Copy it and paste it
-     into `var\cloud\oci\config` under the comment lines, **without** its
-     `key_file=` line (the correct one is already there). Save.
+     into `var\cloud\oci\config` under the comment lines, with
+     `region=us-ashburn-1` and `key_file=/oci/oci_api_key.pem`. Save.
+   - A screen asking for "key one / key two" or an expiry date is a different
+     feature (Generative AI API keys / access tokens) and is not what is
+     needed.
 7. Tell the agent: **"oracle ready"** and the email address that should get
    the budget alert.
 
 The agent then creates the network, the server (ARM, 1 CPU, 6 GB), the data
 disk, the firewall (SSH only) and the budget, all by script. Free ARM servers
-are sometimes "out of capacity" in Frankfurt; the script keeps retrying on
+are sometimes "out of capacity" in the home region; the script keeps retrying on
 its own, which can take hours. Nothing for you to do.
 
-## Step 2 — Backblaze B2 for backups (about 10 minutes)
+## Step 2 — Backblaze B2 for backups — DONE 2026-10-23
 
 1. Open <https://www.backblaze.com/sign-up/cloud-storage>. Choose the region
    **EU Central** during sign-up (it is fixed per account). No card is needed
@@ -87,13 +99,13 @@ its own, which can take hours. Nothing for you to do.
    the bucket list, like `s3.eu-central-003.backblazeb2.com`), keyID,
    applicationKey. Save. Tell the agent: **"b2 ready"**.
 
-## Step 3 — heartbeat monitor (3 minutes)
+## Step 3 — heartbeat monitor — DONE 2026-10-23
 
 <https://healthchecks.io> → free account → **Add Check**: name `alviro`,
 period **10 minutes**, grace **5 minutes**. Copy its **Ping URL** into
 `var\prod.env` (`HEARTBEAT_URL=`). Email alerts to you are on by default.
 
-## Step 4 — production secrets (5 minutes)
+## Step 4 — production secrets — DONE 2026-10-23
 
 In `var\prod.env`:
 
@@ -109,7 +121,7 @@ Save. Then, in your **main** account, open @userinfobot → Start and note the
 number after "Id" (not a secret). Tell the agent: **"secrets saved"** and
 that number.
 
-## Step 5 — the dev bot (5 minutes)
+## Step 5 — the dev bot — DONE 2026-10-23
 
 1. @BotFather → `/newbot` → any neutral name (not containing "Telegram"),
    e.g. "Lab Assistant Dev" → a username ending in `bot`. Copy the token into
@@ -136,8 +148,7 @@ server only ever gets the public half.
 
 1. Main account → Settings → **Chat Automation** → **Alviro** connected, with
    the chats you want (a few trusted contacts plus your second account) and
-   **Reply to Messages** on. If it is still connected from the tests, nothing
-   to do.
+   **Reply to Messages** on. **Done 2026-10-23** (Alviro is connected).
 2. Open Alviro's chat and send `/status`. Tell the agent what it says.
 
 ## Step 8 — Session B: the live test (about 2 hours)

@@ -5,7 +5,7 @@ control chat and a connected business bot on the owner's account. See
 [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md) for the vision and
 [AGENTS.md](AGENTS.md) for the rules every change must follow.
 
-**Status:** M02 (Account connection & observation) — S02.1–S02.5 code complete; S02.6 production hardening in progress (2026-10-22), then the production server (Oracle Cloud, Frankfurt) and the R0 live test (docs/milestones/M02.md). Two bots: **Alviro** is production-only and polled only by the server; local runs use a separate dev bot (AGENTS §9).
+**Status:** M02 (Account connection & observation) — S02.1–S02.5 code complete; S02.6 production hardening in progress (2026-10-22), then the production server (Oracle Cloud, US East Ashburn) and the R0 live test (docs/milestones/M02.md). Two bots: **Alviro** is production-only and polled only by the server; local runs use a separate dev bot (AGENTS §9).
 
 ## Development
 
