@@ -64,11 +64,28 @@ CARD_ARGS_LIMIT = 600
 #: text can be neither reordered nor hidden: by category — format (Cf: bidi
 #: controls, zero-width, tags, word joiner, soft hyphen, …), control (Cc,
 #: C0 and C1), private use (Co), surrogates (Cs), unassigned (Cn) — plus the
-#: variation selectors and the blank Hangul fillers, which are letters or
-#: marks by category but render as nothing.
+#: variation selectors (standard and Mongolian), the blank Hangul fillers,
+#: the combining grapheme joiner, the Khmer inherent vowels and the braille
+#: blank, which are letters, marks or symbols by category but render as
+#: nothing, and the line and paragraph separators, which break the line.
 _HIDDEN_CATEGORIES = frozenset({"Cf", "Cc", "Co", "Cs", "Cn"})
 _HIDDEN_EXTRA = frozenset(
-    {*range(0xFE00, 0xFE10), *range(0xE0100, 0xE01F0), 0x3164, 0x115F, 0x1160, 0xFFA0}
+    {
+        *range(0xFE00, 0xFE10),
+        *range(0xE0100, 0xE01F0),
+        0x3164,
+        0x115F,
+        0x1160,
+        0xFFA0,
+        0x034F,
+        *range(0x180B, 0x180E),
+        0x180F,
+        0x17B4,
+        0x17B5,
+        0x2800,
+        0x2028,
+        0x2029,
+    }
 )
 
 
@@ -396,8 +413,8 @@ class ApplyOutcome:
 TEXT_APPLIED = "✅ Done: <code>{tool}</code> ({status})."
 TEXT_FAILED = "⚠️ I could not apply <code>{tool}</code>: {reason}. Nothing was changed."
 TEXT_UNCERTAIN = (
-    "⚠️ <code>{tool}</code> failed with an internal error. It may not have been applied; "
-    "please check before asking again."
+    "⚠️ <code>{tool}</code> did not finish cleanly, so it may or may not have been "
+    "applied; please check before asking again."
 )
 TEXT_NOT_DONE = (
     "⚠️ <code>{tool}</code> ended as <code>{status}</code>, which is not a confirmed "
@@ -487,13 +504,21 @@ class ConfirmationApplier:
         succeeded = outcome.status in SUCCESS_STATUSES
         final = ConfirmationStatus.APPLIED if succeeded else ConfirmationStatus.FAILED
         async with transaction(self._session_factory) as uow:
-            await uow.session.execute(
+            finished = await uow.session.execute(
                 update(ToolConfirmation)
                 .where(ToolConfirmation.id == confirmation_id)
                 .where(ToolConfirmation.status == ConfirmationStatus.APPLYING.value)
                 .values(status=final.value)
                 .execution_options(synchronize_session=False)
             )
+        if not int(getattr(finished, "rowcount", 0) or 0):
+            # The reconciler gave up on this row meanwhile (it ran past
+            # APPLYING_TIMEOUT) and has already failed it and told the owner.
+            # Whatever the handler returned, the row says `failed`: never
+            # report "Done" over it (§6 invariant 11).
+            logger.warning("tool_confirmation_finished_late", confirmation_id=confirmation_id)
+            succeeded = False
+            outcome = ToolOutcome(outcome.status, {**outcome.data, "uncertain": True})
         text = self._report(tool_name, outcome, succeeded)
         if chat_id is not None:
             await self._channel.send(account_id=account_id, chat_id=chat_id, text=text)

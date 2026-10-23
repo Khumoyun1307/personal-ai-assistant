@@ -7,6 +7,7 @@ later tap cannot turn into a change (§6 invariants 3b, 11). Synthetic text.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from typing import Any
 
@@ -15,9 +16,14 @@ from sqlalchemy import select, text, update
 
 from assistant.accounts.models import PendingInput
 from assistant.agent import confirmations
-from assistant.agent.confirmations import CARD_ARGS_LIMIT, card_text, render_args
+from assistant.agent.confirmations import (
+    CARD_ARGS_LIMIT,
+    ConfirmationApplier,
+    card_text,
+    render_args,
+)
 from assistant.agent.models import ToolConfirmation
-from assistant.agent.tools.registry import ToolContext, ToolServices
+from assistant.agent.tools.registry import ToolContext, ToolOutcome, ToolServices, default_registry
 from assistant.core.channel import Delivery
 from assistant.inbox.notify import OwnerAlerts
 from assistant.jobs.tasks import JobHandlers
@@ -25,6 +31,7 @@ from assistant.llm.port import LLMRequest, ToolResultItem
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response, tool_response
 from tests.integration.agent_env import (
+    ALL_FLAGS,
     NOTE_CANCEL,
     NOTE_EXPLODE,
     NOTE_ODD_STATUS,
@@ -160,7 +167,17 @@ HIDDEN = [
     "ﾠ",
     "\u0085",  # C1 control (NEL)
     "\u009b",  # C1 control (CSI)
-    "\x07",  # C0 control
+    "\x7f",  # DEL (C0 range end; json.dumps leaves it unescaped)
+    "\u034f",  # combining grapheme joiner (Mn)
+    "\u180b",  # Mongolian free variation selectors (Mn)
+    "\u180c",
+    "\u180d",
+    "\u180f",
+    "\u17b4",  # Khmer inherent vowels (Mn, render as nothing)
+    "\u17b5",
+    "\u2800",  # braille blank (So)
+    "\u2028",  # line separator (Zl)
+    "\u2029",  # paragraph separator (Zp)
     "",  # private use
     "\U000f0000",  # supplementary private use
     "͸",  # unassigned
@@ -348,3 +365,67 @@ async def test_an_apply_cancelled_mid_way_is_failed_and_the_owner_told(env: Env)
     assert await status_of(env) == ("failed", None)
     assert "interrupted" in channel.sends[-1]
     assert (await applier(env, channel).apply(confirmation_id)).status == "skipped"
+
+
+async def test_an_apply_the_reconciler_failed_meanwhile_is_not_reported_done(env: Env) -> None:
+    """Review 3 item 3: the handler outlived APPLYING_TIMEOUT and the
+    reconciler failed the row (and told the owner) while it ran. The final
+    `applying → applied` matches nothing, so the owner hears "may or may not
+    have been applied", never "Done"."""
+    _, channel = await held_call(env, "synthetic")
+    confirmation_id = await confirm(env)
+    jobs = handlers(env, channel)
+
+    async def slow_note(ctx: ToolContext, args: Any) -> ToolOutcome:
+        env.clock.advance(minutes=15)
+        await jobs.reconcile_pending()  # fails the row left `applying`
+        return ToolOutcome("ok")
+
+    registry = default_registry()
+    registry.register(dataclasses.replace(SET_NOTE, handler=slow_note))
+    slow = ConfirmationApplier(
+        session_factory=env.factory,
+        clock=env.clock,
+        channel=channel,
+        registry=registry,
+        services=ToolServices(
+            session_factory=env.factory, clock=env.clock, monthly_budget_usd=None, channel=channel
+        ),
+        enabled_flags=ALL_FLAGS,
+    )
+
+    outcome = await slow.apply(confirmation_id)
+
+    assert outcome.status == "failed"
+    assert await status_of(env) == ("failed", None)
+    assert "interrupted" in channel.sends[-2]
+    assert "may or may not have been applied" in channel.sends[-1]
+    assert "Done" not in channel.sends[-1]
+
+
+async def test_a_pending_change_whose_card_expired_gets_a_new_card(env: Env) -> None:
+    """Review 3 gap (a): the card still exists but its `expires_at` passed, so
+    nothing can confirm it; the same change from a later run is not reported
+    as awaiting that dead card."""
+    await connect(env)
+    channel = FakeChannel()
+    await forwarded_note_run(env, channel, "a1")
+    env.clock.advance(hours=25)  # past CARD_TTL
+    again = await forwarded_note_run(env, channel, "b1")
+    assert again["status"] == "awaiting_confirmation"
+    assert "already awaits" not in json.dumps(again)
+    async with env.factory() as session:
+        statuses = sorted((await session.execute(select(ToolConfirmation.status))).scalars().all())
+        live = (
+            (
+                await session.execute(
+                    select(PendingInput)
+                    .where(PendingInput.kind == "tool_confirm")
+                    .where(PendingInput.expires_at > env.clock.now())
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert statuses == ["expired", "pending"]
+    assert len(live) == 1
