@@ -8,6 +8,7 @@ not through a tool result — until the consent exists.
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 
 import pytest
@@ -23,9 +24,9 @@ from assistant.conversations.models import Message
 from assistant.conversations.service import conversations_awaiting_ai
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.metering import MeteredLLMClient
-from assistant.llm.port import LLMRequest, Provenance, TextItem
+from assistant.llm.port import LLMRequest, Provenance, TextItem, ToolResultItem
 from tests.fakes.channel import FakeChannel
-from tests.fakes.llm import FakeLLM, text_response
+from tests.fakes.llm import FakeLLM, text_response, tool_response
 from tests.integration.business_env import (
     OWNER,
     Env,
@@ -118,11 +119,21 @@ async def test_rg08_managed_content_never_reaches_the_llm_without_consent(env: E
         )
         turn_id = turn.id
 
-    fake, channel = FakeLLM(text_response("I cannot read chats yet.")), FakeChannel()
+    # A real tool round trip: the model calls `get_status`, the tool runs
+    # against the database holding the canaries, and its result goes back.
+    fake = FakeLLM(
+        tool_response(("call-1", "get_status", "{}")),
+        text_response("I cannot read chats yet."),
+    )
+    channel = FakeChannel()
     outcome = await _runtime(env, fake, channel).run(turn_id)
 
     assert outcome.status is RunStatus.SUCCEEDED
-    assert fake.requests, "the owner turn itself must reach the model"
+    assert len(fake.requests) == 2, "the turn, then the turn plus the tool result"
+    results = [item for item in fake.requests[1].items if isinstance(item, ToolResultItem)]
+    assert [r.call_id for r in results] == ["call-1"]
+    assert json.loads(results[0].output)["status"] == "ok"
+    assert channel.sends == ["I cannot read chats yet."]
     for request in fake.requests:
         assert not request.contains_managed()
         assert CANARY_TEXT not in request.instructions
