@@ -158,6 +158,15 @@ class _RunState:
     ack_latency_ms: int | None = None
 
 
+def _managed_refs(turns: list[ControlTurn]) -> ToolRefs:
+    """The conversations/contacts the managed turns in the context came from."""
+    refs = ToolRefs()
+    for turn in turns:
+        if turn.contains_managed:
+            refs = refs | ToolRefs.from_json(turn.refs)
+    return refs
+
+
 @dataclass(frozen=True, slots=True)
 class _Started:
     account_id: int
@@ -227,6 +236,7 @@ class OwnerRequestRuntime:
             record_step=self._step_recorder(state.account_id, state.run_id),
             clock=self._clock,
             on_taint=self._taint_recorder(state),
+            refs=state.refs,
         )
         return await self._loop(state, executor, prompt.label)
 
@@ -303,6 +313,10 @@ class OwnerRequestRuntime:
                 used_managed=any(item.provenance is Provenance.MANAGED for item in context.items),
                 tainted=context.tainted,
                 directly_tainted=context.directly_tainted,
+                # The reply may restate a managed forward or quote in the
+                # current turn or the included history, so it carries their
+                # refs and a purge of that chat redacts it too (§10.4).
+                refs=_managed_refs([*history, turn]),
                 received_at=turn.created_at,
             )
             return _Started(

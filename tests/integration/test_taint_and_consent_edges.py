@@ -268,3 +268,87 @@ async def test_managed_data_deletion_clears_managed_forwards(env: Env) -> None:
             )
         ).scalar_one()
     assert value is None
+
+
+# ------------------------------------------------------------ review 3, item 1
+async def purge_the_chat(env: Env) -> dict[str, list[int]]:
+    """Purge the one managed conversation; returns its refs shape."""
+    async with env.factory() as session:
+        conversation_id, business_chat_id, contact_id = (
+            await session.execute(
+                text("SELECT id, business_chat_id, contact_id FROM app.conversations")
+            )
+        ).one()
+    account_id = await one_id(
+        env, "SELECT id FROM app.accounts WHERE telegram_user_id = :o", o=OWNER
+    )
+    async with env.factory() as session, session.begin():
+        await purge_conversation(
+            session,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            business_chat_id=business_chat_id,
+            clock=env.clock,
+        )
+    return {"conversation_ids": [conversation_id], "contact_ids": [contact_id]}
+
+
+async def test_purging_the_chat_redacts_the_reply_to_a_managed_forward(env: Env) -> None:
+    """Review 3 item 1: the reply to a managed forward may restate it, so it
+    carries the forward's refs and is redacted with the chat."""
+    await connect(env)
+    await grant_managed(env)
+    await deliver(env, business_message(message_text="Synthetic chat line"))
+    turn_id = await ask(env, f"{CANARY} forwarded line", **FORWARD_FROM_CONTACT)
+    await runtime(env, FakeLLM(text_response(f"They said {CANARY}")), FakeChannel()).run(turn_id)
+    [reply] = await replies(env)
+    assert reply.contains_managed is True
+
+    refs = await purge_the_chat(env)
+
+    assert reply.refs == refs
+    assert [r.text for r in await replies(env)] == [None]
+
+
+async def test_purging_the_chat_redacts_a_reply_drawing_on_a_forward_in_history(
+    env: Env,
+) -> None:
+    """Review 3 item 1: an included managed history turn seeds the refs too."""
+    await connect(env)
+    await grant_managed(env)
+    await deliver(env, business_message(message_text="Synthetic chat line"))
+    await ask(env, f"{CANARY} forwarded line", **FORWARD_FROM_CONTACT)
+    later = await ask(env, "What did that forward say?")
+    await runtime(env, FakeLLM(text_response(f"It said {CANARY}")), FakeChannel()).run(later)
+    [reply] = await replies(env)
+
+    refs = await purge_the_chat(env)
+
+    assert reply.refs == refs
+    assert [r.text for r in await replies(env)] == [None]
+
+
+# ------------------------------------------------------------ review 3, gap (c)
+async def test_a_history_tainted_run_retainted_by_a_tool_result_passes_taint_on(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D56: inherited taint alone decays, but if the run's own tool result
+    carries contact text too, its reply is third-party and taints later runs."""
+    await connect(env)
+    await grant_managed(env)
+    await deliver(env, business_message(message_text="Synthetic chat line"))
+    conversation_id = await one_id(
+        env, "SELECT id FROM app.conversations WHERE business_chat_id = :c", c=CONTACT
+    )
+    first = await ask(env, "Synthetic forwarded instruction", forward_origin=HIDDEN_FORWARD)
+    await runtime(env, FakeLLM(text_response("I read it.")), FakeChannel()).run(first)
+    monkeypatch.setattr("assistant.agent.runtime.OWNER_HISTORY_TURNS", 1)  # only the reply
+
+    second = await ask(env, "Read the chat")
+    read = args(conversation_id=conversation_id, contact_id=None, cursor=None, limit=None)
+    fake = FakeLLM(tool_response(("c1", "get_conversation", read)), text_response("Read."))
+    await runtime(env, fake, FakeChannel()).run(second)
+
+    assert (await latest_run(env)).tainted is True
+    reply = (await replies(env))[-1]
+    assert (reply.third_party, reply.from_tainted_run) == (True, True)

@@ -98,6 +98,20 @@ class ToolRefs:
             "contact_ids": sorted(self.contact_ids),
         }
 
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any] | None) -> ToolRefs:
+        """The `control_turns.refs` shape back; anything else counts as empty."""
+        if not value:
+            return cls()
+
+        def ids(key: str) -> frozenset[int]:
+            raw = value.get(key)
+            if not isinstance(raw, list):
+                return frozenset()
+            return frozenset(item for item in raw if isinstance(item, int))
+
+        return cls(ids("conversation_ids"), ids("contact_ids"))
+
 
 @dataclass(frozen=True, slots=True)
 class ToolContext:
