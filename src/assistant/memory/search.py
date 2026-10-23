@@ -52,12 +52,13 @@ def _drop_modifiers(text: str) -> str:
     return "".join(
         char
         for char in text
-        if not (
-            0x02B0 <= ord(char) <= 0x02FF
-            or char == _COMBINING_DOT_ABOVE
-            or unicodedata.category(char) == "Sk"
-        )
+        if not (0x02B0 <= ord(char) <= 0x02FF or unicodedata.category(char) == "Sk")
     )
+
+
+#: Casefolding `İ` gives `i` + U+0307; only that stray dot is dropped, after
+#: NFKC, so a decomposed `z` + U+0307 still composes to `ż` first.
+_STRAY_DOT = "i" + _COMBINING_DOT_ABOVE
 
 
 #: Latin letters of other orthographies people type Uzbek with.
@@ -144,7 +145,7 @@ def normalize(text: str) -> str:
     """The canonical search form of `text`. Pure, deterministic, versioned."""
     folded = _drop_modifiers(text.translate(_DROP_APOSTROPHES))
     folded = unicodedata.normalize("NFKC", folded).casefold()
-    folded = _drop_modifiers(folded.translate(_DROP_APOSTROPHES))
+    folded = _drop_modifiers(folded.translate(_DROP_APOSTROPHES)).replace(_STRAY_DOT, "i")
     folded = _transliterate(folded).translate(_LATIN_FOLDS)
     return _WHITESPACE.sub(" ", folded).strip()
 
@@ -233,15 +234,24 @@ def spelling_variants(term: str) -> list[str]:
     return list(variants)
 
 
-def term_alternatives(term: str) -> list[str]:
-    """Every prefix a query term may match: stems, then spellings of each."""
-    out: dict[str, None] = {}
+def term_alternatives(term: str, *, limit: int = _MAX_ALTERNATIVES) -> list[str]:
+    """Every prefix a query term may match: the term, its stems, then the
+    spellings of each. Alternatives shorter than two letters are dropped (a
+    one-letter prefix matches almost everything); the term itself is kept."""
+    out: dict[str, None] = {term: None}
     for stem in stem_variants(term):
         for variant in spelling_variants(stem):
-            out.setdefault(variant, None)
-            if len(out) >= _MAX_ALTERNATIVES:
+            if len(out) >= limit:
                 return list(out)
+            if len(variant) >= _MIN_ALTERNATIVE:
+                out.setdefault(variant, None)
     return list(out)
+
+
+#: Bounds on one tsquery: lexemes in total and terms searched.
+MAX_TSQUERY_LEXEMES = 200
+MAX_TSQUERY_TERMS = 50
+_MIN_ALTERNATIVE = 2
 
 
 def build_tsquery(terms: Sequence[str], mode: TsqueryMode = "and") -> str | None:
@@ -249,13 +259,19 @@ def build_tsquery(terms: Sequence[str], mode: TsqueryMode = "and") -> str | None
     OR-ed together; terms joined by `&` (all words) or `|` (any word).
 
     Terms that are not plain `[a-z0-9]+` are dropped, so the result is safe
-    to bind even if a caller skipped `query_terms`.
+    to bind even if a caller skipped `query_terms`. At most
+    `MAX_TSQUERY_TERMS` terms and `MAX_TSQUERY_LEXEMES` lexemes in total: a
+    long query gets fewer spelling alternatives per term.
     """
+    plain = [term for term in terms if _TERM.fullmatch(term)][:MAX_TSQUERY_TERMS]
+    if not plain:
+        return None
+    per_term = max(1, min(_MAX_ALTERNATIVES, MAX_TSQUERY_LEXEMES // len(plain)))
     groups: list[str] = []
-    for term in terms:
-        if not _TERM.fullmatch(term):
-            continue
-        alternatives = " | ".join(f"{variant}:*" for variant in term_alternatives(term))
+    for term in plain:
+        alternatives = " | ".join(
+            f"{variant}:*" for variant in term_alternatives(term, limit=per_term)
+        )
         groups.append(f"({alternatives})")
     if not groups:
         return None

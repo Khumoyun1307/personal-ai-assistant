@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy import select, text, update
 
 from assistant.conversations.models import Message
-from assistant.memory import search_index
+from assistant.memory import retrieval, search_index
 from assistant.memory.retrieval import SearchFilters, search_messages
 from assistant.memory.search import NORMALIZER_VERSION, normalize, query_terms
 from tests.integration.business_env import (
@@ -236,6 +236,20 @@ async def test_a_weak_trigram_hit_does_not_suppress_the_any_word_fallback(env: E
     await say(env, "Kontrakt imzolandi")
     await say(env, "Kontraktlar haqida")
     async with env.factory() as session:
+        # Precondition: the AND pass alone finds a trigram-only near-miss,
+        # which used to suppress the fallback.
+        and_only = await retrieval._run(
+            session,
+            account_id=await account_id(env),
+            key="kontrakt bekor",
+            terms=["kontrakt", "bekor"],
+            mode="and",
+            filters=SearchFilters(),
+            now=env.clock.now(),
+            limit=10,
+        )
+        assert and_only
+        assert not any(hit.word_match for hit in and_only)
         result = await search_messages(
             session, await account_id(env), ["kontrakt bekor"], now=env.clock.now()
         )

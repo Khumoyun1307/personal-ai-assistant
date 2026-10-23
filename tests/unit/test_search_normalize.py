@@ -8,6 +8,8 @@ because the same function runs at write time and at query time.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -197,21 +199,52 @@ def _groups(tsquery: str | None, joiner: str) -> list[set[str]]:
 
 
 def test_build_tsquery_and_or_modes() -> None:
-    salom, ertaga = _groups(build_tsquery(["salom", "ertaga"], "and"), "&")
-    assert {"salom"} <= salom
-    assert {"ertaga", "erta"} <= ertaga
-    assert len(_groups(build_tsquery(["salom", "ertaga"], "or"), "|")[0]) >= 1
-    assert " | " in (build_tsquery(["salom", "ertaga"], "or") or "")
+    assert build_tsquery(["salom", "ertaga"], "and") == (
+        "(salom:* | salum:*) & (ertaga:* | yertaga:* | erta:* | yerta:*)"
+    )
+    assert build_tsquery(["salom", "ertaga"], "or") == (
+        "(salom:* | salum:*) | (ertaga:* | yertaga:* | erta:* | yerta:*)"
+    )
     [yurak] = _groups(build_tsquery(["yurak"]), "&")
     assert {"yurak", "yurag"} <= yurak
 
 
+_TSQUERY_SHAPE = re.compile(
+    r"^\([a-z0-9]+:\*( \| [a-z0-9]+:\*)*\)( [&|] \([a-z0-9]+:\*( \| [a-z0-9]+:\*)*\))*$"
+)
+
+
 def test_build_tsquery_drops_anything_but_plain_terms() -> None:
-    [ok] = _groups(build_tsquery(["ok", "a&b", "x:*", "!", ""]), "&")
-    assert "ok" in ok
-    assert all(alt.isalnum() for alt in ok)
+    """The injection guard, strictly: exact output, nothing but the allowed shape."""
+    assert build_tsquery(["ok", "a&b", "x:*", "!", ""]) == "(ok:* | oq:* | uk:*)"
     assert build_tsquery([]) is None
     assert build_tsquery(["&"]) is None
+    assert build_tsquery(["a'b", "c)d", "e|f", "g:*h"]) is None
+    hostile = query_terms("x'); DROP TABLE t; -- & | ! :* <-> (a) 'b'")
+    built = build_tsquery(hostile, "or")
+    assert built is not None
+    assert _TSQUERY_SHAPE.fullmatch(built)
+
+
+def test_a_long_query_stays_bounded() -> None:
+    """Review item 6: at most 200 lexemes per tsquery; no 1-letter alternatives."""
+    query = " ".join(f"soz{i}kitob" for i in range(40))[:200]
+    terms = query_terms(query)
+    built = build_tsquery(terms, "or")
+    assert built is not None
+    lexemes = [alt.strip().removesuffix(":*") for alt in re.split(r"[()&|]", built) if alt.strip()]
+    assert len(lexemes) <= 200
+    # Only a query term itself may be a single letter, never an alternative.
+    assert all(len(lexeme) >= 2 or lexeme in terms for lexeme in lexemes)
+    wide = build_tsquery([f"kuh{i}" for i in range(120)], "or") or ""
+    assert wide.count(":*") <= 200
+    long_term = build_tsquery(["qishloqlarimizdagi"]) or ""
+    assert long_term.count(":*") <= 24
+
+
+def test_one_letter_alternatives_are_dropped_but_a_one_letter_term_is_kept() -> None:
+    assert build_tsquery(["u"]) == "(u:*)"  # not "o:*"
+    assert "i:*" not in (build_tsquery(["y"]) or "")
 
 
 @pytest.mark.parametrize(
@@ -248,6 +281,14 @@ def test_apostrophe_lookalike_modifier_letters_are_dropped(variant: str) -> None
 def test_dotted_capital_i_casefolds_without_a_stray_combining_dot() -> None:
     assert normalize("İstanbul") == "istanbul"
     assert normalize("İ").isascii()
+
+
+@pytest.mark.parametrize(("decomposed", "composed"), [("ż", "ż"), ("ė", "ė")])
+def test_a_combining_dot_composes_like_the_precomposed_letter(
+    decomposed: str, composed: str
+) -> None:
+    """Review item 8: NFKC first; only the dot casefolding leaves after `i` is dropped."""
+    assert normalize(decomposed) == normalize(composed)
 
 
 # ------------------------------------------------------------ tagging
