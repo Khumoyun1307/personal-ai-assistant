@@ -13,6 +13,8 @@
 #   deploy/server.sh app-stop|app-start   for the heartbeat-alert check
 #   deploy/server.sh restart-timing  restart app, seconds until healthy again
 #   deploy/server.sh reboot          reboot the host (then: status)
+#   deploy/server.sh reindex-search  re-key search after a normalizer change
+#                                    (idempotent; counts only)
 #   deploy/server.sh verify-r0 ARGS  tools/acceptance/verify_r0.py in a one-off
 #                                    app container (prints numbers/states only)
 #
@@ -172,6 +174,13 @@ case "$action" in
   post-restore)
     require_data_volume
     compose run --rm --no-deps -T app python -m assistant post-restore --backup-taken-at "${1:?timestamp}"
+    ;;
+  reindex-search)
+    require_data_volume
+    # ARCHITECTURE §11.2: re-key retained messages after a normalizer change.
+    # Idempotent and safe beside the running app (an edit always wins); a
+    # no-op when the stored version is current. Prints counts only.
+    compose run --rm --no-deps -T app python -m assistant reindex-search
     ;;
   app-stop)
     compose stop app
