@@ -102,7 +102,9 @@ class BusinessPipeline:
     ) -> Disposition | None:
         """The IGNORED route's handler. The row ends `ignored` with its payload
         cleared whatever happens here; the only thing done is learning from a
-        third-party bot's answer that its chat is a bot chat (§6.5, FR-OBS-04).
+        third-party bot's answer that its chat is a bot chat (§6.5, FR-OBS-04)
+        — only when the bot is the private chat's counterpart (`from.id ==
+        chat.id`).
         Only on the owner's live connection, and with no network call: an
         unknown connection id is not bootstrapped for an update we discard."""
         if decision.reason != REASON_BOT_COUNTERPART or decision.kind not in MESSAGE_KINDS:
@@ -112,6 +114,12 @@ class BusinessPipeline:
             return None
         chat_id = decision.chat_id
         if not isinstance(chat_id, int) or isinstance(chat_id, bool):
+            return None
+        if decision.from_id != chat_id:
+            # A private chat is the conversation with `chat.id`: only that
+            # counterpart answering as a bot proves the chat is a bot chat.
+            # Any other bot-flagged sender says nothing about the contact,
+            # and must not purge what was stored from them.
             return None
         verdict = await self._registry.gate_business(session, row, decision)
         if isinstance(verdict, Disposition) or verdict.account_id is None:

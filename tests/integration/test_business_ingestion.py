@@ -156,6 +156,32 @@ async def test_a_bot_answer_does_not_touch_other_chats(env: Env) -> None:
     assert person.display_name == "Synthetic"
 
 
+async def test_a_bot_sender_that_is_not_the_counterpart_does_not_mark_the_chat(
+    env: Env,
+) -> None:
+    """Only the chat's own counterpart reveals a bot chat: a private chat is
+    the conversation with `chat.id`, so a bot-flagged sender with another id
+    (`from.id != chat.id`) proves nothing about the contact and must not purge
+    what was stored from them."""
+    await connect(env)
+    await deliver(env, business_message(message_text="synthetic contact"))
+    stray = business_message(
+        chat_id=CONTACT, from_id=BOT_CHAT, sender_is_bot=True, message_text="synthetic"
+    )
+    await deliver(env, stray)
+
+    row = await inbound(env, stray)
+    assert row.status == "ignored"
+    assert await payload_is_sql_null(env, stray)
+    assert len(await messages(env, CONTACT)) == 1
+    person = await contact(env, CONTACT)
+    assert person is not None
+    assert person.is_bot is False
+    conv = await conversation(env, CONTACT)
+    assert conv is not None
+    assert conv.mode != "ignore"
+
+
 async def test_a_bot_answer_on_a_stopped_or_foreign_connection_changes_nothing(env: Env) -> None:
     await connect(env)
     await deliver(env, business_message(chat_id=BOT_CHAT, from_id=OWNER, message_text="a"))
