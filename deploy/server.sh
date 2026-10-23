@@ -23,6 +23,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 [ -f .env ] || { echo "ERROR: $(pwd)/.env is missing (deploy/oci/push-env.sh)" >&2; exit 1; }
 compose() { docker compose --env-file .env -f deploy/compose.prod.yml "$@"; }
+# db_client <dropdb|createdb|psql> ARGS: a client inside the db container,
+# connecting as the role the server .env names ($POSTGRES_USER reaches the
+# container through compose.prod.yml), so no role is hard-coded here. The
+# arguments are passed through as positional parameters, never re-parsed.
+# shellcheck disable=SC2016  # expanded inside the db container
+db_client() { compose exec -T db sh -c 'c="$1"; shift; exec "$c" -U "$POSTGRES_USER" "$@"' sh "$@"; }
 
 action="${1:-}"
 shift || true
@@ -77,8 +83,8 @@ case "$action" in
     [ -n "$dump" ] || { echo "ERROR: no dump in /backups/daily" >&2; exit 1; }
     stamp="$(basename "$dump" .dump.age)" # 20261022T020000Z
     taken_at="${stamp:0:4}-${stamp:4:2}-${stamp:6:2}T${stamp:9:2}:${stamp:11:2}:${stamp:13:2}Z"
-    compose exec -T db dropdb -U assistant --if-exists restore_test
-    compose exec -T db createdb -U assistant restore_test
+    db_client dropdb --if-exists restore_test
+    db_client createdb restore_test
     printf '%s\n' "$identity" | compose exec -T backup restore.sh "$dump" restore_test
     unset identity
     # post-restore against the scratch database: the URL is derived inside
@@ -91,11 +97,11 @@ case "$action" in
     echo "dump: $(basename "$dump") ($(compose exec -T backup stat -c %s "$dump" | tr -d '\r') bytes), taken $taken_at"
     for table in messages conversations accounts coverage_gaps; do
       printf 'restore_test app.%s rows: %s\n' "$table" \
-        "$(compose exec -T db psql -U assistant -d restore_test -tAc "SELECT count(*) FROM app.$table" | tr -d '\r[:space:]')"
+        "$(db_client psql -d restore_test -tAc "SELECT count(*) FROM app.$table" | tr -d '\r[:space:]')"
     done
     printf 'restore gap row: %s\n' \
-      "$(compose exec -T db psql -U assistant -d restore_test -tAc "SELECT kind || '/' || certainty FROM app.coverage_gaps ORDER BY id DESC LIMIT 1" | tr -d '\r[:space:]')"
-    compose exec -T db dropdb -U assistant restore_test
+      "$(db_client psql -d restore_test -tAc "SELECT kind || '/' || certainty FROM app.coverage_gaps ORDER BY id DESC LIMIT 1" | tr -d '\r[:space:]')"
+    db_client dropdb restore_test
     echo "restore_test dropped"
     ;;
   restore)
@@ -115,9 +121,14 @@ case "$action" in
     fi
     compose exec -T backup test -f "/backups/daily/$file" \
       || { echo "ERROR: /backups/daily/$file not found" >&2; exit 1; }
-    compose exec -T db dropdb -U assistant --if-exists --force assistant
-    compose exec -T db createdb -U assistant assistant
-    printf '%s\n' "$identity" | compose exec -T backup restore.sh "/backups/daily/$file" assistant
+    # The production database is the one the server .env names: $POSTGRES_DB
+    # in the db container, $PGDATABASE (the same value) in the backup one.
+    # shellcheck disable=SC2016  # expanded inside the db container
+    compose exec -T db sh -c \
+      'dropdb -U "$POSTGRES_USER" --if-exists --force "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+    # shellcheck disable=SC2016  # expanded inside the backup container
+    printf '%s\n' "$identity" \
+      | compose exec -T backup sh -c 'exec restore.sh "$1" "$PGDATABASE"' sh "/backups/daily/$file"
     unset identity
     stamp="${file%.dump.age}"
     echo "next: post-restore --backup-taken-at ${stamp:0:4}-${stamp:4:2}-${stamp:6:2}T${stamp:9:2}:${stamp:11:2}:${stamp:13:2}Z"
