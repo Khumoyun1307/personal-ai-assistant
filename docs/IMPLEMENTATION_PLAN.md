@@ -560,10 +560,10 @@ Fixes from the M02 review plus the Oracle/B2/two-bot setup. Owned by the lead; r
 | RG-04 | Double-tap approval sends once (invariant 6) | S04.3 |
 | RG-05 | Restart in `executing` ⇒ `delivery_uncertain`, never a resend (invariant 6) | S04.4 |
 | RG-06 | Stale drafts never send (invariant 1) | S04.4 |
-| RG-07 | Non-owner connections ignored (no domain rows; payload cleared) (invariants 7, 12) | S02.1 |
-| RG-08 | Managed content never reaches FakeLLM/the LLM without consent (including via tool results and control-turn history) (invariant 9) | S02.2 (extended in S03.1) |
+| RG-07 | Non-owner connections ignored (no domain rows; payload cleared), including an owner later removed from the allowlist (invariants 7, 12) — `test_connections.py::test_rg07_a_connection_from_a_non_allowlisted_user_leaves_no_tenant_trace`, `::test_rg07_an_owner_removed_from_the_allowlist_stores_nothing_more` | S02.1 (extended in S02.6) |
+| RG-08 | Managed content never reaches FakeLLM/the LLM without consent (including via tool results and control-turn history) (invariant 9) | S02.2 (tool round trip scripted in S02.6; extended in S03.1) |
 | RG-09 | No cross-conversation content in draft prompts (invariant 4) | S04.2 |
-| RG-10 | Logs content-free | S00.1 (extended in S02.4) |
+| RG-10 | Logs content-free | S00.1 (extended in S02.4; library loggers and job failures in S02.6) |
 | RG-11 | A tainted owner run changes no state without an owner tap (invariant 3b) | S03.1 (extended in S03.3, S04.4) |
 | RG-12 | An edit or delete targeting an owner or contact message is refused by both policy and gateway (invariant 14) | S04.4 |
 | RG-13 | Never claims to be human (invariant 13) | S06.2 |
