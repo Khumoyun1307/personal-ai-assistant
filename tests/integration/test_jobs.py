@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from assistant.accounts import service
 from assistant.accounts.models import ControlTurn
+from assistant.agent.confirmations import ApplyOutcome
 from assistant.agent.runtime import RunOutcome, RunStatus
 from assistant.core.jobs import OWNER_REQUEST_TASK, owner_control_lock
 from assistant.db.engine import build_engine, build_session_factory
@@ -56,6 +57,17 @@ TRUNCATE = (
     "TRUNCATE procrastinate.procrastinate_jobs, procrastinate.procrastinate_events, "
     "procrastinate.procrastinate_periodic_defers, procrastinate.procrastinate_workers CASCADE"
 )
+
+
+@dataclass
+class RecordingApplier:
+    """Stands in for the confirmation applier."""
+
+    applied: list[int] = field(default_factory=list)
+
+    async def apply(self, confirmation_id: int) -> ApplyOutcome:
+        self.applied.append(confirmation_id)
+        return ApplyOutcome("applied")
 
 
 @dataclass
@@ -107,6 +119,7 @@ async def env(migrated_url: str) -> AsyncIterator[Env]:
         alerts=OwnerAlerts(factory, FakeChannel(), clock),
         monthly_budget_usd=None,
         heartbeat_url=None,
+        confirmation_applier=RecordingApplier(),
     )
     register_tasks(app, handlers)
     async with app.open_async():

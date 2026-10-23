@@ -1,6 +1,6 @@
 """The content-bearing columns, as a checked registry (ARCHITECTURE §10.1).
 
-Every `text` and `jsonb` column in the `app` schema is listed either here as
+Every `text`, `jsonb` and `tsvector` column in the `app` schema is listed either here as
 content or in `NON_CONTENT` as something structural (an enum, an id, a
 digest). A test compares both sets with the live schema, so a new text column
 cannot appear without someone deciding which it is — and the deletion
@@ -18,7 +18,13 @@ CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("messages", "text"),
         ("messages", "media"),
         ("messages", "search_key"),
+        # Generated from `search_key` (revision 0007): purged with it.
+        ("messages", "search_tsv"),
         ("control_turns", "text"),
+        # Text the owner quoted or replied to from another chat (S03.1).
+        ("control_turns", "quoted_text"),
+        # A held model call's arguments, until the owner decides (S03.1).
+        ("tool_confirmations", "args"),
         ("inbound_updates", "payload"),
     }
 )
@@ -62,6 +68,9 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("agent_run_steps", "tool_name"),
         ("agent_run_steps", "args_digest"),
         ("agent_run_steps", "status"),
+        ("tool_confirmations", "tool_call_id"),
+        ("tool_confirmations", "tool_name"),
+        ("tool_confirmations", "status"),
         ("llm_calls", "purpose"),
         ("llm_calls", "model"),
         ("llm_calls", "request_id"),

@@ -8,6 +8,7 @@ queue, lock and schedule. Job arguments are ids only (AGENTS §13).
 |---|---|---|
 | `agent.owner_request(turn_id)` | llm | lock `acct:{id}:control` (set at defer) |
 | `connections.notify_owner(event_id)` | system | deferred with the registry change (S02.1) |
+| `agent.apply_confirmation(confirmation_id)` | llm | lock `acct:{id}:control` (at defer) |
 | `system.ingestion_watchdog` | system | every minute |
 | `system.reconcile_pending` | system | every minute |
 | `system.retention_sweep` | system | hourly |
@@ -21,6 +22,7 @@ Periodic tasks carry a queueing lock so a slow run never piles up copies.
 
 from __future__ import annotations
 
+import html
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -31,9 +33,11 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.agent.budget import check_budget_thresholds
+from assistant.agent.confirmations import ApplyOutcome
 from assistant.agent.runtime import RunOutcome
 from assistant.core.clock import Clock
 from assistant.core.jobs import (
+    APPLY_CONFIRMATION_TASK,
     CONNECTION_NOTIFY_TASK,
     OWNER_REQUEST_TASK,
     JobScheduler,
@@ -42,10 +46,14 @@ from assistant.core.jobs import (
 from assistant.db.uow import transaction
 from assistant.inbox.backup_check import BackupReport, check_backup, deliver_restore_notice
 from assistant.inbox.connection_alerts import notify_connection_change
-from assistant.inbox.notify import AlertResult, OwnerAlerts
+from assistant.inbox.notify import AlertKind, AlertResult, OwnerAlerts
 from assistant.inbox.watchdog import STALL_AFTER, check_ingestion, poller_heartbeat_at
 from assistant.jobs.app import QUEUE_LLM, QUEUE_SYSTEM, STALLED_WORKER_TIMEOUT
-from assistant.jobs.reconcile import unqueued_owner_turns
+from assistant.jobs.reconcile import (
+    fail_interrupted_confirmations,
+    unapplied_confirmations,
+    unqueued_owner_turns,
+)
 from assistant.observability import heartbeat
 from assistant.observability.logging import get_logger
 from assistant.privacy.retention import SweepReport, sweep_all
@@ -75,6 +83,10 @@ class OwnerRuntime(Protocol):
     async def run(self, turn_id: int) -> RunOutcome: ...
 
 
+class Applier(Protocol):
+    async def apply(self, confirmation_id: int) -> ApplyOutcome: ...
+
+
 @dataclass(frozen=True, slots=True)
 class JobHandlers:
     session_factory: async_sessionmaker[AsyncSession]
@@ -84,9 +96,15 @@ class JobHandlers:
     alerts: OwnerAlerts
     monthly_budget_usd: Decimal | None
     heartbeat_url: str | None
+    #: Runs held tool calls the owner confirmed (S03.1). Required: a worker
+    #: that could not apply an owner's confirmed change must not start.
+    confirmation_applier: Applier
     backup_status_path: Path | None = None
     #: An off-site remote is configured: the upload marker is checked too.
     backup_upload_required: bool = False
+
+    async def apply_confirmation(self, confirmation_id: int) -> ApplyOutcome:
+        return await self.confirmation_applier.apply(confirmation_id)
 
     async def owner_request(self, turn_id: int) -> RunOutcome:
         outcome = await self.owner_runtime.run(turn_id)
@@ -132,9 +150,29 @@ class JobHandlers:
                     lock=owner_control_lock(account_id),
                     connection=await uow.raw_connection(),
                 )
+            unapplied = await unapplied_confirmations(uow.session, self.clock.now())
+            for confirmation_id, account_id in unapplied:
+                await self.scheduler.defer(
+                    APPLY_CONFIRMATION_TASK,
+                    args={"confirmation_id": confirmation_id},
+                    lock=owner_control_lock(account_id),
+                    connection=await uow.raw_connection(),
+                )
+            interrupted = await fail_interrupted_confirmations(uow.session, self.clock.now())
         if lost:
             logger.warning("owner_turns_redeferred", count=len(lost))
-        return len(lost)
+        if unapplied:
+            logger.warning("confirmations_redeferred", count=len(unapplied))
+        for confirmation_id, account_id, tool_name in interrupted:
+            # After the commit: the row is `failed` whether or not this arrives.
+            logger.warning("confirmation_interrupted", confirmation_id=confirmation_id)
+            await self.alerts.notify_owner(
+                account_id,
+                AlertKind.CONFIRMATION_INTERRUPTED,
+                dedupe_key=f"confirmation:{confirmation_id}:interrupted",
+                tool=html.escape(tool_name),
+            )
+        return len(lost) + len(unapplied) + len(interrupted)
 
     async def retention_sweep(self) -> SweepReport:
         report = await sweep_all(self.session_factory, self.clock)
@@ -151,6 +189,7 @@ class JobHandlers:
                 message_contents=report.message_contents,
                 contact_names=report.contact_names,
                 expired_inputs=report.expired_inputs,
+                tool_confirmations=report.tool_confirmations,
             )
         return report
 
@@ -177,6 +216,12 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
     @app.task(name=OWNER_REQUEST_TASK, queue=QUEUE_LLM, retry=OWNER_REQUEST_RETRY)
     async def owner_request(turn_id: int) -> None:
         await handlers.owner_request(turn_id)
+
+    @app.task(name=APPLY_CONFIRMATION_TASK, queue=QUEUE_LLM, retry=OWNER_REQUEST_RETRY)
+    async def apply_confirmation(confirmation_id: int) -> None:
+        # Lock `acct:{id}:control` is set at defer; a retry or redelivery is
+        # a no-op once the row has left `confirmed`.
+        await handlers.apply_confirmation(confirmation_id)
 
     @app.task(name=CONNECTION_NOTIFY_TASK, queue=QUEUE_SYSTEM, retry=NOTIFY_RETRY)
     async def connection_notify(event_id: int) -> None:

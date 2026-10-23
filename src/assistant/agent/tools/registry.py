@@ -26,6 +26,7 @@ from typing import Any
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from assistant.core.channel import ControlChannel
 from assistant.core.clock import Clock
 from assistant.llm.port import ToolSpec
 
@@ -57,6 +58,14 @@ TOOL_RUN_TYPES = frozenset({"owner_request"})
 _FORBIDDEN_NAME = re.compile(r"^(send|edit|delete_message|mark_read|read_message|reply)(_|$)")
 
 
+#: Control calls that only reduce autonomy: they run even in a tainted run
+#: (ARCHITECTURE §7.1, §8.1). Names reserved for M04 to M06 tools.
+TAINT_EXEMPT_TOOLS = frozenset({"pause_autonomy", "end_delegation", "cancel_action"})
+#: Never executed from a model call, tainted or not: only `/resume` or a card
+#: button resumes autonomy (§7.1).
+CARD_ONLY_TOOLS = frozenset({"resume_autonomy"})
+
+
 @dataclass(frozen=True, slots=True)
 class ToolServices:
     """Shared dependencies handed to tool handlers."""
@@ -64,6 +73,44 @@ class ToolServices:
     session_factory: async_sessionmaker[AsyncSession]
     clock: Clock
     monthly_budget_usd: Decimal | None
+    #: The owner's control chat, for confirmation cards (None in unit tests
+    #: that never reach the confirmation gate).
+    channel: ControlChannel | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolRefs:
+    """Which conversations and contacts a result drew on. Written to the
+    assistant turn's `control_turns.refs`, so deleting a conversation or a
+    contact can find the turns that quoted it (ARCHITECTURE §10.4)."""
+
+    conversation_ids: frozenset[int] = frozenset()
+    contact_ids: frozenset[int] = frozenset()
+
+    def __or__(self, other: ToolRefs) -> ToolRefs:
+        return ToolRefs(
+            self.conversation_ids | other.conversation_ids, self.contact_ids | other.contact_ids
+        )
+
+    def as_json(self) -> dict[str, list[int]]:
+        return {
+            "conversation_ids": sorted(self.conversation_ids),
+            "contact_ids": sorted(self.contact_ids),
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any] | None) -> ToolRefs:
+        """The `control_turns.refs` shape back; anything else counts as empty."""
+        if not value:
+            return cls()
+
+        def ids(key: str) -> frozenset[int]:
+            raw = value.get(key)
+            if not isinstance(raw, list):
+                return frozenset()
+            return frozenset(item for item in raw if isinstance(item, int))
+
+        return cls(ids("conversation_ids"), ids("contact_ids"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,12 +130,21 @@ class ToolOutcome:
 
     status: str
     data: Mapping[str, Any] = field(default_factory=dict)
-    #: True if `data` holds contact-authored text or names (invariant 3b).
+    #: True if `data` holds managed-conversation content: needs `ai_managed`
+    #: consent to reach the model (§6 invariant 9).
     contains_managed: bool = False
+    #: True if `data` holds contact-authored text or names, which taints the
+    #: run (invariant 3b). Defaults to `contains_managed`.
+    untrusted: bool | None = None
+    refs: ToolRefs = field(default_factory=ToolRefs)
 
     @property
     def is_error(self) -> bool:
         return self.status == "error"
+
+    @property
+    def taints(self) -> bool:
+        return self.contains_managed if self.untrusted is None else self.untrusted
 
 
 ToolHandler = Callable[[ToolContext, Any], Awaitable[ToolOutcome]]
@@ -105,6 +161,18 @@ class ToolDefinition:
     allowed_run_types: frozenset[str] = TOOL_RUN_TYPES
     min_tier: CapabilityTier = CapabilityTier.CONTROL_ONLY
     returns_managed: bool = False
+
+    @property
+    def changes_state(self) -> bool:
+        return self.capability in (CapabilityClass.CONFIGURE, CapabilityClass.CONTROL)
+
+    def needs_confirmation(self, *, tainted: bool) -> bool:
+        """The confirmation gate (§7.1): a model-initiated state change in a
+        tainted run becomes a card, except calls that only reduce autonomy;
+        `resume_autonomy` is a card whatever the taint."""
+        if self.name in CARD_ONLY_TOOLS:
+            return True
+        return tainted and self.changes_state and self.name not in TAINT_EXEMPT_TOOLS
 
     def spec(self) -> ToolSpec:
         return ToolSpec(
@@ -169,9 +237,17 @@ class ToolRegistry:
 
 def default_registry() -> ToolRegistry:
     """Every tool the product has. The catalogue is ARCHITECTURE §8.2."""
+    from assistant.agent.tools.conversations import (
+        GET_CONVERSATION,
+        LIST_CONVERSATIONS,
+        RESOLVE_CONTACT,
+    )
+    from assistant.agent.tools.search import SEARCH_MESSAGES
     from assistant.agent.tools.status import GET_STATUS
 
-    return ToolRegistry([GET_STATUS])
+    return ToolRegistry(
+        [GET_STATUS, SEARCH_MESSAGES, RESOLVE_CONTACT, GET_CONVERSATION, LIST_CONVERSATIONS]
+    )
 
 
 def strict_schema(model: type[BaseModel]) -> dict[str, Any]:

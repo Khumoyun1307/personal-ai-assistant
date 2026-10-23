@@ -62,6 +62,10 @@ healthcheck:
 migrate:
     {{ run }} uv run python -m assistant migrate
 
+# Re-key retained messages after a search-normalizer change (S03.1); idempotent. Pass --force to re-key anyway.
+reindex-search *args:
+    {{ run }} uv run python -m assistant reindex-search {{ args }}
+
 # Run the assistant (from S01.2).
 run:
     {{ compose }} run --rm --service-ports app uv run python -m assistant run

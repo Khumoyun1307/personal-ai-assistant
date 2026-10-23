@@ -7,6 +7,8 @@ volatile run context, then the conversation, then the new turn.
 `owner_request` sees the owner's profile and recent control-chat turns. Turns
 flagged `contains_managed` are excluded unless `ai_managed` is active
 (ARCHITECTURE §14.3) — defence in depth behind the consent wrapper.
+Forwarded and quoted third-party text is wrapped as untrusted, and a context
+that carries any of it, or managed content, starts the run tainted (§7.1).
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from datetime import datetime
 
 from assistant.accounts.models import Account, ControlTurn
 from assistant.agent.prompt_registry import Prompt
+from assistant.agent.untrusted import Source, wrap
 from assistant.llm.port import Provenance, TextItem
 
 #: How many earlier control turns an owner request sees.
@@ -26,6 +29,11 @@ OWNER_HISTORY_TURNS = 20
 class OwnerRequestContext:
     instructions: str
     items: tuple[TextItem, ...]
+    #: The context already carries third-party text or managed content.
+    tainted: bool = False
+    #: ...and it is in the current turn itself (not only inherited from
+    #: history): the reply will taint later runs (D56).
+    directly_tainted: bool = False
 
 
 def build_owner_request(
@@ -35,6 +43,7 @@ def build_owner_request(
     history: list[ControlTurn],
     turn: ControlTurn,
     now: datetime,
+    managed_allowed: bool = False,
 ) -> OwnerRequestContext:
     profile = [
         "Owner profile:",
@@ -47,17 +56,75 @@ def build_owner_request(
     items = [
         TextItem(
             role="user" if past.role == "owner" else "assistant",
-            text=past.text,
+            text=render_turn(past),
             provenance=Provenance.MANAGED if past.contains_managed else Provenance.OWNER_CONTROL,
         )
         for past in history
         if past.text
     ]
-    items.append(
-        TextItem(
+    if turn.contains_managed and not managed_allowed:
+        # The owner forwarded or quoted a message from one of their managed
+        # chats, without `ai_managed`: its text must not reach the model
+        # (§6 invariant 9). The model is told, so it can say so honestly.
+        current = TextItem("user", withheld_turn(turn), Provenance.OWNER_CONTROL)
+    else:
+        current = TextItem(
             role="user",
-            text=turn.text or "",
+            text=render_turn(turn) or "",
             provenance=Provenance.MANAGED if turn.contains_managed else Provenance.OWNER_CONTROL,
         )
+    items.append(current)
+    direct = carries_third_party(turn)
+    tainted = direct or any(carries_third_party(t) for t in history)
+    return OwnerRequestContext(
+        instructions=instructions, items=tuple(items), tainted=tainted, directly_tainted=direct
     )
-    return OwnerRequestContext(instructions=instructions, items=tuple(items))
+
+
+WITHHELD_FORWARD = (
+    "(The owner forwarded a message from one of their chats with other people. Its text "
+    "is withheld: the owner has not agreed to AI processing of those chats. Say so, and "
+    "mention /privacy managed.)"
+)
+WITHHELD_QUOTE = (
+    "(The owner quoted a message from one of their chats with other people; the quote is "
+    "withheld: the owner has not agreed to AI processing of those chats.)"
+)
+
+
+def withheld_turn(turn: ControlTurn) -> str:
+    if turn.quoted_text is not None:
+        return f"{turn.text or ''}\n\n{WITHHELD_QUOTE}"
+    return WITHHELD_FORWARD
+
+
+def carries_third_party(turn: ControlTurn) -> bool:
+    """Whether a turn taints a run that includes it (§7.1, M03 D45, D56).
+
+    An owner turn: it carries forwarded/quoted text or managed content. An
+    assistant reply: only when the run that wrote it was tainted by its OWN
+    inputs (`third_party`); a reply tainted only by inherited history does
+    not pass the taint on, so taint decays once its source leaves the window.
+    """
+    if turn.role != "owner":
+        return bool(turn.third_party)
+    return bool(turn.third_party or turn.quoted_text is not None or turn.contains_managed)
+
+
+def render_turn(turn: ControlTurn) -> str:
+    """A control turn as the model sees it. Third-party text is wrapped as
+    untrusted: a forwarded message entirely, a quote next to the owner's own
+    words (§7.3), and every reply written by a tainted run (it may restate
+    such text; D56(a))."""
+    text = turn.text or ""
+    if turn.role != "owner":
+        if turn.from_tainted_run or turn.third_party:
+            return wrap(text, Source.TAINTED_RUN_REPLY) or ""
+        return text
+    if turn.quoted_text is not None:
+        quote = wrap(turn.quoted_text, Source.QUOTED)
+        return f"{text}\n\n(The owner is quoting this from another chat:)\n{quote}"
+    if turn.third_party:
+        forwarded = wrap(text, Source.FORWARDED)
+        return f"(The owner forwarded this message from someone else:)\n{forwarded}"
+    return text

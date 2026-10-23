@@ -22,7 +22,7 @@ Nothing is held in a database transaction across an LLM or Telegram call.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -47,14 +47,16 @@ from assistant.agent.persistence import (
     month_start,
 )
 from assistant.agent.ports import ControlChannel
-from assistant.agent.tools.executor import StepRecorder, ToolExecutor
+from assistant.agent.tools.executor import StepRecorder, TaintRecorder, ToolExecutor
 from assistant.agent.tools.registry import (
     CapabilityTier,
     ToolContext,
+    ToolRefs,
     ToolRegistry,
     ToolServices,
 )
 from assistant.core.clock import Clock
+from assistant.core.model_routes import processor_for_model
 from assistant.db.uow import transaction
 from assistant.llm.port import (
     InputItem,
@@ -143,9 +145,26 @@ class _RunState:
     tokens: int = 0
     #: Whether anything managed reached the model; the reply inherits it.
     used_managed: bool = False
+    #: Third-party text is in the context (§7.1); persisted on `agent_runs`.
+    tainted: bool = False
+    #: ...through this run's OWN inputs (the current turn or a tool result),
+    #: not only inherited from history: only then does the reply pass the
+    #: taint on to later runs (D56).
+    directly_tainted: bool = False
+    #: Conversations/contacts the tool results drew on; written to the reply turn.
+    refs: ToolRefs = field(default_factory=ToolRefs)
     #: When the owner's message arrived, and how long until the typing indicator.
     received_at: datetime | None = None
     ack_latency_ms: int | None = None
+
+
+def _managed_refs(turns: list[ControlTurn]) -> ToolRefs:
+    """The conversations/contacts the managed turns in the context came from."""
+    refs = ToolRefs()
+    for turn in turns:
+        if turn.contains_managed:
+            refs = refs | ToolRefs.from_json(turn.refs)
+    return refs
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,16 +224,19 @@ class OwnerRequestRuntime:
                 account_id=state.account_id,
                 run_id=state.run_id,
                 run_type=RUN_TYPE,
-                tainted=False,
+                tainted=state.tainted,
                 services=ToolServices(
                     session_factory=self._session_factory,
                     clock=self._clock,
                     monthly_budget_usd=self._config.monthly_budget_usd,
+                    channel=self._channel,
                 ),
             ),
             offered=offered,
             record_step=self._step_recorder(state.account_id, state.run_id),
             clock=self._clock,
+            on_taint=self._taint_recorder(state),
+            refs=state.refs,
         )
         return await self._loop(state, executor, prompt.label)
 
@@ -247,7 +269,14 @@ class OwnerRequestRuntime:
             control = await active_consent(session, account_id, kind=CONSENT_AI_CONTROL)
             if not control.granted:
                 return _Started(account_id, chat_id, no_consent=True)
-            managed = await active_consent(session, account_id, kind=CONSENT_AI_MANAGED)
+            managed_state = await active_consent(session, account_id, kind=CONSENT_AI_MANAGED)
+            # Defence in depth behind the consent wrapper: managed tools and
+            # managed history only when the consent names the processor that
+            # serves this route's model (§14.3, M03 D48).
+            managed_ok = (
+                managed_state.granted
+                and processor_for_model(self._config.model) in managed_state.processors
+            )
             over_budget = await self._over_budget(session, account_id)
             run = AgentRunRepository(session, account_id).add(
                 AgentRun(
@@ -262,11 +291,19 @@ class OwnerRequestRuntime:
             )
             await session.flush()
             history = await ControlTurnRepository(session, account_id).recent_before(
-                turn_id, limit=OWNER_HISTORY_TURNS, include_managed=managed.granted
+                turn_id, limit=OWNER_HISTORY_TURNS, include_managed=managed_ok
             )
             context = build_owner_request(
-                prompt=prompt, account=account, history=history, turn=turn, now=self._clock.now()
+                prompt=prompt,
+                account=account,
+                history=history,
+                turn=turn,
+                now=self._clock.now(),
+                managed_allowed=managed_ok,
             )
+            # Tainted from the start when the context already carries
+            # third-party text or managed content (§7.1, M03 D45).
+            run.tainted = context.tainted
             state = _RunState(
                 account_id=account_id,
                 chat_id=chat_id,
@@ -274,13 +311,19 @@ class OwnerRequestRuntime:
                 items=list(context.items),
                 instructions=context.instructions,
                 used_managed=any(item.provenance is Provenance.MANAGED for item in context.items),
+                tainted=context.tainted,
+                directly_tainted=context.directly_tainted,
+                # The reply may restate a managed forward or quote in the
+                # current turn or the included history, so it carries their
+                # refs and a purge of that chat redacts it too (§10.4).
+                refs=_managed_refs([*history, turn]),
                 received_at=turn.created_at,
             )
             return _Started(
                 account_id,
                 chat_id,
                 state=state,
-                managed_consent=managed.granted,
+                managed_consent=managed_ok,
                 over_budget=over_budget,
             )
 
@@ -351,6 +394,8 @@ class OwnerRequestRuntime:
                     # All results of one turn go back together, before the next call.
                     results = await executor.execute_all(response.tool_calls)
                     state.items.extend(results)
+                    state.refs = executor.refs
+                    state.directly_tainted = state.directly_tainted or executor.saw_untrusted
                     if any(result.provenance is Provenance.MANAGED for result in results):
                         state.used_managed = True
                 case StopReason.COMPLETED:
@@ -382,6 +427,19 @@ class OwnerRequestRuntime:
             month_start(self._clock.now())
         )
         return spent >= limit
+
+    def _taint_recorder(self, state: _RunState) -> TaintRecorder:
+        """Persist the taint the moment it happens, not at the end of the run:
+        a crash mid-run must not leave a tainted run looking clean."""
+
+        async def record() -> None:
+            state.tainted = True
+            async with transaction(self._session_factory) as uow:
+                run = await AgentRunRepository(uow.session, state.account_id).get(state.run_id)
+                if run is not None:
+                    run.tainted = True
+
+        return record
 
     def _step_recorder(self, account_id: int, run_id: int) -> StepRecorder:
         async def record(tool_name: str, digest: str | None, status: str, latency_ms: int) -> None:
@@ -430,7 +488,17 @@ class OwnerRequestRuntime:
                     # A reply built from managed content is itself managed
                     # content: excluded later if `ai_managed` is revoked.
                     contains_managed=state.used_managed,
+                    # A reply from a tainted run may restate third-party text
+                    # (an injection paraphrased by the model): it is always
+                    # shown as untrusted later, and it taints later runs only
+                    # when this run's own inputs carried such text, so taint
+                    # decays once its source leaves the window (§7.1, D56).
+                    third_party=state.directly_tainted,
+                    from_tainted_run=state.tainted,
                     run_id=state.run_id,
+                    # Which conversations/contacts the reply drew on, so a
+                    # deletion of one of them can find this turn (§10.4).
+                    refs=state.refs.as_json(),
                 )
             )
         logger.info(

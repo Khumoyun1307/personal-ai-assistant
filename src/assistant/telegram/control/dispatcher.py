@@ -24,7 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import callbacks, connections, service
 from assistant.accounts.models import Account
-from assistant.conversations import visibility
+from assistant.agent.confirmations import TOOL_CONFIRM_CARD
+from assistant.conversations import read, visibility
 from assistant.core.clock import Clock
 from assistant.core.jobs import (
     CONNECTION_NOTIFY_TASK,
@@ -73,7 +74,10 @@ class ControlDispatcher:
         self._budget = monthly_budget_usd
 
     async def dispatch(self, session: AsyncSession, message: IncomingMessage) -> DispatchOutcome:
-        command, argument = handlers.parse_command(message.text)
+        # A forwarded message is someone else's text: it is never a command,
+        # a stop word or an answer to a pending question — it goes to the
+        # agent as a tainted turn (§6 invariant 3b; M03 D49).
+        command, argument = ("", "") if message.forwarded else handlers.parse_command(message.text)
 
         # /start is special: it is the only entry point that may create an
         # account, so it runs before any account lookup.
@@ -112,7 +116,7 @@ class ControlDispatcher:
             )
 
         # Precedence rule 2: the kill switch never depends on the model.
-        if handlers.is_stop_word(message.text):
+        if not message.forwarded and handlers.is_stop_word(message.text):
             account.autonomy_paused = True
             await session.flush()
             await service.clear_pending_input(session, account_id=account.id)
@@ -123,7 +127,11 @@ class ControlDispatcher:
             return DispatchOutcome(HandlerResult(True, "pause", send, note="stop_word"), account.id)
 
         # Precedence rule 3: an open question consumes this message.
-        pending = await service.get_pending_input(session, account_id=account.id, clock=self._clock)
+        pending = (
+            None
+            if message.third_party
+            else await service.get_pending_input(session, account_id=account.id, clock=self._clock)
+        )
         if pending is not None and pending.kind == "onboarding_consent":
             result = await handlers.handle_consent_reply(
                 session, self._gateway, self._clock, message, account
@@ -138,6 +146,17 @@ class ControlDispatcher:
         # SAME transaction: a crash between the two can lose neither, and a
         # rollback leaves neither (M00 spike E1). One account's turns run one
         # at a time, in order (lock `acct:{id}:control`).
+        origin = (
+            await read.managed_origin(
+                session,
+                account.id,
+                user_ids=tuple(message.origin_user_ids),
+                chat_ids=tuple(message.origin_chat_ids),
+                names=tuple(message.origin_names),
+            )
+            if message.third_party
+            else read.ManagedOrigin()
+        )
         turn = await service.record_control_turn(
             session,
             account_id=account.id,
@@ -145,6 +164,14 @@ class ControlDispatcher:
             text=message.text,
             telegram_message_id=message.telegram_message_id,
             created_at=message.received_at,
+            third_party=message.third_party,
+            quoted_text=message.quoted_text,
+            # Forwarded/quoted text from one of the owner's managed chats is
+            # managed content: it needs `ai_managed` to reach a model, and is
+            # cleared by managed-data deletion and by purging that chat, which
+            # finds it through `refs` (§6 invariant 9, M03 D53).
+            contains_managed=origin.managed,
+            refs=origin.as_refs() if origin.managed else None,
         )
         if self._scheduler is None:
             logger.warning("owner_turn_not_queued", account_id=account.id, turn_id=turn.id)
@@ -210,6 +237,10 @@ class ControlDispatcher:
             chat_id=chat_id,
             message_id=message_id,
         )
+        if parsed.kind == TOOL_CONFIRM_CARD:
+            return await handlers.handle_tool_confirmation_press(
+                session, self._gateway, self._clock, self._scheduler, account, press
+            )
         return await handlers.handle_card_press(session, self._gateway, self._clock, account, press)
 
     async def _load_account_by_id(self, session: AsyncSession, from_id: int) -> Account | None:

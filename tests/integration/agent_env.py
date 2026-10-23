@@ -1,0 +1,181 @@
+"""The owner agent over the S02 business environment (S03.1).
+
+`business_env` gives the real inbox, cards and stored conversations; this
+adds the production LLM wiring (consent gate → metering → FakeLLM), a
+FakeChannel for the agent's replies and cards, and a test-only `configure`
+tool so the confirmation gate can be exercised before M03's real configure
+tools exist (S03.3).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select, text
+
+from assistant.accounts.models import AuditLogEntry, ControlTurn
+from assistant.agent.confirmations import ConfirmationApplier
+from assistant.agent.persistence import DbCallRecorder, DbConsentReader
+from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime
+from assistant.agent.tools.registry import (
+    CapabilityClass,
+    ToolContext,
+    ToolDefinition,
+    ToolOutcome,
+    ToolRegistry,
+    ToolServices,
+    default_registry,
+)
+from assistant.db.uow import transaction
+from assistant.llm.consent import ConsentGatedLLMClient
+from assistant.llm.metering import MeteredLLMClient
+from assistant.llm.port import LLMRequest, TextItem, ToolResultItem
+from tests.fakes.channel import FakeChannel
+from tests.fakes.llm import FakeLLM
+from tests.integration.business_env import OWNER, Env, deliver, private_message
+
+READ_FLAGS = frozenset(
+    {
+        "tool.get_status",
+        "tool.search_messages",
+        "tool.resolve_contact",
+        "tool.get_conversation",
+        "tool.list_conversations",
+    }
+)
+NOTE_FLAG = "tool.test_set_note"
+ALL_FLAGS = READ_FLAGS | {NOTE_FLAG}
+
+
+class SetNoteArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str = Field(description="A synthetic note.")
+
+
+#: Notes that make the test tool misbehave, for the applier's failure paths.
+NOTE_EXPLODE = "explode"
+NOTE_ODD_STATUS = "odd-status"
+NOTE_CANCEL = "cancel"
+
+
+async def set_note(ctx: ToolContext, args: SetNoteArgs) -> ToolOutcome:
+    """A state change: one content-free audit row per execution."""
+    if args.note == NOTE_EXPLODE:
+        raise RuntimeError("synthetic handler failure")
+    if args.note == NOTE_CANCEL:
+        raise asyncio.CancelledError  # a shutdown mid-way
+    if args.note == NOTE_ODD_STATUS:
+        return ToolOutcome("awaiting_approval")
+    async with transaction(ctx.services.session_factory) as uow:
+        uow.session.add(
+            AuditLogEntry(
+                account_id=ctx.account_id,
+                at=ctx.services.clock.now(),
+                actor="agent",
+                event="test_note_set",
+                details={"length": len(args.note)},
+            )
+        )
+    return ToolOutcome("ok")
+
+
+#: Test-only: a `configure` tool, registered only in `registry_with_note_tool()`.
+SET_NOTE = ToolDefinition(
+    name="test_set_note",
+    description="Test-only configure tool.",
+    args_model=SetNoteArgs,
+    capability=CapabilityClass.CONFIGURE,
+    handler=set_note,
+    release_flag=NOTE_FLAG,
+)
+
+
+def registry_with_note_tool() -> ToolRegistry:
+    registry = default_registry()
+    registry.register(SET_NOTE)
+    return registry
+
+
+def runtime(
+    env: Env,
+    fake: FakeLLM,
+    channel: FakeChannel,
+    *,
+    flags: frozenset[str] = ALL_FLAGS,
+    registry: ToolRegistry | None = None,
+) -> OwnerRequestRuntime:
+    llm = ConsentGatedLLMClient(
+        MeteredLLMClient(fake, DbCallRecorder(env.factory, env.clock)), DbConsentReader(env.factory)
+    )
+    return OwnerRequestRuntime(
+        session_factory=env.factory,
+        llm=llm,
+        channel=channel,
+        registry=registry or registry_with_note_tool(),
+        clock=env.clock,
+        config=AgentConfig(model="gpt-6-luna", enabled_flags=flags),
+    )
+
+
+def applier(
+    env: Env, channel: FakeChannel, *, flags: frozenset[str] = ALL_FLAGS
+) -> ConfirmationApplier:
+    return ConfirmationApplier(
+        session_factory=env.factory,
+        clock=env.clock,
+        channel=channel,
+        registry=registry_with_note_tool(),
+        services=ToolServices(
+            session_factory=env.factory, clock=env.clock, monthly_budget_usd=None, channel=channel
+        ),
+        enabled_flags=flags,
+    )
+
+
+async def ask(env: Env, question: str, **extra: Any) -> int:
+    """The owner types `question` (plus any payload fields); returns the turn id."""
+    update = private_message(OWNER, question)
+    update["message"].update(extra)
+    await deliver(env, update)
+    async with env.factory() as session:
+        return int(
+            (
+                await session.execute(
+                    select(ControlTurn.id)
+                    .where(ControlTurn.role == "owner")
+                    .order_by(ControlTurn.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one()
+        )
+
+
+async def one_id(env: Env, sql: str, **params: Any) -> int:
+    async with env.factory() as session:
+        return int((await session.execute(text(sql), params)).scalar_one())
+
+
+async def note_rows(env: Env) -> int:
+    async with env.factory() as session:
+        rows = await session.execute(
+            select(AuditLogEntry).where(AuditLogEntry.event == "test_note_set")
+        )
+        return len(rows.scalars().all())
+
+
+def request_texts(request: LLMRequest) -> str:
+    """Everything a request would have sent, as one string, for assertions."""
+    parts = [request.instructions]
+    for item in request.items:
+        if isinstance(item, TextItem):
+            parts.append(item.text)
+        elif isinstance(item, ToolResultItem):
+            parts.append(item.output)
+    return "\n".join(parts)
+
+
+def args(**values: Any) -> str:
+    return json.dumps(values)

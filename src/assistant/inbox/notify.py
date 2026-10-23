@@ -46,6 +46,8 @@ class AlertKind(StrEnum):
     BACKUP_UPLOAD_STALE = "backup_upload_stale"
     #: The database was restored from a backup and post-restore ran (§15.6).
     RESTORE_NOTICE = "restore_notice"
+    #: A change the owner confirmed was cut off while being applied (S03.1).
+    CONFIRMATION_INTERRUPTED = "confirmation_interrupted"
 
 
 #: Owner-facing text per kind. Plain statements of fact (§6 invariant 11).
@@ -79,6 +81,11 @@ ALERT_TEXT: dict[AlertKind, str] = {
         "decided after that is undone: autonomy is paused, open approvals were cancelled, "
         "and messages from the gap may be missing (it is recorded as a coverage gap). "
         "Please check /status and re-apply any settings, consent or pause you changed since."
+    ),
+    AlertKind.CONFIRMATION_INTERRUPTED: (
+        "⚠️ A change you confirmed (<code>{tool}</code>) was interrupted while it was being "
+        "applied. It may or may not have taken effect; please check before asking again. "
+        "I am not counting it as done."
     ),
 }
 

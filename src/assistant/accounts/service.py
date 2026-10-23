@@ -250,14 +250,24 @@ async def record_control_turn(
     telegram_message_id: int | None = None,
     contains_managed: bool = False,
     created_at: datetime | None = None,
+    third_party: bool = False,
+    quoted_text: str | None = None,
+    refs: dict[str, list[int]] | None = None,
 ) -> ControlTurn:
-    """Append a turn to the owner's conversation with the assistant."""
+    """Append a turn to the owner's conversation with the assistant.
+
+    `third_party` marks forwarded or quoted third-party text (taint, §7.1);
+    `quoted_text` keeps the quote itself (content-bearing, §10.1).
+    """
     turn = ControlTurn(
         account_id=account_id,
         role=role,
         text=text,
         telegram_message_id=telegram_message_id,
         contains_managed=contains_managed,
+        third_party=third_party or quoted_text is not None,
+        quoted_text=quoted_text,
+        refs=refs or {},
     )
     if created_at is not None:
         # When the owner's message arrived, not when we got round to it: the

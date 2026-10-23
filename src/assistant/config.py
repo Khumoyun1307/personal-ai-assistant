@@ -14,11 +14,24 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from assistant.core.model_routes import ModelRoutes, processor_for_model
+
 AppEnv = Literal["dev", "prod"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 LogFormat = Literal["json", "console"]
 
 REQUIRED_DB_DRIVER = "postgresql+psycopg"
+
+#: Run types with a `LLM_ROUTE_<RUN_TYPE>_MODEL` setting (agent/models.py RUN_TYPES).
+ROUTE_RUN_TYPES = (
+    "owner_request",
+    "triage",
+    "draft_reply",
+    "summarize",
+    "extract_memory",
+    "evaluate_monitor",
+    "interpret_instruction",
+)
 
 
 class ConfigError(Exception):
@@ -58,6 +71,16 @@ class Settings(BaseSettings):
     llm_owner_request_effort: (
         Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
     ) = "low"
+    #: Per-route model overrides `LLM_ROUTE_<RUN_TYPE>_MODEL` (ARCHITECTURE
+    #: §7.4); empty means `LLM_DEFAULT_MODEL`. The processor behind each
+    #: model is checked against consent on every call (`core/model_routes.py`).
+    llm_route_owner_request_model: str | None = None
+    llm_route_triage_model: str | None = None
+    llm_route_draft_reply_model: str | None = None
+    llm_route_summarize_model: str | None = None
+    llm_route_extract_memory_model: str | None = None
+    llm_route_evaluate_monitor_model: str | None = None
+    llm_route_interpret_instruction_model: str | None = None
 
     # --- Feature flags -------------------------------------------------------
     #: Release flags that are ON, e.g. `tool.get_status`. Everything defaults
@@ -85,6 +108,13 @@ class Settings(BaseSettings):
         "openai_api_key",
         "llm_monthly_budget_usd",
         "llm_owner_request_effort",
+        "llm_route_owner_request_model",
+        "llm_route_triage_model",
+        "llm_route_draft_reply_model",
+        "llm_route_summarize_model",
+        "llm_route_extract_memory_model",
+        "llm_route_evaluate_monitor_model",
+        "llm_route_interpret_instruction_model",
         "privacy_policy_url",
         "heartbeat_url",
         "backup_status_path",
@@ -136,6 +166,21 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
+    def _every_route_has_a_known_processor(self) -> Self:
+        """A model no processor serves would only fail later, at the consent
+        wrapper, on every call; refuse it at startup and in `healthcheck`,
+        naming the setting (never its value)."""
+        settings = {"LLM_DEFAULT_MODEL": self.llm_default_model} | {
+            f"LLM_ROUTE_{run_type.upper()}_MODEL": model
+            for run_type in ROUTE_RUN_TYPES
+            if (model := getattr(self, f"llm_route_{run_type}_model"))
+        }
+        unknown = [name for name, model in settings.items() if processor_for_model(model) is None]
+        if unknown:
+            raise ValueError(f"no known processor serves the model in: {', '.join(unknown)}")
+        return self
+
+    @model_validator(mode="after")
     def _production_requirements(self) -> Self:
         if self.app_env != "prod":
             return self
@@ -158,3 +203,13 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env == "prod"
+
+    @property
+    def model_routes(self) -> ModelRoutes:
+        """The model per run type (ARCHITECTURE §7.4)."""
+        overrides = {
+            run_type: model
+            for run_type in ROUTE_RUN_TYPES
+            if (model := getattr(self, f"llm_route_{run_type}_model"))
+        }
+        return ModelRoutes(default=self.llm_default_model, overrides=overrides)

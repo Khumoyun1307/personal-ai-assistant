@@ -16,10 +16,11 @@ from aiogram import Bot
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from assistant.agent.confirmations import ConfirmationApplier
 from assistant.agent.persistence import DbCallRecorder, DbConsentReader
 from assistant.agent.ports import ControlChannel
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime
-from assistant.agent.tools.registry import default_registry
+from assistant.agent.tools.registry import ToolServices, default_registry
 from assistant.config import ConfigError, Settings
 from assistant.core.clock import Clock, SystemClock
 from assistant.core.routing import Route
@@ -73,9 +74,32 @@ def build_llm_client(
 
 def agent_config(settings: Settings) -> AgentConfig:
     return AgentConfig(
-        model=settings.llm_default_model,
+        model=settings.model_routes.model_for("owner_request"),
         effort=settings.llm_owner_request_effort,
         monthly_budget_usd=settings.llm_monthly_budget_usd,
+        enabled_flags=settings.feature_flags,
+    )
+
+
+def build_confirmation_applier(
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    channel: ControlChannel,
+    clock: Clock,
+) -> ConfirmationApplier:
+    """Runs held tool calls the owner confirmed (S03.1), with the same
+    registry and flags as the owner runtime."""
+    return ConfirmationApplier(
+        session_factory=session_factory,
+        clock=clock,
+        channel=channel,
+        registry=default_registry(),
+        services=ToolServices(
+            session_factory=session_factory,
+            clock=clock,
+            monthly_budget_usd=settings.llm_monthly_budget_usd,
+            channel=channel,
+        ),
         enabled_flags=settings.feature_flags,
     )
 
@@ -155,6 +179,9 @@ async def running_process(
                     ),
                     backup_status_path=settings.backup_status_path,
                     backup_upload_required=settings.backup_remote is not None,
+                    confirmation_applier=build_confirmation_applier(
+                        settings, session_factory, channel, clock
+                    ),
                 ),
             )
         async with jobs_app.open_async():

@@ -33,6 +33,14 @@ Rules:
   deploying again (`git checkout <sha>` on the server is *not* the path).
 - After a deploy, confirm in the control chat that `/status` answers and the
   heartbeat monitor is still receiving pings.
+- **Search re-key (S03.1 onwards).** When a deploy changes the search
+  normalizer (`NORMALIZER_VERSION`, ARCHITECTURE §11.2 — first time: the
+  S03.1 deploy, v1 → v2), `just prod-status <ip>` prints a healthcheck
+  `WARNING: search keys were built with normalizer v…`. Run
+  `just prod <ip> reindex-search` once after the deploy: it re-keys every
+  retained message in short batches beside the running app (an edit made
+  meanwhile always wins), records the new version and prints counts only.
+  Running it again is a no-op. Locally: `just reindex-search`.
 - A `backup_upload_stale` alert means dumps are produced but no longer reach
   B2: run `just prod-backup <ip>` and read its log lines (`off-site sync of
   … failed` / `… refused`); see `restore.md` §C for the delete guard —

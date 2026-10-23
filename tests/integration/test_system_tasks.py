@@ -28,7 +28,7 @@ from assistant.accounts.models import (
     ForeignConnection,
 )
 from assistant.agent.budget import check_budget_thresholds
-from assistant.agent.models import AgentRun, LlmCall
+from assistant.agent.models import AgentRun, LlmCall, ToolConfirmation
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.db.models import KEY_POLLER_HEARTBEAT
@@ -418,6 +418,76 @@ async def test_every_policy_retention_rule_is_applied(
         assert len((await session.execute(select(AuditLogEntry))).scalars().all()) == 1
         assert len((await session.execute(select(AgentRun))).scalars().all()) == 1
     assert texts == {old_turn.id: None, new_turn.id: "Synthetic new"}
+
+
+async def test_quoted_text_is_cleared_with_the_turn_text_after_ninety_days(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    """`control_turns.quoted_text` (S03.1) follows `text` (ARCHITECTURE §10.4)."""
+    account_id = await owner(factory, clock)
+    async with transaction(factory) as uow:
+        old = await service.record_control_turn(
+            uow.session,
+            account_id=account_id,
+            role="owner",
+            text="What does this mean?",
+            quoted_text="Synthetic quoted line",
+            created_at=NOW - timedelta(days=91),
+        )
+        new = await service.record_control_turn(
+            uow.session,
+            account_id=account_id,
+            role="owner",
+            text="And this?",
+            quoted_text="Synthetic recent quote",
+            created_at=NOW - timedelta(days=1),
+        )
+    await sweep_all(factory, clock)
+    async with factory() as session:
+        rows = {
+            turn.id: (turn.text, turn.quoted_text, turn.third_party)
+            for turn in (await session.execute(select(ControlTurn))).scalars().all()
+        }
+    assert rows[old.id] == (None, None, True)
+    assert rows[new.id] == ("And this?", "Synthetic recent quote", True)
+
+
+async def test_held_tool_calls_expire_and_lose_their_arguments(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    """`tool_confirmations.args` (S03.1): kept only until decided or 24 h."""
+    account_id = await owner(factory, clock)
+    async with transaction(factory) as uow:
+        for call_id, status, age in (
+            ("old-pending", "pending", timedelta(hours=25)),
+            ("fresh-pending", "pending", timedelta(hours=1)),
+            ("decided", "rejected", timedelta(hours=1)),
+            ("stuck-confirmed", "confirmed", timedelta(hours=26)),
+        ):
+            uow.session.add(
+                ToolConfirmation(
+                    account_id=account_id,
+                    tool_call_id=call_id,
+                    tool_name="synthetic_configure",
+                    args={"note": "Synthetic held text"},
+                    status=status,
+                    created_at=NOW - age,
+                    decided_at=NOW - age + timedelta(minutes=1) if status != "pending" else None,
+                )
+            )
+    report = await sweep_all(factory, clock)
+    async with factory() as session:
+        rows = {
+            row.tool_call_id: (row.status, row.args)
+            for row in (await session.execute(select(ToolConfirmation))).scalars().all()
+        }
+    assert rows == {
+        "old-pending": ("expired", None),
+        "fresh-pending": ("pending", {"note": "Synthetic held text"}),
+        "decided": ("rejected", None),
+        "stuck-confirmed": ("failed", None),
+    }
+    assert report.tool_confirmations == 3
 
 
 # ------------------------------------------------- retention: managed content

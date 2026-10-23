@@ -1,7 +1,8 @@
 """Command-line entrypoint: `python -m assistant <command>`.
 
 Commands: `healthcheck`, `migrate`, `inbox requeue|status`, `run` (the
-long-running process, S01.5) and `post-restore` (after a backup restore, S02.5).
+long-running process, S01.5), `post-restore` (after a backup restore, S02.5)
+and `reindex-search` (after a search-normalizer change, S03.1).
 """
 
 from __future__ import annotations
@@ -40,6 +41,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     inbox_sub.add_parser("status", help="show inbox counts by status")
 
+    reindex = sub.add_parser(
+        "reindex-search",
+        help="re-key retained messages for the current search normalizer (ARCHITECTURE §11.2)",
+    )
+    reindex.add_argument(
+        "--force", action="store_true", help="re-key even if the stored version is current"
+    )
+
     restore = sub.add_parser(
         "post-restore", help="make a restored database safe (ARCHITECTURE §15.6)"
     )
@@ -51,9 +60,15 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _check_database(database_url: str) -> None:
-    """Open a connection and run `SELECT 1`. Raises on failure."""
+async def _check_database(database_url: str) -> int | None:
+    """Open a connection and run `SELECT 1`. Raises on failure.
+
+    Returns the stored search-normalizer version, or None when the schema is
+    not migrated yet (no `system_state` table or no row) or when no message
+    holds text (a fresh install: there is nothing to re-key).
+    """
     from sqlalchemy import text
+    from sqlalchemy.exc import ProgrammingError
     from sqlalchemy.ext.asyncio import create_async_engine
     from sqlalchemy.pool import NullPool
 
@@ -62,8 +77,40 @@ async def _check_database(database_url: str) -> None:
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
+            try:
+                value = (
+                    await connection.execute(
+                        text(
+                            "SELECT (value->>'version')::int FROM app.system_state "
+                            "WHERE key = 'normalizer_version'"
+                        )
+                    )
+                ).scalar_one_or_none()
+                keyed = (
+                    await connection.execute(
+                        text("SELECT EXISTS (SELECT 1 FROM app.messages WHERE text IS NOT NULL)")
+                    )
+                ).scalar_one()
+            except ProgrammingError:
+                return None
+            if value is None or not keyed:
+                return None
+            return int(value)
     finally:
         await engine.dispose()
+
+
+def normalizer_warning(stored: int | None) -> str | None:
+    """The healthcheck line when stored search keys are older than the code."""
+    from assistant.memory.search import NORMALIZER_VERSION
+
+    if stored is None or stored >= NORMALIZER_VERSION:
+        return None
+    return (
+        f"WARNING: search keys were built with normalizer v{stored}, the code is "
+        f"v{NORMALIZER_VERSION}; run `python -m assistant reindex-search` "
+        "(`just reindex-search`)."
+    )
 
 
 def healthcheck() -> int:
@@ -90,7 +137,7 @@ def healthcheck() -> int:
     from sqlalchemy.exc import SQLAlchemyError
 
     try:
-        asyncio.run(_check_database(settings.database_url.get_secret_value()))
+        stored_version = asyncio.run(_check_database(settings.database_url.get_secret_value()))
     except (SQLAlchemyError, OSError) as error:
         # Reported by exception type: the message would quote the URL (§14.4).
         print(
@@ -100,6 +147,11 @@ def healthcheck() -> int:
         return EXIT_FAILED
 
     print(f"OK: configuration valid, database reachable (APP_ENV={settings.app_env})")
+    warning = normalizer_warning(stored_version)
+    if warning is not None:
+        # A warning, not a failure: search still works, it just misses
+        # spellings the older keys did not fold.
+        print(warning)
     return EXIT_OK
 
 
@@ -203,6 +255,43 @@ def run(args: argparse.Namespace) -> int:
         return EXIT_FAILED
 
 
+def reindex_search_command(args: argparse.Namespace) -> int:
+    """`reindex-search [--force]` (ARCHITECTURE §11.2): content-free output."""
+    from assistant.config import Settings
+    from assistant.core.clock import SystemClock
+    from assistant.db.engine import build_engine, build_session_factory
+    from assistant.memory.search_index import reindex
+
+    try:
+        settings = Settings()  # type: ignore[call-arg]
+    except ValidationError as error:
+        print("Configuration invalid:", file=sys.stderr)
+        for item in error.errors(include_input=False, include_url=False):
+            location = ".".join(str(part) for part in item["loc"]) or "<settings>"
+            print(f"  {location.upper()}: {item['msg']}", file=sys.stderr)
+        return EXIT_FAILED
+
+    async def run_it() -> int:
+        engine = build_engine(settings.database_url.get_secret_value())
+        try:
+            report = await reindex(
+                build_session_factory(engine), SystemClock(), force=bool(args.force)
+            )
+        finally:
+            await engine.dispose()
+        if report.up_to_date:
+            print(f"OK: search keys already at normalizer v{report.version}; nothing to do")
+            return EXIT_OK
+        print(
+            f"OK: re-keyed {report.updated} of {report.scanned} retained message(s) "
+            f"(v{report.previous_version} -> v{report.version}); "
+            f"{report.skipped_concurrent} edited meanwhile and left as edited"
+        )
+        return EXIT_OK
+
+    return asyncio.run(run_it())
+
+
 def post_restore_command(args: argparse.Namespace) -> int:
     """`post-restore --backup-taken-at <ts>` (ARCHITECTURE §15.6; runbooks/restore.md)."""
     from datetime import UTC, datetime
@@ -259,6 +348,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run(args)
     if args.command == "post-restore":
         return post_restore_command(args)
+    if args.command == "reindex-search":
+        return reindex_search_command(args)
     print(
         f"'{args.command}' is not implemented yet; see docs/IMPLEMENTATION_PLAN.md",
         file=sys.stderr,

@@ -84,6 +84,8 @@ class Env:
     clock: FakeClock
     dispatcher: ControlDispatcher
     bot_id: int = BOT_ID
+    #: The job scheduler the dispatcher defers with (for reconciler tests).
+    scheduler: ProcrastinateScheduler | None = None
 
 
 # ------------------------------------------------------------ payloads
@@ -201,6 +203,10 @@ async def environment(
     async def notify_owner(event_id: int) -> None:  # deferred only
         return None
 
+    @app.task(name="agent.apply_confirmation", queue="llm")
+    async def apply_confirmation(confirmation_id: int) -> None:  # deferred only
+        return None
+
     scheduler = ProcrastinateScheduler(app)
     owners = owner_ids
     lookup = FakeLookup()
@@ -226,7 +232,7 @@ async def environment(
     )
     try:
         async with app.open_async():
-            yield Env(factory, processor, sender, lookup, clock, dispatcher, bot_id)
+            yield Env(factory, processor, sender, lookup, clock, dispatcher, bot_id, scheduler)
     finally:
         async with engine.begin() as conn:
             await conn.exec_driver_sql(RESET)
