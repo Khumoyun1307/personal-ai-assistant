@@ -41,10 +41,22 @@ OPEN_TAG = '<untrusted source="{source}" trust="untrusted">'
 CLOSE_TAG = "</untrusted>"
 
 
+#: Characters a model may read as `<` or `>`: fullwidth, small, single
+#: guillemets, CJK and ornamental angle brackets. Escaped like the real ones
+#: so a lookalike cannot pass for a closing tag either.
+_LOOKALIKE_LT = "＜﹤‹〈❮〈"
+_LOOKALIKE_GT = "＞﹥›〉❯〉"
+_LOOKALIKES = str.maketrans(
+    {**dict.fromkeys(_LOOKALIKE_LT, "&lt;"), **dict.fromkeys(_LOOKALIKE_GT, "&gt;")}
+)
+
+
 def escape(text: str) -> str:
     """Neutralise anything that could form a tag. `&` first, so an existing
-    entity cannot be un-escaped into a bracket by the reader."""
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    entity cannot be un-escaped into a bracket by the reader; lookalike
+    brackets become the same entities as real ones."""
+    escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return escaped.translate(_LOOKALIKES)
 
 
 def wrap(text: str | None, source: Source) -> str | None:

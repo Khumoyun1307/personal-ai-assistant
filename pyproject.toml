@@ -86,6 +86,9 @@ allowed-confusables = ["ʻ", "ʼ", "‘", "’"]
 "tests/unit/test_search_normalize.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/integration/test_message_search.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/integration/test_conversation_tools.py" = ["RUF001", "RUF002", "RUF003"]
+# Untrusted delimiting lists the bracket lookalikes it neutralises.
+"src/assistant/agent/untrusted.py" = ["RUF001"]
+"tests/unit/test_untrusted.py" = ["RUF001"]
 "tests/scenarios/test_find_the_agreed_meeting_time.py" = ["RUF001", "RUF002", "RUF003"]
 # AGENTS §5: only these modules may touch the Bot API. ingress/ is limited to
 # getUpdates, getMe and deleteWebhook; gateway.py owns everything with a
