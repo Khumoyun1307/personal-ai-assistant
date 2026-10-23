@@ -10,6 +10,7 @@ can speak as the owner (§6 invariant 2).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -23,7 +24,18 @@ class Delivery:
     error: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class Button:
+    """An inline button on a control-chat card (§6.7). `callback_data` is the
+    encoded `<kind>:<token>:<op>` (`accounts.callbacks.encode`)."""
+
+    label: str
+    callback_data: str
+
+
 class ControlChannel(Protocol):
-    async def send(self, *, account_id: int, chat_id: int, text: str) -> Delivery: ...
+    async def send(
+        self, *, account_id: int, chat_id: int, text: str, buttons: Sequence[Button] = ()
+    ) -> Delivery: ...
 
     async def typing(self, *, account_id: int, chat_id: int) -> None: ...

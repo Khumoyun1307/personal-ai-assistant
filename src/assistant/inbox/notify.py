@@ -13,6 +13,7 @@ are both written to `audit_log` (content-free: kind, key, delivered).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
@@ -21,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import Account, AuditLogEntry
-from assistant.core.channel import ControlChannel
+from assistant.core.channel import Button, ControlChannel
 from assistant.core.clock import Clock
 from assistant.db.uow import transaction
 from assistant.observability.logging import get_logger
@@ -51,8 +52,10 @@ ALERT_TEXT: dict[AlertKind, str] = {
         "Messages are queued by Telegram for up to 24 hours; I will catch up when this clears."
     ),
     AlertKind.DEAD_LETTER: (
-        "⚠️ An incoming update could not be processed after several attempts and was set "
-        "aside. Nothing was lost; it can be retried once the problem is fixed."
+        "⚠️ {count} incoming update(s) could not be processed after several attempts and "
+        "were set aside. They can be retried once the problem is fixed, but only until "
+        "{purge_date}: then their content is deleted and they cannot be recovered. "
+        "I will remind you daily until then."
     ),
     AlertKind.BUDGET_THRESHOLD: "💰 This month's AI spend has reached {percent}% of the budget.",
     AlertKind.CONNECTION_CHANGE: "{body}",
@@ -73,6 +76,8 @@ ALERT_TEXT: dict[AlertKind, str] = {
 class AlertResult:
     sent: bool
     reason: str
+    #: The control-chat message id, when delivered (a card needs it).
+    message_id: int | None = None
 
 
 class OwnerAlerts:
@@ -93,12 +98,13 @@ class OwnerAlerts:
         *,
         dedupe_key: str,
         cooldown: timedelta | None = None,
+        buttons: Sequence[Button] = (),
         **values: int | str,
     ) -> AlertResult:
         """Send one alert unless the same `dedupe_key` was sent recently.
 
-        `cooldown=None` means once ever for that key (e.g. one alert per
-        dead-lettered row, one per budget threshold per month).
+        `cooldown=None` means once ever for that key (e.g. one per budget
+        threshold per month). `buttons` make the alert a card (§6.7).
         """
         async with transaction(self._session_factory) as uow:
             account = await uow.session.get(Account, account_id)
@@ -109,7 +115,10 @@ class OwnerAlerts:
             chat_id = account.control_chat_id
 
         delivery = await self._channel.send(
-            account_id=account_id, chat_id=chat_id, text=ALERT_TEXT[kind].format(**values)
+            account_id=account_id,
+            chat_id=chat_id,
+            text=ALERT_TEXT[kind].format(**values),
+            buttons=buttons,
         )
         async with transaction(self._session_factory) as uow:
             uow.session.add(
@@ -122,7 +131,11 @@ class OwnerAlerts:
                 )
             )
         logger.info("owner_alert", account_id=account_id, kind=kind.value, delivered=delivery.ok)
-        return AlertResult(delivery.ok, "sent" if delivery.ok else "not_delivered")
+        return AlertResult(
+            delivery.ok,
+            "sent" if delivery.ok else "not_delivered",
+            delivery.message_id if delivery.ok else None,
+        )
 
     async def _recently_sent(
         self,
@@ -162,7 +175,7 @@ class OwnerAlerts:
         sent = 0
         for account_id in account_ids:
             outcome = await self.notify_owner(
-                account_id, kind, dedupe_key=dedupe_key, cooldown=cooldown, **values
+                account_id, kind, dedupe_key=dedupe_key, cooldown=cooldown, buttons=(), **values
             )
             sent += int(outcome.sent)
         return sent

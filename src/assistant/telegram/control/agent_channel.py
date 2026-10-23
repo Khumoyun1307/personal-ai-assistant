@@ -7,7 +7,12 @@ the agent cannot speak as the owner (§6 invariant 2).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
 from assistant.agent.ports import Delivery
+from assistant.core.channel import Button
 from assistant.telegram.gateway import ControlChat, OutboundGateway
 
 
@@ -15,9 +20,23 @@ class GatewayControlChannel:
     def __init__(self, gateway: OutboundGateway) -> None:
         self._gateway = gateway
 
-    async def send(self, *, account_id: int, chat_id: int, text: str) -> Delivery:
+    async def send(
+        self, *, account_id: int, chat_id: int, text: str, buttons: Sequence[Button] = ()
+    ) -> Delivery:
+        keyboard = (
+            InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text=b.label, callback_data=b.callback_data)
+                        for b in buttons
+                    ]
+                ]
+            )
+            if buttons
+            else None
+        )
         result = await self._gateway.send_text(
-            ControlChat(account_id=account_id, chat_id=chat_id), text
+            ControlChat(account_id=account_id, chat_id=chat_id), text, keyboard=keyboard
         )
         return Delivery(
             ok=result.ok,
