@@ -1,129 +1,163 @@
 # M02 — the owner's guide to finishing the milestone
 
-*Written for the owner, in plain language. Last updated 2026-10-21. The agent
-keeps this in step with [M02.md](M02.md); do the steps in order, one at a
-time, and tell the agent what you saw after each one.*
+*Written for the owner, in plain language. Last updated 2026-10-22. The agent
+keeps this in step with [M02.md](M02.md). Do the steps in order and send the
+agent the short phrase at the end of each step. Steps 1–5 can be done in any
+order, on the same day.*
 
 ## Where things stand
 
-- All five M02 slices are built, tested and merged (M02.md has the detail).
-- What is left needs **you**: a server to run the bot on, and a two-hour live
-  test. Everything else is the agent's.
-- There is **one bot, Alviro**. It is the bot you have been using since M00
-  and it will be the production bot. (The documents originally assumed a
-  separate test bot; that was wrong and has been corrected.)
-- Already done, do not repeat: the M00 live tests (LV-01…LV-19 except the
-  LV-08 "reopen" half), the 24 h window test (closed-window half), the
-  privacy policy v3 (published), the M00 review ("M00 OK", 2026-10-21).
+- All five M02 slices are built and merged. A review on 2026-10-22 found bugs
+  in the deploy and backup scripts (the backup image did not even build) and
+  a few smaller code issues; the agent is fixing them now (slice S02.6).
+- Decisions of 2026-10-22: **Oracle Cloud free tier** (Frankfurt) runs the
+  bot; **Backblaze B2** keeps the encrypted off-site backups (a different
+  company, so one account problem cannot lose both copies);
+  **two bots** — **Alviro is production** and runs only on the server, a new
+  **dev bot** is for tests on the laptop with your second account.
+- Already done, do not repeat: the M00 live tests (except the LV-08 "reopen"
+  half), the closed-window test, privacy policy v3, the M00 review.
+- Everything below that is not marked "you" is done by the agent with
+  scripts. You never paste a secret into the chat: you paste it into a file
+  on your own computer, and the agent's scripts move it to the server
+  without displaying it.
 
-## Step 1 — one BotFather tap (1 minute, do any time)
+All files mentioned below are inside the project folder
+`C:\Programming\Telegram AI Assistant Agent\`. They are already created with
+instructions inside; open them with Notepad.
 
-In Telegram open **@BotFather** → `/mybots` → Alviro → **Edit Bot** →
-**Edit Privacy Policy** → paste exactly:
+## Step 0 — BotFather privacy URL (1 minute)
 
-```
-https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19
-```
+@BotFather → `/mybots` → **Alviro** → **Bot Settings** → **Privacy Policy**
+(some apps: **Edit Bot** → **Edit Privacy Policy**) → paste `https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19` →
+send. (If the agent later publishes a new policy version it will give you the
+new link.) Tell the agent: **"privacy URL set"**.
 
-and send. Tell the agent "privacy URL set". (Re-sending the same URL is
-harmless.)
+## Step 1 — Oracle Cloud account (about 20 minutes)
 
-## Step 2 — Session A: the server (about 45 minutes of your time)
+1. Open <https://www.oracle.com/cloud/free/> → **Start for free**.
+2. Fill in email, country, name. When asked for the **Home Region**, choose
+   **Germany Central (Frankfurt)**. This cannot be changed later.
+3. Card check: a **Visa or Mastercard** (Oracle shows a small temporary hold
+   that is released; local-only cards are often refused — if yours is,
+   tell the agent).
+4. Wait for the "your account is ready" email (minutes to a few hours), then
+   sign in to the console.
+5. **Upgrade to Pay As You Go**: console menu ☰ → **Billing & Cost
+   Management** → **Upgrade and Manage Payment** → **Pay As You Go** →
+   upgrade. (If the menu has moved, type "Upgrade" into the console search.)
+   Why: Oracle may switch off *free-only* servers it thinks are idle, and our
+   bot is idle most of the time. Free resources stay $0 after the upgrade;
+   the agent adds a **$1 budget alert** so any charge at all emails you.
+6. **API key for the agent**: profile icon (top right) → **My profile** →
+   **API keys** → **Add API key** → **Generate API key pair** → **Download
+   private key** → **Add**.
+   - Save the downloaded file as `var\cloud\oci\oci_api_key.pem`.
+   - Oracle now shows a **Configuration file preview**. Copy it and paste it
+     into `var\cloud\oci\config` under the comment lines, **without** its
+     `key_file=` line (the correct one is already there). Save.
+7. Tell the agent: **"oracle ready"** and the email address that should get
+   the budget alert.
 
-The bot must run on a machine that is always on, because Telegram keeps
-undelivered messages for only 24 hours. Signing up and entering a card is
-yours; creating the actual server, storage, firewall and backup bucket is the
-agent's, once it has an API key.
+The agent then creates the network, the server (ARM, 1 CPU, 6 GB), the data
+disk, the firewall (SSH only) and the budget, all by script. Free ARM servers
+are sometimes "out of capacity" in Frankfurt; the script keeps retrying on
+its own, which can take hours. Nothing for you to do.
 
-### 2.1 Choose a provider (tell the agent which)
+## Step 2 — Backblaze B2 for backups (about 10 minutes)
 
-| Option | Cost | Notes |
-|---|---|---|
-| **Oracle Cloud "Always Free"**, Frankfurt | $0 | Best fit (large ARM VM, free 20 GB object storage for backups). Needs a card for identity; free ARM capacity is sometimes "out", so creating the VM can take a few retries. |
-| **Google Cloud free tier** e2-micro | $0 | Always on, but only 1 GB RAM and US regions. Works; less comfortable. |
-| **DigitalOcean** (Amsterdam) | about $18/month | Simplest, EU, no capacity games. |
+1. Open <https://www.backblaze.com/sign-up/cloud-storage>. Choose the region
+   **EU Central** during sign-up (it is fixed per account). No card is needed
+   for the free 10 GB.
+2. **B2 Cloud Storage → Buckets → Create a Bucket**: name
+   `alviro-backups-` plus a few random letters (names are global), **Private**,
+   encryption **Enable**, Object Lock **Disable**.
+3. On that bucket: **Lifecycle Settings → Keep only the last version of the
+   file** → save. (Deleted backups must really disappear.)
+4. **Application Keys → Add a New Application Key**: name `alviro-server`,
+   access to **only this bucket**, type **Read and Write**. Backblaze shows
+   the `keyID` and `applicationKey` **once**.
+5. Fill `var\cloud\b2.env`: bucket name, the bucket's **Endpoint** (shown in
+   the bucket list, like `s3.eu-central-003.backblazeb2.com`), keyID,
+   applicationKey. Save. Tell the agent: **"b2 ready"**.
 
-The heartbeat monitor (healthchecks.io) is free in every case.
+## Step 3 — heartbeat monitor (3 minutes)
 
-### 2.2 Create the account and add a card
+<https://healthchecks.io> → free account → **Add Check**: name `alviro`,
+period **10 minutes**, grace **5 minutes**. Copy its **Ping URL** into
+`var\prod.env` (`HEARTBEAT_URL=`). Email alerts to you are on by default.
 
-At the provider you chose. Oracle and Google do not charge on the free tier.
-Tell the agent "account created".
+## Step 4 — production secrets (5 minutes)
 
-### 2.3 Make an API key for the agent
+In `var\prod.env`:
 
-- **Oracle:** top-right profile → *My profile* → *API keys* → *Add API key*
-  → *Generate API key pair* → download the private key file → copy the
-  "configuration file preview" text.
-- **Google:** the agent gives you three exact clicks once you choose Google.
-- **DigitalOcean:** *API* → *Generate New Token* → read and write.
+- `BOT_TOKEN=` — @BotFather → `/mybots` → **Alviro** → **API Token**.
+- `OPENAI_API_KEY=` — OpenAI console → **API keys** → **Create new secret
+  key**, name it `alviro-prod` (a separate key from the laptop one, so either
+  can be revoked alone).
 
-The agent creates a git-ignored file `var/cloud.env` for you; paste the key
-there, save, and tell the agent "key saved". The agent never prints it.
+Save. Tell the agent: **"secrets saved"**.
 
-### 2.4 SSH key
+## Step 5 — the dev bot (5 minutes)
 
-The agent gives you one PowerShell command; you paste the printed public
-line (starts with `ssh-ed25519`) where the agent says. That line is not a
-secret.
+1. @BotFather → `/newbot` → any neutral name (not containing "Telegram"),
+   e.g. "Lab Assistant Dev" → a username ending in `bot`. Copy the token into
+   `var\dev-bot.env` (`DEV_BOT_TOKEN=`).
+2. @BotFather → `/mybots` → the new bot → **Bot Settings** → **Secretary
+   Mode** (older apps: "Business Mode") → **On**. Then send `/setjoingroups`
+   → choose the new bot → **Disable**.
+3. In your **second account**, open @userinfobot and press Start; copy the
+   number after "Id" into `var\dev-bot.env` (`DEV_OWNER_TELEGRAM_ID=`).
+4. Tell the agent: **"dev bot ready"**. Do not connect it to anything yet. The
+   laptop keeps using Alviro until the agent finishes the 7-day media check
+   on 2026-10-25; then the agent switches the laptop to the dev bot itself and
+   tells you the two taps that connect the dev bot to your second account.
 
-### 2.5 Secrets file
+## Step 6 — the backup key (2 minutes, when the agent asks)
 
-The agent creates the template `var/prod.env`. You fill in:
+The agent creates `var\cloud\age-identity.txt`. Copy its whole content into
+your password manager (and on paper if you like), then delete the file and
+tell the agent **"key stored"**. Without it, backups cannot be read; the
+server only ever gets the public half.
 
-- the **Alviro bot token** (BotFather → `/mybots` → Alviro → API Token);
-- a **new OpenAI API key** made for production (OpenAI console → API keys);
-- the **backup bucket keys** (the provider shows them when the agent has
-  created the bucket, or you create them where the agent points);
-- the **heartbeat URL** from healthchecks.io (free account → *Add Check*:
-  name `assistant`, period 10 minutes, grace 5 minutes → copy the ping URL).
+## Step 7 — two taps when the agent says the server is running
 
-Save and tell the agent "secrets saved". The agent copies the file to the
-server without opening it.
-
-### 2.6 Backup key
-
-The agent generates a key pair and leaves the **private** key in
-`var/age-identity.txt`. Copy its contents into your password manager (and on
-paper if you like), then delete the file, and tell the agent "key stored".
-Only the public key goes to the server; without the private key the backups
-cannot be read, so do not lose it.
-
-### 2.7 The agent's part (about an hour, nothing for you to do)
-
-Provision the server, deploy, first backup, restore test, heartbeat test,
-restart and reboot checks. The agent reports the results in M02.md.
-
-### 2.8 Two taps when the agent says the server is running
-
-1. Main account → Settings → **Chat Automation** → make sure **Alviro** is
-   connected with the chats you want (a few trusted contacts plus your second
-   account) and **Reply to Messages** is on. If it is still connected from
-   the tests, there is nothing to do.
+1. Main account → Settings → **Chat Automation** → **Alviro** connected, with
+   the chats you want (a few trusted contacts plus your second account) and
+   **Reply to Messages** on. If it is still connected from the tests, nothing
+   to do.
 2. Open Alviro's chat and send `/status`. Tell the agent what it says.
 
-## Step 3 — Session B: the live test (about 2 hours, after Step 2)
+## Step 8 — Session B: the live test (about 2 hours)
 
-You sit with your phone (main account), Telegram Desktop (main account) and
-your second account. You send a numbered list of test messages the agent
-prepares, edit a few, delete a few, pause and resume the bot, reconnect it
-once, while the agent restarts the server at marked moments and proves every
-message was stored exactly once. The checklist is
+Phone (main account), Telegram Desktop (main account) and your second
+account. You send a numbered list of test messages the agent prepares, edit
+some, delete some, pause and resume the bot, reconnect it once, while the
+agent restarts the server at marked moments and proves every message was
+stored exactly once. Checklist:
 [tools/acceptance/r0-session.md](../../tools/acceptance/r0-session.md); the
-agent walks you through it one checkpoint at a time.
+agent walks you through it one checkpoint at a time. It also covers the
+connection notices and the "does an edit reopen the 24 h window?" half of
+LV-08.
 
-This session also covers the last two small live checks: the connection
-notices from the app (reconnect, rights change) and the "does an owner
-message or an edit reopen the 24 h window?" half of LV-08.
+## Step 9 — review (10 minutes)
 
-## Step 4 — review (10 minutes)
+Read the R0 section the agent adds to M02.md and reply **"M02 OK"**.
 
-Read the R0 section the agent adds to M02.md and reply "M02 OK". That
-closes R0; M03 (summaries, memory, search) is already approved and its code
-starts without further questions.
+## Prefer to let Codex do the agent part?
+
+The server work is a script-driven runbook any coding agent can follow:
+[deploy/runbooks/provision.md](../../deploy/runbooks/provision.md) ("Agent
+part"). Open Codex in the project folder **with network access allowed**
+(its default sandbox blocks the network that SSH and the Oracle tools need)
+and say: *"Read AGENTS.md, then follow deploy/runbooks/provision.md, agent
+part, from the first unchecked step. Never open var/ files or print
+secrets; stop and tell me when a step needs me."* Only one agent should work
+on the server at a time.
 
 ## Things the agent does on its own (for your information)
 
-- 2026-10-25 or later: the 7-day media re-check from M00.
-- M03 code, in parallel with Step 2 if you like.
+- S02.6 fixes, then M03 (search, summaries, memory) right after they merge.
+- 2026-10-25 or later: the 7-day media re-check from M00, then the switch of
+  the laptop to the dev bot.
 - Keeping this guide and M02.md current.
