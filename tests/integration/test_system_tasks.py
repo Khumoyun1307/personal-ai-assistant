@@ -65,12 +65,14 @@ def clock() -> FakeClock:
     return FakeClock(NOW)
 
 
-async def owner(factory: async_sessionmaker[AsyncSession], clock: FakeClock) -> int:
+async def owner(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock, *, telegram_user_id: int = OWNER
+) -> int:
     async with transaction(factory) as uow:
         account, _ = await service.get_or_create_account(
-            uow.session, telegram_user_id=OWNER, clock=clock
+            uow.session, telegram_user_id=telegram_user_id, clock=clock
         )
-        await service.set_control_chat(uow.session, account, OWNER)
+        await service.set_control_chat(uow.session, account, telegram_user_id)
         return account.id
 
 
@@ -86,11 +88,13 @@ async def update_row(
     status: str,
     received_at: datetime,
     processed_at: datetime | None = None,
+    account: int | None = None,
 ) -> int:
     async with transaction(factory) as uow:
         row = InboundUpdate(
             bot_id=8845134387,
             update_id=update_id,
+            account_id=account,
             kind="message",
             payload={"update_id": update_id, "message": {"text": "synthetic"}},
             status=status,
@@ -134,21 +138,89 @@ async def test_a_fresh_heartbeat_raises_nothing(
     assert channel.sends == []
 
 
-async def test_each_dead_letter_alerts_once(
+async def test_dead_letters_alert_daily_with_the_purge_date_until_purged(
     factory: async_sessionmaker[AsyncSession], clock: FakeClock
 ) -> None:
-    await owner(factory, clock)
+    """§6.2: a dead letter can be requeued only while it holds its payload,
+    which the sweep clears 7 days after receipt. The alert says so — never
+    "nothing was lost" (§6 invariant 11) — states the purge date, repeats
+    daily, and stops once there is nothing left to recover."""
+    account_id = await owner(factory, clock)
     await heartbeat(factory, NOW)
     channel = FakeChannel()
     alerts = OwnerAlerts(factory, channel, clock)
-    await update_row(factory, update_id=1, status="failed", received_at=NOW, processed_at=NOW)
+    await update_row(
+        factory, update_id=1, status="failed", received_at=NOW, processed_at=NOW, account=account_id
+    )
 
     await check_ingestion(factory, clock, alerts)
+    clock.advance(hours=1)
+    await heartbeat(factory, clock.now())  # only the dead letters are under test
     await check_ingestion(factory, clock, alerts)
-    await update_row(factory, update_id=2, status="failed", received_at=NOW, processed_at=NOW)
-    await check_ingestion(factory, clock, alerts)
+    assert len(channel.sends) == 1
+    first = channel.sends[0]
+    assert "Nothing was lost" not in first
+    assert "1 incoming update(s)" in first
+    assert "until 2026-10-25 12:00 UTC" in first
+    assert "daily" in first
 
-    assert channel.sends == [ALERT_TEXT[AlertKind.DEAD_LETTER]] * 2
+    # A new failure is announced at once, not after the daily cooldown.
+    await update_row(
+        factory, update_id=2, status="failed", received_at=NOW, processed_at=NOW, account=account_id
+    )
+    await check_ingestion(factory, clock, alerts)
+    assert len(channel.sends) == 2
+    assert "2 incoming update(s)" in channel.sends[-1]
+
+    # The same set repeats a day later...
+    clock.advance(hours=25)
+    await heartbeat(factory, clock.now())
+    await check_ingestion(factory, clock, alerts)
+    assert len(channel.sends) == 3
+
+    # ...and stops once the sweep has cleared the payloads.
+    clock.advance(days=7)
+    await heartbeat(factory, clock.now())
+    await sweep_inbound_payloads(factory, clock)
+    await check_ingestion(factory, clock, alerts)
+    assert len(channel.sends) == 3
+
+
+async def test_a_dead_letter_alerts_only_the_owner_it_belongs_to(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    first = await owner(factory, clock)
+    second = await owner(factory, clock, telegram_user_id=OWNER + 1)
+    await heartbeat(factory, NOW)
+    channel = FakeChannel()
+    await update_row(
+        factory, update_id=1, status="failed", received_at=NOW, processed_at=NOW, account=second
+    )
+
+    await check_ingestion(factory, clock, OwnerAlerts(factory, channel, clock))
+
+    assert channel.recipients == [second]
+    assert first not in channel.recipients
+
+
+async def test_the_dead_letter_date_is_in_the_owners_timezone(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    account_id = await owner(factory, clock)
+    async with transaction(factory) as uow:
+        from assistant.accounts.models import Account
+
+        account = await uow.session.get(Account, account_id)
+        assert account is not None
+        account.timezone = "Asia/Tashkent"
+    channel = FakeChannel()
+    await update_row(
+        factory, update_id=1, status="failed", received_at=NOW, processed_at=NOW, account=account_id
+    )
+
+    await check_ingestion(factory, clock, OwnerAlerts(factory, channel, clock))
+
+    assert "until 2026-10-25 17:00 +05" in channel.sends[0]
 
 
 async def test_an_undelivered_alert_is_tried_again(
@@ -158,10 +230,13 @@ async def test_an_undelivered_alert_is_tried_again(
     channel = FakeChannel(deliver=False)
     alerts = OwnerAlerts(factory, channel, clock)
 
-    first = await alerts.notify_owner(account_id, AlertKind.DEAD_LETTER, dedupe_key="dead_letter:9")
+    values: dict[str, int | str] = {"count": 1, "purge_date": "2026-10-25 12:00 UTC"}
+    first = await alerts.notify_owner(
+        account_id, AlertKind.DEAD_LETTER, dedupe_key="dead_letter:9", **values
+    )
     channel.deliver = True
     second = await alerts.notify_owner(
-        account_id, AlertKind.DEAD_LETTER, dedupe_key="dead_letter:9"
+        account_id, AlertKind.DEAD_LETTER, dedupe_key="dead_letter:9", **values
     )
 
     assert (first.sent, second.sent) == (False, True)

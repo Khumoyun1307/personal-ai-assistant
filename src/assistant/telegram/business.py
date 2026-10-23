@@ -13,8 +13,6 @@ from __future__ import annotations
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts import connections
-from assistant.accounts.connections import ResolutionKind
 from assistant.accounts.models import Account
 from assistant.conversations import service
 from assistant.conversations.events import (
@@ -25,9 +23,10 @@ from assistant.core.clock import Clock
 from assistant.core.routing import Disposition, RouteDecision
 from assistant.inbox.models import InboundUpdate
 from assistant.observability.logging import get_logger
-from assistant.telegram.connections import ConnectionRegistry, business_connection_id
+from assistant.telegram.connections import ConnectionRegistry
 from assistant.telegram.normalize import normalize
 from assistant.telegram.payload import chat_of, optional_timestamp
+from assistant.telegram.routing import REASON_BOT_COUNTERPART
 
 logger = get_logger(__name__)
 
@@ -58,6 +57,13 @@ class BusinessPipeline:
         if isinstance(event, IgnoredUpdate):
             logger.info("business_update_ignored", update_row_id=row.id, reason=event.reason.value)
             return Disposition.IGNORED
+        if await service.is_bot_chat(
+            session, account_id=account_id, business_chat_id=event.business_chat_id
+        ):
+            # A recognised third-party bot chat: nothing from it is stored,
+            # including the owner's own messages to the bot (FR-OBS-04).
+            logger.info("business_update_ignored", update_row_id=row.id, reason="bot_chat")
+            return Disposition.IGNORED
         if isinstance(event, ObservedDeletion):
             outcome = await service.record_deletion(
                 session, account_id=account_id, event=event, clock=self._clock
@@ -67,6 +73,9 @@ class BusinessPipeline:
             )
             if outcome.conversation_id is None:
                 return Disposition.IGNORED
+            if outcome.metadata_only:
+                # Ignore mode: the deletion's payload names the contact.
+                row.payload = None
             await service.resolve_ingest_failure(
                 session, account_id=account_id, inbound_update_id=row.id, clock=self._clock
             )
@@ -88,6 +97,30 @@ class BusinessPipeline:
         )
         return None
 
+    async def on_ignored(
+        self, session: AsyncSession, row: InboundUpdate, decision: RouteDecision
+    ) -> Disposition | None:
+        """The IGNORED route's handler. The row ends `ignored` with its payload
+        cleared whatever happens here; the only thing done is learning from a
+        third-party bot's answer that its chat is a bot chat (§6.5, FR-OBS-04).
+        Only on the owner's live connection, and with no network call: an
+        unknown connection id is not bootstrapped for an update we discard."""
+        if decision.reason != REASON_BOT_COUNTERPART or decision.kind not in MESSAGE_KINDS:
+            return None
+        body = (row.payload or {}).get(decision.kind)
+        if not isinstance(body, dict) or chat_of(body).get("type") != "private":
+            return None
+        chat_id = decision.chat_id
+        if not isinstance(chat_id, int) or isinstance(chat_id, bool):
+            return None
+        verdict = await self._registry.gate_business(session, row, decision)
+        if isinstance(verdict, Disposition) or verdict.account_id is None:
+            return None
+        await service.mark_bot_chat(
+            session, account_id=verdict.account_id, business_chat_id=chat_id, clock=self._clock
+        )
+        return None
+
     async def on_dead_letter(
         self, session: AsyncSession, row: InboundUpdate, decision: RouteDecision
     ) -> None:
@@ -95,29 +128,44 @@ class BusinessPipeline:
         chat and record a definite gap (§6.2), reading the payload leniently —
         this is the path for payloads the normal path could not parse."""
         payload = row.payload or {}
-        connection_id = business_connection_id(payload, decision.kind)
-        if connection_id is None:
+        # The same gate as live traffic (§6 invariants 7, 12): a foreign or
+        # de-allowlisted connection gets nothing; an unknown, disabled or
+        # "stopped" one gets no new rows either.
+        verdict = await self._registry.gate_business(session, row, decision)
+        if verdict is Disposition.REJECTED or row.account_id is None:
             return
-        resolution = await connections.resolve(session, connection_id, self._clock)
-        if resolution.kind is not ResolutionKind.OWNER or resolution.account_id is None:
-            return  # not the owner's traffic: no domain rows (§6 invariant 12)
-        account_id = resolution.account_id
-        row.account_id = account_id
+        account_id = row.account_id
+        live = not isinstance(verdict, Disposition)
         body = payload.get(decision.kind)
         body = body if isinstance(body, dict) else {}
         chat_id = chat_of(body).get("id")
         if not isinstance(chat_id, int) or isinstance(chat_id, bool):
             return
+        if await service.is_bot_chat(session, account_id=account_id, business_chat_id=chat_id):
+            return  # a recognised bot chat keeps no rows, failed or not
         if decision.kind == "deleted_business_messages":
+            # Purging content is always safe, so it happens even when storage
+            # is off; only the tombstones (new rows) need a live connection.
             ids = body.get("message_ids")
             if isinstance(ids, list):
                 event = ObservedDeletion(
                     business_chat_id=chat_id,
-                    telegram_message_ids=tuple(i for i in ids if isinstance(i, int)),
+                    telegram_message_ids=tuple(
+                        i for i in ids if isinstance(i, int) and not isinstance(i, bool)
+                    ),
                 )
                 await service.record_deletion(
-                    session, account_id=account_id, event=event, clock=self._clock
+                    session,
+                    account_id=account_id,
+                    event=event,
+                    clock=self._clock,
+                    tombstones=live,
                 )
+                await _clear_unlinked_payloads(
+                    session, account_id, chat_id, event.telegram_message_ids
+                )
+            return
+        if not live:
             return
         try:
             at = optional_timestamp(body.get("date"), "date")

@@ -203,6 +203,7 @@ async def running_process(
                         Route.REFUSED: control.refused,
                         Route.CONNECTION: registry.connection,
                         Route.BUSINESS: business.handle,
+                        Route.IGNORED: business.on_ignored,
                     },
                     preparers={Route.BUSINESS: registry.prepare},
                     dead_letter_hooks={Route.BUSINESS: business.on_dead_letter},

@@ -7,6 +7,7 @@ target never carries a `business_connection_id`.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 
@@ -19,7 +20,14 @@ class FakeTelegramSender:
         self.actions: list[dict[str, Any]] = []
         self.answered_callbacks: list[dict[str, Any]] = []
         self.fail_with: Exception | None = None
+        #: Awaited at the start of every call, to observe the world "while
+        #: Telegram is being called" (e.g. which rows are locked).
+        self.on_call: Callable[[], Awaitable[None]] | None = None
         self._next_message_id = 1000
+
+    async def _observe(self) -> None:
+        if self.on_call is not None:
+            await self.on_call()
 
     async def send_message(
         self,
@@ -29,6 +37,7 @@ class FakeTelegramSender:
         reply_markup: Any | None = None,
         business_connection_id: str | None = None,
     ) -> dict[str, Any]:
+        await self._observe()
         call = {
             "chat_id": chat_id,
             "text": text,
@@ -50,6 +59,7 @@ class FakeTelegramSender:
         reply_markup: Any | None = None,
         business_connection_id: str | None = None,
     ) -> dict[str, Any]:
+        await self._observe()
         self.edits.append(
             {
                 "chat_id": chat_id,
@@ -68,6 +78,7 @@ class FakeTelegramSender:
     async def answer_callback_query(
         self, *, callback_query_id: str, text: str | None = None, show_alert: bool = False
     ) -> None:
+        await self._observe()
         self.answered_callbacks.append(
             {"id": callback_query_id, "text": text, "show_alert": show_alert}
         )

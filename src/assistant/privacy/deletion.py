@@ -1,5 +1,8 @@
 """Deletion of stored managed-conversation data (FR-ONB-06, J1 step 5; §10.1).
 
+`delete_managed_data` is the account-wide cascade; `purge_conversation` is
+the same cascade for one chat (a recognised bot chat, FR-OBS-04).
+
 Offered when the owner declines or revokes the `ai_managed` consent. It
 cascades over every content-bearing column that managed chats reach
 (`privacy/content_columns.py`): message rows, contact names, the raw
@@ -116,3 +119,76 @@ async def delete_managed_data(
     )
     await session.flush()
     return DeletionReport(messages, contacts, payloads, turns)
+
+
+#: Business update kinds whose payload names a chat (`<kind>.chat.id`).
+_CHAT_PAYLOAD_KINDS = (
+    "business_message",
+    "edited_business_message",
+    "deleted_business_messages",
+)
+
+
+async def purge_conversation(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    conversation_id: int,
+    business_chat_id: int,
+    clock: Clock,
+) -> DeletionReport:
+    """Delete everything stored from ONE conversation, in the caller's
+    transaction: its messages, its contact's names, and every raw update
+    that names the chat (linked or not — a failed or Ignore-mode row holds
+    content too). The conversation row stays, content-free, so later traffic
+    is recognised. Used when a chat turns out to be a third-party bot
+    (FR-OBS-04, §6.5). Raw updates are matched by jsonb containment, never by
+    casting a value that may not be a number."""
+
+    def _count(result: object) -> int:
+        return int(getattr(result, "rowcount", 0) or 0)
+
+    message_ids = select(Message.id).where(Message.conversation_id == conversation_id)
+    payloads = _count(
+        await session.execute(
+            update(InboundUpdate)
+            .where(InboundUpdate.account_id == account_id)
+            .where(InboundUpdate.message_id.in_(message_ids))
+            .where(InboundUpdate.payload.is_not(None))
+            .values(payload=None)
+        )
+    )
+    for kind in _CHAT_PAYLOAD_KINDS:
+        payloads += _count(
+            await session.execute(
+                update(InboundUpdate)
+                .where(InboundUpdate.account_id == account_id)
+                .where(InboundUpdate.kind == kind)
+                .where(InboundUpdate.payload.is_not(None))
+                .where(InboundUpdate.payload.contains({kind: {"chat": {"id": business_chat_id}}}))
+                .values(payload=None)
+            )
+        )
+    messages = _count(
+        await session.execute(
+            delete(Message)
+            .where(Message.account_id == account_id)
+            .where(Message.conversation_id == conversation_id)
+        )
+    )
+    contacts = _count(
+        await session.execute(
+            update(Contact)
+            .where(Contact.account_id == account_id)
+            .where(
+                Contact.id
+                == select(Conversation.contact_id)
+                .where(Conversation.id == conversation_id)
+                .scalar_subquery()
+            )
+            .where((Contact.display_name.is_not(None)) | (Contact.username.is_not(None)))
+            .values(display_name=None, username=None, updated_at=clock.now())
+        )
+    )
+    await session.flush()
+    return DeletionReport(messages, contacts, payloads, 0)

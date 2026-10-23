@@ -8,16 +8,16 @@ scoped, edited in place, always answered.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 from assistant.accounts.models import AuditLogEntry, PendingInput
 from assistant.accounts.service import ConsentMissingError, managed_mode
 from assistant.agent.persistence import DbConsentReader
 from assistant.conversations.models import Contact, Message
 from assistant.conversations.service import conversations_awaiting_ai
+from assistant.core.routing import Route
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.port import LLMRequest, Provenance, TextItem
 from tests.fakes.llm import FakeLLM
@@ -26,59 +26,21 @@ from tests.integration.business_env import (
     STRANGER,
     Env,
     business_message,
+    callback,
     connect,
     count,
+    decline_managed,
     deliver,
+    grant_managed,
     inbound,
-    next_update_id,
+    live_card,
+    press,
     private_message,
 )
 
 pytestmark = pytest.mark.integration
 
 CANARY = "CANARY-SYNTH-2b7e"
-
-
-def callback(
-    data: str | None, *, from_id: int = OWNER, message_id: int | None = 1, chat_id: int = OWNER
-) -> dict[str, Any]:
-    body: dict[str, Any] = {
-        "id": f"cb-{next_update_id()}",
-        "from": {"id": from_id, "is_bot": False, "first_name": "Synthetic"},
-        "chat_instance": "synthetic",
-    }
-    if data is not None:
-        body["data"] = data
-    if message_id is not None:
-        body["message"] = {
-            "message_id": message_id,
-            "date": 1792354000,
-            "chat": {"id": chat_id, "type": "private"},
-        }
-    return {"update_id": next_update_id(), "callback_query": body}
-
-
-async def live_card(env: Env, kind: str) -> PendingInput:
-    async with env.factory() as session:
-        return (
-            await session.execute(
-                select(PendingInput)
-                .where(PendingInput.kind == kind)
-                .where(PendingInput.token.is_not(None))
-            )
-        ).scalar_one()
-
-
-async def press(env: Env, kind: str, op: str, **kwargs: Any) -> dict[str, Any]:
-    card = await live_card(env, kind)
-    update = callback(f"{kind}:{card.token}:{op}", message_id=card.prompt_message_id, **kwargs)
-    await deliver(env, update)
-    return update
-
-
-async def grant_managed(env: Env) -> None:
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "yes"))
 
 
 async def seed(env: Env) -> None:
@@ -89,8 +51,7 @@ async def seed(env: Env) -> None:
 # ------------------------------------------------------------ offering the cards
 async def test_declining_managed_consent_offers_the_deletion_card(env: Env) -> None:
     await seed(env)
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "no"))
+    await decline_managed(env)
 
     card = await live_card(env, "managed_delete")
     assert card.account_id is not None
@@ -163,8 +124,7 @@ async def test_delete_removes_managed_data_and_writes_one_audit_row(env: Env) ->
     await seed(env)
     original = business_message(message_text=f"{CANARY} second")
     await deliver(env, original)
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "no"))
+    await decline_managed(env)
 
     await press(env, "managed_delete", "delete")
 
@@ -192,10 +152,89 @@ async def test_delete_removes_managed_data_and_writes_one_audit_row(env: Env) ->
     await live_card(env, "managed_mode")
 
 
+async def test_a_card_press_holds_no_row_lock_while_calling_telegram(env: Env) -> None:
+    """AGENTS §13: the deletion locks the account and updates conversation
+    rows; the card edit and card B go out only after that commits."""
+    await seed(env)
+    await decline_managed(env)
+    seen_locked: list[bool] = []
+
+    async def probe() -> None:
+        async with env.factory() as session:
+            try:
+                for table in ("accounts", "conversations", "inbound_updates", "pending_inputs"):
+                    await session.execute(
+                        text(f"SELECT 1 FROM app.{table} FOR UPDATE NOWAIT")  # noqa: S608
+                    )
+                seen_locked.append(False)
+            except DBAPIError:
+                seen_locked.append(True)
+            finally:
+                await session.rollback()
+
+    env.sender.on_call = probe
+    try:
+        await press(env, "managed_delete", "delete")
+    finally:
+        env.sender.on_call = None
+
+    assert seen_locked, "the press must have called Telegram"
+    assert not any(seen_locked)
+    assert env.sender.edits[-1]["text"].startswith("🗑 Deleted:")
+    assert "How should I continue?" in env.sender.texts[-1]
+    await live_card(env, "managed_mode")
+
+
+async def test_a_card_press_whose_commit_fails_announces_once(env: Env) -> None:
+    """A transaction that fails after the handler ran is retried; the retry
+    must not edit the card or send card B a second time (at most once)."""
+    await seed(env)
+    await decline_managed(env)
+    original = env.processor._handlers
+    control = original[Route.CONTROL]
+    failures = [OperationalError("synthetic", {}, Exception("synthetic connection lost"))]
+
+    async def flaky(session, row, decision):  # type: ignore[no-untyped-def]
+        result = await control(session, row, decision)
+        if failures:
+            raise failures.pop()
+        return result
+
+    env.processor._handlers = {**original, Route.CONTROL: flaky}
+    edits_before, sends_before = len(env.sender.edits), len(env.sender.sends)
+    try:
+        with pytest.raises(OperationalError):
+            await press(env, "managed_delete", "delete")
+        await env.processor.process_batch()  # the retry
+    finally:
+        env.processor._handlers = original
+
+    new_edits = env.sender.edits[edits_before:]
+    new_sends = env.sender.sends[sends_before:]
+    assert [e["text"].startswith("🗑 Deleted:") for e in new_edits] == [True]
+    assert ["How should I continue?" in s["text"] for s in new_sends] == [True]
+    async with env.factory() as session:
+        cards = (
+            (await session.execute(select(PendingInput).where(PendingInput.kind == "managed_mode")))
+            .scalars()
+            .all()
+        )
+        audits = (
+            (
+                await session.execute(
+                    select(AuditLogEntry).where(AuditLogEntry.event == "managed_data_deleted")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(cards) == 1
+    assert len(audits) == 1
+
+
 async def test_keep_keeps_the_data(env: Env) -> None:
     await seed(env)
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "no"))
+    await decline_managed(env)
 
     await press(env, "managed_delete", "keep")
 
@@ -207,8 +246,7 @@ async def test_keep_keeps_the_data(env: Env) -> None:
 async def test_a_card_is_single_use(env: Env) -> None:
     """Double tap ⇒ one transition (S01.3)."""
     await seed(env)
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "no"))
+    await decline_managed(env)
     card = await live_card(env, "managed_delete")
     data = f"managed_delete:{card.token}:delete"
 
@@ -231,8 +269,7 @@ async def test_a_card_is_single_use(env: Env) -> None:
 
 async def test_a_non_owner_cannot_press_a_card(env: Env) -> None:
     await seed(env)
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "no"))
+    await decline_managed(env)
     card = await live_card(env, "managed_delete")
 
     update = callback(
@@ -257,8 +294,7 @@ async def test_a_stale_or_malformed_press_is_no_longer_active(env: Env, data: st
 
 async def test_an_expired_card_is_no_longer_active(env: Env) -> None:
     await seed(env)
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "no"))
+    await decline_managed(env)
     env.clock.advance(hours=25)
 
     await press(env, "managed_delete", "delete")
@@ -272,8 +308,7 @@ async def test_an_expired_card_is_no_longer_active(env: Env) -> None:
 # ------------------------------------------------------------ the mode choice
 async def test_continuing_without_ai_keeps_observing(env: Env) -> None:
     await seed(env)
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "no"))
+    await decline_managed(env)
     await press(env, "managed_delete", "keep")
     await press(env, "managed_mode", "observe")
 
@@ -285,8 +320,7 @@ async def test_continuing_without_ai_keeps_observing(env: Env) -> None:
 
 async def test_stop_observing_stores_nothing_further(env: Env) -> None:
     await seed(env)
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "no"))
+    await decline_managed(env)
     await press(env, "managed_delete", "keep")
     await press(env, "managed_mode", "stop")
 
@@ -314,8 +348,7 @@ async def test_stop_observing_stores_nothing_further(env: Env) -> None:
 async def test_a_command_does_not_cancel_a_live_card(env: Env) -> None:
     """S01.3 precedence rule 1 cancels *questions*; a card stays tappable."""
     await seed(env)
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "no"))
+    await decline_managed(env)
     await deliver(env, private_message(OWNER, "/help"))
     await live_card(env, "managed_delete")
 
@@ -324,8 +357,7 @@ async def test_expired_cards_are_swept(env: Env) -> None:
     from assistant.privacy.retention import sweep_all
 
     await seed(env)
-    await deliver(env, private_message(OWNER, "/privacy managed"))
-    await deliver(env, private_message(OWNER, "no"))
+    await decline_managed(env)
     env.clock.advance(hours=25)
     report = await sweep_all(env.factory, env.clock)
     assert report.expired_inputs == 1
