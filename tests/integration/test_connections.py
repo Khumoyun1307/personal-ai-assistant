@@ -25,6 +25,7 @@ from assistant.accounts.models import (
     BusinessConnectionEvent,
     ForeignConnection,
 )
+from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.core.errors import TransientError
 from assistant.db.uow import transaction
 from assistant.telegram.ingress.writer import write_batch
@@ -39,6 +40,7 @@ from tests.integration.business_env import (
     connection_update,
     count,
     deliver,
+    environment,
     events,
     inbound,
     notify_jobs,
@@ -50,8 +52,12 @@ from tests.integration.business_env import (
 pytestmark = pytest.mark.integration
 
 
-# ------------------------------------------------------------ non-owners
-async def test_a_connection_from_a_non_allowlisted_user_leaves_no_tenant_trace(env: Env) -> None:
+# ------------------------------------------------------------ non-owners (RG-07)
+async def test_rg07_a_connection_from_a_non_allowlisted_user_leaves_no_tenant_trace(
+    env: Env,
+) -> None:
+    """RG-07 (never weaken): a non-owner connection creates no domain rows and
+    its payload is cleared (§6 invariants 7, 12)."""
     update = connection_update(user_id=STRANGER, connection_id="synthetic-foreign")
     await deliver(env, update)
 
@@ -78,6 +84,56 @@ async def test_traffic_on_a_known_foreign_connection_is_rejected_without_asking_
     assert await payload_is_sql_null(env, message)
     assert env.lookup.calls == []
     assert await count(env, Account) == 0
+
+
+async def test_rg07_an_owner_removed_from_the_allowlist_stores_nothing_more(
+    migrated_url: str,
+) -> None:
+    """RG-07: the allowlist is re-checked on every business update. An owner
+    whose id was removed from OWNER_TELEGRAM_IDS keeps their old rows, but
+    their still-active connection stores nothing further — not live traffic,
+    not a dead letter — and the payload is cleared (§6 invariants 7, 12)."""
+    # A deployment restarted with the owner no longer in the allowlist.
+    async with environment(migrated_url, owner_ids=frozenset({STRANGER})) as env:
+        await _seed_live_owner(env)
+        live = business_message(message_text="synthetic after")
+        poison = business_message(message_text="synthetic poison", extra={"message_id": None})
+        await deliver(env, live)
+        for _ in range(3):
+            await deliver(env, poison)
+
+        row = await inbound(env, live)
+        assert row.status == "rejected"
+        assert row.account_id is None
+        assert await payload_is_sql_null(env, live)
+        assert (await inbound(env, poison)).status in {"rejected", "failed"}
+        assert await count(env, Message) == 0
+        assert await count(env, Contact) == 0
+        assert await count(env, Conversation) == 0
+        assert await count(env, CoverageGap) == 0
+
+
+async def _seed_live_owner(env: Env) -> None:
+    """An onboarded owner with an active connection, written directly (the
+    allowlist in this environment would refuse to create them)."""
+    async with transaction(env.factory) as uow:
+        account, _ = await service.get_or_create_account(
+            uow.session, telegram_user_id=OWNER, clock=env.clock
+        )
+        account.status = "active"
+        await service.set_control_chat(uow.session, account, OWNER)
+        uow.session.add(
+            BusinessConnection(
+                account_id=account.id,
+                connection_id="synthetic-conn-a",
+                is_enabled=True,
+                rights=["can_reply"],
+                capability_tier="can_reply",
+                user_chat_id=OWNER,
+                status="active",
+                connected_at=env.clock.now(),
+            )
+        )
 
 
 # ------------------------------------------------------- before onboarding

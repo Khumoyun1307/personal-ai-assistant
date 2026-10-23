@@ -405,6 +405,63 @@ async def test_deleting_a_message_clears_every_linked_inbound_payload(env: Env) 
     assert await payload_is_sql_null(env, unlinked)
 
 
+async def test_a_deletion_listing_the_same_id_twice_is_processed_once(env: Env) -> None:
+    """A repeated id used to insert two tombstones for one message and hit the
+    unique key, dead-lettering the deletion (S02.6)."""
+    await connect(env)
+    await deliver(env, business_message(message_id=703, message_text="synthetic dup"))
+    update = deleted_messages(message_ids=[703, 703, 998, 998])
+    await deliver(env, update)
+
+    assert (await inbound(env, update)).status == "processed"
+    ids = [m.telegram_message_id for m in await messages(env)]
+    assert sorted(ids) == [703, 998]
+    assert all(m.deleted_at is not None for m in await messages(env))
+
+
+async def test_a_dead_lettered_deletion_also_clears_unlinked_payloads(env: Env) -> None:
+    """The fallback purge for a deletion that cannot be parsed must reach the
+    same places as the normal path, including updates that never became
+    message rows (§6.2)."""
+    await connect(env)
+    await deliver(env, business_message(message_id=704, message_text="synthetic v1"))
+    unlinked = business_message(message_id=704, message_text="synthetic v2", edit=True)
+    async with env.factory() as session, session.begin():
+        from assistant.telegram.ingress.writer import write_batch
+
+        await write_batch(session, bot_id=BOT_ID, updates=[unlinked])
+        # Set aside earlier (a dead letter of its own): it never became a row.
+        await session.execute(
+            text(
+                "UPDATE app.inbound_updates SET status = 'failed', account_id = "
+                "(SELECT id FROM app.accounts) WHERE update_id = :id"
+            ),
+            {"id": unlinked["update_id"]},
+        )
+    poison = deleted_messages(message_ids=[704, "not-a-number"])  # type: ignore[list-item]
+    for _ in range(3):
+        await deliver(env, poison)
+
+    assert (await inbound(env, poison)).status == "failed"
+    stored = await message(env, 704)
+    assert stored is not None
+    assert stored.text is None
+    assert await payload_is_sql_null(env, unlinked)
+
+
+async def test_an_ignore_mode_deletion_keeps_no_payload(env: Env) -> None:
+    """A deletion's payload names the contact (`chat.first_name`): in an
+    Ignore-mode chat it is not ours to keep (§6.5 last paragraph)."""
+    await connect(env)
+    await deliver(env, business_message(message_id=705, message_text="synthetic"))
+    await _set_mode(env, "ignore")
+    update = deleted_messages(message_ids=[705])
+    await deliver(env, update)
+
+    assert (await inbound(env, update)).status == "processed"
+    assert await payload_is_sql_null(env, update)
+
+
 async def test_a_deletion_for_an_unknown_chat_stores_nothing(env: Env) -> None:
     await connect(env)
     update = deleted_messages(chat_id=OTHER_CONTACT, message_ids=[1])
@@ -537,6 +594,42 @@ async def test_a_dead_letter_hook_never_creates_rows_for_a_foreign_connection(en
     assert (await inbound(env, foreign)).status == "rejected"
     assert await count(env, CoverageGap) == 0
     assert await count(env, Conversation) == 0
+
+
+@pytest.mark.parametrize("state", ["stopped", "disabled"])
+async def test_a_dead_letter_creates_no_rows_when_storage_is_off(env: Env, state: str) -> None:
+    """Fail closed (§6 invariant 7): with the owner's "stop observing" choice,
+    or a disabled connection, a dead-lettered update records nothing."""
+    from tests.integration.business_env import connection_update
+
+    await connect(env)
+    if state == "stopped":
+        async with env.factory() as session, session.begin():
+            await session.execute(
+                text(
+                    "UPDATE app.accounts SET settings = settings || "
+                    '\'{"managed_mode": "stopped"}\'::jsonb'
+                )
+            )
+    else:
+        await deliver(env, connection_update(enabled=False, rights=None))
+    original = env.processor._handlers
+
+    async def explode(session, row, decision):  # type: ignore[no-untyped-def]
+        raise DeterministicError("synthetic bug")
+
+    env.processor._handlers = {**original, list(original)[3]: explode}
+    try:
+        poison = business_message(message_text="synthetic poison")
+        for _ in range(3):
+            await deliver(env, poison)
+    finally:
+        env.processor._handlers = original
+
+    assert (await inbound(env, poison)).status == "failed"
+    assert await count(env, Contact) == 0
+    assert await count(env, Conversation) == 0
+    assert await count(env, CoverageGap) == 0
 
 
 async def test_a_handler_bug_on_a_live_message_dead_letters_with_a_gap(env: Env) -> None:

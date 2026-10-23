@@ -86,6 +86,8 @@ class DeletionOutcome:
     conversation_id: int | None
     purged_message_ids: tuple[int, ...] = ()
     tombstoned_telegram_ids: tuple[int, ...] = ()
+    #: The conversation is in Ignore mode: the update's payload is not kept.
+    metadata_only: bool = False
 
 
 # ------------------------------------------------------------------ helpers
@@ -402,12 +404,19 @@ async def _message_for_update(
 
 # ------------------------------------------------------------ record_deletion
 async def record_deletion(
-    session: AsyncSession, *, account_id: int, event: ObservedDeletion, clock: Clock
+    session: AsyncSession,
+    *,
+    account_id: int,
+    event: ObservedDeletion,
+    clock: Clock,
+    tombstones: bool = True,
 ) -> DeletionOutcome:
     """Step 6 of §6.5: purge content, keep tombstones, clear linked payloads.
 
     The payload never says who deleted, or whether it was for both sides
-    (TF §12 LV-07), so nothing here attributes the deletion.
+    (TF §12 LV-07), so nothing here attributes the deletion. `tombstones=False`
+    purges what exists without writing rows for ids never stored — for the
+    dead-letter fallback when storage is off (§6 invariant 7).
     """
     conversation = await _find_conversation(
         session, account_id=account_id, business_chat_id=event.business_chat_id
@@ -416,7 +425,9 @@ async def record_deletion(
         # Nothing stored for this chat: nothing to purge, nothing to remember.
         return DeletionOutcome(None)
     now = clock.now()
-    ids = list(event.telegram_message_ids)
+    # Telegram may list an id more than once; two tombstones for one id
+    # would violate the unique key and dead-letter the deletion.
+    ids = list(dict.fromkeys(event.telegram_message_ids))
     purged = await session.execute(
         update(Message)
         .where(Message.conversation_id == conversation.id)
@@ -436,7 +447,7 @@ async def record_deletion(
     rows = purged.all()
     purged_ids = tuple(int(row[0]) for row in rows)
     seen = {row[1] for row in rows if row[1] is not None}
-    missing = tuple(i for i in ids if i not in seen)
+    missing = tuple(i for i in ids if i not in seen) if tombstones else ()
     for telegram_id in missing:
         # A message we never stored: the tombstone stops a late requeue of
         # its original update from storing content that is gone for the owner.
@@ -466,7 +477,9 @@ async def record_deletion(
         purged=len(purged_ids),
         tombstoned=len(missing),
     )
-    return DeletionOutcome(conversation.id, purged_ids, missing)
+    return DeletionOutcome(
+        conversation.id, purged_ids, missing, metadata_only=conversation.mode == "ignore"
+    )
 
 
 # -------------------------------------------------------- ingest failures
