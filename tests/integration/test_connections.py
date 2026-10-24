@@ -368,12 +368,21 @@ async def test_managed_consent_is_asked_and_recorded_with_the_policy_and_process
     await deliver(env, connection_update())
 
     await deliver(env, private_message(OWNER, "/privacy managed"))
-    assert "OpenAI" in env.sender.sends[-1]["text"]
+    question = env.sender.sends[-1]
+    assert question["text"].startswith("<b>Let Alviro's AI agent work with these chats?</b>")
+    assert "The text is processed by OpenAI" in question["text"]
+    assert "can read the messages saved from the chats you connected" in question["text"]
+    assert "You can change this any time with /privacy." in question["text"]
+    keyboard = question["reply_markup"]
+    labels = [b.text for row in keyboard.inline_keyboard for b in row]
+    assert labels == ["Turn on", "Not now"]
+    ops = [b.callback_data.rsplit(":", 1)[-1] for row in keyboard.inline_keyboard for b in row]
+    assert ops == ["agree", "decline"]  # only the labels changed, not the callback data
     await press(env, "managed_consent", "agree")
 
     state = await managed_consent(env)
     assert state.granted
-    assert (state.policy_version, state.processors) == ("v3", ("OpenAI",))
+    assert (state.policy_version, state.processors) == ("v4", ("OpenAI",))
 
 
 async def test_declining_managed_consent_grants_nothing(env: Env) -> None:
@@ -383,7 +392,7 @@ async def test_declining_managed_consent_grants_nothing(env: Env) -> None:
 
     assert not (await managed_consent(env)).granted
     # The question card is edited to the answer; the deletion card follows (S02.4).
-    assert any("nothing from your chats" in edit["text"] for edit in env.sender.edits)
+    assert any("Not now." in edit["text"] for edit in env.sender.edits)
     assert "Delete what I stored" in env.sender.texts[-1]
 
 
@@ -434,3 +443,20 @@ async def test_privacy_shows_both_consents_and_revoke_withdraws_both(env: Env) -
 
     await deliver(env, private_message(OWNER, "/privacy revoke"))
     assert not (await managed_consent(env)).granted
+
+
+async def test_privacy_says_connected_chats_are_saved_whether_or_not_ai_is_on(env: Env) -> None:
+    """Review finding B: `/privacy` must not claim other people's messages are
+    discarded. Messages from connected chats are stored regardless of
+    `ai_managed`; only a stranger's direct message is not kept (policy v4)."""
+    await onboard(env)
+    await deliver(env, connection_update())
+
+    await deliver(env, private_message(OWNER, "/privacy"))
+    shown = env.sender.sends[-1]["text"]
+    assert "AI for your chats with other people: <b>not granted</b>" in shown
+    assert "discarded" not in shown
+    assert "I save new messages (text kept up to 90 days), whether or not AI is on" in shown
+    assert "If someone else writes to me directly, I don't keep their message." in shown
+    assert "a server in the US (Oracle, Ashburn)" in shown
+    assert "Backblaze B2 in the EU, for up to 35 days" in shown

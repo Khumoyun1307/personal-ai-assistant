@@ -286,13 +286,13 @@ async def press(env: Env, kind: str, op: str, **kwargs: Any) -> dict[str, Any]:
 
 
 async def grant_managed(env: Env) -> None:
-    """`/privacy managed`, then Agree on its card (FR-ONB-05b)."""
+    """`/privacy managed`, then Turn on on its card (FR-ONB-05b)."""
     await deliver(env, private_message(OWNER, "/privacy managed"))
     await press(env, "managed_consent", "agree")
 
 
 async def decline_managed(env: Env) -> None:
-    """`/privacy managed`, then Decline on its card."""
+    """`/privacy managed`, then Not now on its card."""
     await deliver(env, private_message(OWNER, "/privacy managed"))
     await press(env, "managed_consent", "decline")
 

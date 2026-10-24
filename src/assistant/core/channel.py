@@ -22,6 +22,9 @@ class Delivery:
     ok: bool
     message_id: int | None = None
     error: str | None = None
+    #: The outcome is unknown (timeout after the request left): the message
+    #: may be on screen. Never resent automatically (§6 invariant 6).
+    uncertain: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -20,10 +20,12 @@ from assistant.accounts import connections, service
 from assistant.accounts.models import Account, PendingInput
 from assistant.agent import confirmations
 from assistant.agent.confirmations import OP_CONFIRM, OP_REJECT, TOOL_CONFIRM_CARD
+from assistant.conversations.coverage import STATUS_GAP_WINDOW
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
 from assistant.core.jobs import APPLY_CONFIRMATION_TASK, JobScheduler, owner_control_lock
 from assistant.db.uow import after_commit, transaction
+from assistant.inbox.connection_alerts import MANAGED_CONSENT_BUTTONS, MANAGED_CONSENT_QUESTION
 from assistant.observability.status import StatusReport
 from assistant.privacy import deletion
 from assistant.telegram.control.cards import card_keyboard
@@ -198,22 +200,20 @@ async def handle_consent_reply(
     return HandlerResult(True, "consent", result, note="granted")
 
 
-MANAGED_CONSENT_TEXT = (
-    "<b>AI for your chats with other people</b>\n\n"
-    "To summarize the chats you included and help you with them, I need to send "
-    "their text to <b>{processors}</b>. Nothing is sent anywhere else, and it is "
-    "not used to train any model. Until you agree, nothing from those chats is "
-    "sent to any AI provider.\n\n"
-    "Tap <b>Agree</b> or <b>Decline</b> below. "
-    "You can revoke this at any time with <code>/privacy revoke</code>."
-)
+#: The `/privacy managed` card asks exactly what the connection notice asks.
+MANAGED_CONSENT_TEXT = MANAGED_CONSENT_QUESTION
 MANAGED_CONSENT_GRANTED_TEXT = (
-    "Thank you — recorded. From now on I may send the text of the chats you "
-    "included to {processors} when I work on them for you."
+    "Turned on. Alviro's AI agent can now read the messages saved from the chats "
+    "you connected when it works on them for you; the text is processed by "
+    "{processors}. Send <code>/privacy revoke</code> to turn AI off (this also "
+    "turns it off for this chat)."
 )
 MANAGED_CONSENT_DECLINED_TEXT = (
-    "Understood — nothing from your chats with other people will be sent to an "
-    "AI provider. Send <code>/privacy managed</code> if you change your mind."
+    "Not now. Alviro's AI agent doesn't read the chats you connected. "
+    "Send <code>/privacy managed</code> if you change your mind."
+)
+MANAGED_CONSENT_ALREADY_ON_TEXT = (
+    "It's already on. Send <code>/privacy revoke</code> to turn AI off (for this chat too)."
 )
 
 
@@ -228,9 +228,7 @@ async def handle_managed_consent_request(
     target = ControlChat(account_id=account.id, chat_id=message.chat_id)
     state = await service.active_consent(session, account.id, kind=service.CONSENT_AI_MANAGED)
     if state.granted:
-        result = await gateway.send_text(
-            target, "You have already agreed. Send <code>/privacy revoke</code> to withdraw."
-        )
+        result = await gateway.send_text(target, MANAGED_CONSENT_ALREADY_ON_TEXT)
         return HandlerResult(True, "managed_consent", result, note="already_granted")
     if await connections.connection_for_account(session, account.id) is None:
         result = await gateway.send_text(
@@ -240,7 +238,7 @@ async def handle_managed_consent_request(
             "I will ask you then.",
         )
         return HandlerResult(True, "managed_consent", result, note="not_connected")
-    # A card, not a text question: only a tap on Agree or Decline decides, so
+    # A card, not a text question: only a tap on Turn on or Not now decides, so
     # an unrelated message can never be taken as an answer (S02.6).
     card = await service.create_card(
         session,
@@ -256,7 +254,7 @@ async def handle_managed_consent_request(
         keyboard=card_keyboard(
             service.MANAGED_CONSENT_CARD,
             card.token,
-            [("Agree", "agree"), ("Decline", "decline")],
+            list(MANAGED_CONSENT_BUTTONS),
         ),
     )
     if result.ok:
@@ -318,10 +316,14 @@ async def handle_privacy(
         "<b>Privacy</b>\n\n"
         f"AI for this chat: {describe(consent)}\n"
         f"AI for your chats with other people: {describe(managed)}\n\n"
-        "In this chat I store your messages and my replies for 90 days, your "
-        "settings, and a content-free record of what I did.\n\n"
-        "Messages from anyone who is not you are discarded — I keep no record "
-        "of what they said.\n\n"
+        "In this chat I store your messages and my replies (text kept for 90 days), "
+        "your settings, and a record of what I did that contains no message text "
+        "(kept for 1 year).\n\n"
+        "From the chats you connected, I save new messages (text kept up to 90 days), "
+        "whether or not AI is on. If someone else writes to me directly, I don't keep "
+        "their message. Everything is on a server in the US (Oracle, Ashburn) with "
+        "encrypted daily backups, also kept at Backblaze B2 in the EU, for up to 35 "
+        "days.\n\n"
         "Your messages are never used to train a model."
     )
     if connected and not managed.granted:
@@ -348,7 +350,7 @@ async def handle_revoke(
     Takes effect at once: the consent wrapper reads consent on every model
     call, so queued work re-checks and stops (§6 invariant 9).
 
-    Open consent cards close first: an Agree tapped later on a card shown
+    Open consent cards close first: a Turn on tapped later on a card shown
     before the revoke must not grant again. Closing them before revoking
     also orders a concurrent press (it holds the card's row lock) ahead of
     the revoke, so a grant it commits is revoked here too.
@@ -547,8 +549,10 @@ async def handle_card_press(
         case (k, "agree") if k == service.MANAGED_CONSENT_CARD:
             granted = await _grant_managed_consent(session, clock, account)
             settlement = _Settlement(
-                "Agreed" if granted else "Already agreed",
-                MANAGED_CONSENT_GRANTED_TEXT.format(processors=", ".join(AI_PROCESSORS)),
+                "Turned on" if granted else "Already on",
+                MANAGED_CONSENT_GRANTED_TEXT.format(processors=", ".join(AI_PROCESSORS))
+                if granted
+                else MANAGED_CONSENT_ALREADY_ON_TEXT,
                 keep_body=in_notice,
             )
             note = "granted" if granted else "already_granted"
@@ -559,8 +563,8 @@ async def handle_card_press(
             if state.granted:
                 # Agreed meanwhile (another card): revoking is /privacy revoke.
                 settlement = _Settlement(
-                    "Already agreed",
-                    "You have already agreed. Send <code>/privacy revoke</code> to withdraw.",
+                    "Already on",
+                    MANAGED_CONSENT_ALREADY_ON_TEXT,
                     keep_body=in_notice,
                 )
                 note = "already_granted"
@@ -569,7 +573,7 @@ async def handle_card_press(
                     session, account_id=account.id, clock=clock
                 )
                 settlement = _Settlement(
-                    "Declined",
+                    "Not now",
                     MANAGED_CONSENT_DECLINED_TEXT,
                     await _delete_choice_card(session, clock, account),
                     keep_body=in_notice,
@@ -747,6 +751,12 @@ def render_status(report: StatusReport, *, visibility: str) -> str:
         lines.append(
             f"  Latest gap ({escape(gap.certainty)}): {local_time(gap.at_risk_from, tz)} → "
             f"{local_time(gap.at_risk_to, tz)}"
+        )
+    if cov.older_unresolved_gaps:
+        # Known gaps are always shown (FR-ONB-08); past the window, without a
+        # warning (M02 D57).
+        lines.append(
+            f"  Older gaps ({STATUS_GAP_WINDOW.days} or more days ago): {cov.older_unresolved_gaps}"
         )
     consent = report.consent
     lines += [

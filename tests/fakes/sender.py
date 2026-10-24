@@ -3,12 +3,31 @@
 Records the exact keyword arguments each call was made with, so tests can
 assert on what WOULD have gone to Telegram — in particular that a control
 target never carries a `business_connection_id`.
+
+Failures are scripted with REAL aiogram exceptions (`telegram_error`,
+`network_error`), never a look-alike: aiogram's exceptions carry no HTTP
+status, and a fake that did once hid a classification bug that only showed
+in production.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from http import HTTPStatus
 from typing import Any
+
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramConflictError,
+    TelegramEntityTooLarge,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramNotFound,
+    TelegramRetryAfter,
+    TelegramServerError,
+    TelegramUnauthorizedError,
+)
 
 
 class FakeTelegramSender:
@@ -111,13 +130,49 @@ class FakeTelegramSender:
         return [call["text"] for call in self.sends]
 
 
-class FakeTelegramError(Exception):
-    """Stands in for an aiogram error, carrying what the gateway reads."""
+class SyntheticMethod:
+    """The failed Bot API method an aiogram exception carries.
 
-    def __init__(
-        self, message: str, *, status_code: int | None = None, retry_after: int | None = None
-    ) -> None:
-        super().__init__(message)
-        self.message = message
-        self.status_code = status_code
-        self.retry_after = retry_after
+    aiogram reads only its type name and `chat_id`. A real method object would
+    need `aiogram.methods`, which only the Bot API modules may import (AGENTS
+    §5); nothing here calls Telegram.
+    """
+
+    chat_id = 1
+
+
+#: aiogram 3.31 `BaseSession.check_response`: the exception it raises for each
+#: HTTP status Telegram answers with. 5xx is handled below.
+_EXCEPTION_BY_STATUS: dict[int, type[TelegramAPIError]] = {
+    HTTPStatus.BAD_REQUEST: TelegramBadRequest,
+    HTTPStatus.NOT_FOUND: TelegramNotFound,
+    HTTPStatus.CONFLICT: TelegramConflictError,
+    HTTPStatus.UNAUTHORIZED: TelegramUnauthorizedError,
+    HTTPStatus.FORBIDDEN: TelegramForbiddenError,
+    HTTPStatus.REQUEST_ENTITY_TOO_LARGE: TelegramEntityTooLarge,
+}
+
+
+def telegram_error(
+    description: str, *, status_code: int, retry_after: int | None = None
+) -> TelegramAPIError:
+    """The exception aiogram raises when Telegram answers `ok: false`.
+
+    Built the way `check_response` builds it: `retry_after` in the response
+    parameters wins over the status, then the status picks the class, and an
+    unlisted status is a plain `TelegramAPIError`. Like the real thing, it
+    carries no status attribute.
+    """
+    method: Any = SyntheticMethod()
+    if retry_after is not None:
+        return TelegramRetryAfter(method=method, message=description, retry_after=retry_after)
+    exception = _EXCEPTION_BY_STATUS.get(status_code)
+    if exception is None and status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        exception = TelegramServerError
+    return (exception or TelegramAPIError)(method=method, message=description)
+
+
+def network_error(message: str = "Request timeout error") -> TelegramNetworkError:
+    """What aiogram raises when Telegram never answered (timeout, reset)."""
+    method: Any = SyntheticMethod()
+    return TelegramNetworkError(method=method, message=message)

@@ -5,7 +5,7 @@ decisions of 2026-10-22:
 
 | | Choice |
 |---|---|
-| Host (H1) | Oracle Cloud **Always Free**, home region **Frankfurt (`eu-frankfurt-1`)**, `VM.Standard.A1.Flex` (arm64) **1 OCPU / 6 GB**, Ubuntu 24.04 aarch64, 50 GB boot volume, separate **50 GB block volume** for Postgres. Account upgraded to Pay As You Go; a USD 1 budget alerts on any spend. Inbound **SSH 22 only** (security list + ufw); long polling needs no inbound port. |
+| Host (H1) | Oracle Cloud **Always Free**, home region **US East (Ashburn, `us-ashburn-1`)** (the region the owner chose at signup, 2026-10-23; the script checks it), `VM.Standard.A1.Flex` (arm64) **1 OCPU / 6 GB**, Ubuntu 24.04 aarch64, 50 GB boot volume, separate **50 GB block volume** for Postgres. Account upgraded to Pay As You Go; a USD 1 budget alerts on any spend. Inbound **SSH 22 only** (security list + ufw); long polling needs no inbound port. |
 | Off-site backups (H2) | **Backblaze B2, EU Central**: one private bucket, one bucket-restricted application key. rclone's native `b2` backend with `hard_delete`; dumps stay age-encrypted. |
 | Bots (H3) | **Alviro** is production and is polled **only by the server**. A separate dev bot (neutral name) is used locally, connected to the second account (`botfather.md`). |
 | Heartbeat | Healthchecks.io, one check: period 10 min, grace 5 min. |
@@ -21,7 +21,7 @@ them by path and never opens them:
 
 | File | Content | Who writes it |
 |---|---|---|
-| `var/cloud/oci/config`, `var/cloud/oci/oci_api_key.pem` | OCI CLI config (`key_file=/oci/oci_api_key.pem`, `region=eu-frankfurt-1`) and API private key | owner (A3) |
+| `var/cloud/oci/config`, `var/cloud/oci/oci_api_key.pem` | OCI CLI config (`key_file=/oci/oci_api_key.pem`, `region=us-ashburn-1`) and API private key | owner (A3) |
 | `var/cloud/b2.env` | `B2_BUCKET`, `B2_ENDPOINT`, `B2_KEY_ID`, `B2_APP_KEY` | owner (A4) |
 | `var/prod.env` | `BOT_TOKEN` (Alviro), `OPENAI_API_KEY` (prod key), `HEARTBEAT_URL`; optional `PRIVACY_POLICY_URL`, `LLM_MONTHLY_BUDGET_USD`, `FEATURE_FLAGS` | owner (A5, A6) |
 | `var/cloud/ssh/id_ed25519{,.pub}`, `known_hosts` | the agent's SSH key for `deploy@<ip>` | agent (B2) |
@@ -32,9 +32,10 @@ them by path and never opens them:
 ## A. Owner: console-only steps
 
 **A1. Oracle Cloud account.** Sign up at <https://signup.cloud.oracle.com>.
-Choose home region **Germany Central (Frankfurt)** — it is permanent and
-Always Free resources exist only in the home region. A card is verified but
-not charged.
+The home region is permanent and Always Free resources exist only there.
+For this deployment the owner chose **US East (Ashburn), `us-ashburn-1`**
+(Frankfurt was planned; done 2026-10-23). A card is verified but not charged.
+**Done 2026-10-23 (A1–A3).**
 
 **A2. Upgrade to Pay As You Go.** Console → Billing & Cost Management →
 Upgrade and Manage Payment → Pay As You Go. Always Free resources stay free
@@ -43,12 +44,14 @@ upgrade"); the upgrade makes A1 capacity easier to obtain. Wait for the
 "upgrade complete" e-mail before B2. The agent then creates a USD 1 budget
 that mails you on any actual spend.
 
-**A3. API key for the agent.** Console → Profile (top right) → My profile →
-API keys → Add API key → *Generate API key pair* → **Download private key**
-→ save it as `var/cloud/oci/oci_api_key.pem`. Click Add, then copy the
+**A3. API key for the agent.** Console → Profile menu → **User settings** →
+**Tokens and keys** tab (or Resources → API keys) → **Add API key** →
+*Generate API key pair* → **Download private key** → save it as
+`var/cloud/oci/oci_api_key.pem`. Click Add, then copy the
 *Configuration file preview* into `var/cloud/oci/config` (the template is
 there), keeping the line `key_file=/oci/oci_api_key.pem` and
-`region=eu-frankfurt-1`. Your user is a tenancy administrator, which the
+`region=us-ashburn-1`
+(<https://docs.oracle.com/en-us/iaas/Content/Identity/access/to_upload_an_API_signing_key.htm>). Your user is a tenancy administrator, which the
 agent needs for compartments, networking, compute and budgets.
 
 **A4. Backblaze B2.** Sign up at <https://www.backblaze.com/sign-up/cloud-storage>
@@ -103,7 +106,7 @@ config and SSH key present, cloud-init rendered …". It generates the agent
 SSH key on first use. No OCI call is made.
 
 **B2. Provision.** `just oci-provision <owner-email>` (idempotent; safe to
-re-run). Check the lines: `authenticated; home region eu-frankfurt-1`,
+re-run). Check the lines: `authenticated; home region us-ashburn-1`,
 compartment `alviro`, VCN/igw/route table/security list ("inbound TCP 22
 only")/subnet, the Ubuntu 24.04 aarch64 image, `launched instance alviro`,
 block volume `alviro-data` attached at `/dev/oracleoci/oraclevdb`, budget
@@ -115,7 +118,7 @@ in `var/cloud/oci-state.env`).
   (*TooManyRequests*) is retried the same way; if the launch had already
   been accepted, the existing instance is picked up instead of a second one.
 - *Authentication failed* → stop; hand back to A3. *Home region is not
-  eu-frankfurt-1* → stop; the owner decides (it cannot be changed).
+  us-ashburn-1* → stop; the owner decides (it cannot be changed).
 - *In-transit encryption rejected* for the shape/image → re-run with
   `PV_TRANSIT_ENCRYPTION=false` only after telling the owner (volumes stay
   encrypted at rest either way).

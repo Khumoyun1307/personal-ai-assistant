@@ -15,6 +15,7 @@ from sqlalchemy import select, text
 from assistant.accounts.models import Account
 from assistant.agent.tools.registry import ToolContext, ToolServices
 from assistant.agent.tools.status import GetStatusArgs, get_status
+from assistant.conversations.models import CoverageGap
 from assistant.observability.status import build_status
 from assistant.telegram.control.handlers import IncomingMessage
 from tests.integration.business_env import (
@@ -101,6 +102,106 @@ async def test_status_reports_gaps_and_the_caveat(env: Env) -> None:
     assert "failed: 1" in shown
 
 
+async def _seed_outage_gap(
+    env: Env,
+    *,
+    ended_days_ago: float,
+    kind: str = "outage",
+    certainty: str = "possible",
+) -> None:
+    """An unresolved gap whose risk window ended `ended_days_ago` ago."""
+    account = await _account(env)
+    ended = env.clock.now() - timedelta(days=ended_days_ago)
+    async with env.factory() as session, session.begin():
+        session.add(
+            CoverageGap(
+                account_id=account.id,
+                conversation_id=None,
+                kind=kind,
+                certainty=certainty,
+                at_risk_from=ended - timedelta(hours=2),
+                at_risk_to=ended,
+                created_at=env.clock.now(),
+            )
+        )
+
+
+@pytest.mark.parametrize("kind", ["outage", "restore"])
+async def test_status_no_longer_warns_about_a_gap_that_ended_8_days_ago(
+    env: Env, kind: str
+) -> None:
+    """D57: outage/restore gaps stop warning in /status 7 days after their
+    risk window ended, but are still counted (FR-ONB-08: known gaps are
+    shown). S03.2 will decide how summaries use them by date range."""
+    await connect(env)
+    await _seed_outage_gap(env, ended_days_ago=8, kind=kind)
+    shown = await _status(env)
+    assert "Latest gap" not in shown
+    assert "coverage gap(s)" not in shown
+    assert "⚠️" not in shown
+    assert "  Older gaps (7 or more days ago): 1" in shown
+    report = await _report(env)
+    assert report.coverage.unresolved_possible == 0
+    assert report.coverage.older_unresolved_gaps == 1
+    assert report.coverage_caveat is None
+
+
+@pytest.mark.parametrize("kind", ["outage", "restore"])
+async def test_status_still_warns_about_a_gap_that_ended_6_days_ago(env: Env, kind: str) -> None:
+    await connect(env)
+    await _seed_outage_gap(env, ended_days_ago=6, kind=kind)
+    shown = await _status(env)
+    assert "Latest gap (possible)" in shown
+    assert "0 definite and 1 possible coverage gap(s)" in shown
+    assert "Older gaps" not in shown
+
+
+@pytest.mark.parametrize(
+    ("ended_days_ago", "warned"),
+    [(7, False), (7 - 1 / (24 * 60), True)],
+    ids=["exactly-7-days", "a-minute-less"],
+)
+async def test_the_status_window_boundary_is_strict(
+    env: Env, ended_days_ago: float, warned: bool
+) -> None:
+    """Ended less than 7 days ago warns; exactly 7 days ago does not."""
+    await connect(env)
+    await _seed_outage_gap(env, ended_days_ago=ended_days_ago)
+    report = await _report(env)
+    assert report.coverage.unresolved_possible == int(warned)
+    assert report.coverage.older_unresolved_gaps == int(not warned)
+    assert (report.coverage_caveat is not None) is warned
+
+
+async def test_delayed_outage_gaps_use_the_same_window(env: Env) -> None:
+    """A `delayed` gap means messages arrived late, not that any are missing,
+    so once it leaves the window it is not an "older gap" either
+    (verification review, 2026-10-23; FR-ONB-08 is about known gaps)."""
+    await connect(env)
+    await _seed_outage_gap(env, ended_days_ago=1, certainty="delayed")
+    await _seed_outage_gap(env, ended_days_ago=8, certainty="delayed")
+    report = await _report(env)
+    assert report.coverage.delayed == 1
+    assert report.coverage.older_unresolved_gaps == 0
+    assert report.coverage_caveat is None
+    assert "Older gaps" not in await _status(env)
+
+
+async def test_status_warns_about_an_unresolved_dead_letter_gap_regardless_of_age(
+    env: Env,
+) -> None:
+    await connect(env)
+    poison = business_message(message_text="synthetic poison", extra={"message_id": None})
+    for _ in range(3):
+        await deliver(env, poison)
+    env.clock.advance(days=30)
+    shown = await _status(env)
+    assert "Latest gap (definite)" in shown
+    assert "1 definite and 0 possible coverage gap(s)" in shown
+    assert "could not be processed and are paused" in shown
+    assert "Older gaps" not in shown
+
+
 async def test_status_reports_consent_autonomy_and_spend(env: Env) -> None:
     await connect(env)
     await grant_managed(env)
@@ -132,8 +233,25 @@ async def test_the_status_tool_reports_the_same_facts_as_the_command(env: Env) -
     assert outcome.data["consent"] == {
         "control_chat": True,
         "managed_chats": False,
-        "policy_version": "v3",
+        "policy_version": "v4",
     }
+
+
+async def test_the_status_tool_reports_a_gap_past_the_window_as_older(env: Env) -> None:
+    """The model sees the same split as the owner: no warning, but a count."""
+    await connect(env)
+    await _seed_outage_gap(env, ended_days_ago=8)
+    account = await _account(env)
+    services = ToolServices(env.factory, env.clock, Decimal("5"))
+    ctx = ToolContext(
+        account_id=account.id, run_id=1, run_type="owner_request", tainted=False, services=services
+    )
+    outcome = await get_status(ctx, GetStatusArgs())
+
+    assert outcome.data["coverage"]["unresolved_possible"] == 0
+    assert outcome.data["coverage"]["older_unresolved_gaps"] == 1
+    assert outcome.data["coverage"]["latest_gap"] is None
+    assert outcome.data["coverage_caveat"] is None
 
 
 async def test_the_status_tool_result_is_content_free(env: Env) -> None:

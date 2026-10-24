@@ -37,6 +37,7 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("accounts", "timezone"),
         ("accounts", "locale_pref"),
         ("accounts", "settings"),
+        ("accounts", "policy_notice_version"),
         ("consents", "kind"),
         ("consents", "policy_version"),
         ("consents", "processors"),

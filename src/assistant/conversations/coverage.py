@@ -6,9 +6,13 @@ Two writers and one reader:
   ago. Messages dated inside an outage longer than Telegram's 24 h retention
   may be gone for good (`possible`); a shorter one only delayed them.
 - `record_ingest_failure` lives in `service.py` (a dead letter is `definite`).
-- `caveat` — the one-line warning `/status` and summaries show while a
-  conversation is paused by an ingest error or a possible/definite gap is
-  unresolved (FR-OBS-05, §6 invariant 11: never report a gap as coverage).
+- `caveat` — the one-line warning shown while a conversation is paused by an
+  ingest error or a possible/definite gap is unresolved (FR-OBS-05, §6
+  invariant 11: never report a gap as coverage). `summarize` (search answers)
+  counts every unresolved gap; `/status` (`observability.status`) warns only
+  about those `status_gap_filter` keeps — outage/restore gaps that ended less
+  than `STATUS_GAP_WINDOW` ago, and dead-letter gaps of any age — and counts
+  the older ones (`older_gap_filter`) on a plain line.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
@@ -30,6 +34,58 @@ TELEGRAM_UPDATE_RETENTION = timedelta(hours=24)
 OUTAGE_MARGIN = timedelta(minutes=10)
 #: Shorter outages are not worth a row: the watchdog already alerted.
 OUTAGE_MIN = timedelta(minutes=3)
+
+#: `/status` warns about an outage or restore gap only while its risk window
+#: ended less than this long ago (strictly; owner, 2026-10-23, M02 D57): after
+#: a week the warning is noise on every `/status`. Older ones are still
+#: counted, on a plain "older gaps" line (PRD FR-ONB-08: known gaps are
+#: shown). The same window applies to `delayed` outage gaps, which are not
+#: counted as older gaps once out of it (nothing is missing). Unresolved
+#: dead-letter gaps and ingest pauses warn until resolved, whatever their age.
+#: Search answers (`summarize`) are not windowed: they count every unresolved
+#: gap. S03.2 will decide how answers about a date range (summaries,
+#: catch-up) use gaps; date-range overlap is the plan, not this window.
+STATUS_GAP_WINDOW = timedelta(days=7)
+
+_WARNING_CERTAINTIES = ("possible", "definite")
+
+
+def _recent_or_dead_letter(now: datetime) -> ColumnElement[bool]:
+    return or_(
+        CoverageGap.kind == "dead_letter",
+        CoverageGap.at_risk_to > now - STATUS_GAP_WINDOW,
+    )
+
+
+def status_gap_filter(now: datetime) -> ColumnElement[bool]:
+    """The unresolved `possible`/`definite` gaps `/status` warns about at `now`."""
+    return and_(
+        CoverageGap.resolved_at.is_(None),
+        CoverageGap.certainty.in_(_WARNING_CERTAINTIES),
+        _recent_or_dead_letter(now),
+    )
+
+
+def status_delayed_filter(now: datetime) -> ColumnElement[bool]:
+    """The unresolved `delayed` gaps `/status` counts at `now` (same window)."""
+    return and_(
+        CoverageGap.resolved_at.is_(None),
+        CoverageGap.certainty == "delayed",
+        _recent_or_dead_letter(now),
+    )
+
+
+def older_gap_filter(now: datetime) -> ColumnElement[bool]:
+    """Unresolved `possible`/`definite` gaps that fell out of the window: shown
+    on `/status` as a count, without a warning. A `delayed` gap is not one of
+    them: its messages arrived late, nothing is missing (FR-ONB-08 is about
+    known observation gaps)."""
+    return and_(
+        CoverageGap.resolved_at.is_(None),
+        CoverageGap.certainty.in_(_WARNING_CERTAINTIES),
+        CoverageGap.kind != "dead_letter",
+        CoverageGap.at_risk_to <= now - STATUS_GAP_WINDOW,
+    )
 
 
 async def record_outage(

@@ -110,8 +110,11 @@ async def test_a_new_connection_states_the_tier_and_asks_for_managed_consent(
     assert "Can reply" in notice
     assert "cannot see older history" in notice
     assert "OpenAI" in notice
-    assert "Tap <b>Agree</b>" in notice
-    assert [b.label for b in channel.buttons[0]] == ["Agree", "Decline"]
+    assert "Let Alviro's AI agent work with these chats?" in notice
+    assert "The text is processed by OpenAI and isn't used to train their models" in notice
+    assert "When it's off, Alviro still saves new messages from these chats" in notice
+    assert "its AI agent doesn't read them and nothing from them is sent to OpenAI" in notice
+    assert [b.label for b in channel.buttons[0]] == ["Turn on", "Not now"]
     card = await _consent_card(factory, account_id, clock)
     assert card is not None
     assert card.prompt_message_id == result.message_id
@@ -130,7 +133,7 @@ async def test_no_consent_question_once_managed_consent_is_given(
     [notice] = channel.sends
     assert "Reconnected" in notice
     assert "never reached me" in notice
-    assert "Tap <b>Agree</b>" not in notice
+    assert "Let Alviro's AI agent work with these chats?" not in notice
     assert channel.buttons == [()]
 
 
@@ -256,7 +259,9 @@ async def test_a_reconnect_does_not_reopen_an_open_question(
     await notify_connection_change(factory, clock, alerts, again)
 
     assert len(channel.sends) == 2
-    assert "still open above" in channel.sends[-1]
+    assert "The question above about letting Alviro's AI agent" in channel.sends[-1]
+    assert "is still open" in channel.sends[-1]
+    assert "but its AI agent doesn't read them" in channel.sends[-1]
     assert channel.buttons[-1] == ()
     async with factory() as session:
         cards = (
@@ -287,7 +292,11 @@ async def test_a_reconnect_soon_after_a_decline_does_not_ask_again(
     await notify_connection_change(
         factory, clock, alerts, await _event(factory, account_id, "reconnected")
     )
-    assert "You declined AI for these chats" in channel.sends[-1]
+    assert "You chose <b>Not now</b>" in channel.sends[-1]
+    assert (
+        "Alviro saves new messages from them, but its AI agent doesn't read them"
+        in channel.sends[-1]
+    )
     assert channel.buttons[-1] == ()
     assert await _consent_card(factory, account_id, clock) is None
 
@@ -296,5 +305,5 @@ async def test_a_reconnect_soon_after_a_decline_does_not_ask_again(
     await notify_connection_change(
         factory, clock, alerts, await _event(factory, account_id, "reconnected")
     )
-    assert "Tap <b>Agree</b>" in channel.sends[-1]
+    assert "Let Alviro's AI agent work with these chats?" in channel.sends[-1]
     assert await _consent_card(factory, account_id, clock) is not None

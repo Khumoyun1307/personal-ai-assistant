@@ -242,6 +242,35 @@ def test_0009_tainted_reply_flag_and_applying_state_reverse(scratch_url: str) ->
     run_alembic(scratch_url, "head")
 
 
+def test_0010_policy_notice_marker_reverses(scratch_url: str) -> None:
+    """M02 review: `accounts.policy_notice_version` is nullable (NULL for an
+    existing owner, so the notice still goes out) and goes away on downgrade."""
+    run_alembic(scratch_url, "base")
+    run_alembic(scratch_url, "0009")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        conn.execute("INSERT INTO app.accounts (telegram_user_id) VALUES (4747)")
+    run_alembic(scratch_url, "0010")
+
+    assert "policy_notice_version" in _columns(scratch_url, "accounts")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        existing = conn.execute(
+            "SELECT policy_notice_version FROM app.accounts WHERE telegram_user_id = 4747"
+        ).fetchone()
+        assert existing == (None,)
+        conn.execute(
+            "UPDATE app.accounts SET policy_notice_version = 'v4' WHERE telegram_user_id = 4747"
+        )
+
+    run_alembic(scratch_url, "0009", down=True)
+    assert "policy_notice_version" not in _columns(scratch_url, "accounts")
+    with psycopg.connect(libpq(scratch_url)) as conn:
+        kept = conn.execute(
+            "SELECT count(*) FROM app.accounts WHERE telegram_user_id = 4747"
+        ).fetchone()
+        assert kept == (1,)
+    run_alembic(scratch_url, "head")
+
+
 def test_identity_primary_keys_reject_a_client_supplied_id(scratch_url: str) -> None:
     """`GENERATED ALWAYS` means a client cannot collide with the generator."""
     run_alembic(scratch_url, "head")

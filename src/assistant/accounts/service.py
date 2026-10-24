@@ -25,18 +25,22 @@ CONSENT_AI_CONTROL = "ai_control"
 CONSENT_AI_MANAGED = "ai_managed"
 
 #: The privacy-policy version consents are recorded against. v2 adds managed
-#: conversations (docs/legal/privacy-policy.md).
-POLICY_VERSION = "v3"
+#: conversations, v3 deletion and "stop observing", v4 hosting and encrypted
+#: backups (docs/legal/privacy-policy.md). A bump keeps earlier consents valid;
+#: one that widens processing needs an entry in `inbox.policy_notice`, which
+#: tells owners who consented under an older version (AGENTS §16).
+POLICY_VERSION = "v4"
 
 #: Named in every consent, because consent has to say who the data goes to
 #: (SEC-02). A new processor needs a new consent, not just a new entry here.
 AI_PROCESSORS: tuple[str, ...] = ("OpenAI",)
 
-#: Card kind for the managed-conversation consent question (Agree / Decline
-#: buttons — never a free-text answer, so an unrelated message can never be
-#: read as a decision), and how long it stays open: it is asked when the
-#: connection arrives, which the owner may not see for a while. A decline is
-#: also respected for this long: a reconnect does not ask again.
+#: Card kind for the managed-conversation consent question (Turn on / Not now
+#: buttons, callback ops `agree` / `decline` — never a free-text answer, so an
+#: unrelated message can never be read as a decision), and how long it stays
+#: open: it is asked when the connection arrives, which the owner may not see
+#: for a while. A decline is also respected for this long: a reconnect does
+#: not ask again.
 MANAGED_CONSENT_CARD = "managed_consent"
 MANAGED_CONSENT_TTL = timedelta(hours=24)
 

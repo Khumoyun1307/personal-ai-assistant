@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Version** | **v4 (draft)** — names where data is hosted (Oracle Cloud, Frankfurt) and introduces encrypted backups (local + Backblaze B2, EU) with how long deleted data can survive in them |
-| **Status** | **Draft 2026-10-22, not published.** v3 stays the published text at https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19 until the owner publishes v4 (owner step), which must happen **before the production server holds real data and takes its first backup** (Session A). |
-| **Last updated** | 2026-10-22 |
+| **Version** | **v4 (draft)** — plain-language rewrite; names where data is hosted (Oracle Cloud, US East — Ashburn) and introduces encrypted backups (on the server + Backblaze B2, EU) with how long deleted data can remain in them |
+| **Status** | **Draft 2026-10-23, not published yet.** Owner go-ahead to publish given 2026-10-23. **Code is at v4** (`POLICY_VERSION = "v4"`, M02 D59: existing consents stay valid; owners with a consent recorded under an older version, active or revoked, get a one-time update notice with the link and the opt-outs: `/privacy revoke` for AI processing, removing Alviro under Chat Automation for storage). The lead publishes this text at https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19 after that change merges and before the merged code runs anywhere with `PRIVACY_POLICY_URL` set (any `just run` or `just deploy`), and **before the production server holds real data and takes its first backup**; v3 stays the published text until then. |
+| **Last updated** | 2026-10-23 |
 | **Previous** | v3 — deletion and "stop observing", published 2026-10-21; v2 — control chat + managed chats, published 2026-10-19; v1 — control chat only, published 2026-10-18 (see git history of this file) |
 
 Everything between the two `---` lines below is the published text. Change it
@@ -16,70 +16,64 @@ an AI provider without it.
 
 ---
 
-## Personal AI assistant — privacy policy (v4)
+## Alviro — Privacy Policy
 
-This is a personal assistant bot, run by its owner for their own use. There is one user, the owner, and "you" below means the owner. This version covers your private chat with the bot (the control chat) and the chats you choose to include when you connect the bot to your account under Telegram's Chat Automation (managed chats).
+Last updated: 23 October 2026 (version 4)
 
-## What is stored
+Alviro is a personal assistant bot on Telegram, run by its owner for their own use. In this policy, "you" means the owner. It covers your chat with Alviro and the chats you connect to it through Telegram's Chat Automation.
 
-- Your Telegram user id — to recognise you and refuse everyone else. Kept while your account exists.
-- The messages you send to the bot and its replies — so it can hold a conversation with context. The text is deleted after 90 days.
-- Your settings (language, timezone) — kept while your account exists.
-- The connection between the bot and your account: its id, the permissions you granted, and when it changed — so the assistant knows what it may do. No message content. The change history is deleted after 1 year.
-- Messages in your managed chats, from the moment you connect the bot: the text and basic details (who sent it, when, whether it was edited). The text is deleted after at most 90 days; a message deleted in Telegram is deleted here too. The bot cannot see anything sent before you connected it, or chats you did not include.
-- Raw Telegram updates — for recovery after a failure. Their content is deleted after at most 7 days, and immediately for anything the assistant does not keep.
-- Records of AI calls (model, token counts, estimated cost) — for budgeting. No message content. Deleted after 1 year.
-- An activity log (what the assistant did and when) — so you can audit it. No message content. Deleted after 1 year.
+## What Alviro stores
 
-Deletion happens automatically, every hour.
+- **Your Telegram account ID and settings** (such as language and time zone), so Alviro knows it's you. Kept while you use Alviro.
+- **Your chat with Alviro** — your messages and its replies, so it can follow the conversation. Message text is kept for 90 days.
+- **Messages in the chats you connect** — the text and basic details such as who sent it, when, and whether it was edited, starting from the moment you connect Alviro. Message text is kept for up to 90 days. If a message is deleted in Telegram, Alviro deletes it too. Alviro can't see earlier messages or chats you didn't connect.
+- **Connection details** — the permissions you gave Alviro and when they changed. Kept for 1 year.
+- **Technical records** — an activity log of what Alviro did and the usage and cost of AI requests, kept for 1 year and containing no message text; and short-lived copies of incoming Telegram updates, used only to recover from errors and deleted within 7 days.
 
-## Where it is kept, and backups
+Old data is deleted automatically.
 
-Everything above is stored on one server rented from Oracle Cloud in Frankfurt, Germany, on a disk that Oracle encrypts. Once a day the server makes a backup of the database and encrypts it on the server before storing it; only the owner holds the key that can decrypt it, and that key is not on the server. The encrypted backups are kept on the server and, as a second copy, at Backblaze B2 in the EU, which receives only the encrypted files and cannot read them. 14 daily and 4 weekly backups are kept, so the oldest is about five weeks old. Anything deleted — by the hourly clean-up, by a deletion in Telegram, or with the **Delete** button — can remain inside older backups until they are rotated out, at most 35 days later. Backups are used only to recover the assistant after a failure.
+## How Alviro uses your data
 
-## The people you talk to
+Only to help you: answering your questions, summarizing and searching your chats, and remembering your settings. Alviro doesn't send messages to anyone on its own, doesn't share your data for advertising, and doesn't use it to train AI models.
 
-Your managed chats contain messages written by other people. The assistant stores them, as described above, only because you included those chats; it uses them only to help you. It never writes to anyone on its own initiative: in this version it does not send anything into your managed chats at all.
+## AI processing
 
-If someone who is not you writes to the bot directly, they get one fixed reply saying it works only for its owner. Their message is not answered by AI, not stored beyond the technical fact that an update arrived, and its content is discarded when it is processed. If someone else connects the bot to their own account, nothing from it is kept: the assistant records only the connection id and their Telegram user id, to refuse it, and deletes that record 30 days after it was last seen.
+Alviro uses OpenAI's API to understand and answer your messages.
 
-## Who else receives data
+- Your chat with Alviro is processed by OpenAI after you agree to it when you first start the bot.
+- Messages from your connected chats are processed by OpenAI only after you turn on Alviro's AI agent for them — when you connect Alviro, or any time later with /privacy managed.
 
-- OpenAI (model gpt-6-luna) — receives the text of your control-chat conversation when you ask the assistant something, and only after you have agreed to it. Text from your managed chats is sent to OpenAI only after you have separately agreed to that, and only when the assistant works on those chats for you. OpenAI does not use API data to train its models, and data sharing is turned off in this account. OpenAI keeps abuse-monitoring logs, which can include prompts and replies, for up to 30 days. The assistant tells OpenAI not to store responses, so nothing else is kept there. OpenAI's terms: https://developers.openai.com/api/docs/guides/your-data
-- Telegram — carries every message, under Telegram's own privacy policy.
-- Oracle Cloud — hosts the server and its encrypted disk (Frankfurt, Germany). It runs the machine; it is not given the content to process.
-- Backblaze B2 — stores the encrypted backup copies (EU). It receives ciphertext only.
+Under OpenAI's API terms, data sent through the API isn't used to train their models. OpenAI may keep requests for up to 30 days to check for abuse, then deletes them. More information: https://developers.openai.com/api/docs/guides/your-data
 
-There is no other recipient: no analytics, no error-tracking service, no advertising. No message is ever used to train or evaluate any AI model, or sent to feedback programmes, file-upload or batch services.
+## Where your data is kept
 
-## Your consent
+Alviro runs on a server rented from Oracle Cloud in the United States (Ashburn, Virginia), on an encrypted disk. Once a day the database is backed up; the backup is encrypted before it is stored, on the server and as a second copy with Backblaze B2 in the EU. Only the owner holds the key that can open the backups. Backups are kept for up to 5 weeks, so something deleted — by you or automatically — can remain in an older backup until that backup expires (normally no more than 35 days).
 
-There are two separate consents, and each request names the provider:
+## Other people in your chats
 
-1. AI for the control chat — asked when you first start the bot.
-2. AI for your managed chats — asked when you connect the bot to your account. Until you agree, nothing from those chats is sent to any AI provider.
+The chats you connect include messages from other people. Alviro stores and uses them only to help you, as described above.
 
-You can withdraw both at any time by sending /privacy revoke to the bot, and give the second one later with /privacy managed. Withdrawal takes effect immediately: work already queued checks your consent again before it runs and stops. Everything that does not need AI (/status, /settings, /privacy) keeps working.
+If someone else writes to Alviro directly, they get a short reply that it's a private assistant; their message isn't answered by AI or stored. If someone tries to connect Alviro to their own Telegram account, the connection is refused; Alviro keeps only a short technical note to recognise it, deleted 30 days after it was last seen.
 
-## Your rights in this version
+## Your choices
 
-- See your consent state and this policy at any time with /privacy.
-- Withdraw consent at any time with /privacy revoke.
-- Stop the bot seeing your chats at any time by disconnecting it, or by removing chats from Chat Automation, in your Telegram settings.
-- Delete everything the assistant stored from your included chats (messages, names, raw updates): when you decline or withdraw the second consent, the bot offers a **Delete** button, and then a choice between continuing without AI (coverage and visibility only) and **stopping** (it stores nothing further; to disconnect it completely, remove it under Settings → Chat Automation — the bot cannot do that itself). Deleting chosen conversations and exporting your data from inside the bot are planned and not yet available.
+- **/privacy** — see your current settings and this policy.
+- **/privacy managed** — turn on Alviro's AI agent for your connected chats.
+- **/privacy revoke** — turn off AI processing. It takes effect right away; features that don't need AI, such as /status and /settings, keep working.
+- When you turn the AI agent off for your connected chats, Alviro offers to delete everything it stored from them.
+- You can disconnect Alviro or remove chats at any time in Telegram: Settings → Chat Automation.
 
-## Limitations, stated plainly
+## Other services
 
-- Messages already delivered stay in your Telegram chat history and in the other person's; this policy covers what the assistant stores, not what Telegram shows.
-- Deleted data can survive in encrypted backups for at most 35 days (see "Where it is kept, and backups").
+Telegram delivers all messages under its own privacy policy. Oracle Cloud provides the server and Backblaze stores the encrypted backups; they provide infrastructure only. Alviro doesn't use analytics, advertising or tracking services.
 
 ## Changes
 
-This policy is versioned. If what is processed ever grows, you will be told and offered an opt-out before the change takes effect.
+If this policy changes in a way that affects what Alviro stores or shares, you'll be told in the bot before the change applies.
 
 ## Contact
 
-This is a personal deployment: the operator is the owner. Questions about it go to the owner directly.
+Alviro is run by its owner. For any questions, contact the owner directly.
 
 ---
 
@@ -91,4 +85,4 @@ This is a personal deployment: the operator is the owner. Questions about it go 
    owner go-ahead to publish: 2026-10-19; published the same day (page edited in place).
 4. @BotFather registration: same URL, no change needed.
 5. v3 (2026-10-21, M02 S02.4): deletion of stored managed-chat data and the "stop observing" choice become available from inside the bot; no new processing, so no opt-out notice is required (AGENTS §16).
-6. v4 drafted 2026-10-22 (M02 S02.6; owner decisions D38/D39): hosting on Oracle Cloud (Frankfurt) and encrypted backups, kept locally and at Backblaze B2 (EU, ciphertext only), for at most 35 days. This **widens** what is kept (copies, including of deleted data, for up to 35 days, at two infrastructure providers), so per AGENTS §16 it needs an owner notice with opt-out before it takes effect: for this single-owner deployment, the owner's go-ahead to publish v4 before the first production backup. Not yet published; `POLICY_VERSION` in code is unchanged until then.
+6. v4 drafted 2026-10-22 (M02 S02.6; owner decisions D38/D39), rewritten 2026-10-23 in plain language at the owner's request and updated for the actual home region (Oracle Cloud US East — Ashburn; the owner created the account there). Adds hosting and encrypted backups (on the server and at Backblaze B2, EU, ciphertext only), with deleted data remaining in backups for at most 35 days. This **widens** what is kept, so per AGENTS §16 it needs an owner notice with opt-out before it takes effect: for this single-owner deployment, the owner's go-ahead (given 2026-10-23) and publication before the first production backup. `POLICY_VERSION` moved to v4 in code on 2026-10-23 (M02 D59), ahead of publication: existing consents stay valid, and owners holding a consent recorded under an older version get a one-time in-bot notice with the link and the opt-out (`inbox/policy_notice.py`). The page is published at the same URL before that code runs anywhere with `PRIVACY_POLICY_URL` set; publication date: to be recorded.

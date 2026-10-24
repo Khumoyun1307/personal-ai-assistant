@@ -23,7 +23,7 @@ from assistant.telegram.render import (
     split_message,
 )
 from tests.fakes.clock import FakeClock
-from tests.fakes.sender import FakeTelegramError, FakeTelegramSender
+from tests.fakes.sender import FakeTelegramSender, network_error, telegram_error
 
 CONTROL = ControlChat(account_id=1, chat_id=584113992)
 
@@ -123,7 +123,7 @@ async def test_an_unreachable_owner_is_not_reported_as_a_block(
     gateway: OutboundGateway, sender: FakeTelegramSender
 ) -> None:
     """TF §12 LV-09: `chat not found` means "press Start", not "blocked"."""
-    sender.fail_with = FakeTelegramError(
+    sender.fail_with = telegram_error(
         "Telegram server says - Bad Request: chat not found", status_code=400
     )
     result = await gateway.send_text(CONTROL, "hello")
@@ -135,7 +135,7 @@ async def test_an_unreachable_owner_is_not_reported_as_a_block(
 async def test_rate_limiting_is_reported_with_retry_after(
     gateway: OutboundGateway, sender: FakeTelegramSender
 ) -> None:
-    sender.fail_with = FakeTelegramError(
+    sender.fail_with = telegram_error(
         "Too Many Requests: retry after 7", status_code=429, retry_after=7
     )
     result = await gateway.send_text(CONTROL, "hello")
@@ -146,7 +146,7 @@ async def test_rate_limiting_is_reported_with_retry_after(
 async def test_a_blocked_owner_is_forbidden(
     gateway: OutboundGateway, sender: FakeTelegramSender
 ) -> None:
-    sender.fail_with = FakeTelegramError("Forbidden: bot was blocked by the user", status_code=403)
+    sender.fail_with = telegram_error("Forbidden: bot was blocked by the user", status_code=403)
     assert (await gateway.send_text(CONTROL, "x")).error_class is ErrorClass.FORBIDDEN
 
 
@@ -158,13 +158,54 @@ async def test_a_timeout_is_ambiguous_and_never_claimed_as_sent(
     result = await gateway.send_text(CONTROL, "hello")
     assert result.ok is False
     assert result.error_class in {ErrorClass.TRANSIENT, ErrorClass.AMBIGUOUS}
+    assert result.delivery_uncertain
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        network_error("Request timeout error"),
+        network_error("ClientConnectorError: synthetic reset"),
+        telegram_error("Bad Gateway", status_code=502),
+    ],
+)
+async def test_a_send_telegram_never_answered_is_delivery_uncertain(
+    gateway: OutboundGateway, sender: FakeTelegramSender, error: Exception
+) -> None:
+    """§6 invariant 6, with the exceptions aiogram really raises: the message
+    may be on screen, so the result must say so (and never be retried)."""
+    sender.fail_with = error
+    result = await gateway.send_text(CONTROL, "hello")
+    assert (result.ok, result.delivery_uncertain) == (False, True)
+
+
+async def test_a_refused_send_is_a_definite_failure(
+    gateway: OutboundGateway, sender: FakeTelegramSender
+) -> None:
+    """Verification review, 2026-10-23: a real TelegramBadRequest has no
+    status attribute, and this used to come back TRANSIENT (uncertain)."""
+    sender.fail_with = telegram_error(
+        "Bad Request: can't parse entities: synthetic", status_code=400
+    )
+    result = await gateway.send_text(CONTROL, "hello")
+    assert result.error_class is ErrorClass.BAD_REQUEST
+    assert (result.ok, result.delivery_uncertain) == (False, False)
+
+
+async def test_a_refused_edit_is_a_definite_failure(
+    gateway: OutboundGateway, sender: FakeTelegramSender
+) -> None:
+    sender.fail_with = telegram_error("Bad Request: message to edit not found", status_code=400)
+    result = await gateway.edit_control_text(CONTROL, 7, "hello")
+    assert result.error_class is ErrorClass.BAD_REQUEST
+    assert not result.delivery_uncertain
 
 
 async def test_chat_action_failure_never_breaks_a_turn(
     gateway: OutboundGateway, sender: FakeTelegramSender
 ) -> None:
     """A typing indicator is cosmetic; losing it must not lose the reply."""
-    sender.fail_with = FakeTelegramError("boom", status_code=500)
+    sender.fail_with = telegram_error("boom", status_code=500)
     await gateway.chat_action(CONTROL)  # must not raise
 
 

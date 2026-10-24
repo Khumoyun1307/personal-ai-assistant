@@ -49,7 +49,7 @@ from assistant.core.routing import Disposition, RouteDecision
 from assistant.db.uow import transaction
 from assistant.inbox.models import InboundUpdate
 from assistant.observability.logging import get_logger
-from assistant.telegram.errors import ErrorClass, classify
+from assistant.telegram.errors import ErrorClass, classify_exception
 
 logger = get_logger(__name__)
 
@@ -136,7 +136,7 @@ class AiogramConnectionLookup:
                 business_connection_id=connection_id
             )
         except TelegramBadRequest as error:
-            classified = classify(error.message, status=400)
+            classified = classify_exception(error)
             if classified.error_class in (ErrorClass.CONNECTION_INVALID, ErrorClass.BAD_REQUEST):
                 return None
             raise
