@@ -90,12 +90,9 @@ ALERT_TEXT: dict[AlertKind, str] = {
         "applied. It may or may not have taken effect; please check before asking again. "
         "I am not counting it as done."
     ),
-    AlertKind.POLICY_UPDATED: (
-        "📄 <b>Alviro's privacy policy was updated (version {version}):</b> {change}. "
-        "{link}\n\n"
-        "Your current choices stay as they are. If you don't agree, send "
-        "<code>/privacy revoke</code> to stop all AI processing."
-    ),
+    #: The body is per version (`inbox.policy_notice.POLICY_CHANGES`): it has
+    #: to say what that version changes and how to opt out of it.
+    AlertKind.POLICY_UPDATED: "📄 {body}",
 }
 
 
@@ -105,6 +102,8 @@ class AlertResult:
     reason: str
     #: The control-chat message id, when delivered (a card needs it).
     message_id: int | None = None
+    #: Not delivered as far as we know, but it may be on screen (timeout).
+    uncertain: bool = False
 
 
 class OwnerAlerts:
@@ -147,6 +146,14 @@ class OwnerAlerts:
             text=ALERT_TEXT[kind].format(**values),
             buttons=buttons,
         )
+        uncertain = not delivery.ok and delivery.uncertain
+        details: dict[str, object] = {
+            "kind": kind.value,
+            "key": dedupe_key,
+            "delivered": delivery.ok,
+        }
+        if uncertain:
+            details["uncertain"] = True
         async with transaction(self._session_factory) as uow:
             uow.session.add(
                 AuditLogEntry(
@@ -154,14 +161,21 @@ class OwnerAlerts:
                     at=self._clock.now(),
                     actor="system",
                     event=EVENT_ALERT,
-                    details={"kind": kind.value, "key": dedupe_key, "delivered": delivery.ok},
+                    details=details,
                 )
             )
-        logger.info("owner_alert", account_id=account_id, kind=kind.value, delivered=delivery.ok)
+        logger.info(
+            "owner_alert",
+            account_id=account_id,
+            kind=kind.value,
+            delivered=delivery.ok,
+            uncertain=uncertain,
+        )
         return AlertResult(
             delivery.ok,
-            "sent" if delivery.ok else "not_delivered",
+            "sent" if delivery.ok else ("uncertain" if uncertain else "not_delivered"),
             delivery.message_id if delivery.ok else None,
+            uncertain=uncertain,
         )
 
     async def _recently_sent(

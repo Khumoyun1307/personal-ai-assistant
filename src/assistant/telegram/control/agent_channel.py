@@ -13,6 +13,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from assistant.agent.ports import Delivery
 from assistant.core.channel import Button
+from assistant.telegram.errors import ErrorClass
 from assistant.telegram.gateway import ControlChat, OutboundGateway
 
 
@@ -42,6 +43,10 @@ class GatewayControlChannel:
             ok=result.ok,
             message_id=result.message_id,
             error=None if result.ok else result.error_class.value,
+            # A send that got no answer (timeout, reset) or a 5xx may still
+            # have arrived: `errors.classify` calls it transient, and leaves
+            # treating it as ambiguous to the sender (§6 invariant 6).
+            uncertain=result.delivery_uncertain or result.error_class is ErrorClass.TRANSIENT,
         )
 
     async def typing(self, *, account_id: int, chat_id: int) -> None:

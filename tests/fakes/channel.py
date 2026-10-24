@@ -17,6 +17,9 @@ class FakeChannel:
     #: The buttons each send carried, parallel to `sends`.
     buttons: list[tuple[Button, ...]] = field(default_factory=list)
     deliver: bool = True
+    #: With `deliver=False`: report an ambiguous outcome (may be on screen)
+    #: instead of a definite refusal.
+    uncertain: bool = False
     _next_id: int = 500
 
     async def send(
@@ -28,6 +31,8 @@ class FakeChannel:
         self.events.append("send")
         self._next_id += 1
         if not self.deliver:
+            if self.uncertain:
+                return Delivery(ok=False, error="ambiguous", uncertain=True)
             return Delivery(ok=False, error="forbidden")
         return Delivery(ok=True, message_id=self._next_id)
 

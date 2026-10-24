@@ -56,6 +56,11 @@ class Account(Base):
         JSONB, nullable=False, server_default=sql_text("'{}'")
     )
     autonomy_paused: Mapped[bool] = mapped_column(nullable=False, server_default=sql_text("false"))
+    #: The policy version whose update notice is settled for this owner
+    #: (delivered, or sent with an unknown outcome). NULL: none yet. The
+    #: durable "already told" marker; audit rows are swept after a year
+    #: (`inbox.policy_notice`, M02 D59).
+    policy_notice_version: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[CreatedAt]
 
 
