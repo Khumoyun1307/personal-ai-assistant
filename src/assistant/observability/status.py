@@ -16,13 +16,17 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import ColumnElement, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import connections
 from assistant.accounts.models import Account
 from assistant.accounts.service import CONSENT_AI_CONTROL, CONSENT_AI_MANAGED, active_consent
-from assistant.conversations.coverage import status_gap_filter
+from assistant.conversations.coverage import (
+    older_gap_filter,
+    status_delayed_filter,
+    status_gap_filter,
+)
 from assistant.conversations.models import Conversation, CoverageGap
 from assistant.conversations.service import PAUSE_INGEST_ERROR
 from assistant.inbox.processor import inbox_backlog_for
@@ -53,6 +57,9 @@ class CoverageStatus:
     unresolved_possible: int
     unresolved_definite: int
     delayed: int
+    #: Unresolved outage/restore gaps (any certainty) that ended
+    #: `STATUS_GAP_WINDOW` ago or more: shown as a count, without a warning.
+    older_unresolved_gaps: int
     latest_gap: GapRange | None
     paused_by_ingest_error: int
 
@@ -176,8 +183,9 @@ async def build_status(
         .group_by(Conversation.autonomy_paused_reason)
     )
     paused_by_reason = {str(reason): int(count) for reason, count in paused_rows.all()}
-    # Outage and restore gaps older than a week no longer warn; dead-letter
-    # gaps warn until resolved (M02 D57, `coverage.STATUS_GAP_WINDOW`).
+    # Outage and restore gaps that ended a week ago or more no longer warn;
+    # they are counted as older gaps. Dead-letter gaps warn until resolved
+    # (M02 D57, `coverage.STATUS_GAP_WINDOW`).
     gap_counts = await session.execute(
         select(CoverageGap.certainty, func.count())
         .where(CoverageGap.account_id == account_id)
@@ -185,15 +193,18 @@ async def build_status(
         .group_by(CoverageGap.certainty)
     )
     gaps = {str(certainty): int(count) for certainty, count in gap_counts.all()}
-    delayed = (
-        await session.execute(
+
+    async def count_gaps(condition: ColumnElement[bool]) -> int:
+        counted = await session.execute(
             select(func.count())
             .select_from(CoverageGap)
             .where(CoverageGap.account_id == account_id)
-            .where(CoverageGap.resolved_at.is_(None))
-            .where(CoverageGap.certainty == "delayed")
+            .where(condition)
         )
-    ).scalar_one()
+        return int(counted.scalar_one())
+
+    delayed = await count_gaps(status_delayed_filter(now))
+    older = await count_gaps(older_gap_filter(now))
     latest = (
         await session.execute(
             select(CoverageGap)
@@ -209,7 +220,8 @@ async def build_status(
         coverage_started_at=started,
         unresolved_possible=gaps.get("possible", 0),
         unresolved_definite=gaps.get("definite", 0),
-        delayed=int(delayed),
+        delayed=delayed,
+        older_unresolved_gaps=older,
         latest_gap=None
         if latest is None
         else GapRange(latest.certainty, latest.at_risk_from, latest.at_risk_to),

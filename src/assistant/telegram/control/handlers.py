@@ -20,6 +20,7 @@ from assistant.accounts import connections, service
 from assistant.accounts.models import Account, PendingInput
 from assistant.agent import confirmations
 from assistant.agent.confirmations import OP_CONFIRM, OP_REJECT, TOOL_CONFIRM_CARD
+from assistant.conversations.coverage import STATUS_GAP_WINDOW
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
 from assistant.core.jobs import APPLY_CONFIRMATION_TASK, JobScheduler, owner_control_lock
@@ -750,6 +751,13 @@ def render_status(report: StatusReport, *, visibility: str) -> str:
         lines.append(
             f"  Latest gap ({escape(gap.certainty)}): {local_time(gap.at_risk_from, tz)} → "
             f"{local_time(gap.at_risk_to, tz)}"
+        )
+    if cov.older_unresolved_gaps:
+        # Known gaps are always shown (FR-ONB-08); past the window, without a
+        # warning (M02 D57).
+        lines.append(
+            f"  Older gaps (ended more than {STATUS_GAP_WINDOW.days} days ago): "
+            f"{cov.older_unresolved_gaps}"
         )
     consent = report.consent
     lines += [

@@ -9,9 +9,10 @@ Two writers and one reader:
 - `caveat` — the one-line warning shown while a conversation is paused by an
   ingest error or a possible/definite gap is unresolved (FR-OBS-05, §6
   invariant 11: never report a gap as coverage). `summarize` (search answers)
-  counts every unresolved gap; `/status` (`observability.status`) counts only
-  those `status_gap_filter` keeps: recent outage/restore gaps, and dead-letter
-  gaps of any age.
+  counts every unresolved gap; `/status` (`observability.status`) warns only
+  about those `status_gap_filter` keeps — outage/restore gaps that ended less
+  than `STATUS_GAP_WINDOW` ago, and dead-letter gaps of any age — and counts
+  the older ones (`older_gap_filter`) on a plain line.
 """
 
 from __future__ import annotations
@@ -35,22 +36,52 @@ OUTAGE_MARGIN = timedelta(minutes=10)
 OUTAGE_MIN = timedelta(minutes=3)
 
 #: `/status` warns about an outage or restore gap only while its risk window
-#: ended less than this long ago (owner, 2026-10-23, M02 D57): after a week
-#: the warning is noise on every `/status`. Unresolved dead-letter gaps and
-#: ingest pauses show until resolved, whatever their age. Answers about a date
-#: range (summaries, catch-up) use date-range overlap instead, not this.
+#: ended less than this long ago (strictly; owner, 2026-10-23, M02 D57): after
+#: a week the warning is noise on every `/status`. Older ones are still
+#: counted, on a plain "older gaps" line (PRD FR-ONB-08: known gaps are
+#: shown). The same window applies to `delayed` outage gaps. Unresolved
+#: dead-letter gaps and ingest pauses warn until resolved, whatever their age.
+#: Search answers (`summarize`) are not windowed: they count every unresolved
+#: gap. S03.2 will decide how answers about a date range (summaries,
+#: catch-up) use gaps; date-range overlap is the plan, not this window.
 STATUS_GAP_WINDOW = timedelta(days=7)
+
+_WARNING_CERTAINTIES = ("possible", "definite")
+
+
+def _recent_or_dead_letter(now: datetime) -> ColumnElement[bool]:
+    return or_(
+        CoverageGap.kind == "dead_letter",
+        CoverageGap.at_risk_to > now - STATUS_GAP_WINDOW,
+    )
 
 
 def status_gap_filter(now: datetime) -> ColumnElement[bool]:
-    """The unresolved `possible`/`definite` gaps `/status` reports at `now`."""
+    """The unresolved `possible`/`definite` gaps `/status` warns about at `now`."""
     return and_(
         CoverageGap.resolved_at.is_(None),
-        CoverageGap.certainty.in_(["possible", "definite"]),
-        or_(
-            CoverageGap.kind == "dead_letter",
-            CoverageGap.at_risk_to >= now - STATUS_GAP_WINDOW,
-        ),
+        CoverageGap.certainty.in_(_WARNING_CERTAINTIES),
+        _recent_or_dead_letter(now),
+    )
+
+
+def status_delayed_filter(now: datetime) -> ColumnElement[bool]:
+    """The unresolved `delayed` gaps `/status` counts at `now` (same window)."""
+    return and_(
+        CoverageGap.resolved_at.is_(None),
+        CoverageGap.certainty == "delayed",
+        _recent_or_dead_letter(now),
+    )
+
+
+def older_gap_filter(now: datetime) -> ColumnElement[bool]:
+    """Unresolved gaps of any certainty that fell out of the window: shown on
+    `/status` as a count, without a warning."""
+    return and_(
+        CoverageGap.resolved_at.is_(None),
+        CoverageGap.certainty.in_((*_WARNING_CERTAINTIES, "delayed")),
+        CoverageGap.kind != "dead_letter",
+        CoverageGap.at_risk_to <= now - STATUS_GAP_WINDOW,
     )
 
 
