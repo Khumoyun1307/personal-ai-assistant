@@ -37,7 +37,7 @@ from assistant.telegram.ingress.ports import TelegramTransientError
 from tests.fakes.channel import FakeChannel
 from tests.fakes.clock import FakeClock
 from tests.fakes.llm import FakeLLM, tool_response
-from tests.fakes.sender import FakeTelegramError
+from tests.fakes.sender import telegram_error
 from tests.fakes.telegram import FakeUpdateSource
 from tests.integration.business_env import (
     OWNER,
@@ -149,7 +149,7 @@ async def test_injected_failures_never_log_the_canary_or_the_token(
     env.processor._handlers = {**handlers, Route.BUSINESS: business}
 
     # 4. A Telegram 400 whose description carries the canary, on a control send.
-    env.sender.fail_with = FakeTelegramError(f"Bad Request: {CANARY}", status_code=400)
+    env.sender.fail_with = telegram_error(f"Bad Request: {CANARY}", status_code=400)
     await deliver(env, private_message(OWNER, "/help"))
     env.sender.fail_with = None
 

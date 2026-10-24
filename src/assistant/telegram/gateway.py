@@ -12,7 +12,7 @@ one. aiogram's shortcuts auto-inject the connection id, which would send *as
 the owner* into the wrong chat — the single worst failure this product could
 have.
 
-**At-most-once.** A send whose outcome is unknown is reported as `ambiguous`
+**At-most-once.** A send whose outcome is unknown is `delivery_uncertain`
 and is **never retried automatically** (§6 invariant 6): a duplicate message
 sent as the owner cannot be taken back.
 
@@ -32,7 +32,7 @@ from aiogram import Bot
 
 from assistant.core.clock import Clock
 from assistant.observability.logging import get_logger
-from assistant.telegram.errors import ClassifiedError, ErrorClass, classify
+from assistant.telegram.errors import ClassifiedError, ErrorClass, classify_exception
 from assistant.telegram.render import render_control_message
 
 logger = get_logger(__name__)
@@ -75,8 +75,12 @@ class SendResult:
 
     @property
     def delivery_uncertain(self) -> bool:
-        """Unknown outcome. Never retry; surface it (§6 invariant 11)."""
-        return self.error_class is ErrorClass.AMBIGUOUS
+        """Unknown outcome. Never retry; surface it (§6 invariants 6, 11).
+
+        Every gateway call is a write, so TRANSIENT — no answer from Telegram,
+        or a 5xx — means the effect may have happened.
+        """
+        return self.error_class in (ErrorClass.AMBIGUOUS, ErrorClass.TRANSIENT)
 
 
 class TelegramSender(Protocol):
@@ -244,10 +248,7 @@ class OutboundGateway:
             logger.warning("answer_callback_failed", exc_type=type(error).__name__)
 
     def _classify_failure(self, error: Exception, *, account_id: int) -> SendResult:
-        description = getattr(error, "message", None) or str(error)
-        status = getattr(error, "status_code", None) or getattr(error, "status", None)
-        retry_after = getattr(error, "retry_after", None)
-        classified: ClassifiedError = classify(description, status=status, retry_after=retry_after)
+        classified: ClassifiedError = classify_exception(error)
         logger.warning(
             "control_send_failed",
             account_id=account_id,
