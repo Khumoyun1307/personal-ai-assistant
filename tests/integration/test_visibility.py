@@ -139,7 +139,7 @@ async def test_status_no_longer_warns_about_a_gap_that_ended_8_days_ago(
     assert "Latest gap" not in shown
     assert "coverage gap(s)" not in shown
     assert "⚠️" not in shown
-    assert "  Older gaps (ended more than 7 days ago): 1" in shown
+    assert "  Older gaps (7 or more days ago): 1" in shown
     report = await _report(env)
     assert report.coverage.unresolved_possible == 0
     assert report.coverage.older_unresolved_gaps == 1
@@ -174,13 +174,17 @@ async def test_the_status_window_boundary_is_strict(
 
 
 async def test_delayed_outage_gaps_use_the_same_window(env: Env) -> None:
+    """A `delayed` gap means messages arrived late, not that any are missing,
+    so once it leaves the window it is not an "older gap" either
+    (verification review, 2026-10-23; FR-ONB-08 is about known gaps)."""
     await connect(env)
     await _seed_outage_gap(env, ended_days_ago=1, certainty="delayed")
     await _seed_outage_gap(env, ended_days_ago=8, certainty="delayed")
     report = await _report(env)
     assert report.coverage.delayed == 1
-    assert report.coverage.older_unresolved_gaps == 1
+    assert report.coverage.older_unresolved_gaps == 0
     assert report.coverage_caveat is None
+    assert "Older gaps" not in await _status(env)
 
 
 async def test_status_warns_about_an_unresolved_dead_letter_gap_regardless_of_age(

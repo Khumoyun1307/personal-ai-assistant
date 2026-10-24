@@ -756,8 +756,7 @@ def render_status(report: StatusReport, *, visibility: str) -> str:
         # Known gaps are always shown (FR-ONB-08); past the window, without a
         # warning (M02 D57).
         lines.append(
-            f"  Older gaps (ended more than {STATUS_GAP_WINDOW.days} days ago): "
-            f"{cov.older_unresolved_gaps}"
+            f"  Older gaps ({STATUS_GAP_WINDOW.days} or more days ago): {cov.older_unresolved_gaps}"
         )
     consent = report.consent
     lines += [

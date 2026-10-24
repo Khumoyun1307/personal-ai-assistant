@@ -57,7 +57,7 @@ class CoverageStatus:
     unresolved_possible: int
     unresolved_definite: int
     delayed: int
-    #: Unresolved outage/restore gaps (any certainty) that ended
+    #: Unresolved `possible`/`definite` outage/restore gaps that ended
     #: `STATUS_GAP_WINDOW` ago or more: shown as a count, without a warning.
     older_unresolved_gaps: int
     latest_gap: GapRange | None
@@ -184,7 +184,8 @@ async def build_status(
     )
     paused_by_reason = {str(reason): int(count) for reason, count in paused_rows.all()}
     # Outage and restore gaps that ended a week ago or more no longer warn;
-    # they are counted as older gaps. Dead-letter gaps warn until resolved
+    # possible/definite ones are counted as older gaps (an old delayed gap is
+    # not: nothing is missing). Dead-letter gaps warn until resolved
     # (M02 D57, `coverage.STATUS_GAP_WINDOW`).
     gap_counts = await session.execute(
         select(CoverageGap.certainty, func.count())

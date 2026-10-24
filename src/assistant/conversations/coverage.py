@@ -39,7 +39,8 @@ OUTAGE_MIN = timedelta(minutes=3)
 #: ended less than this long ago (strictly; owner, 2026-10-23, M02 D57): after
 #: a week the warning is noise on every `/status`. Older ones are still
 #: counted, on a plain "older gaps" line (PRD FR-ONB-08: known gaps are
-#: shown). The same window applies to `delayed` outage gaps. Unresolved
+#: shown). The same window applies to `delayed` outage gaps, which are not
+#: counted as older gaps once out of it (nothing is missing). Unresolved
 #: dead-letter gaps and ingest pauses warn until resolved, whatever their age.
 #: Search answers (`summarize`) are not windowed: they count every unresolved
 #: gap. S03.2 will decide how answers about a date range (summaries,
@@ -75,11 +76,13 @@ def status_delayed_filter(now: datetime) -> ColumnElement[bool]:
 
 
 def older_gap_filter(now: datetime) -> ColumnElement[bool]:
-    """Unresolved gaps of any certainty that fell out of the window: shown on
-    `/status` as a count, without a warning."""
+    """Unresolved `possible`/`definite` gaps that fell out of the window: shown
+    on `/status` as a count, without a warning. A `delayed` gap is not one of
+    them: its messages arrived late, nothing is missing (FR-ONB-08 is about
+    known observation gaps)."""
     return and_(
         CoverageGap.resolved_at.is_(None),
-        CoverageGap.certainty.in_((*_WARNING_CERTAINTIES, "delayed")),
+        CoverageGap.certainty.in_(_WARNING_CERTAINTIES),
         CoverageGap.kind != "dead_letter",
         CoverageGap.at_risk_to <= now - STATUS_GAP_WINDOW,
     )
