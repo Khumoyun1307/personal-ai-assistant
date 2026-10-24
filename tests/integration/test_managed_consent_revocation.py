@@ -418,6 +418,27 @@ async def test_revoke_closes_open_consent_cards_so_a_stale_agree_grants_nothing(
     assert not await _managed_granted(env)
 
 
+async def test_turn_on_when_already_on_says_already_on(env: Env) -> None:
+    """A second consent card pressed after the first was agreed: the toast
+    says "Already on", and the card must say the same — not "Turned on"."""
+    await seed(env)
+    await deliver(env, private_message(OWNER, "/privacy managed"))
+    await deliver(env, private_message(OWNER, "/privacy managed"))
+    first, second = await _consent_cards(env)
+    for card in (first, second):
+        await deliver(
+            env,
+            callback(f"managed_consent:{card.token}:agree", message_id=card.prompt_message_id),
+        )
+
+    assert env.sender.answered_callbacks[-1]["text"] == "Already on"
+    last = env.sender.edits[-1]
+    assert last["message_id"] == second.prompt_message_id
+    assert "It's already on." in last["text"]
+    assert "Turned on" not in last["text"]
+    assert "(for this chat too)" in last["text"]
+
+
 # ------------------------------------------------------------ the connection notice's card
 async def _notice_card(env: Env) -> PendingInput:
     """The consent card carried by the connection notice, as the

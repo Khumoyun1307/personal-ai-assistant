@@ -112,7 +112,8 @@ async def test_a_new_connection_states_the_tier_and_asks_for_managed_consent(
     assert "OpenAI" in notice
     assert "Let Alviro's AI agent work with these chats?" in notice
     assert "The text is processed by OpenAI and isn't used to train their models" in notice
-    assert "When it's off, Alviro still tracks which chats are connected" in notice
+    assert "When it's off, Alviro still saves new messages from these chats" in notice
+    assert "its AI agent doesn't read them and nothing from them is sent to OpenAI" in notice
     assert [b.label for b in channel.buttons[0]] == ["Turn on", "Not now"]
     card = await _consent_card(factory, account_id, clock)
     assert card is not None
@@ -260,6 +261,7 @@ async def test_a_reconnect_does_not_reopen_an_open_question(
     assert len(channel.sends) == 2
     assert "The question above about letting Alviro's AI agent" in channel.sends[-1]
     assert "is still open" in channel.sends[-1]
+    assert "but its AI agent doesn't read them" in channel.sends[-1]
     assert channel.buttons[-1] == ()
     async with factory() as session:
         cards = (
@@ -291,6 +293,10 @@ async def test_a_reconnect_soon_after_a_decline_does_not_ask_again(
         factory, clock, alerts, await _event(factory, account_id, "reconnected")
     )
     assert "You chose <b>Not now</b>" in channel.sends[-1]
+    assert (
+        "Alviro saves new messages from them, but its AI agent doesn't read them"
+        in channel.sends[-1]
+    )
     assert channel.buttons[-1] == ()
     assert await _consent_card(factory, account_id, clock) is None
 

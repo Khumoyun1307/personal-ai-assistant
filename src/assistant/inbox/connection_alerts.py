@@ -45,16 +45,21 @@ TIER_TEXT: dict[Tier, str] = {
 VISIBILITY = "I see the chats you included from now on. I cannot see older history."
 
 #: The managed-consent question (FR-ONB-05b; wording approved by the owner
-#: 2026-10-23, M02 D58). The same text on the connection notice and on
-#: `/privacy managed`. `{processors}` names who the text goes to (SEC-02).
+#: 2026-10-23, M02 D58, corrected after review). The same text on the
+#: connection notice and on `/privacy managed`. `{processors}` names who the
+#: text goes to (SEC-02). It must say that messages are saved either way and
+#: that turning AI on unlocks everything already saved: storage does not
+#: depend on this consent, only AI processing does (§6 invariant 9).
 MANAGED_CONSENT_QUESTION = (
     "<b>Let Alviro's AI agent work with these chats?</b>\n\n"
-    "When this is on, Alviro's AI agent reads new messages in the chats you connected "
-    "so it can summarise them, find things for you and answer your questions about "
-    "them. The text is processed by {processors} and isn't used to train their "
-    "models. You can turn it off any time with /privacy.\n\n"
-    "When it's off, Alviro still tracks which chats are connected and when messages "
-    "arrive, but doesn't read them."
+    "When this is on, Alviro's AI agent can read the messages saved from the chats "
+    "you connected, so it can summarise them, find things for you and answer your "
+    "questions about them. The text is processed by {processors} and isn't used to "
+    "train their models.\n\n"
+    "When it's off, Alviro still saves new messages from these chats (kept up to "
+    "90 days), but its AI agent doesn't read them and nothing from them is sent to "
+    "{processors}.\n\n"
+    "You can change this any time with /privacy."
 )
 #: Button labels and their callback ops. Only the labels are owner-facing; the
 #: ops (`agree` / `decline`) are what card presses are matched on.
@@ -65,11 +70,13 @@ MANAGED_CONSENT_BUTTONS: tuple[tuple[str, str], ...] = (
 #: When the question is already open, or was answered "Not now" within a day.
 MANAGED_CONSENT_STILL_OPEN = (
     "The question above about letting Alviro's AI agent work with these chats is "
-    "still open. Until you tap <b>Turn on</b>, the AI agent doesn't read them."
+    "still open. Until you tap <b>Turn on</b>, Alviro saves new messages from them "
+    "but its AI agent doesn't read them."
 )
 MANAGED_CONSENT_DECLINED_NOTE = (
-    "You chose <b>Not now</b> for Alviro's AI agent in these chats, so it doesn't "
-    "read them. Send <code>/privacy managed</code> to turn it on."
+    "You chose <b>Not now</b> for Alviro's AI agent in these chats: Alviro saves new "
+    "messages from them, but its AI agent doesn't read them. Send "
+    "<code>/privacy managed</code> to turn it on."
 )
 
 

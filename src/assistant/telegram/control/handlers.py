@@ -202,16 +202,17 @@ async def handle_consent_reply(
 #: The `/privacy managed` card asks exactly what the connection notice asks.
 MANAGED_CONSENT_TEXT = MANAGED_CONSENT_QUESTION
 MANAGED_CONSENT_GRANTED_TEXT = (
-    "Turned on. From now on Alviro's AI agent can read new messages in the chats "
+    "Turned on. Alviro's AI agent can now read the messages saved from the chats "
     "you connected when it works on them for you; the text is processed by "
-    "{processors}. Turn it off any time with <code>/privacy revoke</code>."
+    "{processors}. Send <code>/privacy revoke</code> to turn AI off (this also "
+    "turns it off for this chat)."
 )
 MANAGED_CONSENT_DECLINED_TEXT = (
     "Not now. Alviro's AI agent doesn't read the chats you connected. "
     "Send <code>/privacy managed</code> if you change your mind."
 )
 MANAGED_CONSENT_ALREADY_ON_TEXT = (
-    "It's already on. Send <code>/privacy revoke</code> to turn it off."
+    "It's already on. Send <code>/privacy revoke</code> to turn AI off (for this chat too)."
 )
 
 
@@ -314,10 +315,14 @@ async def handle_privacy(
         "<b>Privacy</b>\n\n"
         f"AI for this chat: {describe(consent)}\n"
         f"AI for your chats with other people: {describe(managed)}\n\n"
-        "In this chat I store your messages and my replies for 90 days, your "
-        "settings, and a content-free record of what I did.\n\n"
-        "Messages from anyone who is not you are discarded — I keep no record "
-        "of what they said.\n\n"
+        "In this chat I store your messages and my replies (text kept for 90 days), "
+        "your settings, and a record of what I did that contains no message text "
+        "(kept for 1 year).\n\n"
+        "From the chats you connected, I save new messages (text kept up to 90 days), "
+        "whether or not AI is on. If someone else writes to me directly, I don't keep "
+        "their message. Everything is on a server in the US (Oracle, Ashburn) with "
+        "encrypted daily backups, also kept at Backblaze B2 in the EU, for up to 35 "
+        "days.\n\n"
         "Your messages are never used to train a model."
     )
     if connected and not managed.granted:
@@ -544,7 +549,9 @@ async def handle_card_press(
             granted = await _grant_managed_consent(session, clock, account)
             settlement = _Settlement(
                 "Turned on" if granted else "Already on",
-                MANAGED_CONSENT_GRANTED_TEXT.format(processors=", ".join(AI_PROCESSORS)),
+                MANAGED_CONSENT_GRANTED_TEXT.format(processors=", ".join(AI_PROCESSORS))
+                if granted
+                else MANAGED_CONSENT_ALREADY_ON_TEXT,
                 keep_body=in_notice,
             )
             note = "granted" if granted else "already_granted"
