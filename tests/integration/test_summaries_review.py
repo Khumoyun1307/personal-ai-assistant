@@ -196,7 +196,7 @@ async def test_a_deletion_during_a_first_build_stores_nothing(senv: Env) -> None
     assert await summary_kinds(senv) == []
     assert TEXT_A2 not in await stored_texts(senv)
     assert await pending_since(senv, a) is not None
-    assert ("failed", "discarded:source_changed") in await run_statuses(senv)
+    assert ("failed", "discarded:changed") in await run_statuses(senv)
     # The next refresh rebuilds from what is retained — without the deleted text.
     fake.parsed.append(with_texts)
     assert (await summaries.refresh(a)).status is SummaryStatus.REFRESHED
