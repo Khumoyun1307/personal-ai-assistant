@@ -2,7 +2,8 @@
 
 Datasets for the LLM quality gates in IMPLEMENTATION_PLAN §10.1. This folder sits
 outside `src/`: nothing in the product imports it (`tests/unit/test_layering.py`).
-The S03.4 runner, rubrics (`evals/rubrics/`) and metrics will be added here.
+The S03.4 runner, metrics, judge rubrics (`evals/rubrics/`) and eval prompts
+(`evals/prompts/`) live here too; see *Running*.
 
 ## Provenance (read first)
 
@@ -63,7 +64,7 @@ text) or `purged_text` (deleted text). Those two fields exist only for reviewers
   edits that change a time or a phone number, deletions, voice and photo
   messages, injections and gaps.
 
-### How S03.4 is expected to score it (to be confirmed when the runner lands)
+### How S03.4 scores it (implemented in `evals/metrics.py`; the choices are E-a…E-j in `docs/milestones/M03.md`, pending the owner's confirmation)
 
 - Recall (threshold ≥ 95 %) is measured over `open` questions and `open`
   commitments, the open loops a catch-up must surface. Answered and done items
@@ -105,7 +106,62 @@ dataset to make a model pass.
 
 ## Running
 
-The runner arrives in S03.4. Until then, `just test tests/unit/test_e1_dataset.py`
-validates both files through the schema and checks the §10.1 minimums. Real-model
-runs are manual, need the owner's approval for their cost (S03.4 is capped at
-USD 1), and record their results in `docs/evals/`.
+All commands run in the dev container (host: `docker compose -f compose.dev.yml
+run --rm app uv run python -m evals …`, PowerShell). `just test
+tests/unit/test_e1_dataset.py` validates both files through the schema and checks
+the §10.1 minimums.
+
+```sh
+python -m evals verify                                  # datasets match MANIFEST.sha256
+python -m evals run retrieval                           # deterministic baseline: no model, no cost
+python -m evals run retrieval --mode variants --estimate-only   # worst-case cost, calls nothing
+python -m evals run retrieval --mode variants --live    # REAL model; owner's go-ahead + cost approval
+python -m evals run summary                             # placeholder: wired after S03.2 (exit 3)
+python -m evals compare docs/evals/<run>.json …         # quality and cost per 100 items per run
+```
+
+What a run does: it refuses unless the datasets match the frozen manifest, builds a
+**throwaway migrated database** (`assistant_eval_<random>` on the server of
+`EVAL_DATABASE_URL`, default `TEST_DATABASE_URL`; never `DATABASE_URL`) loaded with
+the E1 corpus as the product stores messages, runs the target, drops the database
+and writes `docs/evals/<date>-<set>-<model>.md` plus a `.json` next to it. Useful
+flags: `--limit N` (trial run), `--reviews PATH`, `--out-dir`, `--no-write`,
+`--date`, `--model ID` (model-choice comparison; default is the route's configured
+model), `--price MODEL=IN:OUT` (USD per 1M tokens, for a model the product's price
+table lacks), `--budget-usd` (default 1).
+
+**Targets.** `retrieval` has two modes over the 38 queries: `deterministic` (the
+query as typed goes to `memory.retrieval.search_messages`; target in the top 5,
+threshold 85 %) and `variants` (a model writes query variants, the original plus
+variants are searched, a second call writes the final answer from the top 5, which
+is checked mechanically: it must reference a target message, name the contact and
+the day, quote the message verbatim and carry every `answer_values` string; threshold
+80 %). `summary` is a clearly marked placeholder (`evals/targets.py::SummaryTarget`):
+the metrics it will report already exist (`evals/metrics.py`: open-loop recall,
+caveat presence and spurious caveats, owner-facing language and script;
+`evals/judge.py`: fabrication and open-loop pre-screens), and it plugs in after
+S03.2 merges by implementing the `EvalTarget` interface. What a model may see of an
+E1 conversation is built in one place (`evals/render.py`) and never includes labels,
+`original_text` or `purged_text`.
+
+**Gate versus pre-screen.** Every metric is reported twice: over all items (the
+deterministic and judge *pre-screen*) and over the items the owner has confirmed
+(the *gate*, §10.1). With no confirmed items the gate reads `NOT EVALUABLE`, never
+a pass, and so does any run that stopped early, any metric with a judge flag still
+pending the owner's verdict, and any open loop without checkable `values` that the
+owner has not ruled on. The owner's decisions live in a JSON ledger (default
+`evals/reviews/<dataset>.json`, or `--reviews PATH`; format in `evals/review.py`):
+`confirmed_items` (conversation and query ids), `findings` (verdicts on judge
+flags) and `coverage` (covered/missed for open loops with no `values`).
+
+**Real-model runs** are manual and guarded: they refuse without `--live` (pass it
+only when the owner asked for that specific run and approved its cost, AGENTS §8,
+§9); `python -m evals run … --estimate-only` prices every planned call at its worst
+case; a run whose worst case exceeds the cap does not start; in flight, each call is
+refused if the spend so far plus its worst case would pass the cap (default USD 1,
+the S03.4 total, owner approval 2026-10-21); a model with no known price is refused;
+every call is metered in the report (calls, tokens, USD per model and per 100
+items). Calls go only through the `LLMClient` port (official SDK, Responses API,
+`store=False`); no provider file, batch, feedback or fine-tuning API is used.
+Evaluation data is synthetic, so no consent row is involved. Tests use `FakeLLM`
+only. A run can also stop on a budget cap: its report is marked incomplete.
