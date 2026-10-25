@@ -29,7 +29,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts.models import BusinessConnection
+from assistant.accounts.models import BusinessConnection, BusinessConnectionEvent
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 
 #: Gap certainties a summary reports. `delayed` means the messages arrived
@@ -138,7 +138,10 @@ class PeriodCoverage:
 
     start: datetime
     end: datetime
-    connected_at: datetime | None
+    #: The earliest moment anything was observed: the first connection event,
+    #: the connection's date or the first stored message, whichever is
+    #: earliest — never the latest reconnect. None: no business connection.
+    coverage_began: datetime | None
     gaps: tuple[GapFact, ...] = ()
     ignored_with_activity: int = 0
     possibly_paused: int = 0
@@ -146,6 +149,12 @@ class PeriodCoverage:
     deleted_in_period: int = 0
     #: One conversation asked for: account-wide chat counts do not apply.
     single_conversation: bool = False
+    #: The connection exists but is not active now (`disabled`, `stale`,
+    #: `pending_owner`, or not enabled), and since when.
+    connection_inactive: str | None = None
+    connection_inactive_since: datetime | None = None
+    #: Chats asked about (a scoped catch-up) that are in Ignore mode.
+    ignored_in_scope: int = 0
 
 
 async def period_coverage(
@@ -158,13 +167,41 @@ async def period_coverage(
 ) -> PeriodCoverage:
     """The coverage facts for a range; `conversation_ids` narrows them to the
     chats asked about (None = the whole account)."""
-    connected_at = (
+    connection = (
         await session.execute(
-            select(BusinessConnection.connected_at).where(
-                BusinessConnection.account_id == account_id
-            )
+            select(
+                BusinessConnection.status,
+                BusinessConnection.is_enabled,
+                BusinessConnection.connected_at,
+                BusinessConnection.updated_at,
+            ).where(BusinessConnection.account_id == account_id)
         )
-    ).scalar_one_or_none()
+    ).first()
+    coverage_began: datetime | None = None
+    inactive: str | None = None
+    inactive_since: datetime | None = None
+    if connection is not None:
+        status, enabled, connected_at, changed_at = connection
+        # `connected_at` moves to the latest reconnect; coverage began at the
+        # earliest sign of the connection.
+        first_event = (
+            await session.execute(
+                select(func.min(BusinessConnectionEvent.observed_at)).where(
+                    BusinessConnectionEvent.account_id == account_id
+                )
+            )
+        ).scalar_one_or_none()
+        first_message = (
+            await session.execute(
+                select(func.min(Conversation.coverage_started_at)).where(
+                    Conversation.account_id == account_id
+                )
+            )
+        ).scalar_one_or_none()
+        coverage_began = min(m for m in (connected_at, first_event, first_message) if m is not None)
+        if status != "active" or not enabled:
+            inactive = "disabled" if not enabled else str(status)
+            inactive_since = changed_at
 
     gap_query = (
         select(CoverageGap)
@@ -205,8 +242,20 @@ async def period_coverage(
     ).one()
 
     single = conversation_ids is not None
-    ignored = paused = 0
-    if not single:
+    ignored = paused = ignored_in_scope = 0
+    if single:
+        ignored_in_scope = int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(Conversation)
+                    .where(Conversation.account_id == account_id)
+                    .where(Conversation.id.in_(list(conversation_ids or ())))
+                    .where(Conversation.mode == "ignore")
+                )
+            ).scalar_one()
+        )
+    else:
         activity = func.greatest(
             Conversation.last_contact_msg_at,
             Conversation.last_owner_msg_at,
@@ -237,13 +286,16 @@ async def period_coverage(
     return PeriodCoverage(
         start=start,
         end=end,
-        connected_at=connected_at,
+        coverage_began=coverage_began,
         gaps=gaps,
         ignored_with_activity=ignored,
         possibly_paused=paused,
         expired_in_period=int(expired),
         deleted_in_period=int(deleted),
         single_conversation=single,
+        connection_inactive=inactive,
+        connection_inactive_since=inactive_since,
+        ignored_in_scope=ignored_in_scope,
     )
 
 
@@ -251,15 +303,29 @@ def caveats(coverage: PeriodCoverage, timezone: str) -> list[str]:
     """Coverage caveats for a catch-up, in a fixed order. Possible and
     definite gaps only: a `delayed` gap is never reported (FR-SUM-06, §6.6)."""
     lines: list[str] = []
-    if coverage.connected_at is None:
+    if coverage.coverage_began is None:
         lines.append(
             "There is no business connection: none of the owner's chats were observed "
             "in this period."
         )
-    elif coverage.start < coverage.connected_at:
+    elif coverage.start < coverage.coverage_began:
         lines.append(
-            f"Coverage began at {_local(coverage.connected_at, timezone)}, when the "
+            f"Coverage began at {_local(coverage.coverage_began, timezone)}, when the "
             "assistant was connected: messages before that were never seen."
+        )
+    if coverage.connection_inactive is not None:
+        since = (
+            f" since {_local(coverage.connection_inactive_since, timezone)}"
+            if coverage.connection_inactive_since is not None
+            else ""
+        )
+        lines.append(
+            f"The business connection is not active ({coverage.connection_inactive}){since}: "
+            "new messages are not being observed, so anything sent meanwhile is missing."
+        )
+    if coverage.ignored_in_scope:
+        lines.append(
+            "The chat asked about is in Ignore mode: its messages are not stored or summarized."
         )
     for gap in coverage.gaps:
         if gap.certainty not in REPORTED_CERTAINTIES:
