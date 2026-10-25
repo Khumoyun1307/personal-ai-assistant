@@ -316,6 +316,49 @@ async def test_a_job_left_doing_by_a_dead_worker_is_retried(env: Env) -> None:
 
 
 # ------------------------------------------------------------- reconciler
+async def test_a_stalled_job_with_a_queueing_lock_is_failed_not_retried_into_a_collision(
+    env: Env,
+) -> None:
+    """procrastinate's retry puts the job back to `todo` with its queueing
+    lock; when a newer `todo` job already holds that lock (a summary refresh
+    deferred meanwhile), the retry would violate the unique index. Such a
+    job is failed instead; the reconciler (summaries) or the next period
+    (periodic tasks) re-creates the work."""
+    stalled = await env.scheduler.defer(
+        "memory.refresh_summary", args={"conversation_id": 1}, queueing_lock="sum:1"
+    )
+    async with env.engine.begin() as conn:
+        dead_worker = (
+            await conn.execute(
+                text(
+                    "INSERT INTO procrastinate.procrastinate_workers (last_heartbeat) "
+                    "VALUES (now() - interval '10 minutes') RETURNING id"
+                )
+            )
+        ).scalar_one()
+        await conn.execute(
+            text(
+                "UPDATE procrastinate.procrastinate_jobs "
+                "SET status = 'doing', worker_id = :w WHERE id = :j"
+            ),
+            {"w": dead_worker, "j": stalled},
+        )
+    newer = await env.scheduler.defer(
+        "memory.refresh_summary", args={"conversation_id": 1}, queueing_lock="sum:1"
+    )
+    assert newer is not None
+
+    await env.app.tasks["system.retry_stalled_jobs"].func(0)
+
+    assert await job_statuses(env, "memory.refresh_summary") == ["failed", "todo"]
+
+
+async def test_the_summary_task_is_never_retried_by_procrastinate(env: Env) -> None:
+    """A failed refresh leaves the flag set and the reconciler re-creates the
+    job; a procrastinate retry could collide with the queueing lock."""
+    assert env.app.tasks["memory.refresh_summary"].retry_strategy is None
+
+
 async def test_the_reconciler_redefers_only_a_lost_recent_turn(env: Env) -> None:
     account_id = await onboarded_account(env)
     now = env.clock.now()

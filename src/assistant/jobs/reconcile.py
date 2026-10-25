@@ -139,9 +139,11 @@ _UNQUEUED_SUMMARY_REFRESHES = text(
             AND s.revoked_at IS NULL
       )
       AND NOT EXISTS (
+          -- By queueing lock (`sum:{id}`, core/jobs.py): `todo` rows are
+          -- found through procrastinate's unique queueing-lock index.
           SELECT 1 FROM procrastinate.procrastinate_jobs AS j
-          WHERE j.task_name = :task
-            AND j.args ->> 'conversation_id' = c.id::text
+          WHERE j.queueing_lock = 'sum:' || c.id::text
+            AND j.task_name = :task
             AND j.status IN ('todo', 'doing')
       )
     ORDER BY c.pending_ai_since, c.id

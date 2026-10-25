@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import Protocol
 
 from procrastinate import App, RetryStrategy
+from procrastinate.exceptions import UniqueViolation
+from procrastinate.jobs import Status
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -96,13 +98,6 @@ class Applier(Protocol):
 
 class SummaryRefresher(Protocol):
     async def refresh(self, conversation_id: int) -> RefreshOutcome: ...
-
-
-#: Database hiccups only. Model failures end inside the run (the flag stays
-#: and the reconciler re-creates the job later); never `retry=True`.
-SUMMARY_RETRY = RetryStrategy(
-    max_attempts=3, exponential_wait=2, retry_exceptions={OperationalError, DBAPIError}
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,10 +309,13 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
         # a no-op once the row has left `confirmed`.
         await handlers.apply_confirmation(confirmation_id)
 
-    @app.task(name=REFRESH_SUMMARY_TASK, queue=QUEUE_LLM, retry=SUMMARY_RETRY)
+    @app.task(name=REFRESH_SUMMARY_TASK, queue=QUEUE_LLM)
     async def refresh_summary(conversation_id: int) -> None:
         # Queueing lock `sum:{conversation_id}` and `schedule_at` are set at
-        # defer; no `lock` on a future-scheduled job (AGENTS §13).
+        # defer; no `lock` on a future-scheduled job (AGENTS §13). No
+        # procrastinate retry: a retry puts the row back to `todo` with its
+        # queueing lock and collides with a newer queued refresh. A failed
+        # job leaves the flag set; `reconcile_pending` re-creates it.
         await handlers.refresh_summary(conversation_id)
 
     @app.task(name=CONNECTION_NOTIFY_TASK, queue=QUEUE_SYSTEM, retry=NOTIFY_RETRY)
@@ -362,7 +360,25 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
             seconds_since_heartbeat=STALLED_WORKER_TIMEOUT
         )
         for job in stalled:
-            await app.job_manager.retry_job(job)
+            if job.queueing_lock is not None and list(
+                await app.job_manager.list_jobs_async(
+                    queueing_lock=job.queueing_lock, status="todo"
+                )
+            ):
+                # A retry would put the row back to `todo` with its queueing
+                # lock, which a newer queued job already holds (unique index
+                # on `todo` rows): fail it instead — the queued job does the
+                # same work (a summary refresh, the next period's task).
+                await app.job_manager.finish_job(job, status=Status.FAILED, delete_job=False)
+                logger.warning("stalled_job_failed", job_id=job.id, task=job.task_name)
+                continue
+            try:
+                await app.job_manager.retry_job(job)
+            except UniqueViolation:
+                # The same collision, with a job queued since the check.
+                await app.job_manager.finish_job(job, status=Status.FAILED, delete_job=False)
+                logger.warning("stalled_job_failed", job_id=job.id, task=job.task_name)
+                continue
             logger.warning("stalled_job_retried", job_id=job.id, task=job.task_name)
 
     @app.periodic(cron="17 3 * * *")
