@@ -1,0 +1,821 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-25",
+  "set": "retrieval",
+  "target": "retrieval",
+  "dataset": "retrieval",
+  "mode": "deterministic",
+  "model": null,
+  "live": false,
+  "effort": null,
+  "complete": true,
+  "items": 38,
+  "items_planned": 38,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "top5_hit",
+      "label": "Target message in the top 5 results",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.85,
+      "all_items": {
+        "numerator": 31,
+        "denominator": 38,
+        "ratio": 0.8157894736842105
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "fail",
+      "gate_status": "not evaluable",
+      "failed_items": [
+        "r03",
+        "r04",
+        "r05",
+        "r11",
+        "r19",
+        "r26",
+        "r33"
+      ],
+      "pending": 0,
+      "note": "Baseline without a model; the S03.4 gate measures retrieval with model-generated query variants (mode `variants`)."
+    }
+  ],
+  "breakdowns": {
+    "top-5 hit by intent": {
+      "cross_language": {
+        "numerator": 2,
+        "denominator": 5,
+        "ratio": 0.4
+      },
+      "cross_script": {
+        "numerator": 14,
+        "denominator": 14,
+        "ratio": 1.0
+      },
+      "exact": {
+        "numerator": 10,
+        "denominator": 10,
+        "ratio": 1.0
+      },
+      "new_alphabet": {
+        "numerator": 2,
+        "denominator": 3,
+        "ratio": 0.6666666666666666
+      },
+      "no_apostrophe": {
+        "numerator": 4,
+        "denominator": 5,
+        "ratio": 0.8
+      },
+      "paraphrase": {
+        "numerator": 18,
+        "denominator": 25,
+        "ratio": 0.72
+      },
+      "translit": {
+        "numerator": 3,
+        "denominator": 3,
+        "ratio": 1.0
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": null,
+    "spent_usd": "0",
+    "calls": 0,
+    "estimated_calls": 0,
+    "per_model": {}
+  },
+  "notes": [],
+  "details": [
+    {
+      "id": "r01",
+      "intents": [
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c09.m05",
+        "c16.m02",
+        "c17.m03",
+        "c35.m02",
+        "c09.m04"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r02",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 5,
+      "top5": [
+        "c35.m04",
+        "c17.m03",
+        "c35.m03",
+        "c35.m02",
+        "c09.m05"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r03",
+      "intents": [
+        "paraphrase",
+        "cross_language"
+      ],
+      "hit_top5": false,
+      "rank": null,
+      "top5": [
+        "c27.m07",
+        "c29.m03",
+        "c32.m04",
+        "c28.m03",
+        "c28.m06"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r04",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": false,
+      "rank": null,
+      "top5": [
+        "c11.m02",
+        "c06.m02",
+        "c02.m03",
+        "c35.m02",
+        "c12.m07"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r05",
+      "intents": [
+        "paraphrase",
+        "cross_language"
+      ],
+      "hit_top5": false,
+      "rank": null,
+      "top5": [
+        "c33.m02",
+        "c30.m03",
+        "c27.m07",
+        "c31.m07",
+        "c29.m03"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r06",
+      "intents": [
+        "cross_script",
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c17.m03"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r07",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c09.m05",
+        "c35.m02",
+        "c19.m08"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r08",
+      "intents": [
+        "no_apostrophe",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c12.m02",
+        "c37.m01",
+        "c02.m08",
+        "c02.m02",
+        "c12.m07"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r09",
+      "intents": [
+        "no_apostrophe",
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c14.m02",
+        "c16.m02",
+        "c19.m01",
+        "c12.m01",
+        "c35.m03"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r10",
+      "intents": [
+        "no_apostrophe",
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 2,
+      "top5": [
+        "c15.m08",
+        "c01.m07",
+        "c16.m02",
+        "c18.m03",
+        "c17.m02"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r11",
+      "intents": [
+        "no_apostrophe",
+        "new_alphabet",
+        "paraphrase"
+      ],
+      "hit_top5": false,
+      "rank": null,
+      "top5": [
+        "c10.m09",
+        "c35.m03",
+        "c39.m06",
+        "c18.m07",
+        "c03.m05"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r12",
+      "intents": [
+        "new_alphabet",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c10.m01",
+        "c05.m11",
+        "c36.m01",
+        "c39.m01",
+        "c15.m02"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r13",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c07.m03",
+        "c07.m09",
+        "c08.m06",
+        "c24.m03"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r14",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c07.m07",
+        "c07.m03",
+        "c28.m03",
+        "c08.m09",
+        "c05.m03"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r15",
+      "intents": [
+        "translit",
+        "cross_script"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c08.m05",
+        "c35.m05",
+        "c35.m01",
+        "c22.m05",
+        "c23.m04"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r16",
+      "intents": [
+        "cross_script",
+        "translit"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c21.m02"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r17",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 2,
+      "top5": [
+        "c27.m01",
+        "c27.m04",
+        "c27.m02",
+        "c27.m08",
+        "c27.m03"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r18",
+      "intents": [
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c32.m06",
+        "c32.m01",
+        "c32.m03",
+        "c32.m02",
+        "c11.m07"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r19",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": false,
+      "rank": null,
+      "top5": [
+        "c34.m04",
+        "c30.m01"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r20",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c03.m03",
+        "c17.m08",
+        "c31.m06",
+        "c29.m05",
+        "c04.m10"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r21",
+      "intents": [
+        "cross_script",
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c03.m02",
+        "c03.m03",
+        "c29.m05",
+        "c31.m06",
+        "c06.m03"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r22",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c18.m01",
+        "c38.m06",
+        "c05.m09",
+        "c10.m04",
+        "c03.m07"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r23",
+      "intents": [
+        "cross_script",
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c19.m01",
+        "c39.m05",
+        "c13.m07",
+        "c13.m05",
+        "c05.m11"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r24",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 5,
+      "top5": [
+        "c02.m08",
+        "c02.m02",
+        "c12.m07",
+        "c05.m08",
+        "c05.m04"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r25",
+      "intents": [
+        "cross_script",
+        "exact",
+        "new_alphabet"
+      ],
+      "hit_top5": true,
+      "rank": 5,
+      "top5": [
+        "c05.m04",
+        "c20.m02",
+        "c17.m02",
+        "c15.m08",
+        "c10.m04"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r26",
+      "intents": [
+        "cross_language",
+        "paraphrase"
+      ],
+      "hit_top5": false,
+      "rank": null,
+      "top5": [
+        "c08.m02",
+        "c23.m03",
+        "c22.m03",
+        "c26.m05",
+        "c22.m10"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r27",
+      "intents": [
+        "cross_script",
+        "cross_language"
+      ],
+      "hit_top5": true,
+      "rank": 2,
+      "top5": [
+        "c22.m03",
+        "c08.m02",
+        "c02.m08",
+        "c02.m02",
+        "c12.m07"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r28",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c33.m07",
+        "c29.m01",
+        "c31.m01",
+        "c29.m05",
+        "c27.m01"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r29",
+      "intents": [
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c06.m03",
+        "c17.m07",
+        "c09.m07",
+        "c08.m08",
+        "c08.m02"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r30",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c06.m03"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r31",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 3,
+      "top5": [
+        "c16.m01",
+        "c10.m02",
+        "c16.m02",
+        "c16.m05",
+        "c17.m08"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r32",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 2,
+      "top5": [
+        "c05.m09",
+        "c19.m07",
+        "c38.m06",
+        "c40.m06",
+        "c19.m10"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r33",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": false,
+      "rank": null,
+      "top5": [
+        "c37.m02"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r34",
+      "intents": [
+        "cross_language",
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c25.m04",
+        "c15.m08",
+        "c16.m02",
+        "c07.m06",
+        "c04.m02"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r35",
+      "intents": [
+        "no_apostrophe",
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 4,
+      "top5": [
+        "c17.m01",
+        "c09.m10",
+        "c09.m03",
+        "c09.m02",
+        "c09.m01"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r36",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c28.m05",
+        "c30.m01",
+        "c30.m05"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r37",
+      "intents": [
+        "translit",
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c38.m01"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    },
+    {
+      "id": "r38",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c19.m03"
+      ],
+      "variants": 1,
+      "answer_correct": null,
+      "answer_problems": [],
+      "error": null
+    }
+  ]
+}
