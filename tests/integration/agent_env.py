@@ -45,6 +45,8 @@ READ_FLAGS = frozenset(
         "tool.resolve_contact",
         "tool.get_conversation",
         "tool.list_conversations",
+        "tool.summarize_period",
+        "tool.get_attention_list",
     }
 )
 NOTE_FLAG = "tool.test_set_note"
