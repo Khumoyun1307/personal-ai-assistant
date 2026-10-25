@@ -44,7 +44,7 @@ fmt:
 
 # Static types (strict on src/).
 typecheck:
-    {{ run }} uv run mypy src
+    {{ run }} uv run mypy src evals
 
 # Import/layer contracts.
 layers:

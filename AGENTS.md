@@ -41,7 +41,7 @@ The owner develops on **Windows 11 + Docker Desktop (WSL2 backend)**. All Python
 | Full check (DoD gate) | `just check` | ruff check + format check + mypy + lint-imports + pytest |
 | Run all tests | `just test` | `uv run pytest` |
 | Lint + format check | `just lint` | `uv run ruff check . && uv run ruff format --check .` |
-| Type check | `just typecheck` | `uv run mypy src` |
+| Type check | `just typecheck` | `uv run mypy src evals` |
 | Layer contracts | (part of `just check`) | `uv run lint-imports` |
 | Configuration/health check | `just healthcheck` | `uv run python -m assistant healthcheck` |
 | Apply migrations (from S01.1) | `just migrate` | `uv run python -m assistant migrate` |
@@ -150,7 +150,7 @@ Every change must preserve these. Each invariant gets a named regression test in
 
 ## 10. Coding standards
 
-- Python 3.14 (`requires-python = ">=3.14,<3.15"`); full type hints; `mypy --strict` clean for `src/`.
+- Python 3.14 (`requires-python = ">=3.14,<3.15"`); full type hints; `mypy --strict` clean for `src/` and `evals/`.
 - Async I/O throughout; no blocking calls in the event loop (use `asyncio.to_thread` for unavoidable blocking work).
 - Pydantic v2 (version capped by aiogram) for settings, tool arguments, structured outputs, and JSON columns; dataclasses (frozen) for internal value objects.
 - SQLAlchemy 2.1 typed ORM (`Mapped[]`, `mapped_column`), explicit driver URLs (`postgresql+psycopg://`), explicit transactions via the unit of work; no implicit autocommit side effects; no lazy loading in async code paths.

@@ -26,12 +26,12 @@ def frozen_files() -> list[Path]:
     return sorted(p for p in DATASETS.rglob("*") if p.is_file() and p.suffix in FROZEN_SUFFIXES)
 
 
-def _digest(path: Path) -> str:
+def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def render() -> str:
-    lines = [f"{_digest(p)}  {p.relative_to(DATASETS).as_posix()}" for p in frozen_files()]
+    lines = [f"{digest(p)}  {p.relative_to(DATASETS).as_posix()}" for p in frozen_files()]
     return "\n".join(lines) + "\n"
 
 
@@ -42,9 +42,9 @@ def problems() -> list[str]:
     expected: dict[str, str] = {}
     for line in MANIFEST.read_text(encoding="utf-8").splitlines():
         if line.strip():
-            digest, name = line.split(maxsplit=1)
-            expected[name.strip()] = digest
-    actual = {p.relative_to(DATASETS).as_posix(): _digest(p) for p in frozen_files()}
+            recorded, name = line.split(maxsplit=1)
+            expected[name.strip()] = recorded
+    actual = {p.relative_to(DATASETS).as_posix(): digest(p) for p in frozen_files()}
     found = [f"changed: {n}" for n in sorted(expected) if n in actual and actual[n] != expected[n]]
     found += [f"missing: {n}" for n in sorted(set(expected) - set(actual))]
     found += [f"not in manifest: {n}" for n in sorted(set(actual) - set(expected))]
