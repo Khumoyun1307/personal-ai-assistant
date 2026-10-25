@@ -108,7 +108,9 @@ v[OPENAI_API_KEY]="$(read_env "$PROD_ENV" OPENAI_API_KEY)"
 v[HEARTBEAT_URL]="$(read_env "$PROD_ENV" HEARTBEAT_URL)"
 v[LLM_DEFAULT_MODEL]=gpt-6-luna
 v[BACKUP_HOUR_UTC]=02
-v[PRIVACY_POLICY_URL]=""
+# The published policy page (public; docs/legal/privacy-policy.md, edited in
+# place for each version). var/prod.env may override it.
+v[PRIVACY_POLICY_URL]="https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19"
 for key in "${OPTIONAL_KEYS[@]}"; do
   value="$(read_env "$PROD_ENV" "$key")"
   if [ -n "$value" ]; then v[$key]="$value"; fi
