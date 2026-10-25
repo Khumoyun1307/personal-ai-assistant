@@ -49,7 +49,7 @@ EVENT_MEMORY_FORGOTTEN = "memory_forgotten"
 #: then the hourly sweep deletes it (§10.4).
 FORGET_UNDO_WINDOW = timedelta(hours=24)
 #: Longest note, in characters (the confirmation card must show it whole).
-MAX_CONTENT = 500
+MAX_CONTENT = 400
 
 
 @dataclass(frozen=True, slots=True)

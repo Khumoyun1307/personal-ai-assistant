@@ -31,7 +31,7 @@ def _with(base: dict[str, Any], **changes: Any) -> dict[str, Any]:
     [
         (RememberArgs, _with(REMEMBER, content="")),
         (RememberArgs, _with(REMEMBER, content="   ")),
-        (RememberArgs, _with(REMEMBER, content="x" * 501)),
+        (RememberArgs, _with(REMEMBER, content="x" * 401)),  # must fit a confirmation card
         (RememberArgs, _with(REMEMBER, contact_id=3, conversation_id=4)),
         (RememberArgs, _with(REMEMBER, contact_id=0)),
         (RememberArgs, _with(REMEMBER, conversation_id=-1)),
@@ -88,6 +88,17 @@ def test_schema_valid_but_semantically_invalid_memory_arguments_are_refused(
 ) -> None:
     with pytest.raises(ValidationError):
         model.model_validate(values)
+
+
+def test_the_longest_note_still_fits_a_confirmation_card() -> None:
+    """A held `remember` is shown whole on its card or refused (S03.1, D55);
+    the content limit keeps the longest note within the card."""
+    from assistant.agent.confirmations import CARD_ARGS_LIMIT, render_args
+
+    longest = RememberArgs.model_validate(
+        _with(REMEMBER, content="ў" * 400, contact_id=2**63 - 1, replaces_memory_id=2**63 - 1)
+    )
+    assert len(render_args(longest.model_dump(mode="json"))) <= CARD_ARGS_LIMIT
 
 
 def test_valid_arguments_are_accepted_and_trimmed() -> None:

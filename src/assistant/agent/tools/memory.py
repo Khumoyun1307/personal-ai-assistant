@@ -74,7 +74,7 @@ class RememberArgs(BaseModel):
 
     content: Annotated[str, AfterValidator(_content)] = Field(
         description=(
-            "What to remember, in the owner's own words (1-500 characters): drop only "
+            "What to remember, in the owner's own words (1-400 characters): drop only "
             "the 'remember that' framing; add nothing the owner did not say."
         )
     )
