@@ -52,7 +52,9 @@ def test_sanitize_keeps_only_items_citing_shown_messages() -> None:
             {"by": "owner", "text": "Made up", "due": None, "message_ids": [42]},
         ],
     )
-    clean, dropped = sanitize(output, frozenset({5, 6}))
+    clean, dropped, capped = sanitize(output, frozenset({5, 6}))
+    assert capped == 0
+    assert clean["items_omitted"] == 0
     assert clean["open_questions_to_owner"] == [{"text": "Real", "message_ids": [5]}]
     assert clean["commitments"] == [
         {"by": "contact", "text": "Sends papers", "due": "Friday", "message_ids": [6]}
@@ -67,11 +69,16 @@ def test_sanitize_trims_text_and_caps_lists() -> None:
         overview="x" * 5000,
         key_facts=[{"text": "y" * 900, "message_ids": [1]} for _ in range(40)],
     )
-    clean, dropped = sanitize(output, frozenset({1}))
+    clean, dropped, capped = sanitize(output, frozenset({1}))
     assert len(clean["overview"]) == 1500
     assert len(clean["key_facts"]) == 15
     assert all(len(item["text"]) == 400 for item in clean["key_facts"])
-    assert dropped == 25
+    # Review nit: the cap is reported, in the stored summary too, not silent.
+    assert (dropped, capped) == (0, 25)
+    assert clean["items_omitted"] == 25
+    from assistant.agent.tools.common import summary_view
+
+    assert summary_view(clean)["items_omitted"] == 25
 
 
 def test_the_output_schema_is_plain_strict() -> None:
@@ -96,7 +103,7 @@ def test_caveats_report_possible_and_definite_gaps_and_never_delayed_ones() -> N
     coverage = PeriodCoverage(
         start=T,
         end=T + 3 * HOUR,
-        connected_at=T - HOUR,
+        coverage_began=T - HOUR,
         gaps=(
             GapFact("outage", "delayed", T, T + HOUR / 2, None),
             GapFact("outage", "possible", T + HOUR, T + 2 * HOUR, None),
@@ -114,14 +121,14 @@ def test_caveats_report_possible_and_definite_gaps_and_never_delayed_ones() -> N
 
 
 def test_caveats_name_the_period_before_the_connection_and_the_missing_connection() -> None:
-    before = PeriodCoverage(start=T - HOUR, end=T + HOUR, connected_at=T)
+    before = PeriodCoverage(start=T - HOUR, end=T + HOUR, coverage_began=T)
     assert caveats(before, "UTC") == [
         "Coverage began at 2026-10-18 09:00, when the assistant was connected: messages "
         "before that were never seen."
     ]
-    nothing = PeriodCoverage(start=T, end=T + HOUR, connected_at=None)
+    nothing = PeriodCoverage(start=T, end=T + HOUR, coverage_began=None)
     assert caveats(nothing, "UTC")[0].startswith("There is no business connection")
-    clean = PeriodCoverage(start=T, end=T + HOUR, connected_at=T - HOUR)
+    clean = PeriodCoverage(start=T, end=T + HOUR, coverage_began=T - HOUR)
     assert caveats(clean, "UTC") == []
 
 
@@ -129,7 +136,7 @@ def test_caveats_count_ignored_paused_expired_and_deleted() -> None:
     coverage = PeriodCoverage(
         start=T,
         end=T + HOUR,
-        connected_at=T - HOUR,
+        coverage_began=T - HOUR,
         ignored_with_activity=2,
         possibly_paused=1,
         expired_in_period=3,

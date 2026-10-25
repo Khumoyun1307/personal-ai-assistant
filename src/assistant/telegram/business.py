@@ -87,7 +87,7 @@ class BusinessPipeline:
             if outcome.metadata_only:
                 # Ignore mode: the deletion's payload names the contact.
                 row.payload = None
-            elif outcome.purged_message_ids and self._summaries is not None:
+            elif outcome.content_lost_ids and self._summaries is not None:
                 # A covering summary was dropped and must be rebuilt.
                 self._summaries.after_new_content(session, outcome.conversation_id)
             await service.resolve_ingest_failure(

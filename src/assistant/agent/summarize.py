@@ -1,28 +1,35 @@
-"""The `summarize` run type (ARCHITECTURE Â§7.1, Â§7.2, Â§11.1; S03.2).
+"""The `summarize` run type (ARCHITECTURE §7.1, §7.2, §11.1; S03.2).
 
 A contact-triggered run type: its input is untrusted chat content, so it
-has **no tools** (Â§6 invariant 3a, RG-17) â€” one structured-output call
+has **no tools** (§6 invariant 3a, RG-17) — one structured-output call
 through `LLMClient.parse`, the stop reason checked before anything is read,
 the output re-validated by our own model and then `sanitize`d (an item that
 cites no shown message is dropped). Invalid, truncated or refused output
 stores nothing.
 
-Two entry points, each about ONE conversation (Â§6 invariant 4):
+Two entry points, each about ONE conversation (§6 invariant 4):
 
-- `refresh(conversation_id)` â€” the rolling summary, incrementally: the
+- `refresh(conversation_id)` — the rolling summary, incrementally: the
   previous summary plus the messages after its `covers_through_message_id`
   (in chunks). Run by `memory.refresh_summary` and, for a stale chat, by the
-  attention list. Stored only if nobody refreshed it meanwhile; the refresh
-  flag is cleared only if no message changed while the model ran.
-- `summarize_period(...)` â€” one chat's messages in a catch-up range, cached
+  attention list (one call at most there, D62).
+- `summarize_period(...)` — one chat's messages in a catch-up range, cached
   in `conversation_summaries` (kind `period`) while the range's messages
   are unchanged.
 
-Consent is checked here for a clean skip (no run row, no call) and again,
-as the wall, by the consent wrapper on the call itself (Â§6 invariant 9): a
-job queued before a revocation stops when it runs. Every call has an
-`agent_runs` row (prompt version, model) and is metered by the wrapper.
-No transaction is open across the model call (AGENTS Â§13).
+**Nothing deleted is stored.** The store re-checks, under the §9.4 locks,
+that every message the model read is still retained with the same content
+and that the chat may still be summarized (`memory/summaries.py`); if a
+deletion, an edit, managed-data deletion or a bot-chat purge committed while
+the model ran, the result is discarded (`DISCARDED`) — not stored, not
+returned (§6 invariant 9, PRD §20, D63, D66).
+
+Consent is checked here for a clean skip (no run row, no call) — before a
+cached period summary is served too — and again, as the wall, by the consent
+wrapper on the call itself: a job queued before a revocation stops when it
+runs. Every call has an `agent_runs` row (prompt version, model), closed on
+every path, including an unexpected error or a cancellation. No transaction
+is open across the model call (AGENTS §13).
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
+import pydantic
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -54,6 +62,7 @@ from assistant.core.model_routes import processor_for_model
 from assistant.db.uow import transaction
 from assistant.llm.port import LLMClient, LLMError, LLMErrorKind, LLMRequest, StopReason
 from assistant.memory import summaries
+from assistant.memory.summaries import StoreResult
 from assistant.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -69,14 +78,14 @@ _REPEATING_ERRORS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class SummarizeConfig:
-    """Model and budgets of the `summarize` route (ARCHITECTURE Â§7.4)."""
+    """Model and budgets of the `summarize` route (ARCHITECTURE §7.4)."""
 
     model: str
     effort: str | None = "low"
     max_output_tokens: int = 2000
     max_output_tokens_ceiling: int = 4000
     call_timeout_seconds: float = 90.0
-    #: New messages per incremental call, and calls per refresh.
+    #: New messages per incremental call, and calls per background refresh.
     messages_per_call: int = 200
     max_calls_per_refresh: int = 5
     #: Messages of one chat a period summary reads (the newest, if more).
@@ -100,7 +109,10 @@ class SummaryStatus(StrEnum):
     REFUSED = "refused"
     FAILED = "failed"
     RACED = "raced"
-    """Another refresh stored first; this one's result was dropped."""
+    """Another refresh stored first, or the summary was invalidated meanwhile."""
+    DISCARDED = "discarded"
+    """A message the model read was deleted or edited, or the chat was
+    purged or set to Ignore while it ran: nothing stored or returned."""
     SKIPPED = "skipped"
     """Ignore mode or a bot chat: never summarized."""
     NOT_FOUND = "not_found"
@@ -160,16 +172,19 @@ class Summarizer:
         return self._config
 
     # ------------------------------------------------------------ rolling
-    async def refresh(self, conversation_id: int) -> RefreshOutcome:
+    async def refresh(
+        self, conversation_id: int, *, max_calls: int | None = None
+    ) -> RefreshOutcome:
         """Bring the rolling summary up to the newest retained message, in at
-        most `max_calls_per_refresh` incremental calls."""
+        most `max_calls` incremental calls (default `max_calls_per_refresh`;
+        each may be retried once if truncated)."""
         calls = 0
         outcome = RefreshOutcome(SummaryStatus.NOT_FOUND)
-        for _ in range(self._config.max_calls_per_refresh):
+        for _ in range(max_calls or self._config.max_calls_per_refresh):
             outcome = await self._refresh_once(conversation_id)
             calls += outcome.calls
             if outcome.status is not SummaryStatus.REFRESHED or not outcome.more_pending:
-                return replace(outcome, calls=calls)
+                break
         return replace(outcome, calls=calls)
 
     async def _refresh_once(self, conversation_id: int) -> RefreshOutcome:
@@ -194,20 +209,20 @@ class Summarizer:
             if account is None:  # pragma: no cover - the FK guarantees it
                 return RefreshOutcome(SummaryStatus.NOT_FOUND)
             previous = await summaries.rolling_summary(session, account_id, conversation_id)
-            based_on = None if previous is None else previous.covers_through_message_id
+            after = None if previous is None else previous.covers_through_message_id
             marker = await summaries.activity_marker(session, account_id, conversation_id)
             batch = await summaries.messages_after(
                 session,
                 account_id,
                 conversation_id,
-                after_id=based_on,
+                after_id=after,
                 limit=config.messages_per_call + 1,
             )
             more = len(batch) > config.messages_per_call
             batch = batch[: config.messages_per_call]
             if not batch:
                 # Nothing unseen (an edit or a deletion set the flag).
-                await summaries.clear_refresh_flag(
+                await summaries.settle_refresh_flag(
                     session, account_id=account_id, conversation_id=conversation_id, marker=marker
                 )
                 return RefreshOutcome(SummaryStatus.UP_TO_DATE, account_id)
@@ -222,51 +237,58 @@ class Summarizer:
 
         try:
             output, calls = await self._call(prepared, prompt.label)
-        except _CallFailedError as failure:
-            await self._finish_run(prepared, failure.run_status, failure.error_class)
-            return RefreshOutcome(failure.status, account_id, calls=1)
-
-        allowed = context.shown_ids | (
-            cited_ids(dict(previous.summary)) if previous is not None else frozenset()
-        )
-        clean, dropped = sanitize(output, allowed)
-        async with transaction(self._session_factory) as uow:
-            stored = await summaries.store_rolling(
-                uow.session,
-                account_id=account_id,
-                conversation_id=conversation_id,
-                based_on=based_on,
-                summary=clean,
-                covers_through=max(m.message_id for m in batch),
-                added_messages=len(batch),
-                prompt_version=prompt.label,
-                model=config.model,
-                now=self._clock.now(),
+            allowed = context.shown_ids | (
+                cited_ids(dict(previous.summary)) if previous is not None else frozenset()
             )
-            if stored and not more:
-                await summaries.clear_refresh_flag(
+            clean, uncited, capped = sanitize(output, allowed)
+            async with transaction(self._session_factory) as uow:
+                result = await summaries.store_rolling(
                     uow.session,
                     account_id=account_id,
                     conversation_id=conversation_id,
-                    marker=marker,
+                    based_on=None if previous is None else previous.version,
+                    source={m.message_id: m.content_hash for m in batch},
+                    summary=clean,
+                    covers_through=max(m.message_id for m in batch),
+                    added_messages=len(batch),
+                    prompt_version=prompt.label,
+                    model=config.model,
+                    now=self._clock.now(),
                 )
-            await self._close_run(
-                uow.session, prepared, "succeeded", None if stored else "raced_discarded"
-            )
+                if result is StoreResult.STORED and not more:
+                    await summaries.settle_refresh_flag(
+                        uow.session,
+                        account_id=account_id,
+                        conversation_id=conversation_id,
+                        marker=marker,
+                    )
+                await self._close_run(uow.session, prepared, *_run_close(result))
+        except _CallFailedError as failure:
+            await self._finish_run(prepared, failure.run_status, failure.error_class)
+            return RefreshOutcome(failure.status, account_id, calls=1)
+        except BaseException as error:
+            await self._fail_run(prepared, error)
+            raise
         logger.info(
             "summary_refreshed",
             conversation_id=conversation_id,
             run_id=run_id,
             messages=len(batch),
-            items_dropped=dropped,
-            stored=stored,
+            items_uncited=uncited,
+            items_capped=capped,
+            result=result.value,
             more_pending=more,
         )
+        status = {
+            StoreResult.STORED: SummaryStatus.REFRESHED,
+            StoreResult.RACED: SummaryStatus.RACED,
+            StoreResult.SOURCE_CHANGED: SummaryStatus.DISCARDED,
+        }[result]
         return RefreshOutcome(
-            SummaryStatus.REFRESHED if stored else SummaryStatus.RACED,
+            status,
             account_id,
             calls=calls,
-            more_pending=more and stored,
+            more_pending=more and result is StoreResult.STORED,
         )
 
     # ------------------------------------------------------------- period
@@ -291,6 +313,10 @@ class Summarizer:
             account = await session.get(Account, account_id)
             if account is None:
                 return PeriodOutcome(SummaryStatus.NOT_FOUND)
+            # Consent before anything, the cache included: a stored summary is
+            # managed content too (§14.3).
+            if not await self._managed_ok(session, account_id):
+                return PeriodOutcome(SummaryStatus.NO_CONSENT)
             source = await summaries.period_source(
                 session,
                 account_id,
@@ -311,8 +337,6 @@ class Summarizer:
                     source.total,
                     cached.message_count,
                 )
-            if not await self._managed_ok(session, account_id):
-                return PeriodOutcome(SummaryStatus.NO_CONSENT, message_count=source.total)
             if await self._over_budget(session, account_id):
                 return PeriodOutcome(SummaryStatus.OVER_BUDGET, message_count=source.total)
             context = build_summarize(
@@ -324,34 +348,42 @@ class Summarizer:
 
         try:
             output, calls = await self._call(prepared, prompt.label)
+            clean, uncited, capped = sanitize(output, context.shown_ids)
+            async with transaction(self._session_factory) as uow:
+                result = await summaries.store_period(
+                    uow.session,
+                    account_id=account_id,
+                    conversation_id=conversation_id,
+                    start=start,
+                    source_end=end,
+                    end=end_key,
+                    digest=source.digest,
+                    summary=clean,
+                    covers_through=source.covers_through_message_id,
+                    message_count=len(source.messages),
+                    prompt_version=prompt.label,
+                    model=config.model,
+                    now=self._clock.now(),
+                )
+                await self._close_run(uow.session, prepared, *_run_close(result))
         except _CallFailedError as failure:
             await self._finish_run(prepared, failure.run_status, failure.error_class)
             return PeriodOutcome(failure.status, message_count=source.total, calls=1)
-
-        clean, dropped = sanitize(output, context.shown_ids)
-        async with transaction(self._session_factory) as uow:
-            await summaries.store_period(
-                uow.session,
-                account_id=account_id,
-                conversation_id=conversation_id,
-                start=start,
-                end=end_key,
-                digest=source.digest,
-                summary=clean,
-                covers_through=source.covers_through_message_id,
-                message_count=len(source.messages),
-                prompt_version=prompt.label,
-                model=config.model,
-                now=self._clock.now(),
-            )
-            await self._close_run(uow.session, prepared, "succeeded", None)
+        except BaseException as error:
+            await self._fail_run(prepared, error)
+            raise
         logger.info(
             "period_summarized",
             conversation_id=conversation_id,
             run_id=run_id,
             messages=len(source.messages),
-            items_dropped=dropped,
+            items_uncited=uncited,
+            items_capped=capped,
+            result=result.value,
         )
+        if result is not StoreResult.STORED:
+            # Written from messages that changed meanwhile: never shown.
+            return PeriodOutcome(SummaryStatus.DISCARDED, message_count=source.total, calls=calls)
         return PeriodOutcome(
             SummaryStatus.SUMMARIZED, clean, source.total, len(source.messages), calls
         )
@@ -360,9 +392,9 @@ class Summarizer:
     async def _call(
         self, prepared: _Prepared, prompt_label: str
     ) -> tuple[ConversationSummaryOutput, int]:
-        """One structured call â€” no tools, ever (Â§6 invariant 3a) â€” retried
+        """One structured call — no tools, ever (§6 invariant 3a) — retried
         once with a larger output budget if truncated, never continued by
-        prefilling (AGENTS Â§8). Stop reason first, then content."""
+        prefilling (AGENTS §8). Stop reason first, then content."""
         config = self._config
         request = LLMRequest(
             account_id=prepared.account_id,
@@ -399,8 +431,16 @@ class Summarizer:
             case StopReason.COMPLETED:
                 if response.parsed is None:
                     raise _CallFailedError(SummaryStatus.FAILED, "failed", "invalid_output")
-                # Our own model again: the adapter's validation is not the contract.
-                return ConversationSummaryOutput.model_validate(response.parsed.model_dump()), calls
+                try:
+                    # Our own model again: the adapter's validation is not the contract.
+                    validated = ConversationSummaryOutput.model_validate(
+                        response.parsed.model_dump()
+                    )
+                except pydantic.ValidationError:
+                    raise _CallFailedError(
+                        SummaryStatus.FAILED, "failed", "invalid_output"
+                    ) from None
+                return validated, calls
             case StopReason.REFUSAL | StopReason.CONTENT_FILTER:
                 raise _CallFailedError(SummaryStatus.REFUSED, "refused", response.stop_reason.value)
             case StopReason.MAX_TOKENS:
@@ -411,7 +451,7 @@ class Summarizer:
     # ------------------------------------------------------------ checks
     async def _managed_ok(self, session: AsyncSession, account_id: int) -> bool:
         """`ai_control` and `ai_managed` both active and both naming the
-        processor that serves this route's model (Â§14.3, M03 D48)."""
+        processor that serves this route's model (§14.3, M03 D48)."""
         processor = processor_for_model(self._config.model)
         if processor is None:
             return False
@@ -484,3 +524,23 @@ class Summarizer:
         )
         async with transaction(self._session_factory) as uow:
             await self._close_run(uow.session, prepared, status, error_class)
+
+    async def _fail_run(self, prepared: _Prepared, error: BaseException) -> None:
+        """An unexpected error or a cancellation: the run must not stay
+        `running`. Best effort — a failure here is logged (type only) and the
+        original error still propagates."""
+        try:
+            await self._finish_run(prepared, "failed", f"exception:{type(error).__name__}")
+        except Exception as close_error:
+            logger.error(
+                "summarize_run_close_failed",
+                run_id=prepared.run_id,
+                exc_type=type(close_error).__name__,
+            )
+
+
+def _run_close(result: StoreResult) -> tuple[str, str | None]:
+    """How a run that got an answer is closed, by what the store did."""
+    if result is StoreResult.STORED:
+        return "succeeded", None
+    return "failed", f"discarded:{result.value}"

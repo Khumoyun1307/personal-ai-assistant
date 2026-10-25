@@ -6,22 +6,31 @@ lives here:
 
 - **reading the source**: one conversation's retained messages after a
   summary's `covers_through_message_id` (rolling), or within a range
-  (period), account-scoped;
-- **storing** a rolling summary optimistically (only if nobody refreshed it
-  meanwhile) and a period summary as a cache keyed by range and
-  `source_digest`; both under the conversation row lock, never across a
-  model call (AGENTS §13);
+  (period), account-scoped, each with its `content_hash`;
+- **storing** a rolling summary optimistically (only if the stored one is
+  still the one it was built on) and a period summary as a cache keyed by
+  range and `source_digest`. Both take the §9.4 locks (account FOR KEY
+  SHARE, so a store waits for managed-data deletion's FOR UPDATE; then the
+  conversation FOR UPDATE) and **re-check the source in a fresh statement**:
+  every message the model read must still be retained with the same
+  content, and the chat must still be summarizable (not Ignore, not a bot
+  chat). Otherwise nothing is stored — deleted or edited text never lands in
+  a summary written while the model ran (§6 invariant 9, PRD §20, D63, D66).
+  No lock is held across a model call (AGENTS §13);
 - **the refresh flag** `conversations.pending_ai_since` ("content no AI run
-  has seen yet"): cleared only when no message changed since the refresh
-  read its source;
+  has seen yet"): cleared when no message changed since the refresh read its
+  source, otherwise moved to the earliest such change, so the maximum wait
+  counts from content the summary has not seen;
 - **refresh timing**: a trailing debounce with a maximum wait;
 - **deferring** `memory.refresh_summary` after the ingesting transaction
   commits (a crash in between is caught by `system.reconcile_pending`);
-- **invalidation**: a deleted message must not live on in a summary
-  (PRD §20: no keeping contacts' deleted messages), so a deletion drops the
-  conversation's period caches, and its rolling summary when it covered the
-  message (rebuilt from what is retained);
+- **invalidation**: a deleted or edited message must not live on in a
+  summary, so it drops the chat's period caches, and the rolling summary
+  when it covered the message (rebuilt from what is retained);
 - **deletion and retention** helpers for the privacy cascades.
+
+Change markers ignore retention purges (`purged_at`): expiry is not news
+for a summary, which exists to outlive it.
 """
 
 from __future__ import annotations
@@ -30,11 +39,13 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from assistant.accounts.models import Account
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.jobs import REFRESH_SUMMARY_TASK, JobScheduler, summary_queueing_lock
@@ -63,6 +74,8 @@ class SourceMessage:
     text: str | None
     media_kind: str | None
     edited: bool
+    #: What the store re-checks: the message still has this content.
+    content_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +91,11 @@ class StoredSummary:
     source_digest: str | None
     updated_at: datetime
 
+    @property
+    def version(self) -> tuple[int, int | None]:
+        """What a rolling store compares: the row and how far it covers."""
+        return (self.summary_id, self.covers_through_message_id)
+
 
 @dataclass(frozen=True, slots=True)
 class ConversationRef:
@@ -88,6 +106,15 @@ class ConversationRef:
     mode: str
     is_bot: bool
     pending_ai_since: datetime | None
+
+
+class StoreResult(StrEnum):
+    STORED = "stored"
+    RACED = "raced"
+    """Another refresh stored first, or the summary was invalidated."""
+    SOURCE_CHANGED = "source_changed"
+    """A message the model read was deleted or edited, or the chat can no
+    longer be summarized: nothing stored."""
 
 
 def _stored(row: ConversationSummary) -> StoredSummary:
@@ -114,6 +141,7 @@ def _source(row: Message) -> SourceMessage:
         text=row.text,
         media_kind=(row.media or {}).get("kind") if row.media else None,
         edited=row.edited_at is not None,
+        content_hash=row.content_hash,
     )
 
 
@@ -193,16 +221,31 @@ async def messages_after(
 async def activity_marker(
     session: AsyncSession, account_id: int, conversation_id: int
 ) -> datetime | None:
-    """When any message of the conversation last changed (new, edited,
-    deleted or expired): the refresh flag is cleared only if this did not
-    move while the refresh ran."""
+    """When a message of the conversation last changed (new, edited,
+    deleted) — retention purges excluded."""
     return (
         await session.execute(
             select(func.max(Message.updated_at))
             .where(Message.account_id == account_id)
             .where(Message.conversation_id == conversation_id)
+            .where(Message.purged_at.is_(None))
         )
     ).scalar_one_or_none()
+
+
+async def first_change_after(
+    session: AsyncSession, account_id: int, conversation_id: int, marker: datetime | None
+) -> datetime | None:
+    """The earliest message change after `marker` (None: no change)."""
+    statement = (
+        select(func.min(Message.updated_at))
+        .where(Message.account_id == account_id)
+        .where(Message.conversation_id == conversation_id)
+        .where(Message.purged_at.is_(None))
+    )
+    if marker is not None:
+        statement = statement.where(Message.updated_at > marker)
+    return (await session.execute(statement)).scalar_one_or_none()
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,13 +258,29 @@ class PeriodSource:
     covers_through_message_id: int | None
 
 
-def source_digest(pairs: Sequence[tuple[int, datetime]]) -> str | None:
-    """A hash over (message id, updated_at): any new, edited, deleted or
-    expired message in the range changes it. No content goes in."""
+def source_digest(pairs: Sequence[tuple[int, str | None]]) -> str | None:
+    """A hash over (message id, content hash): any new, edited, deleted or
+    expired message in the range changes it."""
     if not pairs:
         return None
-    canonical = "|".join(f"{mid}:{moment.isoformat()}" for mid, moment in sorted(pairs))
+    canonical = "|".join(f"{mid}:{content or ''}" for mid, content in sorted(pairs))
     return hashlib.sha256(canonical.encode()).hexdigest()[:40]
+
+
+async def _period_fingerprint(
+    session: AsyncSession, account_id: int, conversation_id: int, start: datetime, end: datetime
+) -> tuple[str | None, int, int | None]:
+    """(digest, count, highest id) of the range, without loading any text."""
+    rows = (
+        await session.execute(
+            select(Message.id, Message.content_hash)
+            .where(*_retained(account_id, conversation_id))
+            .where(Message.sent_at >= start)
+            .where(Message.sent_at < end)
+        )
+    ).all()
+    pairs = [(int(mid), content) for mid, content in rows]
+    return source_digest(pairs), len(pairs), max((mid for mid, _ in pairs), default=None)
 
 
 async def period_source(
@@ -233,26 +292,25 @@ async def period_source(
     end: datetime,
     limit: int,
 ) -> PeriodSource:
-    """The retained messages of one conversation sent in `[start, end)`."""
-    rows = list(
-        (
-            await session.execute(
-                select(Message)
-                .where(*_retained(account_id, conversation_id))
-                .where(Message.sent_at >= start)
-                .where(Message.sent_at < end)
-                .order_by(Message.sent_at.desc(), Message.id.desc())
-            )
-        )
-        .scalars()
-        .all()
+    """The retained messages of one conversation sent in `[start, end)`:
+    counted and fingerprinted in full, but only the newest `limit` loaded."""
+    digest, total, highest = await _period_fingerprint(
+        session, account_id, conversation_id, start, end
     )
-    kept = [_source(row) for row in reversed(rows[:limit])]
+    rows = (
+        await session.execute(
+            select(Message)
+            .where(*_retained(account_id, conversation_id))
+            .where(Message.sent_at >= start)
+            .where(Message.sent_at < end)
+            .order_by(Message.sent_at.desc(), Message.id.desc())
+            .limit(limit)
+        )
+    ).scalars()
+    kept = [_source(row) for row in rows.all()]
+    kept.reverse()
     return PeriodSource(
-        messages=tuple(kept),
-        total=len(rows),
-        digest=source_digest([(row.id, row.updated_at) for row in rows]),
-        covers_through_message_id=max((row.id for row in rows), default=None),
+        messages=tuple(kept), total=total, digest=digest, covers_through_message_id=highest
     )
 
 
@@ -284,7 +342,7 @@ async def cached_period(
 async def lock_conversation(
     session: AsyncSession, account_id: int, conversation_id: int
 ) -> Conversation | None:
-    """The conversation row, locked (§9.4 lock order: conversation first)."""
+    """The conversation row, locked FOR UPDATE."""
     return (
         await session.execute(
             select(Conversation)
@@ -295,25 +353,70 @@ async def lock_conversation(
     ).scalar_one_or_none()
 
 
+async def _lock_for_store(
+    session: AsyncSession, account_id: int, conversation_id: int
+) -> Conversation | None:
+    """§9.4 lock order for a summary write: the account FOR KEY SHARE (so it
+    waits for managed-data deletion, which holds the account FOR UPDATE),
+    then the conversation FOR UPDATE (a deletion, edit or bot-chat purge of
+    this chat holds it too). None when the chat may no longer be summarized:
+    gone, Ignore mode, or a bot chat."""
+    account = (
+        await session.execute(
+            select(Account.id).where(Account.id == account_id).with_for_update(key_share=True)
+        )
+    ).scalar_one_or_none()
+    if account is None:
+        return None
+    conversation = await lock_conversation(session, account_id, conversation_id)
+    if conversation is None or conversation.mode == "ignore":
+        return None
+    is_bot = (
+        await session.execute(select(Contact.is_bot).where(Contact.id == conversation.contact_id))
+    ).scalar_one_or_none()
+    return None if is_bot else conversation
+
+
+async def _source_intact(
+    session: AsyncSession,
+    account_id: int,
+    conversation_id: int,
+    source: Mapping[int, str | None],
+) -> bool:
+    """Every message the model read is still retained with the same content
+    (read in a fresh statement, after the locks)."""
+    if not source:
+        return True
+    rows = await session.execute(
+        select(Message.id, Message.content_hash)
+        .where(*_retained(account_id, conversation_id))
+        .where(Message.id.in_(list(source)))
+    )
+    return {int(mid): content for mid, content in rows.all()} == dict(source)
+
+
 async def store_rolling(
     session: AsyncSession,
     *,
     account_id: int,
     conversation_id: int,
-    based_on: int | None,
+    based_on: tuple[int, int | None] | None,
+    source: Mapping[int, str | None],
     summary: Mapping[str, Any],
     covers_through: int,
     added_messages: int,
     prompt_version: str,
     model: str,
     now: datetime,
-) -> bool:
-    """Write the new rolling summary if the stored one is still the one it
-    was built on (`based_on` = its `covers_through_message_id`, None for
-    none). False when another refresh got there first: nothing is written,
-    and the caller's work is simply dropped."""
-    if await lock_conversation(session, account_id, conversation_id) is None:
-        return False
+) -> StoreResult:
+    """Write the new rolling summary if (a) the chat may still be summarized,
+    (b) every message it was written from is unchanged, and (c) the stored
+    summary is still the one it was built on (`based_on` = its `version`,
+    None for none). Otherwise nothing is written."""
+    if await _lock_for_store(session, account_id, conversation_id) is None:
+        return StoreResult.SOURCE_CHANGED
+    if not await _source_intact(session, account_id, conversation_id, source):
+        return StoreResult.SOURCE_CHANGED
     current = (
         await session.execute(
             select(ConversationSummary)
@@ -323,8 +426,8 @@ async def store_rolling(
             .with_for_update()
         )
     ).scalar_one_or_none()
-    if (None if current is None else current.covers_through_message_id) != based_on:
-        return False
+    if (None if current is None else (current.id, current.covers_through_message_id)) != based_on:
+        return StoreResult.RACED
     if current is None:
         session.add(
             ConversationSummary(
@@ -348,21 +451,22 @@ async def store_rolling(
         current.model = model
         current.updated_at = now
     await session.flush()
-    return True
+    return StoreResult.STORED
 
 
-async def clear_refresh_flag(
+async def settle_refresh_flag(
     session: AsyncSession, *, account_id: int, conversation_id: int, marker: datetime | None
-) -> bool:
-    """Clear `pending_ai_since` — only if no message changed since `marker`
-    was read; otherwise the flag stays and the next refresh picks it up."""
+) -> None:
+    """After a refresh saw everything up to `marker`: clear `pending_ai_since`
+    if nothing changed since, else move it to the earliest change after the
+    marker — the content the summary has not seen (the maximum wait counts
+    from there, not from content already summarized)."""
     conversation = await lock_conversation(session, account_id, conversation_id)
     if conversation is None or conversation.pending_ai_since is None:
-        return False
-    if await activity_marker(session, account_id, conversation_id) != marker:
-        return False
-    conversation.pending_ai_since = None
-    return True
+        return
+    conversation.pending_ai_since = await first_change_after(
+        session, account_id, conversation_id, marker
+    )
 
 
 async def store_period(
@@ -371,6 +475,7 @@ async def store_period(
     account_id: int,
     conversation_id: int,
     start: datetime,
+    source_end: datetime,
     end: datetime | None,
     digest: str,
     summary: Mapping[str, Any],
@@ -379,10 +484,19 @@ async def store_period(
     prompt_version: str,
     model: str,
     now: datetime,
-) -> None:
-    """Cache one period summary, replacing the previous one for the range."""
-    if await lock_conversation(session, account_id, conversation_id) is None:
-        return
+) -> StoreResult:
+    """Cache one period summary, replacing the previous one for the range —
+    only if the range's messages are exactly those it was written from
+    (`digest` recomputed after the locks) and the chat may still be
+    summarized. `source_end` is the range end that was read; `end` is the
+    stored key (None = open-ended)."""
+    if await _lock_for_store(session, account_id, conversation_id) is None:
+        return StoreResult.SOURCE_CHANGED
+    current, _, _ = await _period_fingerprint(
+        session, account_id, conversation_id, start, source_end
+    )
+    if current != digest:
+        return StoreResult.SOURCE_CHANGED
     await session.execute(
         delete(ConversationSummary)
         .where(ConversationSummary.account_id == account_id)
@@ -409,6 +523,7 @@ async def store_period(
         )
     )
     await session.flush()
+    return StoreResult.STORED
 
 
 # ----------------------------------------------------------- refresh timing
@@ -476,38 +591,34 @@ class SummaryRefreshTrigger:
 
 
 # -------------------------------------------------------------- invalidation
-async def invalidate_after_deletion(
+async def invalidate_covering(
     session: AsyncSession,
     conversation: Conversation,
-    purged_message_ids: Sequence[int],
+    message_ids: Sequence[int],
     *,
     now: datetime,
 ) -> int:
-    """A deleted message must not survive in a summary (M03 D63).
+    """A deleted (D63) or edited (D66) message must not survive in a summary.
 
-    Runs in the deletion's transaction, with the conversation row already
-    locked. Drops every period cache of the conversation, and the rolling
-    summary if it covered one of the messages; the rolling summary is then
-    rebuilt from what is retained (the refresh flag is set). Content that
+    Runs in the deletion's or edit's transaction, with the conversation row
+    already locked. Drops every period cache of the conversation, and the
+    rolling summary if it covered one of the messages; the rolling summary is
+    then rebuilt from what is retained (the refresh flag is set). Content that
     already expired cannot be rebuilt: `summary_gap_before` records it, so
     answers say earlier messages expired without a summary. Returns the
-    number of summaries removed.
+    number of summaries removed. `message_ids` must be messages whose content
+    changed in that transaction (a repeated deletion is not one).
     """
-    if not purged_message_ids:
+    if not message_ids:
         return 0
     account_id, conversation_id = conversation.account_id, conversation.id
-    removed = int(
-        getattr(
-            await session.execute(
-                delete(ConversationSummary)
-                .where(ConversationSummary.account_id == account_id)
-                .where(ConversationSummary.conversation_id == conversation_id)
-                .where(ConversationSummary.kind == KIND_PERIOD)
-            ),
-            "rowcount",
-            0,
+    removed = _rowcount(
+        await session.execute(
+            delete(ConversationSummary)
+            .where(ConversationSummary.account_id == account_id)
+            .where(ConversationSummary.conversation_id == conversation_id)
+            .where(ConversationSummary.kind == KIND_PERIOD)
         )
-        or 0
     )
     rolling = (
         await session.execute(
@@ -520,7 +631,7 @@ async def invalidate_after_deletion(
     covered = (
         rolling is not None
         and rolling.covers_through_message_id is not None
-        and min(purged_message_ids) <= rolling.covers_through_message_id
+        and min(message_ids) <= rolling.covers_through_message_id
     )
     if covered:
         await session.delete(rolling)

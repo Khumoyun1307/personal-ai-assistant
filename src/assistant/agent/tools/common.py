@@ -205,7 +205,15 @@ def summary_view(summary: Mapping[str, Any]) -> dict[str, Any]:
         "key_facts": points("key_facts"),
         "needs_reply": bool(summary.get("needs_reply")),
         "needs_reply_reason": _summary_text(summary.get("needs_reply_reason")),
+        **_omitted(summary.get("items_omitted")),
     }
+
+
+def _omitted(value: object) -> dict[str, Any]:
+    """The list cap's count, said out loud when it cut anything."""
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return {"items_omitted": value, "note": f"{value} older item(s) were left out (list cap)."}
+    return {}
 
 
 async def require_contacts(session: AsyncSession, account_id: int, ids: Sequence[int]) -> None:

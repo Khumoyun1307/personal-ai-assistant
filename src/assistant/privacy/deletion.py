@@ -64,6 +64,15 @@ async def delete_managed_data(
     account = await session.get(Account, account_id, with_for_update=True)
     if account is None:
         raise ValueError("unknown account")
+    # §9.4 lock order: account, then its conversations. A summary being
+    # stored meanwhile waits on these locks and then finds its source gone
+    # (memory/summaries.py), so nothing deleted here is written back.
+    await session.execute(
+        select(Conversation.id)
+        .where(Conversation.account_id == account_id)
+        .order_by(Conversation.id)
+        .with_for_update()
+    )
 
     def _count(result: object) -> int:
         return int(getattr(result, "rowcount", 0) or 0)
@@ -166,6 +175,14 @@ async def purge_conversation(
     def _count(result: object) -> int:
         return int(getattr(result, "rowcount", 0) or 0)
 
+    # The conversation row first (§9.4; the caller usually holds it already):
+    # an in-flight summary store waits and then finds the chat purged.
+    await session.execute(
+        select(Conversation.id)
+        .where(Conversation.account_id == account_id)
+        .where(Conversation.id == conversation_id)
+        .with_for_update()
+    )
     message_ids = select(Message.id).where(Message.conversation_id == conversation_id)
     payloads = _count(
         await session.execute(

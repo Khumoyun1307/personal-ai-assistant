@@ -90,15 +90,19 @@ def _cited(ids: Iterable[int], allowed: frozenset[int]) -> list[int]:
 
 def sanitize(
     output: ConversationSummaryOutput, allowed_ids: frozenset[int]
-) -> tuple[dict[str, Any], int]:
-    """The stored form of a summary, and how many items were dropped.
+) -> tuple[dict[str, Any], int, int]:
+    """The stored form of a summary, how many items were dropped as
+    uncited, and how many were cut by the list cap.
 
     An item survives only if it cites at least one message id from
     `allowed_ids` (the messages shown in this call, plus — for a rolling
     summary — those cited by the summary it updates); ids outside the set
-    are removed. Text is trimmed to fixed limits; lists are capped.
+    are removed. Text is trimmed to fixed limits; lists are capped at
+    `MAX_ITEMS`, and the stored summary says how many items the cap left out
+    (`items_omitted`), so a reader never takes a capped list as complete.
     """
     dropped = 0
+    capped = 0
     result: dict[str, Any] = {
         "overview": _clip(output.overview, MAX_OVERVIEW) or "",
         "needs_reply": output.needs_reply,
@@ -114,7 +118,7 @@ def sanitize(
                 dropped += 1
                 continue
             kept.append({"text": text, "message_ids": ids})
-        dropped += max(0, len(kept) - MAX_ITEMS)
+        capped += max(0, len(kept) - MAX_ITEMS)
         result[key] = kept[:MAX_ITEMS]
     commitments: list[dict[str, Any]] = []
     for item in output.commitments:
@@ -126,9 +130,10 @@ def sanitize(
         commitments.append(
             {"by": item.by, "text": text, "due": _clip(item.due, MAX_DUE), "message_ids": ids}
         )
-    dropped += max(0, len(commitments) - MAX_ITEMS)
+    capped += max(0, len(commitments) - MAX_ITEMS)
     result["commitments"] = commitments[:MAX_ITEMS]
-    return result, dropped
+    result["items_omitted"] = capped
+    return result, dropped, capped
 
 
 def cited_ids(summary: dict[str, Any] | Any) -> frozenset[int]:

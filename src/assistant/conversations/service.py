@@ -45,7 +45,7 @@ from assistant.conversations.models import (
 from assistant.core.clock import Clock
 from assistant.inbox.models import InboundUpdate
 from assistant.memory.search import detect_script, guess_lang, normalize
-from assistant.memory.summaries import invalidate_after_deletion
+from assistant.memory.summaries import invalidate_covering
 from assistant.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -90,6 +90,9 @@ class DeletionOutcome:
     tombstoned_telegram_ids: tuple[int, ...] = ()
     #: The conversation is in Ignore mode: the update's payload is not kept.
     metadata_only: bool = False
+    #: Messages that still held content until this deletion (a subset of
+    #: `purged_message_ids`, which also lists rows already deleted).
+    content_lost_ids: tuple[int, ...] = ()
 
 
 # ------------------------------------------------------------------ helpers
@@ -276,6 +279,9 @@ async def record_message(
 
     # Step 5: something new for the AI to look at, once consent allows.
     content_changed = effect in (Effect.INSERTED, Effect.UPDATED) and not metadata_only
+    if effect is Effect.UPDATED and not metadata_only and message_id is not None:
+        # The pre-edit text must not live on in a summary either (M03 D66).
+        await invalidate_covering(session, conversation, [message_id], now=now)
     if content_changed and conversation.pending_ai_since is None:
         conversation.pending_ai_since = now
     conversation.updated_at = now
@@ -430,6 +436,21 @@ async def record_deletion(
     # Telegram may list an id more than once; two tombstones for one id
     # would violate the unique key and dead-letter the deletion.
     ids = list(dict.fromkeys(event.telegram_message_ids))
+    # Rows that still hold content: only these lose something now. A
+    # redelivered deletion or a never-stored id must not invalidate a summary
+    # (and force a paid rebuild) — the conversation row lock orders this read
+    # against any concurrent edit of the chat.
+    content_lost = tuple(
+        int(message_id)
+        for message_id in (
+            await session.execute(
+                select(Message.id)
+                .where(Message.conversation_id == conversation.id)
+                .where(Message.telegram_message_id.in_(ids))
+                .where((Message.text.is_not(None)) | (Message.media.is_not(None)))
+            )
+        ).scalars()
+    )
     purged = await session.execute(
         update(Message)
         .where(Message.conversation_id == conversation.id)
@@ -472,8 +493,8 @@ async def record_deletion(
             .where(InboundUpdate.message_id.in_(purged_ids))
             .values(payload=None)
         )
-        # A deleted message must not live on in a summary (S03.2, M03 D63).
-        await invalidate_after_deletion(session, conversation, purged_ids, now=now)
+    # A deleted message must not live on in a summary (S03.2, M03 D63).
+    await invalidate_covering(session, conversation, content_lost, now=now)
     conversation.updated_at = now
     logger.info(
         "business_messages_deleted",
@@ -482,7 +503,11 @@ async def record_deletion(
         tombstoned=len(missing),
     )
     return DeletionOutcome(
-        conversation.id, purged_ids, missing, metadata_only=conversation.mode == "ignore"
+        conversation.id,
+        purged_ids,
+        missing,
+        metadata_only=conversation.mode == "ignore",
+        content_lost_ids=content_lost,
     )
 
 

@@ -13,8 +13,13 @@ type (`agent/summarize.py`):
   is the owner model's job; the caveats must all be relayed (prompt rule).
 - **`get_attention_list`** — v1 (FR-SUM-03): chats where the contact wrote
   last and nobody answered, each with the rolling summary's "needs reply"
-  verdict; a chat whose summary is stale is refreshed first (at most
-  `MAX_INLINE_CHECKS` per call, M03 D62), otherwise marked unchecked.
+  verdict; a chat whose summary is stale is refreshed first — at most
+  `MAX_INLINE_CHECKS` chats, ONE summary call each (plus one retry of a
+  truncated output), never chained (M03 D62) — otherwise marked unchecked.
+
+A chat whose summary fails is listed as not summarized (or unchecked); it
+never aborts the other chats. A summary written from messages that changed
+while the model ran is discarded and never returned (D63, D66).
 
 Both: class `read`, `owner_request` only, offered only with `ai_managed`
 (`returns_managed`), flags default off, every contact-authored or
@@ -59,6 +64,9 @@ from assistant.agent.tools.registry import (
 from assistant.conversations.models import Conversation
 from assistant.db.uow import transaction
 from assistant.memory import catch_up, summaries
+from assistant.observability.logging import get_logger
+
+logger = get_logger(__name__)
 
 SUMMARIZE_PERIOD_FLAG = "tool.summarize_period"
 ATTENTION_FLAG = "tool.get_attention_list"
@@ -71,6 +79,8 @@ MAX_CATCH_UP_CONVERSATIONS = 15
 MAX_INLINE_CHECKS = 8
 #: Summary calls in flight at once within one tool call.
 SUMMARY_CONCURRENCY = 4
+#: An open-ended catch-up also covers messages dated this far after our clock.
+CLOCK_SKEW = timedelta(minutes=5)
 
 
 def _moment(value: str | None) -> str | None:
@@ -129,6 +139,7 @@ _FAILED_REASONS = {
     SummaryStatus.REFUSED: "the_model_refused",
     SummaryStatus.FAILED: "summary_failed",
     SummaryStatus.NOT_FOUND: "not_found",
+    SummaryStatus.DISCARDED: "messages_changed_during_the_summary",
 }
 
 
@@ -151,6 +162,9 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
             return ToolOutcome("error", {"reason": "the period has not started yet"})
         if end - start > MAX_PERIOD:
             return ToolOutcome("error", {"reason": "a period is at most 31 days"})
+        # "Until now" also takes messages Telegram dated a little after our
+        # clock (clock skew); a fixed end is taken as given.
+        query_end = end + CLOCK_SKEW if open_ended else end
         await require_contacts(session, ctx.account_id, one(args.contact_id))
         await require_conversations(session, ctx.account_id, one(args.conversation_id))
         scope: list[int] | None = None
@@ -171,12 +185,12 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
             session,
             ctx.account_id,
             start=start,
-            end=end,
+            end=query_end,
             conversation_ids=one(args.conversation_id),
             contact_ids=one(args.contact_id),
         )
         coverage = await catch_up.period_coverage(
-            session, ctx.account_id, start=start, end=end, conversation_ids=scope
+            session, ctx.account_id, start=start, end=query_end, conversation_ids=scope
         )
 
     chosen = active[:MAX_CATCH_UP_CONVERSATIONS]
@@ -186,14 +200,24 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
         async def run() -> PeriodOutcome:
             if summarizer is None:
                 return PeriodOutcome(SummaryStatus.FAILED)
-            return await summarizer.summarize_period(
-                account_id=ctx.account_id,
-                conversation_id=conversation_id,
-                start=start,
-                end=end,
-                open_ended=open_ended,
-                parent_run_id=ctx.run_id,
-            )
+            try:
+                return await summarizer.summarize_period(
+                    account_id=ctx.account_id,
+                    conversation_id=conversation_id,
+                    start=start,
+                    end=query_end,
+                    open_ended=open_ended,
+                    parent_run_id=ctx.run_id,
+                )
+            except Exception as error:
+                # One chat's failure (its run already closed as failed) must
+                # not abort the whole catch-up; it is listed as not summarized.
+                logger.warning(
+                    "catch_up_chat_failed",
+                    conversation_id=conversation_id,
+                    exc_type=type(error).__name__,
+                )
+                return PeriodOutcome(SummaryStatus.FAILED)
 
         return run
 
@@ -326,7 +350,17 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
 
         def job(conversation_id: int) -> Callable[[], Awaitable[object]]:
             async def run() -> object:
-                return await summarizer.refresh(conversation_id)
+                try:
+                    # One call per chat at most (plus a truncation retry),
+                    # never chained: the cost of an ask stays bounded (D62).
+                    return await summarizer.refresh(conversation_id, max_calls=1)
+                except Exception as error:
+                    logger.warning(
+                        "attention_check_failed",
+                        conversation_id=conversation_id,
+                        exc_type=type(error).__name__,
+                    )
+                    return None
 
             return run
 

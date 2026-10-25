@@ -6,6 +6,7 @@ sent — in particular that nothing reached it without consent.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from typing import Any
 
@@ -87,6 +88,9 @@ class FakeLLM:
         value = self.parsed.pop(0)
         if callable(value):
             value = value(request)
+            if inspect.isawaitable(value):
+                # An async hook: e.g. commits a deletion while the call is in flight.
+                value = await value
         if isinstance(value, LLMError):
             raise value
         if isinstance(value, StopReason):
