@@ -1,7 +1,7 @@
 """Cost guards for real-model evaluation runs (AGENTS §8, §9; PLAN §1.4).
 
 S03.4 real-model runs are capped at USD 1 in total (owner approval,
-2026-10-21). The guards, in order:
+2026-10-21); the cap enforced here is per run (default USD 1). The guards, in order:
 
 1. **Refuse without `--live`** (`evals/__main__.py`): a model run needs an
    explicit flag, and the owner's go-ahead for that specific run.
@@ -10,16 +10,20 @@ S03.4 real-model runs are capped at USD 1 in total (owner approval,
    `max_output_tokens`). A run whose worst case exceeds the cap does not start.
 3. **Hard stop in flight** (`BudgetedLLMClient`): before each call, spent plus
    that call's worst case must fit under the cap, else `BudgetExceededError`
-   is raised and the call is never made. A call that fails after generating
-   (invalid structured output) is billed at its worst case, because its real
-   usage is unknown.
+   is raised and the call is never made. A call that fails after possibly
+   generating (invalid structured output, a timeout or connection failure) is
+   billed at its worst case, because its real usage is unknown. The SDK client
+   is built with `max_retries=0` (`evals/live.py`), so there are no invisible
+   retries: every attempt is one call here.
 4. **Metering**: every call becomes a `CallEntry` (purpose, model, tokens,
    cost); the report totals them per model and per 100 items.
 
 Prices come from `assistant.llm.metering.PRICES_PER_MTOK`, the one place the
 product keeps them, plus explicit `--price MODEL=IN:OUT` overrides for models
-the table lacks. A model with no price is refused: without one the cap cannot
-be enforced. No model id is hard-coded here; models come from configuration.
+the table lacks (exact id, positive prices; never for a model the table already
+prices). Only a dated snapshot (`name-YYYY-MM-DD`) shares a base model's price.
+A model with no price is refused: without one the cap cannot be enforced. No
+model id is hard-coded here; models come from configuration.
 
 No provider file, batch or feedback API is used: calls go through the
 `LLMClient` port (Responses API, `store=False`).
@@ -28,6 +32,7 @@ No provider file, batch or feedback API is used: calls go through the
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -48,19 +53,25 @@ from assistant.llm.port import (
     ToolResultItem,
     Usage,
 )
+from evals.errors import EvalsError
 from evals.targets import PlannedCall
 
-#: Default cap for one run (the S03.4 total is USD 1).
+#: Default cap for one run (the S03.4 total of USD 1 is tracked via the reports).
 DEFAULT_BUDGET_USD = Decimal("1")
-#: Conservative: Cyrillic and Uzbek text tokenizes at about 2-3 characters per
-#: token, so assuming 2 over-estimates the input cost.
-CHARS_PER_TOKEN = 2
+#: Worst case for input: one token per character (Cyrillic and Uzbek text
+#: tokenizes at about 2-3 characters per token, so this over-estimates), plus a
+#: fixed per-call overhead for the structured-output schema and request framing.
+CHARS_PER_TOKEN = 1
+CALL_OVERHEAD_TOKENS = 500
+#: A dated snapshot of a model (`name-YYYY-MM-DD`), the only suffix that shares
+#: the base model's price. `name-pro` or `name-preview` are different models.
+_SNAPSHOT = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 
 _MILLION = Decimal(1_000_000)
 Prices = Mapping[str, tuple[Decimal, Decimal]]
 
 
-class BudgetError(Exception):
+class BudgetError(EvalsError):
     """A cost guard stopped the run."""
 
 
@@ -90,26 +101,30 @@ def parse_price(spec: str) -> tuple[str, tuple[Decimal, Decimal]]:
         prices = (Decimal(input_price), Decimal(output_price))
     except ValueError, ArithmeticError:
         raise ValueError(f"--price expects MODEL=IN:OUT, got '{spec}'") from None
-    if not model or min(prices) < 0:
-        raise ValueError(f"--price expects MODEL=IN:OUT with non-negative prices, got '{spec}'")
+    if not model or min(prices) <= 0:
+        # A zero price would make a model free and the cap meaningless.
+        raise ValueError(f"--price expects MODEL=IN:OUT with positive prices, got '{spec}'")
     return model, prices
 
 
+def _table_price(model: str) -> tuple[Decimal, Decimal] | None:
+    """The product table's price for `model` or its dated snapshot, never a
+    longer name that merely starts with it."""
+    return PRICES_PER_MTOK.get(_SNAPSHOT.sub("", model))
+
+
+def check_overrides(overrides: Prices) -> None:
+    """Refuse an override for a model the product table already prices: it
+    could only lower the price and so disable the cap."""
+    for model in overrides:
+        if _table_price(model) is not None:
+            raise ValueError(f"--price: '{model}' is already priced in PRICES_PER_MTOK")
+
+
 def _lookup(model: str, overrides: Prices) -> tuple[Decimal, Decimal] | None:
-    if model in overrides:
-        return overrides[model]
-    # Resolved model ids may carry a snapshot suffix (`name-<date>`).
-    for name, price in overrides.items():
-        if model.startswith(f"{name}-"):
-            return price
-    return next(
-        (
-            price
-            for name, price in PRICES_PER_MTOK.items()
-            if model == name or model.startswith(f"{name}-")
-        ),
-        None,
-    )
+    # The table first, so an override can never reprice a model it covers;
+    # overrides match the exact model id only (never a prefix).
+    return _table_price(model) or overrides.get(model)
 
 
 def price_of(model: str, usage: Usage, overrides: Prices) -> Decimal:
@@ -122,7 +137,10 @@ def price_of(model: str, usage: Usage, overrides: Prices) -> Decimal:
 
 def worst_case(model: str, input_chars: int, max_output_tokens: int, overrides: Prices) -> Decimal:
     """The most one call can cost: conservative input, full output budget."""
-    usage = Usage(input_tokens=-(-input_chars // CHARS_PER_TOKEN), output_tokens=max_output_tokens)
+    usage = Usage(
+        input_tokens=-(-input_chars // CHARS_PER_TOKEN) + CALL_OVERHEAD_TOKENS,
+        output_tokens=max_output_tokens,
+    )
     return price_of(model, usage, overrides)
 
 
@@ -213,6 +231,9 @@ def _request_chars(request: LLMRequest) -> int:
     return len(request.instructions) + sum(map(item_chars, request.items)) + tool_chars
 
 
+_BILLED_FAILURES = frozenset({LLMErrorKind.INVALID_OUTPUT, LLMErrorKind.UNAVAILABLE})
+
+
 class BudgetedLLMClient:
     """An `LLMClient` that meters every call and refuses to overspend.
 
@@ -234,6 +255,7 @@ class BudgetedLLMClient:
         self._inner = inner
         self._cap = cap_usd
         self._overrides: Prices = overrides or {}
+        check_overrides(self._overrides)
         self.ledger = ledger if ledger is not None else CallLedger()
         self.processor = inner.processor
 
@@ -275,9 +297,12 @@ class BudgetedLLMClient:
         return response
 
     def _bill_unknown(self, request: LLMRequest, error: LLMError, worst: Decimal) -> None:
-        # Output was generated but unusable: the provider billed it, we cannot
-        # see how much, so assume the worst.
-        if error.kind is LLMErrorKind.INVALID_OUTPUT:
+        # Output may have been generated and billed, with no usage reported: an
+        # unusable structured output, or a timeout/connection failure (the
+        # provider can finish and bill a request we stopped waiting for). Assume
+        # the worst. Requests the provider rejected (429, auth, bad request)
+        # generated nothing and cost nothing.
+        if error.kind in _BILLED_FAILURES:
             self.ledger.entries.append(
                 CallEntry(request.purpose, request.model, Usage(), worst, estimated=True)
             )

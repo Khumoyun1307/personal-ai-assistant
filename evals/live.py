@@ -26,12 +26,15 @@ from assistant.config import Settings
 from assistant.core.model_routes import processor_for_model
 from assistant.llm.openai_adapter import OpenAIClient
 from assistant.llm.port import LLMClient
+from evals.errors import EvalsError
 
-#: As in `bootstrap.OPENAI_MAX_RETRIES`.
-OPENAI_MAX_RETRIES = 2
+#: No SDK retries: they happen invisibly, so the budget ledger would miss
+#: billed attempts (the product's client retries twice; evaluation runs must
+#: count every call). A failed call is billed at its worst case instead.
+OPENAI_MAX_RETRIES = 0
 
 
-class LiveSetupError(Exception):
+class LiveSetupError(EvalsError):
     """The live run cannot be configured. Never carries a value."""
 
 

@@ -6,10 +6,13 @@ from decimal import Decimal
 
 import pytest
 from evals.budget import (
+    CALL_OVERHEAD_TOKENS,
+    CHARS_PER_TOKEN,
     BudgetedLLMClient,
     BudgetExceededError,
     CallLedger,
     UnknownPriceError,
+    check_overrides,
     estimate,
     parse_price,
     price_of,
@@ -71,17 +74,55 @@ def test_an_explicit_price_covers_a_model_the_table_lacks() -> None:
     assert price_of(model, Usage(1_000_000, 1_000_000), {model: prices}) == Decimal("1.80")
 
 
-@pytest.mark.parametrize("spec", ["nomodel", "m=1", "m=a:b", "=1:2", "m=-1:2"])
-def test_a_malformed_price_is_refused(spec: str) -> None:
+@pytest.mark.parametrize(
+    "spec", ["nomodel", "m=1", "m=a:b", "=1:2", "m=-1:2", "m=0:0", "m=0:1", "m=1:0", "gpt=0:0"]
+)
+def test_a_malformed_or_free_price_is_refused(spec: str) -> None:
+    """A zero price would make a model free and the cap meaningless."""
     with pytest.raises(ValueError, match="--price expects"):
         parse_price(spec)
 
 
+@pytest.mark.parametrize(
+    "model",
+    [f"{LUNA}-pro", f"{LUNA}-preview", f"{LUNA}-20261001", f"{LUNA}-2026-10", f"{LUNA}-"],
+)
+def test_only_a_dated_snapshot_suffix_shares_a_models_price(model: str) -> None:
+    """`gpt-6-luna-pro` is another model, not Luna."""
+    with pytest.raises(UnknownPriceError):
+        price_of(model, Usage(10, 10), {})
+
+
+def test_an_override_matches_its_model_exactly_never_by_prefix() -> None:
+    overrides = {"gpt": (Decimal("0.01"), Decimal("0.01"))}
+    for model in ("gpt-6-sol", "gpt-6-astra", "gpt-"):
+        with pytest.raises(UnknownPriceError):
+            price_of(model, Usage(10, 10), overrides)
+
+
+def test_an_override_cannot_reprice_a_model_the_table_prices() -> None:
+    with pytest.raises(ValueError, match="already priced"):
+        check_overrides({LUNA: (Decimal("0.01"), Decimal("0.01"))})
+    with pytest.raises(ValueError, match="already priced"):
+        check_overrides({f"{LUNA}-2026-10-01": (Decimal("0.01"), Decimal("0.01"))})
+    check_overrides({"gpt-6-sol": (Decimal("0.30"), Decimal("1.50"))})  # not in the table: fine
+
+
+def test_even_if_one_slips_through_the_table_price_wins() -> None:
+    cheap = {LUNA: (Decimal(0), Decimal(0))}
+    assert price_of(LUNA, Usage(1_000_000, 1_000_000), cheap) == Decimal("0.60")
+
+
 # --------------------------------------------------------------- the estimate
 def test_the_worst_case_prices_the_full_output_budget_and_conservative_input() -> None:
-    # 2000 chars -> 1000 input tokens at 2 chars/token; output at the full budget.
-    expected = (Decimal(1000) * Decimal("0.10") + Decimal(3000) * Decimal("0.50")) / 1_000_000
+    # Input: one token per character plus a fixed per-call overhead (schema and
+    # framing); output at the full budget.
+    input_tokens = 2000 // CHARS_PER_TOKEN + CALL_OVERHEAD_TOKENS
+    in_cost = Decimal(input_tokens) * Decimal("0.10")
+    expected = (in_cost + Decimal(3000) * Decimal("0.50")) / 1_000_000
     assert worst_case(LUNA, 2000, 3000, {}) == expected
+    assert CHARS_PER_TOKEN == 1
+    assert CALL_OVERHEAD_TOKENS >= 300
 
 
 def test_the_estimate_is_the_sum_of_the_worst_cases_and_checks_the_cap() -> None:
@@ -152,13 +193,42 @@ async def test_invalid_structured_output_is_billed_at_its_worst_case() -> None:
     assert entry.cost_usd == worst_case(LUNA, 100 + 1, 1000, {})
 
 
-async def test_an_unavailable_provider_costs_nothing() -> None:
+async def test_an_unavailable_provider_is_billed_at_its_worst_case() -> None:
+    """A timeout can still be billed: the provider may have generated output."""
     inner = FakeLLM()
     inner.parsed = [LLMError(LLMErrorKind.UNAVAILABLE)]
     client = BudgetedLLMClient(inner, cap_usd=Decimal("1"))
     with pytest.raises(LLMError):
         await client.parse(request(), Answer)
+    (entry,) = client.ledger.entries
+    assert entry.estimated
+    assert entry.cost_usd == worst_case(LUNA, 101, 1000, {})
+
+
+@pytest.mark.parametrize(
+    "kind", [LLMErrorKind.RATE_LIMITED, LLMErrorKind.AUTH, LLMErrorKind.BAD_REQUEST]
+)
+async def test_a_request_the_provider_rejected_is_not_billed(kind: LLMErrorKind) -> None:
+    inner = FakeLLM()
+    inner.parsed = [LLMError(kind)]
+    client = BudgetedLLMClient(inner, cap_usd=Decimal("1"))
+    with pytest.raises(LLMError):
+        await client.parse(request(), Answer)
     assert client.ledger.entries == []
+
+
+async def test_failed_calls_count_towards_the_cap() -> None:
+    """Retries are off, so each failed attempt is one billed worst case."""
+    inner = FakeLLM()
+    inner.parsed = [LLMError(LLMErrorKind.UNAVAILABLE)] * 5
+    one = worst_case(LUNA, 101, 1000, {})
+    client = BudgetedLLMClient(inner, cap_usd=one * Decimal("2.5"))
+    for _ in range(2):
+        with pytest.raises(LLMError):
+            await client.parse(request(), Answer)
+    with pytest.raises(BudgetExceededError):
+        await client.parse(request(), Answer)
+    assert len(inner.requests) == 2
 
 
 async def test_parse_is_metered_like_complete() -> None:
