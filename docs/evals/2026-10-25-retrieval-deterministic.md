@@ -18,15 +18,15 @@ Dataset files (SHA-256, verified against `evals/datasets/MANIFEST.sha256` before
 
 ## Results
 
-Pre-screen = every item (deterministic checks and judge flags only pre-screen). Gate = items the owner has confirmed (IMPLEMENTATION_PLAN §10.1); with none, the gate is *not evaluable*, never a pass.
+Pre-screen = every item (deterministic checks and judge flags only pre-screen). Gate = items the owner has confirmed (IMPLEMENTATION_PLAN §10.1), and it needs every item of the set confirmed: with fewer, the gate is *not evaluable*, never a pass (the count is shown as "k of N confirmed").
 
 | Metric | Threshold | Pre-screen (all items) | Gate (owner-confirmed) | Gate status |
 |---|---|---|---|---|
-| Target message in the top 5 results | >= 85 % | 31/38 (81.6 %) (fail) | n/a (no items) | **NOT EVALUABLE** |
+| Target message in the top 5 results | >= 85 % | 31/38 (81.6 %) (fail) | n/a (no items) | **INFO** (0 of 38 confirmed) |
 
 Failed items, Target message in the top 5 results: r03, r04, r05, r11, r19, r26, r33
 
-Note, Target message in the top 5 results: Baseline without a model; the S03.4 gate measures retrieval with model-generated query variants (mode `variants`).
+Note, Target message in the top 5 results: Baseline without a model; the S03.4 gate measures retrieval with model-generated query variants (mode `variants`), so 85 % is a pre-screen comparison here, not a gate.
 
 ### top-5 hit by intent
 

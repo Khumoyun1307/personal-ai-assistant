@@ -22,9 +22,11 @@ Two kinds of result live here:
   at its budget cap is marked incomplete and cannot pass any gate.
 
 Every metric is recorded over all items (pre-screen) and over owner-confirmed items
-(gate). The gate reads `not evaluable` until the owner has confirmed items (and
-ruled on pending judge flags), so a report is evidence for the owner's decision, not
-the decision. The model-choice decision itself is written down by the owner after
+(gate). The gate reads `not evaluable` until the owner has confirmed **every item of
+the set** (and ruled on pending judge flags); a `--limit` trial (file name ends
+`-trial`) or a run stopped at its cap can never pass; each report shows "k of N
+confirmed" beside the gate. A report is evidence for the owner's decision, not the
+decision. The model-choice decision itself is written down by the owner after
 comparing runs.
 
 ## Naming

@@ -9,8 +9,11 @@
   "live": false,
   "effort": null,
   "complete": true,
+  "trial": false,
+  "stopped": false,
   "items": 38,
   "items_planned": 38,
+  "items_total": 38,
   "dataset_files": {
     "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
     "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
@@ -38,7 +41,10 @@
         "ratio": null
       },
       "prescreen_status": "fail",
-      "gate_status": "not evaluable",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 38,
       "failed_items": [
         "r03",
         "r04",
@@ -49,7 +55,7 @@
         "r33"
       ],
       "pending": 0,
-      "note": "Baseline without a model; the S03.4 gate measures retrieval with model-generated query variants (mode `variants`)."
+      "note": "Baseline without a model; the S03.4 gate measures retrieval with model-generated query variants (mode `variants`), so 85 % is a pre-screen comparison here, not a gate."
     }
   ],
   "breakdowns": {
