@@ -239,6 +239,18 @@ async def sweep_message_content(
     now = clock.now()
     cutoff = now - MESSAGE_CONTENT_RETENTION
     async with transaction(session_factory) as uow:
+        due = (func.coalesce(Message.edited_at, Message.sent_at) < cutoff) & (
+            (Message.text.is_not(None)) | (Message.media.is_not(None))
+        )
+        # §9.4 lock order: the conversations first, then their messages —
+        # as ingestion and deletion do — so the sweep cannot deadlock with
+        # them on the same chat.
+        await uow.session.execute(
+            select(Conversation.id)
+            .where(Conversation.id.in_(select(Message.conversation_id).where(due)))
+            .order_by(Conversation.id)
+            .with_for_update()
+        )
         purged = await uow.session.execute(
             update(Message)
             .where(func.coalesce(Message.edited_at, Message.sent_at) < cutoff)

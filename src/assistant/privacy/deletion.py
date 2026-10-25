@@ -61,12 +61,17 @@ async def delete_managed_data(
     """Delete everything stored from the owner's managed chats, in one
     transaction (the caller's). Conversations and coverage gaps stay: they
     hold no content and keep the coverage record honest."""
-    account = await session.get(Account, account_id, with_for_update=True)
+    # FOR NO KEY UPDATE, not FOR UPDATE: ingestion holds a conversation and
+    # then inserts a message, which takes a key share on the account through
+    # the foreign key; FOR UPDATE would block that while this waits for the
+    # conversation — a deadlock. Nothing here changes the account's key.
+    account = await session.get(Account, account_id, with_for_update={"key_share": True})
     if account is None:
         raise ValueError("unknown account")
     # §9.4 lock order: account, then its conversations. A summary being
-    # stored meanwhile waits on these locks and then finds its source gone
-    # (memory/summaries.py), so nothing deleted here is written back.
+    # stored meanwhile waits on the conversation lock and then finds its
+    # source gone (memory/summaries.py), so nothing deleted here is written
+    # back.
     await session.execute(
         select(Conversation.id)
         .where(Conversation.account_id == account_id)
