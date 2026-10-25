@@ -70,8 +70,12 @@ def resolve_model(route: str, override: str | None) -> ModelChoice:
             raise
         return ModelChoice(override, None)
     model = override or settings.model_routes.model_for(route)
-    effort = settings.llm_owner_request_effort if route == "owner_request" else None
-    return ModelChoice(model, effort)
+    # The effort the product sends on that route, so the evaluation measures what runs.
+    efforts = {
+        "owner_request": settings.llm_owner_request_effort,
+        "summarize": settings.llm_summarize_effort,
+    }
+    return ModelChoice(model, efforts.get(route))
 
 
 def load_live_config(route: str, override: str | None) -> LiveConfig:

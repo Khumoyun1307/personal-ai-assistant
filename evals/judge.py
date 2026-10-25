@@ -245,7 +245,34 @@ def _judge_input(conversation: Conversation, output: SummaryOutput) -> str:
     )
 
 
-def fabrication_metric(results: Sequence[ScreenResult], ledger: ReviewLedger) -> MetricResult:
+def screen_input_chars(conversation: Conversation, summary_chars: int) -> int:
+    """Characters of the fabrication judge's request for a summary of
+    `summary_chars` characters (rubric and input), for the pre-run estimate."""
+    empty = SummaryOutput(conversation.id, "", "en")
+    return (
+        len(load_asset("rubrics", RUBRIC_ID).text)
+        + len(_judge_input(conversation, empty))
+        + (summary_chars)
+    )
+
+
+def loops_input_chars(conversation: Conversation, summary_chars: int) -> int | None:
+    """The same for the open-loop judge; None when the conversation has no
+    open loop without `values`, so the judge is never called for it."""
+    pending = [loop for loop in open_loops(conversation) if not loop.values]
+    if not pending:
+        return None
+    lines = "\n".join(f"- {loop.id}: {_describe(loop)}" for loop in pending)
+    return (
+        len(load_asset("rubrics", LOOPS_RUBRIC_ID).text)
+        + len("Open items:\n" + lines + "\n\nSummary:\n")
+        + summary_chars
+    )
+
+
+def fabrication_metric(
+    results: Sequence[ScreenResult], ledger: ReviewLedger, set_size: int | None = None
+) -> MetricResult:
     """Zero fabricated facts, over the owner's verdicts.
 
     Pre-screen: every flag not dismissed, over the screened conversations.
@@ -295,5 +322,5 @@ def fabrication_metric(results: Sequence[ScreenResult], ledger: ReviewLedger) ->
         ),
         pending=pending + len(unscreened),
         note="; ".join(notes),
-        set_size=len(results),
+        set_size=len(results) if set_size is None else set_size,
     )

@@ -2,14 +2,14 @@
 
     python -m evals verify
     python -m evals run retrieval [--mode deterministic|variants|both] [--live] ...
-    python -m evals run summary            # placeholder until S03.2 merges
+    python -m evals run summary [--owner-language uz-Latn|uz-Cyrl|ru|en] [--live] ...
     python -m evals compare docs/evals/<run>.json [...]
 
-Safe by default: `run retrieval` is the deterministic, model-free baseline.
-Any mode that calls a model refuses without `--live`, refuses when the
-worst-case cost exceeds the cap, and stops mid-run before overspending. See
-`evals/README.md` "Running". Exit codes: 0 done, 2 refused or misconfigured,
-3 target not available yet.
+Safe by default: `run retrieval` is the deterministic, model-free baseline, and
+`run summary` (which always calls a model) refuses without `--live`. Any run
+that calls a model refuses without `--live`, refuses when the worst-case cost
+exceeds the cap, and stops mid-run before overspending. See `evals/README.md`
+"Running". Exit codes: 0 done, 2 refused or misconfigured, 4 stopped early.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import get_args
 
 from assistant.core.clock import SystemClock
 from evals.budget import (
@@ -35,18 +36,26 @@ from evals.budget import (
 from evals.corpus import eval_database_url, isolated_corpus
 from evals.errors import EvalsError
 from evals.live import ModelChoice, build_client, load_live_config, resolve_model
+from evals.metrics import OwnerLanguage
 from evals.report import RunMeta, fmt_measure, render_comparison
 from evals.retrieval import RetrievalMode, RetrievalTarget
 from evals.review import ReviewLedger
-from evals.runner import RefusedError, check_estimate, ensure_frozen, require_live, run_target
+from evals.runner import (
+    RefusedError,
+    RunOutcome,
+    check_estimate,
+    ensure_frozen,
+    require_live,
+    run_target,
+)
 from evals.schema import load_e1, load_queries
-from evals.targets import RunContext, SummaryTarget, TargetNotAvailableError, TargetResult
+from evals.summary import SummaryTarget, isolated_summary
+from evals.targets import EvalTarget, RunContext, TargetResult
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_DIR = REPO / "docs" / "evals"
 REVIEWS_DIR = Path(__file__).resolve().parent / "reviews"
 EXIT_REFUSED = 2
-EXIT_NOT_AVAILABLE = 3
 #: A run that stopped before its planned items (the budget cap): its report was
 #: written, but the run failed.
 EXIT_INCOMPLETE = 4
@@ -79,6 +88,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[m.value for m in RetrievalMode] + ["both"],
         default=RetrievalMode.DETERMINISTIC.value,
         help="retrieval only: deterministic (no model, default), variants (a model), both",
+    )
+    run.add_argument(
+        "--owner-language",
+        choices=get_args(OwnerLanguage),
+        default="uz-Latn",
+        help="summary only: the owner's language and script the summaries are written in",
     )
     run.add_argument(
         "--live",
@@ -157,10 +172,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "compare":
             return _compare(args.reports)
         if args.target == "summary":
-            return _summary(args)
+            return asyncio.run(_summary(args))
         return asyncio.run(_retrieval(args))
-    except TargetNotAvailableError as error:
-        return _refuse(str(error), EXIT_NOT_AVAILABLE)
     except EvalsError as error:  # the tool's own, explainable failures; a bug keeps its traceback
         return _refuse(str(error))
 
@@ -179,18 +192,79 @@ def _compare(paths: Sequence[Path]) -> int:
     return 0
 
 
-def _summary(args: argparse.Namespace) -> int:
-    ensure_frozen()
-    SummaryTarget().plan(RunContext(limit=args.limit))  # raises: not available yet
-    return 0  # pragma: no cover
-
-
-async def _retrieval(args: argparse.Namespace) -> int:
+def _require_recorded(args: argparse.Namespace) -> None:
     if args.live and args.no_write:
         raise RefusedError(
             "refusing --live with --no-write: a model run must leave its report (and, if it "
             "fails, its spend ledger) so money spent is never unrecorded"
         )
+
+
+def _print_outcome(
+    label: str, outcome: RunOutcome, *, ledger: CallLedger, cap: Decimal, spent: bool
+) -> None:
+    result = outcome.result
+    suffix = " (TRIAL: a --limit run is never a gate)" if result.trial else ""
+    _say(f"{label}: {result.items} items{suffix}")
+    for metric in result.metrics:
+        confirmed, of = metric.confirmation()
+        _say(
+            f"  {metric.label}: {fmt_measure(metric.all_items, unit=metric.unit)} "
+            f"pre-screen; gate {metric.gate_status().value} "
+            f"({confirmed} of {of} confirmed)"
+        )
+    for note in result.notes:
+        _say(f"  note: {note}")
+    if outcome.markdown is not None:
+        _say(f"  report: {outcome.markdown}")
+    if spent:
+        _say(f"  spent ${ledger.spent:.4f} of ${cap}")
+
+
+async def _summary(args: argparse.Namespace) -> int:
+    """The summary target: the real S03.2 catch-up path on the E1 set, in a
+    throwaway database. It always calls a model, so every guard applies."""
+    _require_recorded(args)
+    digests = ensure_frozen()
+    cap, prices = _cap(args.budget_usd), _prices(args.price)
+    reviews = _reviews(args.reviews, "e1")
+    target = SummaryTarget(load_e1(), owner_language=args.owner_language)
+    (choice,) = _guard([target], [target.label], args, cap, prices, reviews)
+    if args.estimate_only:
+        return 0
+    assert choice is not None  # the summary target always uses a model
+    live_client = build_client(load_live_config(target.route, args.model))
+    run_date = args.date or SystemClock().now().date()
+    out_dir = None if args.no_write else args.out_dir
+    ledger = CallLedger()
+    llm = BudgetedLLMClient(live_client, cap_usd=cap, overrides=prices, ledger=ledger)
+    context = RunContext(
+        llm=llm, model=choice.model, effort=choice.effort, reviews=reviews, limit=args.limit
+    )
+    meta = RunMeta(
+        run_date=run_date,
+        set_name=target.name,
+        mode=target.label,
+        model=choice.model,
+        live=True,
+        effort=choice.effort,
+        dataset_files=digests,
+        cap_usd=cap,
+        reviews=reviews,
+    )
+    async with isolated_summary(eval_database_url(), target) as bound:
+        try:
+            outcome = await run_target(bound, context, meta=meta, ledger=ledger, out_dir=out_dir)
+        except BaseException:
+            if ledger.entries:
+                _refuse(f"the run failed after spending ${ledger.spent:.4f} of ${cap}")
+            raise
+    _print_outcome(f"summary ({target.label})", outcome, ledger=ledger, cap=cap, spent=True)
+    return exit_code(outcome.result)
+
+
+async def _retrieval(args: argparse.Namespace) -> int:
+    _require_recorded(args)
     digests = ensure_frozen()
     cap, prices = _cap(args.budget_usd), _prices(args.price)
     reviews = _reviews(args.reviews, "retrieval")
@@ -201,7 +275,7 @@ async def _retrieval(args: argparse.Namespace) -> int:
     )
     queries = load_queries()
     targets = [RetrievalTarget(queries, mode=mode) for mode in modes]
-    choices = _guard(targets, args, cap, prices, reviews)
+    choices = _guard(targets, [t.mode.value for t in targets], args, cap, prices, reviews)
     if args.estimate_only:
         return 0
     live_client = None
@@ -243,28 +317,20 @@ async def _retrieval(args: argparse.Namespace) -> int:
                 if ledger.entries:
                     _refuse(f"the run failed after spending ${ledger.spent:.4f} of ${cap}")
                 raise
-            result = outcome.result
-            suffix = " (TRIAL: a --limit run is never a gate)" if result.trial else ""
-            _say(f"retrieval ({target.mode.value}): {result.items} items{suffix}")
-            for metric in result.metrics:
-                confirmed, of = metric.confirmation()
-                _say(
-                    f"  {metric.label}: {fmt_measure(metric.all_items, unit=metric.unit)} "
-                    f"pre-screen; gate {metric.gate_status().value} "
-                    f"({confirmed} of {of} confirmed)"
-                )
-            for note in result.notes:
-                _say(f"  note: {note}")
-            if outcome.markdown is not None:
-                _say(f"  report: {outcome.markdown}")
-            if choice is not None:
-                _say(f"  spent ${ledger.spent:.4f} of ${cap}")
-            code = max(code, exit_code(result))
+            _print_outcome(
+                f"retrieval ({target.mode.value})",
+                outcome,
+                ledger=ledger,
+                cap=cap,
+                spent=choice is not None,
+            )
+            code = max(code, exit_code(outcome.result))
     return code
 
 
 def _guard(
-    targets: Sequence[RetrievalTarget],
+    targets: Sequence[EvalTarget],
+    labels: Sequence[str],
     args: argparse.Namespace,
     cap: Decimal,
     prices: Prices,
@@ -272,7 +338,7 @@ def _guard(
 ) -> list[ModelChoice | None]:
     """Everything that can refuse a run, before a database or a model is touched."""
     choices: list[ModelChoice | None] = []
-    for target in targets:
+    for target, label in zip(targets, labels, strict=True):
         if not target.uses_model:
             choices.append(None)
             continue
@@ -282,7 +348,7 @@ def _guard(
         context = RunContext(model=choice.model, reviews=reviews, limit=args.limit)
         result = check_estimate(target, context, model=choice.model, cap_usd=cap, prices=prices)
         _say(
-            f"{target.name} ({target.mode.value}): model {choice.model}, {result.calls} calls, "
+            f"{target.name} ({label}): model {choice.model}, {result.calls} calls, "
             f"worst case ${result.upper_bound_usd:.4f}, cap ${cap}"
         )
         choices.append(choice)

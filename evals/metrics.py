@@ -261,9 +261,18 @@ def check_caveats(conversation: Conversation, output: SummaryOutput) -> CaveatCh
     )
 
 
-def caveat_metrics(checks: Sequence[CaveatCheck], ledger: ReviewLedger) -> list[MetricResult]:
+def caveat_metrics(
+    checks: Sequence[CaveatCheck],
+    ledger: ReviewLedger,
+    *,
+    presence_set_size: int | None = None,
+    spurious_set_size: int | None = None,
+) -> list[MetricResult]:
     """Presence (every conversation that has expected caveats carries them all)
-    and spurious caveats (none, e.g. for a delayed gap that lost nothing)."""
+    and spurious caveats (none, e.g. for a delayed gap that lost nothing).
+
+    The set sizes are the whole set's (a `--limit` or stopped run measures
+    fewer, and its gate must not read as complete); default: the items measured."""
     with_caveats = {c.conversation_id: not c.missing for c in checks if c.expected}
     presence = ratio_metric(
         key="caveat_presence",
@@ -271,6 +280,7 @@ def caveat_metrics(checks: Sequence[CaveatCheck], ledger: ReviewLedger) -> list[
         outcomes=with_caveats,
         threshold=CAVEAT_THRESHOLD,
         ledger=ledger,
+        set_size=presence_set_size,
     )
     spurious = count_metric(
         key="spurious_caveats",
@@ -279,6 +289,7 @@ def caveat_metrics(checks: Sequence[CaveatCheck], ledger: ReviewLedger) -> list[
         offending=[c.conversation_id for c in checks if c.spurious],
         threshold=0,
         ledger=ledger,
+        set_size=spurious_set_size,
     )
     return [presence, spurious]
 
@@ -495,11 +506,14 @@ def check_language(text: str, expected: OwnerLanguage) -> LanguageVerdict:
     return LanguageVerdict(detected == language and share >= SCRIPT_SHARE_MIN, detected, share)
 
 
-def language_metric(verdicts: Mapping[str, LanguageVerdict], ledger: ReviewLedger) -> MetricResult:
+def language_metric(
+    verdicts: Mapping[str, LanguageVerdict], ledger: ReviewLedger, set_size: int | None = None
+) -> MetricResult:
     return ratio_metric(
         key="owner_language",
         label="Owner-facing language and script correct",
         outcomes={item: verdict.ok for item, verdict in verdicts.items()},
         threshold=LANGUAGE_THRESHOLD,
         ledger=ledger,
+        set_size=set_size,
     )
