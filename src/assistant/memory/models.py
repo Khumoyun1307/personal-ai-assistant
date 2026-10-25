@@ -45,6 +45,7 @@ class ConversationSummary(Base):
             "OR (kind = 'period' AND period_start IS NOT NULL)",
             name="period_bounds",
         ),
+        CheckConstraint("period_end IS NULL OR period_end > period_start", name="period_order"),
         Index(
             "ix_conversation_summaries_account_id_conversation_id",
             "account_id",

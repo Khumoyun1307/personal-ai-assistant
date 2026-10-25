@@ -307,6 +307,8 @@ def test_0011_conversation_summaries_reverse(scratch_url: str) -> None:
             conn.execute(insert, (account_id, conversation_id, "rolling", start, None))
         with pytest.raises(psycopg.errors.CheckViolation):
             conn.execute(insert, (account_id, conversation_id, "period", None, None))
+        with pytest.raises(psycopg.errors.CheckViolation):  # review nit: end after start
+            conn.execute(insert, (account_id, conversation_id, "period", start, start))
         conn.execute("DELETE FROM app.messages WHERE conversation_id = %s", (conversation_id,))
         conn.execute("DELETE FROM app.conversations WHERE id = %s", (conversation_id,))
         left = conn.execute("SELECT count(*) FROM app.conversation_summaries").fetchone()

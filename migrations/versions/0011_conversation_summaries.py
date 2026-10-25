@@ -80,6 +80,10 @@ def upgrade() -> None:
             "OR (kind = 'period' AND period_start IS NOT NULL)",
             name="ck_conversation_summaries_period_bounds",
         ),
+        sa.CheckConstraint(
+            "period_end IS NULL OR period_end > period_start",
+            name="ck_conversation_summaries_period_order",
+        ),
         sa.PrimaryKeyConstraint("id", name="pk_conversation_summaries"),
         schema=APP,
     )
