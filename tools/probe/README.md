@@ -46,6 +46,10 @@ just probe delete <connection_id> <msg_id> [<msg_id> ...]
 just probe getfile <file_id> --download
 just probe sendphoto <connection_id> <chat_id> <file_id>
 just probe burst <connection_id> <chat_id> "text" --count 5
+
+# Production bot (Alviro), owner go-ahead per run; token read from var/prod.env.
+# Only `me` and `getfile` are accepted: never polling, never sending (D40).
+just probe-prod getfile --latest photo --download
 ```
 
 Every API call — success *or* failure — is appended to the same JSONL file with

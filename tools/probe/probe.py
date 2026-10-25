@@ -275,6 +275,44 @@ def log_result(label: str, value: Any) -> None:
         print(f"{label}: {console_summary(value)}")
 
 
+#: Commands that may run with the production bot's token from a laptop (D40):
+#: one-off calls that never poll. `listen` would steal production updates and
+#: advance the server's offset; every send acts on real chats.
+PROD_TOKEN_COMMANDS = frozenset({"me", "getfile"})
+PROD_ENV_PATH = Path("var/prod.env")
+
+
+def read_env_value(path: Path, key: str) -> str:
+    """The last `key=` value in a dotenv file, unquoted; parsed, never printed."""
+    value = ""
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if line.startswith("#") or not line.startswith(f"{key}="):
+            continue
+        value = line[len(key) + 1 :].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+    return value
+
+
+def use_prod_token(command: str, path: Path = PROD_ENV_PATH) -> None:
+    """Point this process at the production token, for non-polling commands only."""
+    if command not in PROD_TOKEN_COMMANDS:
+        allowed = ", ".join(sorted(PROD_TOKEN_COMMANDS))
+        print(f"--prod-token allows only: {allowed} (never polling or sending).", file=sys.stderr)
+        raise SystemExit(2)
+    if not path.is_file():
+        print(f"{path} is missing; --prod-token needs the production settings.", file=sys.stderr)
+        raise SystemExit(2)
+    token = read_env_value(path, "BOT_TOKEN")
+    if not token:
+        print(f"BOT_TOKEN is not set in {path}.", file=sys.stderr)
+        raise SystemExit(2)
+    os.environ["BOT_TOKEN"] = token
+
+
 def make_bot() -> Bot:
     token = os.environ.get("BOT_TOKEN")
     if not token:
@@ -607,6 +645,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print full payloads to the console (contains real chat content)",
     )
+    parser.add_argument(
+        "--prod-token",
+        action="store_true",
+        help="use BOT_TOKEN from var/prod.env; only `me` and `getfile` (owner go-ahead per run)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     summary = sub.add_parser("summary", help="what a dump contains, content-free")
@@ -695,6 +738,8 @@ def main() -> int:
     if args.command == "summary":  # local file read; no event loop needed
         cmd_summary(args)
         return 0
+    if args.prod_token:
+        use_prod_token(args.command)
     asyncio.run(COMMANDS[args.command](args))
     return 0
 

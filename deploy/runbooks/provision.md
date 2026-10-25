@@ -144,7 +144,8 @@ adds it with `gh repo deploy-key add` (read-only is gh's default; "already
 in use" on a re-run is fine), and clones `main` into `/opt/assistant`.
 Any `ERROR:` line → stop and report it.
 
-**B5. Server `.env`.** `just prod-env-push <ip> <owner-telegram-id>` →
+**B5. Server `.env`.** `just prod-env-push <ip>` (the owner id comes from
+`OWNER_TELEGRAM_IDS` in `var/prod.env`, written by `just dev-bot-switch`) →
 `valid: …` (names only) and `server: /opt/assistant/.env 600 deploy`.
 `invalid: <NAME> …` → hand back to the owner to fix that value in
 `var/prod.env` or `var/cloud/b2.env`. A note about an empty

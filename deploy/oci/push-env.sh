@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Assemble the server .env and stream it to /opt/assistant/.env (mode 600).
 #
-#   push-env.sh <ip> --owner-ids <id[,id]>      validate, then push over SSH
-#   push-env.sh --check --owner-ids <id[,id]>   validate only (no SSH)
+#   push-env.sh <ip> [--owner-ids <id[,id]>]      validate, then push over SSH
+#   push-env.sh --check [--owner-ids <id[,id]>]   validate only (no SSH)
 #
 # Sources (git-ignored, never printed):
 #   var/prod.env           BOT_TOKEN, OPENAI_API_KEY, HEARTBEAT_URL (owner);
+#                          OWNER_TELEGRAM_IDS (written by `just dev-bot-switch`;
+#                          --owner-ids overrides it);
 #                          optional: PRIVACY_POLICY_URL, LLM_MONTHLY_BUDGET_USD,
 #                          FEATURE_FLAGS, LLM_DEFAULT_MODEL,
 #                          LLM_OWNER_REQUEST_EFFORT, LOG_LEVEL, BACKUP_HOUR_UTC
@@ -45,7 +47,6 @@ while [ $# -gt 0 ]; do
     *) ip="$1"; shift ;;
   esac
 done
-[[ "$owner_ids" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "--owner-ids <telegram user id[,id]> is required (the main account)"
 if [ "$check_only" -eq 0 ] && [ -z "$write_to" ]; then
   require_ip "$ip"
 fi
@@ -79,6 +80,11 @@ read_env() {
 [ -r "$PROD_ENV" ] || die "var/prod.env is missing (owner step A6 in runbooks/provision.md)"
 [ -r "$B2_ENV" ] || die "var/cloud/b2.env is missing (owner step A4)"
 [ -r "$AGE_IDENTITY" ] || die "var/cloud/age-identity.txt is missing (run: just prod-age-key)"
+if [ -z "$owner_ids" ]; then
+  owner_ids="$(read_env "$PROD_ENV" OWNER_TELEGRAM_IDS)"
+fi
+[[ "$owner_ids" =~ ^[0-9]+(,[0-9]+)*$ ]] ||
+  die "OWNER_TELEGRAM_IDS (the main account) is missing: run just dev-bot-switch, or pass --owner-ids"
 
 # --- generated values ------------------------------------------------------------
 if [ -z "$(read_env "$GENERATED_ENV" POSTGRES_PASSWORD)" ]; then
