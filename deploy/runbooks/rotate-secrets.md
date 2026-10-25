@@ -9,8 +9,8 @@ hand and never echo a secret into a shell. Rotation is: obtain the new value,
 put it into the source file, then
 
 ```powershell
-just prod-env-push <ip> <owner-telegram-id>   # validates names, streams .env (600)
-just deploy <ip>                              # containers restart with it
+just prod-env-push <ip>   # validates names, streams .env (600); owner ids from var/prod.env
+just deploy <ip>          # containers restart with it
 just prod-status <ip>
 ```
 

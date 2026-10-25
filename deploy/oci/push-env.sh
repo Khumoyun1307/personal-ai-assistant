@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Assemble the server .env and stream it to /opt/assistant/.env (mode 600).
 #
-#   push-env.sh <ip> --owner-ids <id[,id]>      validate, then push over SSH
-#   push-env.sh --check --owner-ids <id[,id]>   validate only (no SSH)
+#   push-env.sh <ip> [--owner-ids <id[,id]>]      validate, then push over SSH
+#   push-env.sh --check [--owner-ids <id[,id]>]   validate only (no SSH)
 #
 # Sources (git-ignored, never printed):
 #   var/prod.env           BOT_TOKEN, OPENAI_API_KEY, HEARTBEAT_URL (owner);
+#                          OWNER_TELEGRAM_IDS (written by `just dev-bot-switch`;
+#                          --owner-ids overrides it);
 #                          optional: PRIVACY_POLICY_URL, LLM_MONTHLY_BUDGET_USD,
 #                          FEATURE_FLAGS, LLM_DEFAULT_MODEL,
 #                          LLM_OWNER_REQUEST_EFFORT, LOG_LEVEL, BACKUP_HOUR_UTC
@@ -37,7 +39,7 @@ check_only=0
 write_to=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --owner-ids) owner_ids="${2:-}"; shift 2 ;;
+    --owner-ids) [ $# -ge 2 ] || die "--owner-ids needs a value"; owner_ids="$2"; shift 2 ;;
     --check) check_only=1; shift ;;
     # Test hook: write the result to a file under var/cloud instead of SSH.
     --write-to) write_to="${2:-}"; shift 2 ;;
@@ -45,7 +47,6 @@ while [ $# -gt 0 ]; do
     *) ip="$1"; shift ;;
   esac
 done
-[[ "$owner_ids" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "--owner-ids <telegram user id[,id]> is required (the main account)"
 if [ "$check_only" -eq 0 ] && [ -z "$write_to" ]; then
   require_ip "$ip"
 fi
@@ -79,6 +80,11 @@ read_env() {
 [ -r "$PROD_ENV" ] || die "var/prod.env is missing (owner step A6 in runbooks/provision.md)"
 [ -r "$B2_ENV" ] || die "var/cloud/b2.env is missing (owner step A4)"
 [ -r "$AGE_IDENTITY" ] || die "var/cloud/age-identity.txt is missing (run: just prod-age-key)"
+if [ -z "$owner_ids" ]; then
+  owner_ids="$(read_env "$PROD_ENV" OWNER_TELEGRAM_IDS)"
+fi
+[[ "$owner_ids" =~ ^[0-9]+(,[0-9]+)*$ ]] ||
+  die "OWNER_TELEGRAM_IDS (the main account) is missing: run just dev-bot-switch, or pass --owner-ids"
 
 # --- generated values ------------------------------------------------------------
 if [ -z "$(read_env "$GENERATED_ENV" POSTGRES_PASSWORD)" ]; then
@@ -102,7 +108,9 @@ v[OPENAI_API_KEY]="$(read_env "$PROD_ENV" OPENAI_API_KEY)"
 v[HEARTBEAT_URL]="$(read_env "$PROD_ENV" HEARTBEAT_URL)"
 v[LLM_DEFAULT_MODEL]=gpt-6-luna
 v[BACKUP_HOUR_UTC]=02
-v[PRIVACY_POLICY_URL]=""
+# The published policy page (public; docs/legal/privacy-policy.md, edited in
+# place for each version). var/prod.env may override it.
+v[PRIVACY_POLICY_URL]="https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19"
 for key in "${OPTIONAL_KEYS[@]}"; do
   value="$(read_env "$PROD_ENV" "$key")"
   if [ -n "$value" ]; then v[$key]="$value"; fi
@@ -144,9 +152,7 @@ need AGE_RECIPIENT '^age1[0-9a-z]{58}$' "an age public key"
 need RCLONE_CONFIG_OFFSITE_ACCOUNT '^[0-9A-Za-z]{12,}$' "a B2 application key id"
 need RCLONE_CONFIG_OFFSITE_KEY '^[0-9A-Za-z/+]{20,}$' "a B2 application key"
 need BACKUP_REMOTE '^offsite:[A-Za-z0-9-]{6,63}$' "offsite:<B2 bucket name>"
-if [ -z "${v[PRIVACY_POLICY_URL]}" ]; then
-  log "note: PRIVACY_POLICY_URL is empty (set it in var/prod.env; /privacy needs it)"
-fi
+need PRIVACY_POLICY_URL '^https://[^[:space:]]+$' "an https URL"
 if [ "${#problems[@]}" -gt 0 ]; then
   for p in "${problems[@]}"; do log "invalid: $p"; done
   die "server .env not pushed"

@@ -44,6 +44,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramAPIError
@@ -109,7 +110,16 @@ def update_type_of(payload: dict[str, Any]) -> str:
     return "unknown"
 
 
+def current_bot_id() -> str | None:
+    """The bot id part of BOT_TOKEN (public, unlike the token's secret half)."""
+    token = os.environ.get("BOT_TOKEN", "")
+    return token.split(":", 1)[0] if ":" in token else None
+
+
 def write_record(record: dict[str, Any]) -> None:
+    # File ids are valid only for the bot that received them, and since the
+    # two-bot switch (D40) both bots write here.
+    record.setdefault("bot_id", current_bot_id())
     DUMP_DIR.mkdir(parents=True, exist_ok=True)
     path = DUMP_DIR / f"updates-{datetime.now(UTC):%Y%m%d}.jsonl"
     with path.open("a", encoding="utf-8") as handle:
@@ -275,6 +285,48 @@ def log_result(label: str, value: Any) -> None:
         print(f"{label}: {console_summary(value)}")
 
 
+#: Commands that may run with the production bot's token from a laptop (D40):
+#: one-off calls that never poll. `listen` would steal production updates and
+#: advance the server's offset; every send acts on real chats.
+PROD_TOKEN_COMMANDS = frozenset({"me", "getfile"})
+PROD_ENV_PATH = Path("var/prod.env")
+#: Set by --prod-token: the process now speaks for the production bot.
+PROD_TOKEN_IN_USE = False
+
+
+def read_env_value(path: Path, key: str) -> str:
+    """The last `key=` value in a dotenv file, unquoted; parsed, never printed."""
+    value = ""
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if line.startswith("#") or not line.startswith(f"{key}="):
+            continue
+        value = line[len(key) + 1 :].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+    return value
+
+
+def use_prod_token(command: str, path: Path = PROD_ENV_PATH) -> None:
+    """Point this process at the production token, for non-polling commands only."""
+    if command not in PROD_TOKEN_COMMANDS:
+        allowed = ", ".join(sorted(PROD_TOKEN_COMMANDS))
+        print(f"--prod-token allows only: {allowed} (never polling or sending).", file=sys.stderr)
+        raise SystemExit(2)
+    if not path.is_file():
+        print(f"{path} is missing; --prod-token needs the production settings.", file=sys.stderr)
+        raise SystemExit(2)
+    token = read_env_value(path, "BOT_TOKEN")
+    if not token:
+        print(f"BOT_TOKEN is not set in {path}.", file=sys.stderr)
+        raise SystemExit(2)
+    global PROD_TOKEN_IN_USE
+    os.environ["BOT_TOKEN"] = token
+    PROD_TOKEN_IN_USE = True
+
+
 def make_bot() -> Bot:
     token = os.environ.get("BOT_TOKEN")
     if not token:
@@ -297,6 +349,13 @@ async def with_bot(coro_name: str, fn: Any, *args: Any, **kwargs: Any) -> None:
                 "message": str(error),
                 "retry_after": getattr(error, "retry_after", None),
             },
+        )
+    except (aiohttp.ClientError, TimeoutError, OSError) as error:
+        # A failed file download raises aiohttp's error, whose text holds the
+        # file URL with the token in it: class and status only (AGENTS §9).
+        log_result(
+            coro_name,
+            {"error_class": type(error).__name__, "status": getattr(error, "status", None)},
         )
     finally:
         await bot.session.close()
@@ -459,14 +518,26 @@ async def cmd_getfile(args: argparse.Namespace) -> None:
     await with_bot(f"getFile({args.latest or 'by id'})", run)
 
 
-def latest_file_id(content_kind: str) -> str | None:
-    """The file_id of the most recent `content_kind` message in any dump."""
+def latest_file_id(content_kind: str, accept_legacy: bool | None = None) -> str | None:
+    """The file_id of the most recent `content_kind` message this bot received.
+
+    Records written before the two-bot switch carry no `bot_id`; they all came
+    from Alviro (M00), so they count only with `--prod-token`.
+    """
+    bot_id = current_bot_id()
+    if accept_legacy is None:
+        accept_legacy = PROD_TOKEN_IN_USE
     found: str | None = None
     for path in sorted(DUMP_DIR.glob("updates-*.jsonl")):
         for line in path.read_text(encoding="utf-8").splitlines():
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if "bot_id" in record:
+                if record["bot_id"] != bot_id:
+                    continue
+            elif not accept_legacy:
                 continue
             payload = record.get("payload") or {}
             body = payload.get(str(record.get("update_type"))) or {}
@@ -607,6 +678,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print full payloads to the console (contains real chat content)",
     )
+    parser.add_argument(
+        "--prod-token",
+        action="store_true",
+        help="use BOT_TOKEN from var/prod.env; only `me` and `getfile` (owner go-ahead per run)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     summary = sub.add_parser("summary", help="what a dump contains, content-free")
@@ -695,6 +771,8 @@ def main() -> int:
     if args.command == "summary":  # local file read; no event loop needed
         cmd_summary(args)
         return 0
+    if args.prod_token:
+        use_prod_token(args.command)
     asyncio.run(COMMANDS[args.command](args))
     return 0
 

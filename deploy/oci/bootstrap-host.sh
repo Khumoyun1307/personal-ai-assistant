@@ -133,8 +133,10 @@ clone() {
   remote "$ip" "PROD_DIR=$PROD_DIR REPO_SLUG=$REPO_SLUG bash -s" <<'REMOTE'
 set -euo pipefail
 # `ssh -T git@github.com` exits 1 even when the key is accepted; the
-# greeting says whether it was.
-greeting="$(ssh -o BatchMode=yes -T git@github.com 2>&1 || true)"
+# greeting says whether it was. This script arrives on stdin (`bash -s`):
+# ssh and git must not read it, or they swallow the rest of the script and
+# the step "succeeds" without running (seen 2026-10-25), hence </dev/null.
+greeting="$(ssh -o BatchMode=yes -T git@github.com 2>&1 </dev/null || true)"
 case "$greeting" in
   *"successfully authenticated"*) echo "GitHub accepts the server deploy key" ;;
   *)
@@ -144,10 +146,10 @@ case "$greeting" in
 esac
 sudo install -d -o deploy -g deploy "$PROD_DIR"
 if [ -d "$PROD_DIR/.git" ]; then
-  git -C "$PROD_DIR" fetch --quiet origin main
-  git -C "$PROD_DIR" merge --ff-only --quiet origin/main
+  git -C "$PROD_DIR" fetch --quiet origin main </dev/null
+  git -C "$PROD_DIR" merge --ff-only --quiet origin/main </dev/null
 else
-  git clone --quiet --branch main "git@github.com:$REPO_SLUG.git" "$PROD_DIR"
+  git clone --quiet --branch main "git@github.com:$REPO_SLUG.git" "$PROD_DIR" </dev/null
 fi
 echo "checkout: $PROD_DIR at $(git -C "$PROD_DIR" log -1 --format='%h %cs') on $(git -C "$PROD_DIR" rev-parse --abbrev-ref HEAD)"
 docker info --format 'docker ok: {{.ServerVersion}} {{.Architecture}}, data root {{.DockerRootDir}}'

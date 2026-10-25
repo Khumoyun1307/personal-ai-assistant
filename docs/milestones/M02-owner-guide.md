@@ -111,8 +111,10 @@ In `var\prod.env`:
 
 - `BOT_TOKEN=` — @BotFather → `/mybots` → **Alviro** → **API Token** →
   **Revoke current token**, then copy the **new** token. (The old one has
-  been sitting on the laptop since M00; a fresh token means only the server
-  holds a working one. The laptop's old copy simply stops working.)
+  been sitting on the laptop since M00; a fresh token means the laptop's old
+  copy simply stops working. The new one stays in this file, which only the
+  push-to-server script and the one-off `just probe-prod` check read; only
+  the server ever polls with it.)
 - `OPENAI_API_KEY=` — OpenAI console → **API keys** → **Create new secret
   key**, name it `alviro-prod` (a separate key from the laptop one, so either
   can be revoked alone).

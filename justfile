@@ -74,6 +74,18 @@ run:
 probe *args:
     {{ run }} python tools/probe/probe.py {{ args }}
 
+# One-off non-polling probe call (`me`, `getfile`) with Alviro's token from var/prod.env; needs the owner's go-ahead per run (D40, AGENTS §9).
+probe-prod *args:
+    {{ run }} python tools/probe/probe.py --prod-token {{ args }}
+
+# Step D (D40): move the main account's id into var/prod.env, put the dev bot into .env, then recreate the dev database. Every run drops the dev database; the venv and uv cache are kept.
+dev-bot-switch:
+    {{ compose }} run --rm --no-deps app python tools/dev/switch_dev_bot.py
+    {{ compose }} down
+    docker volume rm -f assistant-dev_db-data
+    {{ compose }} up -d db
+    {{ run }} uv run python -m assistant migrate
+
 # Sanitize a probe dump into committable fixtures (owner or agent per AGENTS §9).
 sanitize input output="tests/fixtures/telegram":
     {{ run }} python tools/probe/sanitize.py --input {{ input }} --output {{ output }}
@@ -121,9 +133,9 @@ prod-bootstrap ip:
     -gh repo deploy-key add "{{ cloud_dir }}/server-deploy-key.pub" --repo {{ repo_slug }} --title alviro-server
     {{ ops }} deploy/oci/bootstrap-host.sh {{ ip }} clone
 
-# Assemble the server .env from var/prod.env + var/cloud/* and stream it to the server (mode 600).
-prod-env-push ip owner_ids:
-    {{ _ops }} --mount "type=bind,src={{ prod_env }},dst=/prod.env,readonly" -e PROD_ENV=/prod.env --entrypoint bash {{ oci_image }} deploy/oci/push-env.sh {{ ip }} --owner-ids {{ owner_ids }}
+# Assemble the server .env from var/prod.env + var/cloud/* and stream it to the server (mode 600). Owner ids default to OWNER_TELEGRAM_IDS in var/prod.env.
+prod-env-push ip owner_ids="":
+    {{ _ops }} --mount "type=bind,src={{ prod_env }},dst=/prod.env,readonly" -e PROD_ENV=/prod.env --entrypoint bash {{ oci_image }} deploy/oci/push-env.sh {{ ip }} {{ if owner_ids == "" { "" } else { "--owner-ids " + owner_ids } }}
 
 # Deploy the current `main` to the server: pull, rebuild, migrate, restart.
 deploy ip:
