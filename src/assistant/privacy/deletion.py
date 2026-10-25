@@ -23,6 +23,7 @@ from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.inbox.models import InboundUpdate
+from assistant.memory import items
 from assistant.memory.summaries import delete_account_summaries, delete_conversation_summaries
 
 #: Raw updates that carry managed content, or the owner's name from the
@@ -43,11 +44,14 @@ class DeletionReport:
     control_turns_cleared: int
     #: `conversation_summaries` rows deleted (S03.2).
     summaries: int = 0
+    #: `memory_items` about a contact or chat deleted (S03.3).
+    memory_items: int = 0
 
     @property
     def total(self) -> int:
         return (
-            self.messages
+            self.memory_items
+            + self.messages
             + self.contacts_cleared
             + self.payloads_cleared
             + self.control_turns_cleared
@@ -86,6 +90,9 @@ async def delete_managed_data(
         await session.execute(delete(Message).where(Message.account_id == account_id))
     )
     summaries = await delete_account_summaries(session, account_id)
+    # Notes about the people in those chats (S03.3, M03 D71); the owner's
+    # own instructions, preferences and facts stay.
+    notes = await items.delete_about_contacts(session, account_id)
     contacts = _count(
         await session.execute(
             update(Contact)
@@ -145,12 +152,13 @@ async def delete_managed_data(
                 "payloads_cleared": payloads,
                 "control_turns_cleared": turns,
                 "summaries_deleted": summaries,
+                "memory_items_deleted": notes,
                 "messages_remaining": int(remaining),
             },
         )
     )
     await session.flush()
-    return DeletionReport(messages, contacts, payloads, turns, summaries)
+    return DeletionReport(messages, contacts, payloads, turns, summaries, notes)
 
 
 #: Business update kinds whose payload names a chat (`<kind>.chat.id`).
@@ -217,6 +225,16 @@ async def purge_conversation(
         )
     )
     summaries = await delete_conversation_summaries(session, account_id, conversation_id)
+    contact_id = (
+        await session.execute(
+            select(Conversation.contact_id)
+            .where(Conversation.account_id == account_id)
+            .where(Conversation.id == conversation_id)
+        )
+    ).scalar_one_or_none()
+    notes = await items.delete_for_conversation(
+        session, account_id, conversation_id, [] if contact_id is None else [int(contact_id)]
+    )
     turns = await redact_turns_referring_to(
         session, account_id=account_id, conversation_id=conversation_id, clock=clock
     )
@@ -235,7 +253,7 @@ async def purge_conversation(
         )
     )
     await session.flush()
-    return DeletionReport(messages, contacts, payloads, turns, summaries)
+    return DeletionReport(messages, contacts, payloads, turns, summaries, notes)
 
 
 async def redact_turns_referring_to(

@@ -45,6 +45,11 @@ class Source(StrEnum):
     """A model-written summary of a managed chat (S03.2): derived from
     contact text, so it may carry an injection forward."""
 
+    MEMORY_FROM_TAINTED_RUN = "memory_from_tainted_run"
+    """A memory item saved from a run that had other people's text in it
+    (the owner confirmed it on a card, S03.3, M03 D70): the words may be
+    someone else's."""
+
 
 OPEN_TAG = '<untrusted source="{source}" trust="untrusted">'
 CLOSE_TAG = "</untrusted>"

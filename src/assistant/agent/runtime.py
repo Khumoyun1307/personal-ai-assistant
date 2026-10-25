@@ -69,11 +69,14 @@ from assistant.llm.port import (
     Provenance,
     StopReason,
 )
+from assistant.memory import items
 from assistant.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 RUN_TYPE = "owner_request"
+#: Owner-scope memory items preloaded into an owner run (newest first).
+OWNER_MEMORY_ITEMS = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,6 +308,8 @@ class OwnerRequestRuntime:
                 turn=turn,
                 now=self._clock.now(),
                 managed_allowed=managed_ok,
+                # The owner's own saved items (owner scope; S03.3, FR-CTL-01).
+                memory=await items.owner_items(session, account_id, limit=OWNER_MEMORY_ITEMS),
             )
             # Tainted from the start when the context already carries
             # third-party text or managed content (§7.1, M03 D45).

@@ -128,6 +128,9 @@ class ToolContext:
     run_type: str
     tainted: bool
     services: ToolServices
+    #: The model's id for this call: with `run_id`, the idempotency key of a
+    #: state change (§8.3 step 4). Empty outside a model call.
+    call_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +251,8 @@ def default_registry() -> ToolRegistry:
         LIST_CONVERSATIONS,
         RESOLVE_CONTACT,
     )
+    from assistant.agent.tools.memory import FORGET, LIST_MEMORIES, REMEMBER
+    from assistant.agent.tools.modes import SET_CONVERSATION_MODE, UPDATE_PREFERENCES
     from assistant.agent.tools.search import SEARCH_MESSAGES
     from assistant.agent.tools.status import GET_STATUS
     from assistant.agent.tools.summaries import GET_ATTENTION_LIST, SUMMARIZE_PERIOD
@@ -261,6 +266,11 @@ def default_registry() -> ToolRegistry:
             LIST_CONVERSATIONS,
             SUMMARIZE_PERIOD,
             GET_ATTENTION_LIST,
+            REMEMBER,
+            FORGET,
+            LIST_MEMORIES,
+            UPDATE_PREFERENCES,
+            SET_CONVERSATION_MODE,
         ]
     )
 

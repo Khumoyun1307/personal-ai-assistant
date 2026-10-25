@@ -34,9 +34,10 @@ from assistant.core.jobs import (
     owner_control_lock,
 )
 from assistant.inbox.connection_alerts import VISIBILITY
+from assistant.memory.undo import UNDO_CARD
 from assistant.observability.logging import get_logger
 from assistant.observability.status import build_status
-from assistant.telegram.control import deeplinks, handlers
+from assistant.telegram.control import deeplinks, handlers, panels
 from assistant.telegram.control.handlers import HandlerResult, IncomingMessage
 from assistant.telegram.gateway import ControlChat, OutboundGateway
 
@@ -241,6 +242,12 @@ class ControlDispatcher:
             return await handlers.handle_tool_confirmation_press(
                 session, self._gateway, self._clock, self._scheduler, account, press
             )
+        if parsed.kind == UNDO_CARD:
+            return await handlers.handle_undo_press(
+                session, self._gateway, self._clock, account, press
+            )
+        if parsed.kind in panels.KINDS:
+            return await panels.handle_press(session, self._gateway, self._clock, account, press)
         return await handlers.handle_card_press(session, self._gateway, self._clock, account, press)
 
     async def _load_account_by_id(self, session: AsyncSession, from_id: int) -> Account | None:
@@ -261,7 +268,9 @@ class ControlDispatcher:
             )
         if panel is None:
             logger.info("panel_refused", account_id=account.id, malformed=chat_id is None)
-        return await handlers.handle_conversation_panel(self._gateway, account, message, panel)
+        return await panels.handle_panel_command(
+            session, self._gateway, self._clock, account, message, panel
+        )
 
     async def _load_account(
         self, session: AsyncSession, message: IncomingMessage
@@ -317,9 +326,11 @@ class ControlDispatcher:
             case "settings":
                 if argument:
                     return await handlers.apply_setting(
-                        session, self._gateway, account, message, argument
+                        session, self._gateway, account, message, argument, self._clock
                     )
-                return await handlers.handle_settings(self._gateway, account, message)
+                return await panels.handle_settings_command(
+                    session, self._gateway, self._clock, account, message
+                )
             case "pause":
                 account.autonomy_paused = True
                 await session.flush()

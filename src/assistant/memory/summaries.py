@@ -45,7 +45,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from assistant.accounts.models import Account
+from assistant.accounts.models import Account, Consent
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.jobs import REFRESH_SUMMARY_TASK, JobScheduler, summary_queueing_lock
@@ -734,6 +734,60 @@ async def delete_conversation_summaries(
             .where(ConversationSummary.conversation_id == conversation_id)
         )
     )
+
+
+async def covered_through(session: AsyncSession, conversation_ids: set[int]) -> dict[int, int]:
+    """conversation id → the highest message id its rolling summary covers."""
+    if not conversation_ids:
+        return {}
+    rows = await session.execute(
+        select(ConversationSummary.conversation_id, ConversationSummary.covers_through_message_id)
+        .where(ConversationSummary.kind == KIND_ROLLING)
+        .where(ConversationSummary.conversation_id.in_(sorted(conversation_ids)))
+        .where(ConversationSummary.covers_through_message_id.is_not(None))
+    )
+    return {int(c): int(m) for c, m in rows.all()}
+
+
+async def rollup_candidates(
+    session: AsyncSession, expiring_before: datetime, *, limit: int = 500
+) -> list[tuple[int, datetime]]:
+    """(conversation id, earliest change) of chats with retained content last
+    changed before `expiring_before` that their rolling summary has not
+    covered — the rollup before the retention ceiling (§10.4). Only chats
+    that may be summarized: account with an active `ai_managed` consent, not
+    Ignore, not a bot. The earliest change is that content's `updated_at`,
+    what the refresh flag counts its maximum wait from."""
+    rolling = (
+        select(ConversationSummary.covers_through_message_id)
+        .where(ConversationSummary.conversation_id == Message.conversation_id)
+        .where(ConversationSummary.kind == KIND_ROLLING)
+        .scalar_subquery()
+    )
+    consent = (
+        select(Consent.id)
+        .where(Consent.account_id == Conversation.account_id)
+        .where(Consent.kind == "ai_managed")
+        .where(Consent.revoked_at.is_(None))
+        .exists()
+    )
+    rows = await session.execute(
+        select(Message.conversation_id, func.min(Message.updated_at))
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .join(Contact, Contact.id == Conversation.contact_id)
+        .where(Conversation.mode != "ignore")
+        .where(Contact.is_bot.is_(False))
+        .where(consent)
+        .where(Message.deleted_at.is_(None))
+        .where(Message.purged_at.is_(None))
+        .where((Message.text.is_not(None)) | (Message.media.is_not(None)))
+        .where(func.coalesce(Message.edited_at, Message.sent_at) < expiring_before)
+        .where(Message.id > func.coalesce(rolling, 0))
+        .group_by(Message.conversation_id)
+        .order_by(Message.conversation_id)
+        .limit(limit)
+    )
+    return [(int(c), changed) for c, changed in rows.all()]
 
 
 async def sweep_period_summaries(session: AsyncSession, now: datetime) -> int:

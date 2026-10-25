@@ -124,7 +124,7 @@ class ToolExecutor:
             )
             return held, digest
         try:
-            return await tool.handler(self.context, args), digest
+            return await tool.handler(replace(self.context, call_id=call.call_id), args), digest
         except LookupError:
             # A referenced id that does not exist in this account. Same answer
             # whether it is missing or someone else's (AGENTS §6.12).

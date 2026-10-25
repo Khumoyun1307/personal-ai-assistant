@@ -86,6 +86,7 @@ class FakeTelegramSender:
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "text": text,
+                "reply_markup": reply_markup,
                 "business_connection_id": business_connection_id,
             }
         )

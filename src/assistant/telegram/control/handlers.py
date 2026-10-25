@@ -16,7 +16,7 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from assistant.accounts import connections, service
+from assistant.accounts import connections, preferences, service
 from assistant.accounts.models import Account, PendingInput
 from assistant.agent import confirmations
 from assistant.agent.confirmations import OP_CONFIRM, OP_REJECT, TOOL_CONFIRM_CARD
@@ -26,6 +26,7 @@ from assistant.core.clock import Clock
 from assistant.core.jobs import APPLY_CONFIRMATION_TASK, JobScheduler, owner_control_lock
 from assistant.db.uow import after_commit, transaction
 from assistant.inbox.connection_alerts import MANAGED_CONSENT_BUTTONS, MANAGED_CONSENT_QUESTION
+from assistant.memory import undo
 from assistant.observability.status import StatusReport
 from assistant.privacy import deletion
 from assistant.telegram.control.cards import card_keyboard
@@ -114,7 +115,7 @@ HELP_TEXT = (
     "/start — set up or re-run onboarding\n"
     "/help — this message\n"
     "/status — what I can see: connection, rights, coverage, gaps, consent\n"
-    "/settings — language and timezone\n"
+    "/settings — language, timezone, the mode new chats start in, chats by mode\n"
     "/privacy — what I store, who sees it, and how to delete it\n\n"
     "Send me anything else and I will answer it.\n"
     "Send <b>stop</b> at any time to pause everything."
@@ -382,9 +383,9 @@ MANAGED_MODE_KIND = "managed_mode"
 
 DELETE_CARD_TEXT = (
     "<b>Delete what I stored from your chats?</b>\n\n"
-    "This removes every message, name and raw update I kept from the chats you "
-    "included under Chat Automation. It cannot be undone. Summaries and settings "
-    "in this chat stay."
+    "This removes every message, name, summary and raw update I kept from the chats "
+    "you included under Chat Automation, and your notes about the people in them. It "
+    "cannot be undone. Your own notes and settings stay."
 )
 DELETE_CARD_BUTTONS = [("Delete", "delete"), ("Keep", "keep")]
 MODE_CARD_TEXT = (
@@ -584,7 +585,8 @@ async def handle_card_press(
             settlement = _Settlement(
                 "Deleted",
                 f"🗑 Deleted: {report.messages} message(s), {report.contacts_cleared} "
-                f"contact name(s), {report.payloads_cleared} raw update(s).",
+                f"contact name(s), {report.payloads_cleared} raw update(s), "
+                f"{report.summaries} summary(ies), {report.memory_items} note(s).",
                 await _mode_choice_card(session, clock, account),
             )
             note = "deleted"
@@ -685,6 +687,51 @@ async def handle_tool_confirmation_press(
         note = "rejected"
     _queue_settlement(session, gateway, press, target, message_id, settlement)
     return HandlerResult(True, "card", None, note=note)
+
+
+UNDONE_TEXT = "↩️ Undone."
+UNDO_SUPERSEDED_TEXT = (
+    "It was changed again since, so nothing was undone. Check /settings or ask me what is "
+    "saved now."
+)
+
+
+async def handle_undo_press(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    press: CardPress,
+) -> HandlerResult:
+    """Undo on an echoed change (S03.3). The owner's own tap: no further card.
+    Single-use and owner-scoped like every card; the change is reversed only
+    while the state it created is still in place (`memory/undo.py`)."""
+    card = await service.claim_card(session, account_id=account.id, token=press.token, clock=clock)
+    target = ControlChat(account_id=account.id, chat_id=press.chat_id)
+    message_id = press.message_id
+    if card is None or card.kind != undo.UNDO_CARD or card.ref_id is None:
+        _queue_settlement(
+            session, gateway, press, target, message_id, _Settlement(CALLBACK_EXPIRED_TEXT)
+        )
+        return HandlerResult(False, "card", None, note="no_longer_active")
+    if message_id is None:
+        message_id = card.prompt_message_id
+    if press.op != undo.OP_UNDO:
+        _queue_settlement(
+            session, gateway, press, target, message_id, _Settlement(CALLBACK_EXPIRED_TEXT)
+        )
+        return HandlerResult(False, "card", None, note="unknown_op")
+    outcome = await undo.undo(session, account_id=account.id, change_id=card.ref_id, clock=clock)
+    if outcome.status is undo.UndoStatus.UNDONE:
+        settlement = _Settlement("Undone", UNDONE_TEXT, keep_body=True)
+    elif outcome.status is undo.UndoStatus.SUPERSEDED:
+        settlement = _Settlement("Not undone", UNDO_SUPERSEDED_TEXT, keep_body=True)
+    else:
+        settlement = _Settlement(CALLBACK_EXPIRED_TEXT)
+    _queue_settlement(session, gateway, press, target, message_id, settlement)
+    return HandlerResult(
+        outcome.status is undo.UndoStatus.UNDONE, "card", None, note=outcome.status.value
+    )
 
 
 def local_time(value: datetime | None, timezone: str) -> str:
@@ -847,26 +894,14 @@ def render_panel(panel: ConversationPanel, *, timezone: str) -> str:
         lines.append("⚠️ A message here could not be processed; automation is paused.")
     if panel.unresolved_gaps:
         lines.append(f"⚠️ {panel.unresolved_gaps} coverage gap(s): some messages may be missing.")
+    if panel.mode == "ignore":
+        lines.append("Ignored: new messages from this chat are not stored.")
+    if panel.summary_overview:
+        lines += ["", f"<b>Summary</b> (AI-written): {escape(panel.summary_overview)}"]
+    if panel.notes:
+        lines += ["", f"<b>Your notes</b> ({panel.notes_total}):"]
+        lines += [f"• {escape(note)}" for note in panel.notes]
     return "\n".join(lines)
-
-
-async def handle_conversation_panel(
-    gateway: OutboundGateway,
-    account: Account,
-    message: IncomingMessage,
-    panel: ConversationPanel | None,
-) -> HandlerResult:
-    """`/start bizChat<id>` from "Manage Bot" (TF §12 LV-10).
-
-    Unknown, foreign and malformed ids all get the same reply, so the panel
-    reveals nothing about chats that are not this owner's (AGENTS §6.7).
-    """
-    target = ControlChat(account_id=account.id, chat_id=message.chat_id)
-    if panel is None:
-        result = await gateway.send_text(target, PANEL_UNKNOWN)
-        return HandlerResult(True, "panel", result, note="unknown_chat")
-    result = await gateway.send_text(target, render_panel(panel, timezone=account.timezone))
-    return HandlerResult(True, "panel", result, note="shown")
 
 
 async def handle_settings(
@@ -892,6 +927,7 @@ async def apply_setting(
     account: Account,
     message: IncomingMessage,
     argument: str,
+    clock: Clock,
 ) -> HandlerResult:
     """`/settings <key> <value>`. Validated, not trusted."""
     target = ControlChat(account_id=account.id, chat_id=message.chat_id)
@@ -901,28 +937,27 @@ async def apply_setting(
     if not value:
         return await handle_settings(gateway, account, message)
 
+    # The same validation and audit as the panel and the agent's tool (S03.3).
     if key == "timezone":
-        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
         try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError, ValueError, KeyError:
+            await preferences.update(session, account, timezone=value, actor="owner", clock=clock)
+        except preferences.PreferenceError:
             result = await gateway.send_text(
-                target, f"I do not know the timezone <code>{value}</code>."
+                target, f"I do not know the timezone <code>{escape(value)}</code>."
             )
             return HandlerResult(True, "settings", result, note="invalid_timezone")
-        account.timezone = value
-        await session.flush()
-        result = await gateway.send_text(target, f"Timezone set to {value}.")
+        result = await gateway.send_text(target, f"Timezone set to {escape(account.timezone)}.")
         return HandlerResult(True, "settings", result, note="timezone")
 
     if key in {"language", "locale"}:
-        if len(value) > 8 or not value.replace("-", "").isalnum():
+        try:
+            await preferences.update(session, account, language=value, actor="owner", clock=clock)
+        except preferences.PreferenceError:
             result = await gateway.send_text(target, "That does not look like a language code.")
             return HandlerResult(True, "settings", result, note="invalid_language")
-        account.locale_pref = value
-        await session.flush()
-        result = await gateway.send_text(target, f"Language set to {value}.")
+        result = await gateway.send_text(
+            target, f"Language set to {escape(account.locale_pref or value)}."
+        )
         return HandlerResult(True, "settings", result, note="language")
 
     result = await gateway.send_text(target, "I can set <b>timezone</b> or <b>language</b>.")

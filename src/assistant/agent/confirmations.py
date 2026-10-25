@@ -486,6 +486,7 @@ class ConfirmationApplier:
                     # The owner looked and tapped: this is the owner's act now.
                     tainted=False,
                     services=replace(self._services, channel=self._channel),
+                    call_id=call_id,
                 )
                 try:
                     outcome = await tool.handler(context, parsed)
