@@ -40,7 +40,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 from sqlalchemy import select
 
 from assistant.accounts.models import Account
-from assistant.agent.summarize import PeriodOutcome, SummaryStatus
+from assistant.agent.summarize import PeriodOutcome, RefreshOutcome, SummaryStatus
 from assistant.agent.tools.common import (
     COVERAGE_RULE,
     OptionalId,
@@ -81,6 +81,22 @@ MAX_INLINE_CHECKS = 8
 SUMMARY_CONCURRENCY = 4
 #: An open-ended catch-up also covers messages dated this far after our clock.
 CLOCK_SKEW = timedelta(minutes=5)
+#: Immediate retries of a chat whose summary was discarded because a message
+#: was deleted or edited during the call (owner, 2026-10-25; D63/D66).
+CHANGED_RETRIES = 1
+#: The reason (and attention `check`) for a chat that changed during both.
+CHANGED_DURING_SUMMARY = "changed_during_summary"
+
+
+def changed_notice(conversation_id: int) -> str:
+    """Our own owner-facing words for a chat left out because it changed
+    while it was being summarized. Says nothing about what changed beyond
+    "deleted or edited": the content must not be quoted or described."""
+    return (
+        f"The chat with conversation_id {conversation_id} changed while it was being "
+        "summarized (a message was deleted or edited), so it was left out. Ask again "
+        "shortly to include it."
+    )
 
 
 def _moment(value: str | None) -> str | None:
@@ -139,7 +155,7 @@ _FAILED_REASONS = {
     SummaryStatus.REFUSED: "the_model_refused",
     SummaryStatus.FAILED: "summary_failed",
     SummaryStatus.NOT_FOUND: "not_found",
-    SummaryStatus.DISCARDED: "messages_changed_during_the_summary",
+    SummaryStatus.DISCARDED: CHANGED_DURING_SUMMARY,
 }
 
 
@@ -201,14 +217,22 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
             if summarizer is None:
                 return PeriodOutcome(SummaryStatus.FAILED)
             try:
-                return await summarizer.summarize_period(
-                    account_id=ctx.account_id,
-                    conversation_id=conversation_id,
-                    start=start,
-                    end=query_end,
-                    open_ended=open_ended,
-                    parent_run_id=ctx.run_id,
-                )
+                outcome = PeriodOutcome(SummaryStatus.DISCARDED)
+                # The owner asked: a chat that changed during the call (a
+                # deletion or an edit) is retried once at once, with the fresh
+                # messages (D63/D66); a second change leaves it out.
+                for _ in range(1 + CHANGED_RETRIES):
+                    outcome = await summarizer.summarize_period(
+                        account_id=ctx.account_id,
+                        conversation_id=conversation_id,
+                        start=start,
+                        end=query_end,
+                        open_ended=open_ended,
+                        parent_run_id=ctx.run_id,
+                    )
+                    if outcome.status is not SummaryStatus.DISCARDED:
+                        break
+                return outcome
             except Exception as error:
                 # One chat's failure (its run already closed as failed) must
                 # not abort the whole catch-up; it is listed as not summarized.
@@ -278,6 +302,13 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
     }
     if lines:
         data["note"] = "Relay every coverage caveat to the owner; none may be dropped."
+    notices = [
+        changed_notice(item["conversation_id"])
+        for item in not_summarized
+        if item.get("reason") == CHANGED_DURING_SUMMARY
+    ]
+    if notices:
+        data["notices"] = notices
     if not active:
         data["note_empty"] = (
             "No stored messages in this period. That does not mean nothing was said: "
@@ -346,14 +377,21 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         c.conversation_id for c in candidates if c.summary_stale or c.conversation_id not in rolling
     ][:MAX_INLINE_CHECKS]
     summarizer = services.summarizer
+    changed: set[int] = set()
     if stale and summarizer is not None:
 
-        def job(conversation_id: int) -> Callable[[], Awaitable[object]]:
-            async def run() -> object:
+        def job(conversation_id: int) -> Callable[[], Awaitable[RefreshOutcome | None]]:
+            async def run() -> RefreshOutcome | None:
                 try:
-                    # One call per chat at most (plus a truncation retry),
-                    # never chained: the cost of an ask stays bounded (D62).
-                    return await summarizer.refresh(conversation_id, max_calls=1)
+                    # One call per chat (plus a truncation retry), never
+                    # chained (D62) — except one immediate retry when the
+                    # chat changed during the call (owner, D63/D66).
+                    outcome = await summarizer.refresh(conversation_id, max_calls=1)
+                    for _ in range(CHANGED_RETRIES):
+                        if outcome.status is not SummaryStatus.DISCARDED:
+                            break
+                        outcome = await summarizer.refresh(conversation_id, max_calls=1)
+                    return outcome
                 except Exception as error:
                     logger.warning(
                         "attention_check_failed",
@@ -364,7 +402,12 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
 
             return run
 
-        await _bounded_gather([job(conversation_id) for conversation_id in stale])
+        outcomes = await _bounded_gather([job(conversation_id) for conversation_id in stale])
+        changed = {
+            conversation_id
+            for conversation_id, outcome in zip(stale, outcomes, strict=True)
+            if outcome is not None and outcome.status is SummaryStatus.DISCARDED
+        }
 
     async with transaction(services.session_factory) as uow:
         session = uow.session
@@ -387,7 +430,11 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
     entries: list[dict[str, Any]] = []
     for candidate in candidates:
         stored = rolling.get(candidate.conversation_id)
-        checked = stored is not None and candidate.conversation_id not in pending
+        checked = (
+            stored is not None
+            and candidate.conversation_id not in pending
+            and candidate.conversation_id not in changed
+        )
         entry: dict[str, Any] = {
             "conversation_id": candidate.conversation_id,
             "contact_id": candidate.contact_id,
@@ -396,7 +443,9 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             "waiting_since": local_time(candidate.last_contact_msg_at, tz),
             "last_answer": local_time(candidate.last_answer_at, tz),
             "needs_reply": None,
-            "check": "not_checked",
+            "check": (
+                CHANGED_DURING_SUMMARY if candidate.conversation_id in changed else "not_checked"
+            ),
         }
         if checked and stored is not None:
             view = summary_view(stored.summary)
@@ -418,7 +467,9 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         "rule": (
             "Listed: chats where the contact wrote last and neither the owner nor the "
             "assistant answered since. needs_reply is a model judgement from the chat's "
-            "summary; not_checked means it could not be checked now."
+            "summary; not_checked means it could not be checked now; "
+            "changed_during_summary means the chat changed while it was being checked — "
+            "relay its notice."
         ),
         "window_days": days,
         "timezone": tz,
@@ -426,6 +477,10 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
     }
     if not entries:
         data["note"] = "No stored chat is waiting for the owner's reply in this window."
+    if changed:
+        data["notices"] = [
+            changed_notice(c.conversation_id) for c in candidates if c.conversation_id in changed
+        ]
     return ToolOutcome(
         "ok",
         data,

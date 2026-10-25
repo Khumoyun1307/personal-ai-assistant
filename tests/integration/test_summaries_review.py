@@ -63,6 +63,8 @@ from tests.integration.test_summaries import (
     everything,
     seed,
     shown_ids,
+    summary_requests,
+    summary_rows,
     ts,
 )
 
@@ -223,19 +225,61 @@ async def test_a_deletion_of_a_new_message_during_an_incremental_refresh_stores_
     assert await summary_kinds(senv) == [(a, "rolling")]  # the earlier one is kept
 
 
-async def test_a_deletion_during_a_period_summary_stores_and_returns_nothing(
+CHANGED_NOTICE = "changed while it was being summarized"
+
+
+async def test_a_deletion_during_both_period_summary_calls_is_reported_not_summarized(
+    senv: Env,
+) -> None:
+    """Owner addition to item 1: one immediate retry; if that is discarded too,
+    the chat is NOT summarized (`changed_during_summary`) with our own notice
+    — never an empty or complete summary (invariant 11), never the content."""
+    a, b = await seed(senv)
+    fake = FakeLLM()
+
+    def per_chat(request: LLMRequest) -> Any:
+        if "SYNTH-B" in everything(request):
+            return with_texts(request)
+        hook = deletions.pop(0)
+        return hook(request)
+
+    deletions = [during(delete(senv, 12)), during(delete(senv, 11))]
+    fake.parsed = [per_chat, per_chat, per_chat]
+
+    result = await catch_up(senv, fake)
+
+    assert [(r.conversation_id, r.kind) for r in await summary_rows(senv)] == [(b, "period")]
+    assert [e["conversation_id"] for e in result.data["conversations"]] == [b]  # unaffected
+    skipped = result.data["not_summarized"]
+    assert [(n["conversation_id"], n["reason"]) for n in skipped] == [(a, "changed_during_summary")]
+    notices = result.data["notices"]
+    assert len(notices) == 1
+    assert CHANGED_NOTICE in notices[0]
+    assert "deleted or edited" in notices[0]
+    assert "ask again" in notices[0].lower()
+    dumped = json.dumps(result.data)
+    assert TEXT_A not in dumped
+    assert TEXT_A2 not in dumped
+    assert len(summary_requests(fake)) == 3  # A twice (one retry), B once
+
+
+async def test_a_deletion_during_the_first_period_call_is_retried_once_without_notice(
     senv: Env,
 ) -> None:
     a, _ = await seed(senv)
     fake = FakeLLM()
-    fake.parsed = [during(delete(senv, 12))]
+    fake.parsed = [during(delete(senv, 12)), with_texts]
 
     result = await catch_up(senv, fake, conversation_id=a)
 
-    assert await summary_kinds(senv) == []
-    assert result.data["conversations"] == []
-    assert result.data["not_summarized"][0]["reason"] == "messages_changed_during_the_summary"
-    assert TEXT_A2 not in json.dumps(result.data)
+    [entry] = result.data["conversations"]
+    assert entry["conversation_id"] == a
+    dumped = json.dumps(result.data)
+    assert TEXT_A2 not in dumped
+    assert TEXT_A in dumped
+    assert "notices" not in result.data
+    assert TEXT_A2 not in await stored_texts(senv)
+    assert len(summary_requests(fake)) == 2
 
 
 async def test_managed_data_deletion_during_a_refresh_leaves_no_summary(senv: Env) -> None:
@@ -382,6 +426,62 @@ async def test_a_connection_that_is_not_active_gets_a_caveat(
 
 
 # ============================================================ 5. attention-list cost
+async def _attention(env: Env, fake: FakeLLM) -> ToolOutcome:
+    return await get_attention_list_tool(
+        await tool_ctx(env, fake), GetAttentionListArgs(active_within_days=None, limit=None)
+    )
+
+
+async def test_the_attention_check_retries_a_changed_chat_once_without_notice(
+    senv: Env,
+) -> None:
+    a, b = await seed(senv)
+    fake = FakeLLM()
+
+    def per_chat(request: LLMRequest) -> Any:
+        if "SYNTH-B" in everything(request):
+            return echo(request)
+        return hooks.pop(0)(request)
+
+    hooks: list[Any] = [during(delete(senv, 12)), with_texts]
+    fake.parsed = [per_chat, per_chat, per_chat]
+
+    result = await _attention(senv, fake)
+
+    checks = {e["conversation_id"]: e["check"] for e in result.data["conversations"]}
+    assert checks == {a: "model", b: "model"}
+    assert "notices" not in result.data
+    assert TEXT_A2 not in await stored_texts(senv)
+    assert len(summary_requests(fake)) == 3
+
+
+async def test_the_attention_check_reports_a_chat_that_changed_during_both_calls(
+    senv: Env,
+) -> None:
+    a, b = await seed(senv)
+    fake = FakeLLM()
+
+    def per_chat(request: LLMRequest) -> Any:
+        if "SYNTH-B" in everything(request):
+            return echo(request)
+        return hooks.pop(0)(request)
+
+    hooks: list[Any] = [during(delete(senv, 12)), during(delete(senv, 11))]
+    fake.parsed = [per_chat, per_chat, per_chat]
+
+    result = await _attention(senv, fake)
+
+    by_id = {e["conversation_id"]: e for e in result.data["conversations"]}
+    assert (by_id[a]["check"], by_id[a]["needs_reply"]) == ("changed_during_summary", None)
+    assert by_id[b]["check"] == "model"  # unaffected
+    [notice] = result.data["notices"]
+    assert CHANGED_NOTICE in notice
+    assert "deleted or edited" in notice
+    assert TEXT_A not in json.dumps(result.data)
+    assert TEXT_A2 not in json.dumps(result.data)
+    assert [r.conversation_id for r in await summary_rows(senv)] == [b]
+
+
 async def test_the_attention_list_makes_at_most_one_summary_call_per_chat(senv: Env) -> None:
     a, b = await seed(senv)  # chat A has two unseen messages, B one
     fake = FakeLLM()
