@@ -30,6 +30,7 @@ from assistant.jobs.tasks import JobHandlers
 from assistant.llm.port import LLMRequest, ToolResultItem
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response, tool_response
+from tests.fakes.summaries import RecordingRefresher
 from tests.integration.agent_env import (
     ALL_FLAGS,
     NOTE_CANCEL,
@@ -321,6 +322,7 @@ def handlers(env: Env, channel: FakeChannel) -> JobHandlers:
         monthly_budget_usd=None,
         heartbeat_url=None,
         confirmation_applier=applier(env, channel),
+        summary_refresher=RecordingRefresher(),
     )
 
 

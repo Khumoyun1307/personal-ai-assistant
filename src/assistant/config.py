@@ -22,6 +22,9 @@ LogFormat = Literal["json", "console"]
 
 REQUIRED_DB_DRIVER = "postgresql+psycopg"
 
+#: Release flag of the background summary refresh (S03.2, M03 D61).
+SUMMARY_REFRESH_FLAG = "summary.refresh"
+
 #: Run types with a `LLM_ROUTE_<RUN_TYPE>_MODEL` setting (agent/models.py RUN_TYPES).
 ROUTE_RUN_TYPES = (
     "owner_request",
@@ -71,6 +74,10 @@ class Settings(BaseSettings):
     llm_owner_request_effort: (
         Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
     ) = "low"
+    #: Reasoning effort for `summarize` runs (S03.2); empty sends none.
+    llm_summarize_effort: (
+        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
+    ) = "low"
     #: Per-route model overrides `LLM_ROUTE_<RUN_TYPE>_MODEL` (ARCHITECTURE
     #: §7.4); empty means `LLM_DEFAULT_MODEL`. The processor behind each
     #: model is checked against consent on every call (`core/model_routes.py`).
@@ -86,6 +93,12 @@ class Settings(BaseSettings):
     #: Release flags that are ON, e.g. `tool.get_status`. Everything defaults
     #: off (AGENTS §8): a tool reaches the model only when its flag is listed.
     feature_flags: Annotated[frozenset[str], NoDecode] = frozenset()
+
+    # --- Summaries (S03.2, M03 D60) -------------------------------------------
+    #: A chat's rolling summary is refreshed after this many quiet minutes...
+    summary_refresh_debounce_minutes: int = Field(default=30, ge=1, le=1440)
+    #: ...or at the latest this many hours after its first unseen message.
+    summary_refresh_max_wait_hours: int = Field(default=6, ge=1, le=168)
 
     # --- Privacy ---------------------------------------------------------------
     #: The published privacy policy (FR-PRV-01), shown by /privacy.
@@ -108,6 +121,7 @@ class Settings(BaseSettings):
         "openai_api_key",
         "llm_monthly_budget_usd",
         "llm_owner_request_effort",
+        "llm_summarize_effort",
         "llm_route_owner_request_model",
         "llm_route_triage_model",
         "llm_route_draft_reply_model",
@@ -203,6 +217,12 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env == "prod"
+
+    @property
+    def summaries_enabled(self) -> bool:
+        """Background summary refreshes run only with flag `summary.refresh`
+        (M03 D61); the catch-up and attention tools summarize on demand."""
+        return SUMMARY_REFRESH_FLAG in self.feature_flags
 
     @property
     def model_routes(self) -> ModelRoutes:

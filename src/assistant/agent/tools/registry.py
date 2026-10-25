@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import IntEnum, StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -29,6 +29,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from assistant.core.channel import ControlChannel
 from assistant.core.clock import Clock
 from assistant.llm.port import ToolSpec
+
+if TYPE_CHECKING:
+    from assistant.agent.summarize import Summarizer
 
 
 class CapabilityClass(StrEnum):
@@ -76,6 +79,9 @@ class ToolServices:
     #: The owner's control chat, for confirmation cards (None in unit tests
     #: that never reach the confirmation gate).
     channel: ControlChannel | None = None
+    #: The `summarize` run type (S03.2), for catch-up and attention tools;
+    #: None where no summary can be made (those tools then say so).
+    summarizer: Summarizer | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,9 +250,18 @@ def default_registry() -> ToolRegistry:
     )
     from assistant.agent.tools.search import SEARCH_MESSAGES
     from assistant.agent.tools.status import GET_STATUS
+    from assistant.agent.tools.summaries import GET_ATTENTION_LIST, SUMMARIZE_PERIOD
 
     return ToolRegistry(
-        [GET_STATUS, SEARCH_MESSAGES, RESOLVE_CONTACT, GET_CONVERSATION, LIST_CONVERSATIONS]
+        [
+            GET_STATUS,
+            SEARCH_MESSAGES,
+            RESOLVE_CONTACT,
+            GET_CONVERSATION,
+            LIST_CONVERSATIONS,
+            SUMMARIZE_PERIOD,
+            GET_ATTENTION_LIST,
+        ]
     )
 
 

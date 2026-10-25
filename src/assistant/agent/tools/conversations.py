@@ -16,6 +16,7 @@ from datetime import timedelta
 from typing import Annotated, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
@@ -30,6 +31,7 @@ from assistant.agent.tools.common import (
     name,
     one,
     require_contacts,
+    summary_view,
 )
 from assistant.agent.tools.registry import (
     CapabilityClass,
@@ -39,7 +41,9 @@ from assistant.agent.tools.registry import (
     ToolRefs,
 )
 from assistant.conversations import read
+from assistant.conversations.models import Conversation
 from assistant.db.uow import transaction
+from assistant.memory import summaries
 
 LIST_FLAG = "tool.list_conversations"
 GET_FLAG = "tool.get_conversation"
@@ -206,8 +210,25 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
             before=decode_cursor(args.cursor),
             limit=args.limit or 30,
         )
+        stored = await summaries.rolling_summary(session, ctx.account_id, conversation_id)
+        unseen = (
+            await session.execute(
+                select(Conversation.pending_ai_since)
+                .where(Conversation.account_id == ctx.account_id)
+                .where(Conversation.id == conversation_id)
+            )
+        ).scalar_one_or_none() is not None
     tz = account.timezone
     cov = page.coverage
+    summary: dict[str, object] | None = None
+    if stored is not None:
+        # The chat's running summary (S03.2): model output, wrapped as
+        # untrusted like the messages it was written from.
+        summary = {
+            **summary_view(stored.summary),
+            "updated_at": local_time(stored.updated_at, tz),
+            "up_to_date": not unseen,
+        }
     return ToolOutcome(
         "ok",
         {
@@ -225,7 +246,7 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
                 for m in page.messages
             ],
             "next_cursor": encode_cursor(page.next_cursor),
-            "summary": None,
+            "summary": summary,
             "timezone": tz,
             "coverage": {
                 "rule": COVERAGE_RULE,
@@ -249,9 +270,10 @@ GET_CONVERSATION = ToolDefinition(
     name="get_conversation",
     description=(
         "Read the stored messages of one chat with another person, newest page first "
-        "(each page oldest to newest), by conversation_id or contact_id. Use "
-        "next_cursor as cursor for older messages. Includes what the record "
-        "cannot contain (coverage start, deleted/expired messages, gaps)."
+        "(each page oldest to newest), by conversation_id or contact_id, with the chat's "
+        "running summary when there is one. Use next_cursor as cursor for older "
+        "messages. Includes what the record cannot contain (coverage start, "
+        "deleted/expired messages, gaps)."
     ),
     args_model=GetConversationArgs,
     capability=CapabilityClass.READ,

@@ -28,6 +28,7 @@ from assistant.inbox.models import InboundUpdate
 from assistant.inbox.processor import InboxProcessor
 from assistant.jobs.app import build_app
 from assistant.jobs.scheduler import ProcrastinateScheduler
+from assistant.memory.summaries import SummaryRefreshTrigger
 from assistant.telegram.business import BusinessPipeline
 from assistant.telegram.connections import ConnectionRegistry
 from assistant.telegram.control.dispatcher import ControlDispatcher
@@ -86,6 +87,9 @@ class Env:
     bot_id: int = BOT_ID
     #: The job scheduler the dispatcher defers with (for reconciler tests).
     scheduler: ProcrastinateScheduler | None = None
+    #: The pipeline's summary-refresh trigger, when built with
+    #: `summaries=True` (S03.2); tests may swap its scheduler.
+    summary_trigger: SummaryRefreshTrigger | None = None
 
 
 # ------------------------------------------------------------ payloads
@@ -183,9 +187,16 @@ def private_message(sender_id: int, message_text: str) -> dict[str, Any]:
 # ------------------------------------------------------------ the environment
 @asynccontextmanager
 async def environment(
-    migrated_url: str, *, owner_ids: frozenset[int] = frozenset({OWNER}), bot_id: int = BOT_ID
+    migrated_url: str,
+    *,
+    owner_ids: frozenset[int] = frozenset({OWNER}),
+    bot_id: int = BOT_ID,
+    summaries: bool = False,
 ) -> AsyncIterator[Env]:
-    """The production wiring over a clean database, for one test."""
+    """The production wiring over a clean database, for one test.
+
+    `summaries=True` wires the summary-refresh trigger, as production does
+    with flag `summary.refresh` on (off by default, like production)."""
     engine = build_engine(migrated_url)
     async with engine.begin() as conn:
         await conn.exec_driver_sql(RESET)
@@ -207,11 +218,16 @@ async def environment(
     async def apply_confirmation(confirmation_id: int) -> None:  # deferred only
         return None
 
+    @app.task(name="memory.refresh_summary", queue="llm")
+    async def refresh_summary(conversation_id: int) -> None:  # deferred only
+        return None
+
     scheduler = ProcrastinateScheduler(app)
     owners = owner_ids
     lookup = FakeLookup()
     registry = ConnectionRegistry(factory, clock, lookup, scheduler, owner_ids=owners)
-    pipeline = BusinessPipeline(registry, clock, bot_id=bot_id)
+    trigger = SummaryRefreshTrigger(scheduler, clock) if summaries else None
+    pipeline = BusinessPipeline(registry, clock, bot_id=bot_id, summaries=trigger)
     dispatcher = ControlDispatcher(gateway, clock, scheduler)
     control = ControlInboxHandlers(dispatcher, gateway, RefusalLimiter(clock))
     processor = InboxProcessor(
@@ -232,7 +248,9 @@ async def environment(
     )
     try:
         async with app.open_async():
-            yield Env(factory, processor, sender, lookup, clock, dispatcher, bot_id, scheduler)
+            yield Env(
+                factory, processor, sender, lookup, clock, dispatcher, bot_id, scheduler, trigger
+            )
     finally:
         async with engine.begin() as conn:
             await conn.exec_driver_sql(RESET)

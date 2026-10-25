@@ -41,6 +41,10 @@ class Source(StrEnum):
     """An earlier assistant reply written while third-party text was in
     context: it may restate that text (M03 D56)."""
 
+    SUMMARY = "summary"
+    """A model-written summary of a managed chat (S03.2): derived from
+    contact text, so it may carry an injection forward."""
+
 
 OPEN_TAG = '<untrusted source="{source}" trust="untrusted">'
 CLOSE_TAG = "</untrusted>"

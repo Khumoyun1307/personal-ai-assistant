@@ -47,6 +47,7 @@ from assistant.agent.persistence import (
     month_start,
 )
 from assistant.agent.ports import ControlChannel
+from assistant.agent.summarize import Summarizer
 from assistant.agent.tools.executor import StepRecorder, TaintRecorder, ToolExecutor
 from assistant.agent.tools.registry import (
     CapabilityTier,
@@ -187,6 +188,7 @@ class OwnerRequestRuntime:
         registry: ToolRegistry,
         clock: Clock,
         config: AgentConfig,
+        summarizer: Summarizer | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._llm = llm
@@ -194,6 +196,8 @@ class OwnerRequestRuntime:
         self._registry = registry
         self._clock = clock
         self._config = config
+        #: The `summarize` run type, for the catch-up and attention tools.
+        self._summarizer = summarizer
 
     async def run(self, turn_id: int) -> RunOutcome:
         prompt = prompt_registry.active(RUN_TYPE)
@@ -230,6 +234,7 @@ class OwnerRequestRuntime:
                     clock=self._clock,
                     monthly_budget_usd=self._config.monthly_budget_usd,
                     channel=self._channel,
+                    summarizer=self._summarizer,
                 ),
             ),
             offered=offered,

@@ -4,6 +4,9 @@ Explicit, testable functions per run type. Order follows the prompt-caching
 rule: the stable prompt first, then the rarely-changing owner profile, then the
 volatile run context, then the conversation, then the new turn.
 
+`summarize` (S03.2) sees ONE conversation: its messages and its own earlier
+summary, never another chat's (§6 invariant 4), all wrapped as untrusted.
+
 `owner_request` sees the owner's profile and recent control-chat turns. Turns
 flagged `contains_managed` are excluded unless `ai_managed` is active
 (ARCHITECTURE §14.3) — defence in depth behind the consent wrapper.
@@ -13,13 +16,18 @@ that carries any of it, or managed content, starts the run tainted (§7.1).
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from assistant.accounts.models import Account, ControlTurn
 from assistant.agent.prompt_registry import Prompt
 from assistant.agent.untrusted import Source, wrap
 from assistant.llm.port import Provenance, TextItem
+from assistant.memory.summaries import SourceMessage
 
 #: How many earlier control turns an owner request sees.
 OWNER_HISTORY_TURNS = 20
@@ -109,6 +117,101 @@ def carries_third_party(turn: ControlTurn) -> bool:
     if turn.role != "owner":
         return bool(turn.third_party)
     return bool(turn.third_party or turn.quoted_text is not None or turn.contains_managed)
+
+
+#: Sender labels for a summarize run, from classification — never from text.
+SUMMARY_SENDER_LABELS = {
+    "contact": "contact",
+    "owner_manual": "owner",
+    "owner_automated": "owner's account (automatic message)",
+    "assistant_sent": "assistant (sent for the owner)",
+}
+#: One message's text is cut here in a summarize context.
+SUMMARY_MESSAGE_CHARS = 2000
+
+
+@dataclass(frozen=True, slots=True)
+class SummarizeContext:
+    instructions: str
+    items: tuple[TextItem, ...]
+    #: Ids of the messages shown: the only ones an item may cite.
+    shown_ids: frozenset[int]
+
+
+def build_summarize(
+    *,
+    prompt: Prompt,
+    account: Account,
+    messages: Sequence[SourceMessage],
+    previous: Mapping[str, Any] | None = None,
+    period: tuple[datetime, datetime] | None = None,
+) -> SummarizeContext:
+    """The context of one `summarize` run: ONE conversation's messages and,
+    when updating, that conversation's own previous summary — nothing from
+    any other chat (§6 invariant 4). Contact text and the earlier summary
+    are wrapped as untrusted; sender labels come from classification."""
+    timezone = account.timezone
+    profile = [
+        "Owner profile:",
+        f"- preferred language: {account.locale_pref or 'not set'}",
+        f"- timezone: {timezone} (message times below are in it)",
+    ]
+    if period is not None:
+        task = (
+            "Task: summarize what happened in this chat between "
+            f"{_local(period[0], timezone)} and {_local(period[1], timezone)} "
+            "(the period summary). Only the messages of that period are shown."
+        )
+    elif previous is not None:
+        task = (
+            "Task: update the running summary of this chat with the new messages "
+            "(the current summary covers the earlier ones)."
+        )
+    else:
+        task = "Task: write the running summary of this chat from its messages."
+    instructions = "\n\n".join([prompt.text, "\n".join(profile), task])
+
+    items: list[TextItem] = []
+    if previous is not None and period is None:
+        body = wrap(json.dumps(previous, ensure_ascii=False, sort_keys=True), Source.SUMMARY)
+        items.append(
+            TextItem(
+                "user", f"Current running summary (earlier messages):\n{body}", Provenance.MANAGED
+            )
+        )
+    ordered = sorted(messages, key=lambda m: (m.sent_at, m.message_id))
+    lines = [_summary_line(message, timezone) for message in ordered]
+    header = "Messages of the period:" if period is not None else "New messages:"
+    items.append(TextItem("user", header + "\n" + "\n".join(lines), Provenance.MANAGED))
+    return SummarizeContext(
+        instructions=instructions,
+        items=tuple(items),
+        shown_ids=frozenset(m.message_id for m in messages),
+    )
+
+
+def _local(moment: datetime, timezone: str) -> str:
+    try:
+        zone = ZoneInfo(timezone)
+    except ZoneInfoNotFoundError, ValueError:
+        zone = ZoneInfo("UTC")
+    return moment.astimezone(zone).strftime("%Y-%m-%d %H:%M")
+
+
+def _summary_line(message: SourceMessage, timezone: str) -> str:
+    label = SUMMARY_SENDER_LABELS.get(message.direction, "unknown sender")
+    edited = " (edited)" if message.edited else ""
+    parts: list[str] = []
+    if message.media_kind is not None or message.text is None:
+        parts.append(f"({message.media_kind or message.content_type})")
+    if message.text is not None:
+        text = message.text
+        if len(text) > SUMMARY_MESSAGE_CHARS:
+            text = text[:SUMMARY_MESSAGE_CHARS] + "…"
+        source = Source.CONTACT if message.direction == "contact" else Source.OWNER_IN_BUSINESS_CHAT
+        parts.append(wrap(text, source) or "")
+    when = _local(message.sent_at, timezone)
+    return f"[{message.message_id}] {when} {label}{edited}: {' '.join(parts)}"
 
 
 def render_turn(turn: ControlTurn) -> str:

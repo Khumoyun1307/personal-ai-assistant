@@ -47,6 +47,7 @@ from assistant.telegram.gateway import OutboundGateway
 from tests.fakes.channel import FakeChannel
 from tests.fakes.clock import FakeClock
 from tests.fakes.sender import FakeTelegramSender
+from tests.fakes.summaries import RecordingRefresher
 
 pytestmark = pytest.mark.integration
 
@@ -120,6 +121,7 @@ async def env(migrated_url: str) -> AsyncIterator[Env]:
         monthly_budget_usd=None,
         heartbeat_url=None,
         confirmation_applier=RecordingApplier(),
+        summary_refresher=RecordingRefresher(),
     )
     register_tasks(app, handlers)
     async with app.open_async():
