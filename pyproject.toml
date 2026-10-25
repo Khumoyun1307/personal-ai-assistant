@@ -84,6 +84,12 @@ allowed-confusables = ["ʻ", "ʼ", "‘", "’"]
 # flag as confusable with Latin ones.
 "src/assistant/memory/search.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/unit/test_search_normalize.py" = ["RUF001", "RUF002", "RUF003"]
+# The language check's function-word lists and its synthetic samples are
+# Russian and Uzbek Cyrillic text.
+"evals/metrics.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/unit/test_eval_metrics.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/unit/test_eval_retrieval_answers.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/integration/test_eval_retrieval.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/integration/test_message_search.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/integration/test_conversation_tools.py" = ["RUF001", "RUF002", "RUF003"]
 # Untrusted delimiting lists the bracket lookalikes it neutralises.
