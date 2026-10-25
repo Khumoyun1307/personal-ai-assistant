@@ -212,7 +212,10 @@ def summary_view(summary: Mapping[str, Any]) -> dict[str, Any]:
 def _omitted(value: object) -> dict[str, Any]:
     """The list cap's count, said out loud when it cut anything."""
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-        return {"items_omitted": value, "note": f"{value} older item(s) were left out (list cap)."}
+        return {
+            "items_omitted": value,
+            "note": f"{value} more item(s) were left out of these lists (each list is capped).",
+        }
     return {}
 
 

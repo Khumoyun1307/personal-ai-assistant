@@ -64,6 +64,7 @@ from assistant.agent.tools.registry import (
 from assistant.conversations.models import Conversation
 from assistant.db.uow import transaction
 from assistant.memory import catch_up, summaries
+from assistant.memory.summaries import StoreResult
 from assistant.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -82,21 +83,48 @@ SUMMARY_CONCURRENCY = 4
 #: An open-ended catch-up also covers messages dated this far after our clock.
 CLOCK_SKEW = timedelta(minutes=5)
 #: Immediate retries of a chat whose summary was discarded because a message
-#: was deleted or edited during the call (owner, 2026-10-25; D63/D66).
+#: was deleted, edited or expired during the call (owner, 2026-10-25;
+#: D63/D66). A chat set to Ignore or found to be a bot chat is not retried.
 CHANGED_RETRIES = 1
-#: The reason (and attention `check`) for a chat that changed during both.
-CHANGED_DURING_SUMMARY = "changed_during_summary"
+_RETRYABLE = frozenset({StoreResult.CHANGED, StoreResult.EXPIRED})
+#: Reason (and attention `check`) per discard cause, when the chat is left out.
+DISCARD_REASONS = {
+    StoreResult.CHANGED: "changed_during_summary",
+    StoreResult.EXPIRED: "expired_during_summary",
+    StoreResult.IGNORED: "set_to_ignore_during_summary",
+    StoreResult.BOT_CHAT: "bot_chat_during_summary",
+}
+CHANGED_DURING_SUMMARY = DISCARD_REASONS[StoreResult.CHANGED]
+_NOTICE_CAUSE = {
+    StoreResult.CHANGED: (
+        "changed while it was being summarized (a message was deleted or edited), so it was "
+        "left out. Ask again shortly to include it."
+    ),
+    StoreResult.EXPIRED: (
+        "had messages expire under the retention setting while it was being summarized, so "
+        "it was left out. Ask again shortly to include what is still stored."
+    ),
+    StoreResult.IGNORED: (
+        "was set to Ignore mode while it was being summarized, so it was left out: chats in "
+        "Ignore mode are not stored or summarized."
+    ),
+    StoreResult.BOT_CHAT: (
+        "is a chat with a bot (this showed while it was being summarized), so it was left out "
+        "and its stored messages were removed: bot chats are not stored or summarized."
+    ),
+}
+
+
+def discard_notice(conversation_id: int, cause: StoreResult) -> str:
+    """Our own owner-facing words for a chat left out because it changed
+    while it was being summarized, per cause. Content-free: what changed is
+    never quoted or described."""
+    return f"The chat with conversation_id {conversation_id} {_NOTICE_CAUSE[cause]}"
 
 
 def changed_notice(conversation_id: int) -> str:
-    """Our own owner-facing words for a chat left out because it changed
-    while it was being summarized. Says nothing about what changed beyond
-    "deleted or edited": the content must not be quoted or described."""
-    return (
-        f"The chat with conversation_id {conversation_id} changed while it was being "
-        "summarized (a message was deleted or edited), so it was left out. Ask again "
-        "shortly to include it."
-    )
+    """The notice for a deletion or edit (the common cause)."""
+    return discard_notice(conversation_id, StoreResult.CHANGED)
 
 
 def _moment(value: str | None) -> str | None:
@@ -155,7 +183,7 @@ _FAILED_REASONS = {
     SummaryStatus.REFUSED: "the_model_refused",
     SummaryStatus.FAILED: "summary_failed",
     SummaryStatus.NOT_FOUND: "not_found",
-    SummaryStatus.DISCARDED: CHANGED_DURING_SUMMARY,
+    SummaryStatus.SKIPPED: "chat_not_summarized_ignore_or_bot",
 }
 
 
@@ -219,8 +247,9 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
             try:
                 outcome = PeriodOutcome(SummaryStatus.DISCARDED)
                 # The owner asked: a chat that changed during the call (a
-                # deletion or an edit) is retried once at once, with the fresh
-                # messages (D63/D66); a second change leaves it out.
+                # deletion, an edit or an expiry) is retried once at once, with
+                # the fresh messages (D63/D66); a second change — or a chat
+                # set to Ignore or found to be a bot chat — leaves it out.
                 for _ in range(1 + CHANGED_RETRIES):
                     outcome = await summarizer.summarize_period(
                         account_id=ctx.account_id,
@@ -230,7 +259,7 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
                         open_ended=open_ended,
                         parent_run_id=ctx.run_id,
                     )
-                    if outcome.status is not SummaryStatus.DISCARDED:
+                    if outcome.discard_reason not in _RETRYABLE:
                         break
                 return outcome
             except Exception as error:
@@ -249,6 +278,7 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
 
     entries: list[dict[str, Any]] = []
     not_summarized: list[dict[str, Any]] = []
+    notices: list[str] = []
     for item, outcome in zip(chosen, outcomes, strict=True):
         base = {
             "conversation_id": item.conversation_id,
@@ -259,11 +289,13 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
             "awaiting_owner_reply": item.awaiting_owner_reply,
         }
         if outcome.summary is None:
-            reason = (
-                "summaries_unavailable"
-                if summarizer is None
-                else _FAILED_REASONS.get(outcome.status, outcome.status.value)
-            )
+            if summarizer is None:
+                reason = "summaries_unavailable"
+            elif outcome.discard_reason is not None:
+                reason = DISCARD_REASONS[outcome.discard_reason]
+                notices.append(discard_notice(item.conversation_id, outcome.discard_reason))
+            else:
+                reason = _FAILED_REASONS.get(outcome.status, outcome.status.value)
             not_summarized.append({**base, "reason": reason})
             continue
         entry = {
@@ -302,11 +334,6 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
     }
     if lines:
         data["note"] = "Relay every coverage caveat to the owner; none may be dropped."
-    notices = [
-        changed_notice(item["conversation_id"])
-        for item in not_summarized
-        if item.get("reason") == CHANGED_DURING_SUMMARY
-    ]
     if notices:
         data["notices"] = notices
     if not active:
@@ -377,7 +404,7 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         c.conversation_id for c in candidates if c.summary_stale or c.conversation_id not in rolling
     ][:MAX_INLINE_CHECKS]
     summarizer = services.summarizer
-    changed: set[int] = set()
+    changed: dict[int, StoreResult] = {}
     if stale and summarizer is not None:
 
         def job(conversation_id: int) -> Callable[[], Awaitable[RefreshOutcome | None]]:
@@ -388,7 +415,7 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
                     # chat changed during the call (owner, D63/D66).
                     outcome = await summarizer.refresh(conversation_id, max_calls=1)
                     for _ in range(CHANGED_RETRIES):
-                        if outcome.status is not SummaryStatus.DISCARDED:
+                        if outcome.discard_reason not in _RETRYABLE:
                             break
                         outcome = await summarizer.refresh(conversation_id, max_calls=1)
                     return outcome
@@ -404,9 +431,9 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
 
         outcomes = await _bounded_gather([job(conversation_id) for conversation_id in stale])
         changed = {
-            conversation_id
+            conversation_id: outcome.discard_reason
             for conversation_id, outcome in zip(stale, outcomes, strict=True)
-            if outcome is not None and outcome.status is SummaryStatus.DISCARDED
+            if outcome is not None and outcome.discard_reason is not None
         }
 
     async with transaction(services.session_factory) as uow:
@@ -444,7 +471,9 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             "last_answer": local_time(candidate.last_answer_at, tz),
             "needs_reply": None,
             "check": (
-                CHANGED_DURING_SUMMARY if candidate.conversation_id in changed else "not_checked"
+                DISCARD_REASONS[changed[candidate.conversation_id]]
+                if candidate.conversation_id in changed
+                else "not_checked"
             ),
         }
         if checked and stored is not None:
@@ -468,8 +497,8 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             "Listed: chats where the contact wrote last and neither the owner nor the "
             "assistant answered since. needs_reply is a model judgement from the chat's "
             "summary; not_checked means it could not be checked now; "
-            "changed_during_summary means the chat changed while it was being checked — "
-            "relay its notice."
+            "a check ending in _during_summary means the chat changed while it was being "
+            "checked — relay its notice."
         ),
         "window_days": days,
         "timezone": tz,
@@ -479,7 +508,9 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         data["note"] = "No stored chat is waiting for the owner's reply in this window."
     if changed:
         data["notices"] = [
-            changed_notice(c.conversation_id) for c in candidates if c.conversation_id in changed
+            discard_notice(c.conversation_id, changed[c.conversation_id])
+            for c in candidates
+            if c.conversation_id in changed
         ]
     return ToolOutcome(
         "ok",

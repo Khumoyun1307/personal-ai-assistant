@@ -9,8 +9,8 @@ lives here:
   (period), account-scoped, each with its `content_hash`;
 - **storing** a rolling summary optimistically (only if the stored one is
   still the one it was built on) and a period summary as a cache keyed by
-  range and `source_digest`. Both take the §9.4 locks (account FOR KEY
-  SHARE, so a store waits for managed-data deletion's FOR UPDATE; then the
+  range and `source_digest`. Both take the §9.4 locks (account FOR SHARE,
+  so a store waits for managed-data deletion's FOR NO KEY UPDATE; then the
   conversation FOR UPDATE) and **re-check the source in a fresh statement**:
   every message the model read must still be retained with the same
   content, and the chat must still be summarizable (not Ignore, not a bot
@@ -109,12 +109,25 @@ class ConversationRef:
 
 
 class StoreResult(StrEnum):
+    """What a summary store did. Every value but STORED stores nothing; all
+    but RACED mean the chat changed while the model ran, and say how."""
+
     STORED = "stored"
     RACED = "raced"
-    """Another refresh stored first, or the summary was invalidated."""
-    SOURCE_CHANGED = "source_changed"
-    """A message the model read was deleted or edited, or the chat can no
-    longer be summarized: nothing stored."""
+    """Another refresh stored first: its summary stands."""
+    CHANGED = "changed"
+    """A message the model read was deleted or edited (or the summary it
+    built on was invalidated by one)."""
+    EXPIRED = "expired"
+    """A message the model read expired under the retention setting."""
+    IGNORED = "ignored"
+    """The chat was set to Ignore mode."""
+    BOT_CHAT = "bot_chat"
+    """The chat turned out to be a chat with a bot (purged)."""
+
+    @property
+    def discarded(self) -> bool:
+        return self not in (StoreResult.STORED, StoreResult.RACED)
 
 
 def _stored(row: ConversationSummary) -> StoredSummary:
@@ -293,22 +306,34 @@ async def period_source(
     limit: int,
 ) -> PeriodSource:
     """The retained messages of one conversation sent in `[start, end)`:
-    counted and fingerprinted in full, but only the newest `limit` loaded."""
+    counted and fingerprinted in full, but only the newest `limit` loaded.
+
+    A range that fits the limit is read in ONE statement and its digest
+    taken from those very rows, so the digest and the texts cannot differ.
+    A larger range is fingerprinted first and loaded second: a change in
+    between can only make the store's re-check fail (a wasted call), never
+    let changed text through."""
+    statement = (
+        select(Message)
+        .where(*_retained(account_id, conversation_id))
+        .where(Message.sent_at >= start)
+        .where(Message.sent_at < end)
+        .order_by(Message.sent_at.desc(), Message.id.desc())
+    )
+    rows = list((await session.execute(statement.limit(limit + 1))).scalars().all())
+    if len(rows) <= limit:
+        kept = [_source(row) for row in reversed(rows)]
+        return PeriodSource(
+            messages=tuple(kept),
+            total=len(kept),
+            digest=source_digest([(m.message_id, m.content_hash) for m in kept]),
+            covers_through_message_id=max((m.message_id for m in kept), default=None),
+        )
     digest, total, highest = await _period_fingerprint(
         session, account_id, conversation_id, start, end
     )
-    rows = (
-        await session.execute(
-            select(Message)
-            .where(*_retained(account_id, conversation_id))
-            .where(Message.sent_at >= start)
-            .where(Message.sent_at < end)
-            .order_by(Message.sent_at.desc(), Message.id.desc())
-            .limit(limit)
-        )
-    ).scalars()
-    kept = [_source(row) for row in rows.all()]
-    kept.reverse()
+    newest = list((await session.execute(statement.limit(limit))).scalars().all())
+    kept = [_source(row) for row in reversed(newest)]
     return PeriodSource(
         messages=tuple(kept), total=total, digest=digest, covers_through_message_id=highest
     )
@@ -355,44 +380,62 @@ async def lock_conversation(
 
 async def _lock_for_store(
     session: AsyncSession, account_id: int, conversation_id: int
-) -> Conversation | None:
-    """§9.4 lock order for a summary write: the account FOR KEY SHARE (so it
-    waits for managed-data deletion, which holds the account FOR UPDATE),
-    then the conversation FOR UPDATE (a deletion, edit or bot-chat purge of
-    this chat holds it too). None when the chat may no longer be summarized:
-    gone, Ignore mode, or a bot chat."""
+) -> StoreResult | None:
+    """§9.4 lock order for a summary write: the account FOR SHARE (it waits
+    for managed-data deletion's FOR NO KEY UPDATE, but neither for
+    ingestion's foreign-key share nor for other stores), then the
+    conversation FOR UPDATE — the lock every deletion, edit, bot-chat
+    purge, retention purge and managed-data deletion of this chat takes
+    first, so a store waits for them and then sees their result. None when
+    the chat may still be summarized; otherwise why not."""
     account = (
         await session.execute(
-            select(Account.id).where(Account.id == account_id).with_for_update(key_share=True)
+            select(Account.id).where(Account.id == account_id).with_for_update(read=True)
         )
     ).scalar_one_or_none()
     if account is None:
-        return None
+        return StoreResult.CHANGED
     conversation = await lock_conversation(session, account_id, conversation_id)
-    if conversation is None or conversation.mode == "ignore":
-        return None
+    if conversation is None:
+        return StoreResult.CHANGED
     is_bot = (
         await session.execute(select(Contact.is_bot).where(Contact.id == conversation.contact_id))
     ).scalar_one_or_none()
-    return None if is_bot else conversation
+    if is_bot:
+        return StoreResult.BOT_CHAT
+    if conversation.mode == "ignore":
+        return StoreResult.IGNORED
+    return None
 
 
-async def _source_intact(
+async def _changed_source(
     session: AsyncSession,
     account_id: int,
     conversation_id: int,
     source: Mapping[int, str | None],
-) -> bool:
-    """Every message the model read is still retained with the same content
-    (read in a fresh statement, after the locks)."""
+) -> StoreResult | None:
+    """None when every message the model read is still retained with the
+    same content (read in a fresh statement, after the locks); otherwise
+    EXPIRED if one of them expired under retention, else CHANGED."""
     if not source:
-        return True
+        return None
     rows = await session.execute(
         select(Message.id, Message.content_hash)
         .where(*_retained(account_id, conversation_id))
         .where(Message.id.in_(list(source)))
     )
-    return {int(mid): content for mid, content in rows.all()} == dict(source)
+    if {int(mid): content for mid, content in rows.all()} == dict(source):
+        return None
+    expired = (
+        await session.execute(
+            select(func.count())
+            .select_from(Message)
+            .where(Message.account_id == account_id)
+            .where(Message.id.in_(list(source)))
+            .where(Message.purged_at.is_not(None))
+        )
+    ).scalar_one()
+    return StoreResult.EXPIRED if expired else StoreResult.CHANGED
 
 
 async def store_rolling(
@@ -413,10 +456,10 @@ async def store_rolling(
     (b) every message it was written from is unchanged, and (c) the stored
     summary is still the one it was built on (`based_on` = its `version`,
     None for none). Otherwise nothing is written."""
-    if await _lock_for_store(session, account_id, conversation_id) is None:
-        return StoreResult.SOURCE_CHANGED
-    if not await _source_intact(session, account_id, conversation_id, source):
-        return StoreResult.SOURCE_CHANGED
+    refused = await _lock_for_store(session, account_id, conversation_id)
+    refused = refused or await _changed_source(session, account_id, conversation_id, source)
+    if refused is not None:
+        return refused
     current = (
         await session.execute(
             select(ConversationSummary)
@@ -426,6 +469,10 @@ async def store_rolling(
             .with_for_update()
         )
     ).scalar_one_or_none()
+    if current is None and based_on is not None:
+        # The summary this was built on is gone: only a deletion or edit
+        # of a message it covered (or a purge) removes it (D63, D66).
+        return StoreResult.CHANGED
     if (None if current is None else (current.id, current.covers_through_message_id)) != based_on:
         return StoreResult.RACED
     if current is None:
@@ -478,6 +525,7 @@ async def store_period(
     source_end: datetime,
     end: datetime | None,
     digest: str,
+    source: Mapping[int, str | None],
     summary: Mapping[str, Any],
     covers_through: int | None,
     message_count: int,
@@ -489,14 +537,17 @@ async def store_period(
     only if the range's messages are exactly those it was written from
     (`digest` recomputed after the locks) and the chat may still be
     summarized. `source_end` is the range end that was read; `end` is the
-    stored key (None = open-ended)."""
-    if await _lock_for_store(session, account_id, conversation_id) is None:
-        return StoreResult.SOURCE_CHANGED
+    stored key (None = open-ended); `source` maps the messages the model
+    read to their content hashes (to say why, when the digest moved)."""
+    refused = await _lock_for_store(session, account_id, conversation_id)
+    if refused is not None:
+        return refused
     current, _, _ = await _period_fingerprint(
         session, account_id, conversation_id, start, source_end
     )
     if current != digest:
-        return StoreResult.SOURCE_CHANGED
+        why = await _changed_source(session, account_id, conversation_id, source)
+        return why or StoreResult.CHANGED
     await session.execute(
         delete(ConversationSummary)
         .where(ConversationSummary.account_id == account_id)

@@ -126,6 +126,8 @@ class RefreshOutcome:
     calls: int = 0
     #: More unseen messages remain than one refresh processes.
     more_pending: bool = False
+    #: DISCARDED only: why (changed, expired, ignored, bot_chat).
+    discard_reason: StoreResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +138,8 @@ class PeriodOutcome:
     message_count: int = 0
     summarized_count: int = 0
     calls: int = 0
+    #: DISCARDED only: why (changed, expired, ignored, bot_chat).
+    discard_reason: StoreResult | None = None
 
 
 class _CallFailedError(Exception):
@@ -279,15 +283,17 @@ class Summarizer:
             result=result.value,
             more_pending=more,
         )
-        status = {
-            StoreResult.STORED: SummaryStatus.REFRESHED,
-            StoreResult.RACED: SummaryStatus.RACED,
-            StoreResult.SOURCE_CHANGED: SummaryStatus.DISCARDED,
-        }[result]
+        if result.discarded:
+            status = SummaryStatus.DISCARDED
+        elif result is StoreResult.RACED:
+            status = SummaryStatus.RACED
+        else:
+            status = SummaryStatus.REFRESHED
         return RefreshOutcome(
             status,
             account_id,
             calls=calls,
+            discard_reason=result if result.discarded else None,
             more_pending=more and result is StoreResult.STORED,
         )
 
@@ -317,6 +323,13 @@ class Summarizer:
             # managed content too (§14.3).
             if not await self._managed_ok(session, account_id):
                 return PeriodOutcome(SummaryStatus.NO_CONSENT)
+            # Like a refresh: an Ignore-mode or bot chat is never summarized,
+            # whatever the caller saw a moment ago.
+            ref = await summaries.conversation_ref(session, conversation_id)
+            if ref is None or ref.account_id != account_id:
+                return PeriodOutcome(SummaryStatus.NOT_FOUND)
+            if ref.mode == "ignore" or ref.is_bot:
+                return PeriodOutcome(SummaryStatus.SKIPPED)
             source = await summaries.period_source(
                 session,
                 account_id,
@@ -358,6 +371,7 @@ class Summarizer:
                     source_end=end,
                     end=end_key,
                     digest=source.digest,
+                    source={m.message_id: m.content_hash for m in source.messages},
                     summary=clean,
                     covers_through=source.covers_through_message_id,
                     message_count=len(source.messages),
@@ -383,7 +397,12 @@ class Summarizer:
         )
         if result is not StoreResult.STORED:
             # Written from messages that changed meanwhile: never shown.
-            return PeriodOutcome(SummaryStatus.DISCARDED, message_count=source.total, calls=calls)
+            return PeriodOutcome(
+                SummaryStatus.DISCARDED,
+                message_count=source.total,
+                calls=calls,
+                discard_reason=result if result.discarded else StoreResult.CHANGED,
+            )
         return PeriodOutcome(
             SummaryStatus.SUMMARIZED, clean, source.total, len(source.messages), calls
         )
