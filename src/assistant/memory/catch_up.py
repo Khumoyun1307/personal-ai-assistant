@@ -155,6 +155,9 @@ class PeriodCoverage:
     connection_inactive_since: datetime | None = None
     #: Chats asked about (a scoped catch-up) that are in Ignore mode.
     ignored_in_scope: int = 0
+    #: Closed intervals in which the connection was off (disabled, then
+    #: reconnected), overlapping the period — from the connection events.
+    off_intervals: tuple[tuple[datetime, datetime], ...] = ()
 
 
 async def period_coverage(
@@ -180,6 +183,7 @@ async def period_coverage(
     coverage_began: datetime | None = None
     inactive: str | None = None
     inactive_since: datetime | None = None
+    off_intervals: tuple[tuple[datetime, datetime], ...] = ()
     if connection is not None:
         status, enabled, connected_at, changed_at = connection
         # `connected_at` moves to the latest reconnect; coverage began at the
@@ -199,9 +203,13 @@ async def period_coverage(
             )
         ).scalar_one_or_none()
         coverage_began = min(m for m in (connected_at, first_event, first_message) if m is not None)
+        closed, open_since = await _off_intervals(session, account_id)
+        off_intervals = tuple((off, on) for off, on in closed if off < end and on > start)
         if status != "active" or not enabled:
             inactive = "disabled" if not enabled else str(status)
-            inactive_since = changed_at
+            # Dated by the event that switched it off, not `updated_at`
+            # (a rights change moves that too).
+            inactive_since = open_since or changed_at
 
     gap_query = (
         select(CoverageGap)
@@ -296,7 +304,43 @@ async def period_coverage(
         connection_inactive=inactive,
         connection_inactive_since=inactive_since,
         ignored_in_scope=ignored_in_scope,
+        off_intervals=off_intervals,
     )
+
+
+#: Connection events that switch observation off, and back on (accounts/
+#: connections.py `Change`). An event with `is_enabled = false` is off too.
+_OFF_CHANGES = frozenset({"disabled"})
+_ON_CHANGES = frozenset({"connected", "reconnected", "activated"})
+
+
+async def _off_intervals(
+    session: AsyncSession, account_id: int
+) -> tuple[list[tuple[datetime, datetime]], datetime | None]:
+    """The account's off intervals from `business_connection_events`, by
+    event time: closed ones `(off, back on)`, and the start of one still
+    open (None if observation is on)."""
+    rows = (
+        await session.execute(
+            select(
+                BusinessConnectionEvent.change,
+                BusinessConnectionEvent.is_enabled,
+                BusinessConnectionEvent.observed_at,
+            )
+            .where(BusinessConnectionEvent.account_id == account_id)
+            .order_by(BusinessConnectionEvent.observed_at, BusinessConnectionEvent.id)
+        )
+    ).all()
+    closed: list[tuple[datetime, datetime]] = []
+    off_since: datetime | None = None
+    for change, enabled, at in rows:
+        if change in _OFF_CHANGES or (not enabled and change not in ("stale_event", "foreign")):
+            if off_since is None:
+                off_since = at
+        elif change in _ON_CHANGES and enabled and off_since is not None:
+            closed.append((off_since, at))
+            off_since = None
+    return closed, off_since
 
 
 def caveats(coverage: PeriodCoverage, timezone: str) -> list[str]:
@@ -312,6 +356,11 @@ def caveats(coverage: PeriodCoverage, timezone: str) -> list[str]:
         lines.append(
             f"Coverage began at {_local(coverage.coverage_began, timezone)}, when the "
             "assistant was connected: messages before that were never seen."
+        )
+    for off, on in coverage.off_intervals:
+        lines.append(
+            f"The business connection was off from {_local(off, timezone)} to "
+            f"{_local(on, timezone)}: messages sent in between were not observed and are missing."
         )
     if coverage.connection_inactive is not None:
         since = (
