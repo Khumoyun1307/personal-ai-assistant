@@ -746,7 +746,7 @@ async def covered_through(session: AsyncSession, conversation_ids: set[int]) -> 
         .where(ConversationSummary.conversation_id.in_(sorted(conversation_ids)))
         .where(ConversationSummary.covers_through_message_id.is_not(None))
     )
-    return {int(c): int(m) for c, m in rows.all()}
+    return {int(c): int(m) for c, m in rows.all() if m is not None}
 
 
 async def rollup_candidates(
