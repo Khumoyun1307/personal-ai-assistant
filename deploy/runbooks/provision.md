@@ -23,7 +23,8 @@ them by path and never opens them:
 |---|---|---|
 | `var/cloud/oci/config`, `var/cloud/oci/oci_api_key.pem` | OCI CLI config (`key_file=/oci/oci_api_key.pem`, `region=us-ashburn-1`) and API private key | owner (A3) |
 | `var/cloud/b2.env` | `B2_BUCKET`, `B2_ENDPOINT`, `B2_KEY_ID`, `B2_APP_KEY` | owner (A4) |
-| `var/prod.env` | `BOT_TOKEN` (Alviro), `OPENAI_API_KEY` (prod key), `HEARTBEAT_URL`; optional `PRIVACY_POLICY_URL`, `LLM_MONTHLY_BUDGET_USD`, `FEATURE_FLAGS` | owner (A5, A6) |
+| `var/prod.env` | `BOT_TOKEN` (Alviro), `OPENAI_API_KEY` (prod key), `HEARTBEAT_URL`; `OWNER_TELEGRAM_IDS` (the main account); optional `PRIVACY_POLICY_URL` (default: the published page), `LLM_MONTHLY_BUDGET_USD`, `FEATURE_FLAGS` | owner (A5, A6); `OWNER_TELEGRAM_IDS` copied from the laptop settings by `just dev-bot-switch` |
+| `var/dev-switch/env.before-dev-bot` | the laptop settings as they were before the switch (old, revoked Alviro token) | agent (`just dev-bot-switch`); owner deletes it once the dev bot works |
 | `var/cloud/ssh/id_ed25519{,.pub}`, `known_hosts` | the agent's SSH key for `deploy@<ip>` | agent (B2) |
 | `var/cloud/age-identity.txt` | backup key pair; only the public key leaves the laptop | agent (B3); owner moves it (A8) |
 | `var/cloud/prod-generated.env` | generated `POSTGRES_PASSWORD` (hex) | agent (B5) |
@@ -82,9 +83,10 @@ Copy the ping URL into `var/prod.env` as `HEARTBEAT_URL`.
   `var/prod.env` as `OPENAI_API_KEY` (never the dev key, so either can be
   rotated alone). Optional: `LLM_MONTHLY_BUDGET_USD`, `PRIVACY_POLICY_URL`.
 
-**A7. Hand over to the agent**, in chat: "provision production", the e-mail
-address for budget alerts, and the main account's Telegram user id
-(`OWNER_TELEGRAM_IDS`). No secret goes into chat.
+**A7. Hand over to the agent**, in chat: "provision production" and the
+e-mail address for budget alerts. The main account's Telegram user id
+(`OWNER_TELEGRAM_IDS`) is not typed anywhere: `just dev-bot-switch` copies it
+from the laptop settings into `var/prod.env`. No secret goes into chat.
 
 Owner steps that come later: **A8** after the restore test (B7.4) move
 `var/cloud/age-identity.txt` into your password manager (and on paper), then
@@ -148,8 +150,8 @@ Any `ERROR:` line → stop and report it.
 `OWNER_TELEGRAM_IDS` in `var/prod.env`, written by `just dev-bot-switch`) →
 `valid: …` (names only) and `server: /opt/assistant/.env 600 deploy`.
 `invalid: <NAME> …` → hand back to the owner to fix that value in
-`var/prod.env` or `var/cloud/b2.env`. A note about an empty
-`PRIVACY_POLICY_URL` must be resolved before the bot is announced.
+`var/prod.env` or `var/cloud/b2.env`. `PRIVACY_POLICY_URL` defaults to the
+published policy page.
 
 **B6. First start.** Before this, confirm with the owner that nothing else
 polls Alviro (the laptop's `.env` holds the dev bot's token). Then

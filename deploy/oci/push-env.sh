@@ -39,7 +39,7 @@ check_only=0
 write_to=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --owner-ids) owner_ids="${2:-}"; shift 2 ;;
+    --owner-ids) [ $# -ge 2 ] || die "--owner-ids needs a value"; owner_ids="$2"; shift 2 ;;
     --check) check_only=1; shift ;;
     # Test hook: write the result to a file under var/cloud instead of SSH.
     --write-to) write_to="${2:-}"; shift 2 ;;
@@ -152,9 +152,7 @@ need AGE_RECIPIENT '^age1[0-9a-z]{58}$' "an age public key"
 need RCLONE_CONFIG_OFFSITE_ACCOUNT '^[0-9A-Za-z]{12,}$' "a B2 application key id"
 need RCLONE_CONFIG_OFFSITE_KEY '^[0-9A-Za-z/+]{20,}$' "a B2 application key"
 need BACKUP_REMOTE '^offsite:[A-Za-z0-9-]{6,63}$' "offsite:<B2 bucket name>"
-if [ -z "${v[PRIVACY_POLICY_URL]}" ]; then
-  log "note: PRIVACY_POLICY_URL is empty (set it in var/prod.env; /privacy needs it)"
-fi
+need PRIVACY_POLICY_URL '^https://[^[:space:]]+$' "an https URL"
 if [ "${#problems[@]}" -gt 0 ]; then
   for p in "${problems[@]}"; do log "invalid: $p"; done
   die "server .env not pushed"

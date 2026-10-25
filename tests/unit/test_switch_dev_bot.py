@@ -176,3 +176,25 @@ def test_switched_settings_without_the_main_id_in_prod_stop(files: dict[str, Pat
     )
     assert _run(files) == 1
     assert "OWNER_TELEGRAM_IDS" not in switch.read_env(files["prod"])
+
+
+def test_a_byte_order_mark_does_not_hide_the_first_key(files: dict[str, Path]) -> None:
+    # PowerShell's Out-File writes a BOM; the old token must still be replaced.
+    for name in ("env", "prod", "dev"):
+        files[name].write_bytes(b"\xef\xbb\xbf" + files[name].read_bytes())
+    files["env"].write_bytes(
+        b"\xef\xbb\xbf" + f"BOT_TOKEN={OLD_TOKEN}\nOWNER_TELEGRAM_IDS={MAIN_ID}\n".encode()
+    )
+
+    assert _run(files) == 0
+
+    text = files["env"].read_text(encoding="utf-8-sig")
+    assert OLD_TOKEN not in text
+    assert switch.read_env(files["env"])["BOT_TOKEN"] == DEV_TOKEN
+    assert switch.read_env(files["prod"])["OWNER_TELEGRAM_IDS"] == MAIN_ID
+
+
+def test_no_temporary_copy_is_left_behind(files: dict[str, Path]) -> None:
+    assert _run(files) == 0
+    assert not list(files["env"].parent.glob("*.switch-tmp"))
+    assert not list(files["prod"].parent.glob("*.switch-tmp"))

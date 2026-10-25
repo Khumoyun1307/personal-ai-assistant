@@ -78,11 +78,11 @@ probe *args:
 probe-prod *args:
     {{ run }} python tools/probe/probe.py --prod-token {{ args }}
 
-# Step D (D40): move the main account's id into var/prod.env, put the dev bot into .env, then recreate the dev database (its data is dropped).
+# Step D (D40): move the main account's id into var/prod.env, put the dev bot into .env, then recreate the dev database. Every run drops the dev database; the venv and uv cache are kept.
 dev-bot-switch:
     {{ compose }} run --rm --no-deps app python tools/dev/switch_dev_bot.py
     {{ compose }} down
-    -docker volume rm assistant-dev_db-data
+    docker volume rm -f assistant-dev_db-data
     {{ compose }} up -d db
     {{ run }} uv run python -m assistant migrate
 

@@ -38,7 +38,9 @@ def read_env(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.is_file():
         return values
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    # utf-8-sig: PowerShell's Out-File writes a BOM, which would glue itself
+    # to the first key.
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
         line = raw.strip()
         if line.startswith("export "):
             line = line[len("export ") :].lstrip()
@@ -54,7 +56,7 @@ def read_env(path: Path) -> dict[str, str]:
 
 def write_env(path: Path, updates: dict[str, str]) -> None:
     """Set keys in place (first assignment kept, repeats dropped), append the rest."""
-    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
     out: list[str] = []
     done: set[str] = set()
     for raw in lines:
@@ -70,10 +72,14 @@ def write_env(path: Path, updates: dict[str, str]) -> None:
         out.append(raw)
     out.extend(f"{key}={value}" for key, value in updates.items() if key not in done)
     tmp = path.with_name(path.name + ".switch-tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write("\n".join(out) + "\n")
-    tmp.replace(path)
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("\n".join(out) + "\n")
+        tmp.replace(path)
+    finally:
+        # A failed replace must not leave a second copy of the settings behind.
+        tmp.unlink(missing_ok=True)
 
 
 def _usable(value: str, pattern: re.Pattern[str]) -> bool:
