@@ -8,6 +8,8 @@ schema, so a new content column cannot slip in unclassified.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from sqlalchemy import select, text
 
@@ -15,6 +17,9 @@ from assistant.accounts.service import record_control_turn
 from assistant.agent.models import AgentRun, ToolConfirmation
 from assistant.privacy.content_columns import CONTENT_COLUMNS, NON_CONTENT_COLUMNS
 from assistant.privacy.deletion import delete_managed_data, purge_conversation
+from tests.integration.business_env import (
+    CONTACT as CONTACT_CHAT,
+)
 from tests.integration.business_env import (
     OWNER,
     Env,
@@ -214,6 +219,65 @@ async def test_purging_a_conversation_redacts_the_turns_that_referred_to_it(env:
     assert texts[by_contact.id] is None
     assert texts[unrelated.id] == "Synthetic unrelated"
     assert await _columns_containing(env, CANARY) == []
+
+
+async def _add_summaries(env: Env, account_id: int, conversation_id: int, marker: str) -> None:
+    async with env.factory() as session, session.begin():
+        for kind, start in (("rolling", None), ("period", env.clock.now())):
+            await session.execute(
+                text(
+                    "INSERT INTO app.conversation_summaries "
+                    "(account_id, conversation_id, kind, period_start, summary) "
+                    "VALUES (:a, :c, :k, :s, CAST(:j AS jsonb))"
+                ),
+                {
+                    "a": account_id,
+                    "c": conversation_id,
+                    "k": kind,
+                    "s": start,
+                    "j": json.dumps({"overview": f"{marker} summary"}),
+                },
+            )
+
+
+async def test_conversation_summaries_go_with_purge_and_managed_data_deletion(env: Env) -> None:
+    """S03.2's content column `conversation_summaries.summary` is covered by
+    both cascades: a conversation purge takes that chat's summaries only;
+    managed-data deletion (offered on decline/revoke) takes them all."""
+    await connect(env)
+    await deliver(env, business_message(message_text=f"{CANARY} one"))
+    await deliver(
+        env,
+        business_message(from_id=7000000006, chat_id=7000000006, message_text="Synthetic two"),
+    )
+    account_id = await _account_id(env, OWNER)
+    async with env.factory() as session:
+        rows = dict(
+            (
+                await session.execute(text("SELECT business_chat_id, id FROM app.conversations"))
+            ).all()
+        )
+    first, second = rows[CONTACT_CHAT], rows[7000000006]
+    await _add_summaries(env, account_id, first, CANARY)
+    await _add_summaries(env, account_id, second, "OTHER-SYNTH")
+    assert "app.conversation_summaries.summary" in await _columns_containing(env, CANARY)
+
+    async with env.factory() as session, session.begin():
+        report = await purge_conversation(
+            session,
+            account_id=account_id,
+            conversation_id=first,
+            business_chat_id=CONTACT_CHAT,
+            clock=env.clock,
+        )
+    assert report.summaries == 2
+    assert await _columns_containing(env, CANARY) == []
+    assert "app.conversation_summaries.summary" in await _columns_containing(env, "OTHER-SYNTH")
+
+    async with env.factory() as session, session.begin():
+        report = await delete_managed_data(session, account_id=account_id, clock=env.clock)
+    assert report.summaries == 2
+    assert await _columns_containing(env, "OTHER-SYNTH") == []
 
 
 async def test_deletion_leaves_other_accounts_intact(migrated_url: str) -> None:

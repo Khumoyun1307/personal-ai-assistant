@@ -1106,3 +1106,24 @@ async def test_without_managed_consent_the_summary_tools_are_absent(senv: Env) -
     offered = {tool.name for tool in fake.requests[0].tools}
     assert not offered & {"summarize_period", "get_attention_list", "get_conversation"}
     assert "SYNTH-" not in json.dumps([everything(r) for r in fake.requests])
+
+
+# ============================================================ retention
+async def test_period_summaries_expire_after_thirty_days_rolling_ones_stay(senv: Env) -> None:
+    """§10.4: a period summary is a catch-up cache (30 days); the rolling
+    summary is memory and stays until deleted (R-07)."""
+    from assistant.privacy.retention import sweep_all
+
+    a, _ = await seed(senv)
+    fake = FakeLLM()
+    fake.parsed = [echo, echo]
+    await summarizer(senv, fake).refresh(a)
+    await catch_up(senv, fake, since="2026-10-18 08:30", until=None, conversation=a)
+
+    senv.clock.advance(days=29)
+    assert (await sweep_all(senv.factory, senv.clock)).period_summaries == 0
+    senv.clock.advance(days=2)
+    report = await sweep_all(senv.factory, senv.clock)
+
+    assert report.period_summaries == 1
+    assert [(row.conversation_id, row.kind) for row in await summary_rows(senv)] == [(a, "rolling")]

@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "business_connections",
     "consents",
     "control_turns",
+    "conversation_summaries",
     "foreign_connections",
     "inbound_updates",
     "llm_calls",
@@ -268,6 +269,51 @@ def test_0010_policy_notice_marker_reverses(scratch_url: str) -> None:
             "SELECT count(*) FROM app.accounts WHERE telegram_user_id = 4747"
         ).fetchone()
         assert kept == (1,)
+    run_alembic(scratch_url, "head")
+
+
+def test_0011_conversation_summaries_reverse(scratch_url: str) -> None:
+    """S03.2: one rolling summary per conversation, one period row per range
+    (a NULL end counts as one value), the kind/bounds CHECKs, cascades from
+    the conversation, and a symmetric downgrade."""
+    run_alembic(scratch_url, "base")
+    run_alembic(scratch_url, "0011")
+    assert "conversation_summaries" in tables_in(scratch_url, "app")
+    assert {"uq_conversation_summaries_rolling", "uq_conversation_summaries_period"} <= _indexes(
+        scratch_url, "conversation_summaries"
+    )
+    _seed_message(scratch_url, "synthetic")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT account_id, id FROM app.conversations WHERE business_chat_id = 77"
+        ).fetchone()
+        assert row is not None
+        account_id, conversation_id = row
+        insert = (
+            "INSERT INTO app.conversation_summaries (account_id, conversation_id, kind, "
+            "period_start, period_end, summary) VALUES (%s, %s, %s, %s, %s, '{}')"
+        )
+        conn.execute(insert, (account_id, conversation_id, "rolling", None, None))
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(insert, (account_id, conversation_id, "rolling", None, None))
+        start = "2026-10-18 08:00+00"
+        conn.execute(insert, (account_id, conversation_id, "period", start, None))
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(insert, (account_id, conversation_id, "period", start, None))
+        conn.execute(insert, (account_id, conversation_id, "period", start, "2026-10-18 09:00+00"))
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(insert, (account_id, conversation_id, "weekly", None, None))
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(insert, (account_id, conversation_id, "rolling", start, None))
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(insert, (account_id, conversation_id, "period", None, None))
+        conn.execute("DELETE FROM app.messages WHERE conversation_id = %s", (conversation_id,))
+        conn.execute("DELETE FROM app.conversations WHERE id = %s", (conversation_id,))
+        left = conn.execute("SELECT count(*) FROM app.conversation_summaries").fetchone()
+        assert left == (0,)
+
+    run_alembic(scratch_url, "0010", down=True)
+    assert "conversation_summaries" not in tables_in(scratch_url, "app")
     run_alembic(scratch_url, "head")
 
 
