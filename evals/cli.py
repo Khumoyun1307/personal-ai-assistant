@@ -27,25 +27,44 @@ from assistant.core.clock import SystemClock
 from evals.budget import (
     DEFAULT_BUDGET_USD,
     BudgetedLLMClient,
-    BudgetError,
     CallLedger,
     Prices,
+    check_overrides,
     parse_price,
 )
 from evals.corpus import eval_database_url, isolated_corpus
-from evals.live import LiveSetupError, ModelChoice, build_client, load_live_config, resolve_model
+from evals.errors import EvalsError
+from evals.live import ModelChoice, build_client, load_live_config, resolve_model
 from evals.report import RunMeta, fmt_measure, render_comparison
 from evals.retrieval import RetrievalMode, RetrievalTarget
 from evals.review import ReviewLedger
 from evals.runner import RefusedError, check_estimate, ensure_frozen, require_live, run_target
 from evals.schema import load_e1, load_queries
-from evals.targets import RunContext, SummaryTarget, TargetNotAvailableError
+from evals.targets import RunContext, SummaryTarget, TargetNotAvailableError, TargetResult
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_DIR = REPO / "docs" / "evals"
 REVIEWS_DIR = Path(__file__).resolve().parent / "reviews"
 EXIT_REFUSED = 2
 EXIT_NOT_AVAILABLE = 3
+#: A run that stopped before its planned items (the budget cap): its report was
+#: written, but the run failed.
+EXIT_INCOMPLETE = 4
+
+
+def exit_code(result: TargetResult) -> int:
+    """Non-zero for a stopped run. A deliberate `--limit` trial is not a failure."""
+    return EXIT_INCOMPLETE if result.stopped else 0
+
+
+def _positive(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a whole number, got '{value}'") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return number
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,7 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="MODEL=IN:OUT",
         help="USD per 1M tokens for a model the price table lacks (repeatable)",
     )
-    run.add_argument("--limit", type=int, help="evaluate only the first N items")
+    run.add_argument(
+        "--limit",
+        type=_positive,
+        help="evaluate only the first N items (N >= 1): a trial run, never a gate",
+    )
     run.add_argument("--estimate-only", action="store_true", help="print the cost and stop")
     run.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="where to write reports")
     run.add_argument("--no-write", action="store_true", help="do not write report files")
@@ -119,9 +142,11 @@ def _cap(value: str) -> Decimal:
 
 def _prices(specs: Sequence[str]) -> Prices:
     try:
-        return dict(parse_price(spec) for spec in specs)
+        prices = dict(parse_price(spec) for spec in specs)
+        check_overrides(prices)
     except ValueError as error:
         raise RefusedError(str(error)) from None
+    return prices
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -134,10 +159,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.target == "summary":
             return _summary(args)
         return asyncio.run(_retrieval(args))
-    except (RefusedError, LiveSetupError, BudgetError, RuntimeError) as error:
-        return _refuse(str(error))
     except TargetNotAvailableError as error:
         return _refuse(str(error), EXIT_NOT_AVAILABLE)
+    except EvalsError as error:  # the tool's own, explainable failures; a bug keeps its traceback
+        return _refuse(str(error))
 
 
 def _verify() -> int:
@@ -161,6 +186,11 @@ def _summary(args: argparse.Namespace) -> int:
 
 
 async def _retrieval(args: argparse.Namespace) -> int:
+    if args.live and args.no_write:
+        raise RefusedError(
+            "refusing --live with --no-write: a model run must leave its report (and, if it "
+            "fails, its spend ledger) so money spent is never unrecorded"
+        )
     digests = ensure_frozen()
     cap, prices = _cap(args.budget_usd), _prices(args.price)
     reviews = _reviews(args.reviews, "retrieval")
@@ -179,6 +209,7 @@ async def _retrieval(args: argparse.Namespace) -> int:
         live_client = build_client(load_live_config(targets[-1].route, args.model))
     run_date = args.date or SystemClock().now().date()
     out_dir = None if args.no_write else args.out_dir
+    code = 0
     async with isolated_corpus(eval_database_url(), load_e1()) as corpus:
         for target, choice in zip(targets, choices, strict=True):
             ledger = CallLedger()
@@ -204,23 +235,32 @@ async def _retrieval(args: argparse.Namespace) -> int:
                 cap_usd=None if choice is None else cap,
                 reviews=reviews,
             )
-            outcome = await run_target(
-                target.bind(corpus), context, meta=meta, ledger=ledger, out_dir=out_dir
-            )
-            _say(f"retrieval ({target.mode.value}): {outcome.result.items} items")
-            for metric in outcome.result.metrics:
-                status = metric.gate_status(complete=outcome.result.complete)
+            try:
+                outcome = await run_target(
+                    target.bind(corpus), context, meta=meta, ledger=ledger, out_dir=out_dir
+                )
+            except BaseException:
+                if ledger.entries:
+                    _refuse(f"the run failed after spending ${ledger.spent:.4f} of ${cap}")
+                raise
+            result = outcome.result
+            suffix = " (TRIAL: a --limit run is never a gate)" if result.trial else ""
+            _say(f"retrieval ({target.mode.value}): {result.items} items{suffix}")
+            for metric in result.metrics:
+                confirmed, of = metric.confirmation()
                 _say(
                     f"  {metric.label}: {fmt_measure(metric.all_items, unit=metric.unit)} "
-                    f"pre-screen; gate {status.value}"
+                    f"pre-screen; gate {metric.gate_status().value} "
+                    f"({confirmed} of {of} confirmed)"
                 )
-            for note in outcome.result.notes:
+            for note in result.notes:
                 _say(f"  note: {note}")
             if outcome.markdown is not None:
                 _say(f"  report: {outcome.markdown}")
             if choice is not None:
                 _say(f"  spent ${ledger.spent:.4f} of ${cap}")
-    return 0
+            code = max(code, exit_code(result))
+    return code
 
 
 def _guard(

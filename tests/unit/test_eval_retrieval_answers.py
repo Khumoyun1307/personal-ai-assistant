@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from evals.retrieval import Answer, HitView, Reference, _search_queries, check_answer
+from evals.retrieval import (
+    MIN_QUOTE_CHARS,
+    Answer,
+    HitView,
+    Reference,
+    _search_queries,
+    check_answer,
+)
 from evals.schema import RetrievalQuery
 
 from assistant.memory.retrieval import MAX_QUERIES
@@ -75,6 +82,33 @@ def test_a_wrong_day_a_wrong_contact_and_an_invented_quote_each_fail() -> None:
 
 def test_a_name_with_an_honorific_still_matches() -> None:
     assert verdict(mutate(contact="Kamola opa"))[0]
+
+
+def test_a_name_must_match_whole_words_not_fragments() -> None:
+    assert verdict(mutate(contact="Kam")) == (False, ("wrong_contact",))
+    assert verdict(mutate(contact="Kamolaxon")) == (False, ("wrong_contact",))
+    assert verdict(mutate(contact="a")) == (False, ("wrong_contact",))
+
+
+def test_a_quote_must_be_a_real_excerpt_not_a_fragment() -> None:
+    """A bare amount or one short word occurs in many messages and proves nothing."""
+    assert MIN_QUOTE_CHARS == 8
+    assert verdict(mutate(quote="17-uy")) == (False, ("quote_too_short",))
+    assert verdict(mutate(quote="Qorasuv-3"))[0]  # 9 characters of words: enough
+
+
+def test_a_short_message_may_be_quoted_in_full() -> None:
+    hit = HitView("h1", "c09.m05", "c09", "Kamola", "2026-10-20", "17-uy, 45")
+    answer = Answer(
+        found=True,
+        answer="Qorasuv-3, 17-uy",
+        references=[Reference(ref="h1", contact="Kamola", day="2026-10-20", quote="17-uy, 45")],
+    )
+    assert check_answer(answer, QUERY, [hit]).correct
+    fragment = answer.model_copy(
+        update={"references": [answer.references[0].model_copy(update={"quote": "17-uy"})]}
+    )
+    assert check_answer(fragment, QUERY, [hit]).problems == ("quote_too_short",)
 
 
 def test_citing_a_non_target_message_fails_even_if_the_values_appear() -> None:

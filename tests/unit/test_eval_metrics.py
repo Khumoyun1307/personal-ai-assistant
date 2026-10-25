@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from evals.errors import LedgerError
 from evals.metrics import (
     SummaryOutput,
     caveat_metrics,
@@ -30,7 +31,6 @@ from evals.metrics import (
 from evals.review import ReviewLedger, finding_id
 from evals.schema import Conversation
 from evals.targets import Measure, MetricResult, Status
-from pydantic import ValidationError
 
 MESSAGES = [
     ("contact", "Bekzod, ertaga soat 15:00 da uchrashamizmi?"),
@@ -363,7 +363,9 @@ def test_no_owner_confirmed_items_means_not_evaluable_never_pass() -> None:
     assert metric.gate_status() is Status.NOT_EVALUABLE
 
 
-def test_the_gate_counts_only_confirmed_items() -> None:
+def test_a_tiny_confirmed_subset_is_not_a_gate() -> None:
+    """1 of 1 confirmed items passing says nothing about the set: the gate needs
+    every item of the set owner-confirmed (E-k)."""
     ledger = ReviewLedger(frozenset({"c01"}), {}, {})
     metric = ratio_metric(
         key="k",
@@ -374,16 +376,75 @@ def test_the_gate_counts_only_confirmed_items() -> None:
     )
     assert metric.prescreen_status() is Status.FAIL
     assert metric.confirmed == Measure(1, 1)
+    assert metric.gate_status() is Status.NOT_EVALUABLE
+    assert metric.confirmation() == (1, 2)
+
+
+def test_the_gate_passes_only_when_every_item_of_the_set_is_confirmed() -> None:
+    ledger = ReviewLedger(frozenset({"c01", "c02"}), {}, {})
+    metric = ratio_metric(
+        key="k", label="k", outcomes={"c01": True, "c02": True}, threshold=0.95, ledger=ledger
+    )
+    assert metric.confirmation() == (2, 2)
     assert metric.gate_status() is Status.PASS
 
 
-def test_an_incomplete_run_never_passes_but_a_confirmed_miss_still_fails() -> None:
+def test_a_confirmed_set_below_the_threshold_fails() -> None:
     ledger = ReviewLedger(frozenset({"c01", "c02"}), {}, {})
-    good = ratio_metric(key="k", label="k", outcomes={"c01": True}, threshold=0.5, ledger=ledger)
-    bad = ratio_metric(key="k", label="k", outcomes={"c02": False}, threshold=0.5, ledger=ledger)
-    assert good.gate_status(complete=True) is Status.PASS
-    assert good.gate_status(complete=False) is Status.NOT_EVALUABLE
-    assert bad.gate_status(complete=False) is Status.FAIL
+    metric = ratio_metric(
+        key="k", label="k", outcomes={"c01": True, "c02": False}, threshold=0.95, ledger=ledger
+    )
+    assert metric.gate_status() is Status.FAIL
+
+
+def test_enough_confirmed_misses_fail_the_gate_before_the_rest_is_reviewed() -> None:
+    """With 10 items and a 95 % bar, two confirmed misses cannot be undone."""
+    outcomes = {f"c{n:02d}": n > 2 for n in range(1, 11)}  # c01, c02 miss
+    ledger = ReviewLedger(frozenset({"c01", "c02"}), {}, {})
+    metric = ratio_metric(key="k", label="k", outcomes=outcomes, threshold=0.95, ledger=ledger)
+    assert metric.gate_status() is Status.FAIL
+    one_miss = ReviewLedger(frozenset({"c01"}), {}, {})
+    # 9/10 = 90 % < 95 %: one confirmed miss already makes the bar unreachable.
+    assert (
+        ratio_metric(
+            key="k", label="k", outcomes=outcomes, threshold=0.95, ledger=one_miss
+        ).gate_status()
+        is Status.FAIL
+    )
+    lenient = ratio_metric(key="k", label="k", outcomes=outcomes, threshold=0.8, ledger=one_miss)
+    assert lenient.gate_status() is Status.NOT_EVALUABLE  # 9/10 could still reach 80 %
+
+
+def test_a_run_over_part_of_the_set_never_passes_even_fully_confirmed() -> None:
+    """A trial or stopped run measured 3 of 38 items: the set is 38."""
+    ledger = ReviewLedger(frozenset({"r01", "r02", "r03"}), {}, {})
+    metric = ratio_metric(
+        key="k",
+        label="k",
+        outcomes={"r01": True, "r02": True, "r03": True},
+        threshold=0.85,
+        ledger=ledger,
+        set_size=38,
+    )
+    assert metric.confirmed == Measure(3, 3)
+    assert metric.gate_status() is Status.NOT_EVALUABLE
+    assert metric.confirmation() == (3, 38)
+
+
+def test_a_metric_whose_gate_is_defined_elsewhere_is_informational_at_the_gate() -> None:
+    """The retrieval gate is defined with model-generated variants; the
+    deterministic baseline compares against 85 % only as a pre-screen."""
+    ledger = ReviewLedger(frozenset({"r01"}), {}, {})
+    metric = ratio_metric(
+        key="k",
+        label="k",
+        outcomes={"r01": True},
+        threshold=0.85,
+        ledger=ledger,
+        gated=False,
+    )
+    assert metric.prescreen_status() is Status.PASS
+    assert metric.gate_status() is Status.INFO
 
 
 def test_a_count_metric_with_nothing_measured_is_not_a_pass() -> None:
@@ -444,8 +505,31 @@ def test_the_ledger_loads_from_json_and_refuses_unknown_keys(tmp_path: Path) -> 
     assert ledger.source == "review.json"
 
     path.write_text(json.dumps({"confirmed": ["c01"]}), encoding="utf-8")
-    with pytest.raises(ValidationError):
+    with pytest.raises(LedgerError):
         ReviewLedger.load(path)
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["{not json", "[]", '{"confirmed": []}', '{"findings": {"c01#aaaaaaaa": "maybe"}}', ""],
+)
+def test_a_malformed_ledger_is_a_clean_error_not_a_traceback(tmp_path: Path, body: str) -> None:
+    path = tmp_path / "review.json"
+    path.write_text(body, encoding="utf-8")
+    with pytest.raises(LedgerError, match=r"review\.json"):
+        ReviewLedger.load(path)
+
+
+def test_a_missing_ledger_file_is_a_clean_error(tmp_path: Path) -> None:
+    with pytest.raises(LedgerError, match="cannot be read"):
+        ReviewLedger.load(tmp_path / "absent.json")
+
+
+def test_the_owner_can_record_a_fabrication_the_judge_missed(tmp_path: Path) -> None:
+    path = tmp_path / "review.json"
+    path.write_text(json.dumps({"confirmed_items": ["c01"], "fabrications": ["c01"]}), "utf-8")
+    ledger = ReviewLedger.load(path)
+    assert ledger.owner_fabrications == frozenset({"c01"})
 
 
 def test_finding_ids_are_stable_and_ignore_case_and_padding() -> None:

@@ -249,23 +249,34 @@ def fabrication_metric(results: Sequence[ScreenResult], ledger: ReviewLedger) ->
     """Zero fabricated facts, over the owner's verdicts.
 
     Pre-screen: every flag not dismissed, over the screened conversations.
-    Gate: owner-confirmed flags, over the owner-confirmed conversations; open
-    while a flag is pending or a conversation is unscreened.
+    Gate: owner-confirmed flags, over the owner-confirmed conversations (all of
+    them, E-k); open while a flag is pending or a conversation is unscreened.
+
+    **A judge negative decides the item.** The judge can only pre-screen what it
+    sees: a conversation it did not flag counts as clean. The owner overrides
+    that, per conversation, with `fabrications` in the review ledger (an owner
+    fabrication counts as confirmed). Whether to spot-check judge-negative
+    summaries, and how many, is the owner's call (E-c).
     """
     screened = [r for r in results if r.screened]
     live = [f for r in screened for f in r.findings if f.status != "dismissed"]
     confirmed_findings = [f for f in live if f.status == "confirmed"]
-    # A conversation holding a finding the owner confirmed counts as confirmed
-    # for the gate: the owner has looked at it, and it must fail the gate.
-    flagged_by_owner = {f.conversation_id for f in confirmed_findings}
-    confirmed_conversations = [
-        r
-        for r in screened
-        if ledger.is_confirmed(r.conversation_id) or r.conversation_id in flagged_by_owner
-    ]
+    ids = {r.conversation_id for r in results}
+    owner_found = sorted(ledger.owner_fabrications & ids)
+    # A conversation holding a finding the owner confirmed (or recorded) counts
+    # as confirmed for the gate: the owner has looked at it, and it must fail.
+    flagged_by_owner = {f.conversation_id for f in confirmed_findings} | set(owner_found)
+    confirmed_conversations = {
+        r.conversation_id
+        for r in results
+        if (r.screened or r.conversation_id in flagged_by_owner)
+        and (ledger.is_confirmed(r.conversation_id) or r.conversation_id in flagged_by_owner)
+    }
     pending = sum(f.status == "pending_owner" for f in live)
     unscreened = [r.conversation_id for r in results if not r.screened]
     notes = []
+    if owner_found:
+        notes.append("fabrication recorded by the owner in: " + ", ".join(owner_found))
     if pending:
         notes.append(f"{pending} flagged statement(s) pending owner confirmation")
     if unscreened:
@@ -276,9 +287,13 @@ def fabrication_metric(results: Sequence[ScreenResult], ledger: ReviewLedger) ->
         unit="count",
         goal="at_most",
         threshold=FABRICATION_THRESHOLD,
-        all_items=Measure(len(live), len(screened)),
-        confirmed=Measure(len(confirmed_findings), len(confirmed_conversations)),
-        failed_items=tuple(f.finding_id for f in live),
+        all_items=Measure(len(live) + len(owner_found), len(screened)),
+        confirmed=Measure(len(confirmed_findings) + len(owner_found), len(confirmed_conversations)),
+        failed_items=(
+            *(f.finding_id for f in live),
+            *(f"{conversation}#owner" for conversation in owner_found),
+        ),
         pending=pending + len(unscreened),
         note="; ".join(notes),
+        set_size=len(results),
     )

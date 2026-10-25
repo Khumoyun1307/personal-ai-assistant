@@ -47,6 +47,7 @@ from assistant.conversations.models import Contact, Message
 from assistant.conversations.models import Conversation as ConversationRow
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.memory.search import detect_script, guess_lang, normalize
+from evals.errors import ConfigurationError
 from evals.schema import Conversation
 from evals.schema import Message as DatasetMessage
 
@@ -158,7 +159,7 @@ def eval_database_url() -> str:
     """The server to create the throwaway database on. Never `DATABASE_URL`."""
     url = os.environ.get("EVAL_DATABASE_URL") or os.environ.get("TEST_DATABASE_URL")
     if not url:
-        raise RuntimeError(
+        raise ConfigurationError(
             "set EVAL_DATABASE_URL (or TEST_DATABASE_URL): the server to create a "
             "throwaway evaluation database on; the dev database is never used"
         )

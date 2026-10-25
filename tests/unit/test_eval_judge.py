@@ -155,11 +155,27 @@ def test_no_flags_but_no_confirmed_conversations_is_not_a_pass() -> None:
     assert metric.gate_status() is Status.NOT_EVALUABLE
 
 
-def test_no_flags_over_confirmed_conversations_passes() -> None:
+def test_no_flags_over_confirmed_conversations_passes_only_when_all_are_confirmed() -> None:
     results = [ScreenResult("c01", ()), ScreenResult("c02", ())]
-    metric = fabrication_metric(results, ReviewLedger(frozenset({"c01"}), {}, {}))
-    assert metric.confirmed == Measure(0, 1)
-    assert metric.gate_status() is Status.PASS
+    partly = fabrication_metric(results, ReviewLedger(frozenset({"c01"}), {}, {}))
+    assert partly.confirmed == Measure(0, 1)
+    assert partly.gate_status() is Status.NOT_EVALUABLE  # 1 of 2 confirmed
+    fully = fabrication_metric(results, ReviewLedger(frozenset({"c01", "c02"}), {}, {}))
+    assert fully.confirmation() == (2, 2)
+    assert fully.gate_status() is Status.PASS
+
+
+def test_a_judge_negative_decides_unless_the_owner_records_a_fabrication() -> None:
+    """The judge can only flag what it sees: a conversation it did not flag counts
+    as clean. The owner overrides that in the ledger (`fabrications`)."""
+    results = [ScreenResult("c01", ())]
+    clean = fabrication_metric(results, ReviewLedger(frozenset({"c01"}), {}, {}))
+    assert clean.gate_status() is Status.PASS
+    ledger = ReviewLedger(frozenset({"c01"}), {}, {}, None, frozenset({"c01"}))
+    found = fabrication_metric(results, ledger)
+    assert found.confirmed == Measure(1, 1)
+    assert found.all_items == Measure(1, 1)
+    assert found.gate_status() is Status.FAIL
 
 
 def test_an_owner_confirmed_fabrication_fails_the_gate_even_unreviewed_elsewhere() -> None:

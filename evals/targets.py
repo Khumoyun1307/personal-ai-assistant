@@ -8,8 +8,11 @@ runner, the report writer or the cost guards.
 Gate semantics (IMPLEMENTATION_PLAN §10.1): an LLM judge and the deterministic
 checks only **pre-screen**. Every metric therefore carries two measurements:
 over *all* items (the pre-screen) and over the items the owner has confirmed
-(the gate). `gate_status` looks at the confirmed measurement only; with no
-confirmed items it is `NOT_EVALUABLE`, never a pass.
+(the gate). `gate_status` looks at the confirmed measurement only, and only
+passes when *every* item of the set is owner-confirmed; with fewer it is
+`NOT_EVALUABLE` (unless confirmed misses already make the threshold
+unreachable), never a pass. A trial or stopped run measures part of the set, so
+it can never pass either.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from enum import StrEnum
 from typing import Any, Literal, Protocol
 
 from assistant.llm.port import LLMClient
+from evals.errors import EvalsError
 from evals.review import ReviewLedger
 
 DatasetName = Literal["e1", "retrieval"]
@@ -67,6 +71,14 @@ class MetricResult:
     #: the gate cannot pass.
     pending: int = 0
     note: str = ""
+    #: How many items the whole set has for this metric (a full run's
+    #: denominator). None means "the items measured". A trial or stopped run
+    #: measures fewer than the set, so its gate can never pass.
+    set_size: int | None = None
+    #: False when the threshold is only a comparison for the pre-screen (the
+    #: retrieval 85 % is defined with model-generated variants; a model-free
+    #: run reports it but has no gate).
+    gated: bool = True
 
     def _meets(self, measure: Measure) -> bool | None:
         if self.threshold is None or measure.denominator == 0:
@@ -76,6 +88,11 @@ class MetricResult:
             return None
         return value >= self.threshold if self.goal == "at_least" else value <= self.threshold
 
+    def confirmation(self) -> tuple[int, int]:
+        """`(k, N)`: items the owner confirmed, of the items in the set."""
+        total = self.set_size if self.set_size is not None else self.all_items.denominator
+        return self.confirmed.denominator, total
+
     def prescreen_status(self) -> Status:
         meets = self._meets(self.all_items)
         if self.threshold is None:
@@ -84,16 +101,31 @@ class MetricResult:
             return Status.NOT_EVALUABLE
         return Status.PASS if meets else Status.FAIL
 
-    def gate_status(self, *, complete: bool = True) -> Status:
-        """Pass/fail over owner-confirmed items; never a pass without them."""
+    def _cannot_pass(self) -> bool:
+        """True when owner-confirmed misses alone already sink the threshold,
+        however the unreviewed rest turns out."""
         if self.threshold is None:
+            return False
+        if self.unit == "count":
+            return self.goal == "at_most" and self.confirmed.numerator > self.threshold
+        _, total = self.confirmation()
+        if self.goal != "at_least" or total == 0:
+            return False
+        confirmed_misses = self.confirmed.denominator - self.confirmed.numerator
+        return (total - confirmed_misses) / total < self.threshold
+
+    def gate_status(self) -> Status:
+        """The gate: pass/fail only when **every item of the set** is
+        owner-confirmed (E-k); a definite miss fails earlier; otherwise not
+        evaluable. A model-free comparison (`gated=False`) is informational."""
+        if self.threshold is None or not self.gated:
             return Status.INFO
-        meets = self._meets(self.confirmed)
-        if meets is False:
-            return Status.FAIL  # a confirmed miss stays a miss, complete or not
-        if meets is None or self.pending or not complete:
+        if self._cannot_pass():
+            return Status.FAIL
+        confirmed, total = self.confirmation()
+        if self.pending or total == 0 or confirmed < total:
             return Status.NOT_EVALUABLE
-        return Status.PASS
+        return Status.PASS if self._meets(self.confirmed) else Status.FAIL
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,10 +141,12 @@ class PlannedCall:
 class TargetResult:
     target: str
     dataset: DatasetName
-    #: Items evaluated, and items the run planned to evaluate. They differ when
-    #: a budget stop ended the run early.
+    #: Items evaluated, items the run planned to evaluate (fewer than the set
+    #: for a `--limit` trial), and items in the whole set. `items` falls short
+    #: of `items_planned` when a budget stop ended the run early.
     items: int
     items_planned: int
+    items_total: int
     metrics: tuple[MetricResult, ...]
     #: One JSON-able record per item (ids and numbers only).
     details: tuple[Mapping[str, Any], ...] = ()
@@ -123,8 +157,18 @@ class TargetResult:
     prompts: tuple[str, ...] = ()
 
     @property
+    def trial(self) -> bool:
+        """A `--limit` run over part of the set: never a gate."""
+        return self.items_planned < self.items_total
+
+    @property
+    def stopped(self) -> bool:
+        """The run ended before its planned items (a budget stop): a failure."""
+        return self.items < self.items_planned
+
+    @property
     def complete(self) -> bool:
-        return self.items == self.items_planned
+        return not self.trial and not self.stopped
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +182,7 @@ class RunContext:
     #: Reasoning effort to request, or None to send none.
     effort: str | None = None
     reviews: ReviewLedger = field(default_factory=ReviewLedger.empty)
-    #: Evaluate only the first N items (cheap trial runs).
+    #: Evaluate only the first N items (N >= 1): a trial run, never a gate.
     limit: int | None = None
 
 
@@ -160,7 +204,7 @@ class EvalTarget(Protocol):
     async def run(self, context: RunContext) -> TargetResult: ...
 
 
-class TargetNotAvailableError(Exception):
+class TargetNotAvailableError(EvalsError):
     """A target exists in the interface but cannot run yet."""
 
 

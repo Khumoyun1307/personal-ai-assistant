@@ -71,8 +71,13 @@ VARIANTS_MAX_OUTPUT_TOKENS = 1500
 ANSWER_MAX_OUTPUT_TOKENS = 2500
 TIMEOUT_SECONDS = 90.0
 MAX_QUERY_CHARS = 200
-#: Rough size of one rendered hit, for the pre-run estimate only.
-_HIT_CHARS = 600
+#: Generous size of one rendered hit (the JSON wrapper, the untrusted tags and
+#: a message of a few hundred characters), for the pre-run estimate only.
+_HIT_CHARS = 1000
+#: A quote shorter than this (in word characters: letters and digits with single
+#: spaces) must be the whole message. One short word or a bare amount occurs in
+#: many messages and proves nothing; 8 is about one real word plus a number.
+MIN_QUOTE_CHARS = 8
 
 
 class RetrievalMode(StrEnum):
@@ -131,8 +136,9 @@ def _compact(text: str) -> str:
 
 
 def _names_match(model_name: str, dataset_name: str) -> bool:
+    """Whole words: "Kamola opa" matches "Kamola"; "Kam" and "Kamolaxon" do not."""
     a, b = _compact(model_name), _compact(dataset_name)
-    return bool(a) and bool(b) and (a in b or b in a)
+    return contains_words(a, b) or contains_words(b, a)
 
 
 def check_answer(answer: Answer, query: RetrievalQuery, hits: Sequence[HitView]) -> AnswerVerdict:
@@ -160,8 +166,11 @@ def check_answer(answer: Answer, query: RetrievalQuery, hits: Sequence[HitView])
             problems.append("wrong_contact")
         if reference.day.strip() != hit.day:
             problems.append("wrong_date")
-        if not contains_words(_compact(hit.text), _compact(reference.quote)):
+        message, quote = _compact(hit.text), _compact(reference.quote)
+        if not contains_words(message, quote):
             problems.append("quote_not_in_message")
+        elif len(quote) < MIN_QUOTE_CHARS and quote != message:
+            problems.append("quote_too_short")
         quotes.append(reference.quote)
     if not cited_targets:
         problems.append("no_target_cited")
@@ -231,7 +240,11 @@ class RetrievalTarget:
         return self._bound
 
     def _selected(self, context: RunContext) -> list[RetrievalQuery]:
-        return self._queries if context.limit is None else self._queries[: context.limit]
+        if context.limit is None:
+            return self._queries
+        if context.limit < 1:
+            raise ValueError("limit must be at least 1")
+        return self._queries[: context.limit]
 
     # ------------------------------------------------------------- estimate
     def plan(self, context: RunContext) -> Sequence[PlannedCall]:
@@ -416,6 +429,7 @@ class RetrievalTarget:
         ledger: ReviewLedger,
         stopped: str | None,
     ) -> TargetResult:
+        total = len(self._queries)
         hits = {r.query_id: r.hit for r in records}
         metrics: list[MetricResult] = [
             ratio_metric(
@@ -424,9 +438,14 @@ class RetrievalTarget:
                 outcomes=hits,
                 threshold=HIT_THRESHOLD,
                 ledger=ledger,
+                set_size=total,
+                # The 85 % is defined with model-generated variants: without a
+                # model it is only the pre-screen comparison, with no gate.
+                gated=self.uses_model,
                 note=(
                     "Baseline without a model; the S03.4 gate measures retrieval with "
-                    "model-generated query variants (mode `variants`)."
+                    "model-generated query variants (mode `variants`), so 85 % is a "
+                    "pre-screen comparison here, not a gate."
                     if not self.uses_model
                     else ""
                 ),
@@ -443,6 +462,7 @@ class RetrievalTarget:
                     outcomes=answers,
                     threshold=ANSWER_THRESHOLD,
                     ledger=ledger,
+                    set_size=total,
                 )
             )
             prompts = [VARIANTS_PROMPT_ID, ANSWER_PROMPT_ID]
@@ -459,6 +479,7 @@ class RetrievalTarget:
             dataset=self.dataset,
             items=len(records),
             items_planned=planned,
+            items_total=total,
             metrics=tuple(metrics),
             details=tuple(r.as_json() for r in records),
             breakdowns={"top-5 hit by intent": _by_intent(records)},

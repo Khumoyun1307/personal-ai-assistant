@@ -48,9 +48,13 @@ def ratio_metric(
     threshold: float | None,
     ledger: ReviewLedger,
     note: str = "",
+    set_size: int | None = None,
+    gated: bool = True,
 ) -> MetricResult:
     """A pass-rate metric over `outcomes` (item id -> passed). The gate looks
-    only at the items the owner has confirmed."""
+    only at the items the owner has confirmed, and needs all `set_size` of them
+    (default: the items measured). `gated=False` keeps the threshold as a
+    pre-screen comparison only."""
     confirmed = {item: ok for item, ok in outcomes.items() if ledger.is_confirmed(item)}
     return MetricResult(
         key=key,
@@ -62,6 +66,8 @@ def ratio_metric(
         confirmed=Measure(sum(confirmed.values()), len(confirmed)),
         failed_items=tuple(item for item, ok in outcomes.items() if not ok),
         note=note,
+        set_size=set_size,
+        gated=gated,
     )
 
 
@@ -75,6 +81,7 @@ def count_metric(
     ledger: ReviewLedger,
     pending: int = 0,
     note: str = "",
+    set_size: int | None = None,
 ) -> MetricResult:
     """A "no more than `threshold` offences" metric (zero fabrications)."""
     confirmed_items = {item for item in items if ledger.is_confirmed(item)}
@@ -90,6 +97,7 @@ def count_metric(
         failed_items=tuple(dict.fromkeys(offending)),
         pending=pending,
         note=note,
+        set_size=set_size,
     )
 
 
@@ -163,6 +171,7 @@ def recall_metric(
     coverage: Mapping[str, bool | None],
     ledger: ReviewLedger,
     judged: Mapping[str, bool] | None = None,
+    set_size: int | None = None,
 ) -> MetricResult:
     """Open-loop recall, with three sources of truth for "was it surfaced":
 
@@ -210,6 +219,7 @@ def recall_metric(
         failed_items=tuple(item for item, ok in pre_screen.items() if not ok),
         pending=len(unresolved),
         note=note,
+        set_size=set_size,
     )
 
 

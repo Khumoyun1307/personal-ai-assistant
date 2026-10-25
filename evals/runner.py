@@ -14,12 +14,19 @@ from pathlib import Path
 
 from evals import manifest
 from evals.budget import CallLedger, CostEstimate, Prices, estimate
-from evals.report import RunMeta, write_report
+from evals.errors import RefusedError
+from evals.report import RunMeta, write_report, write_spend_ledger
 from evals.targets import EvalTarget, RunContext, TargetResult
 
-
-class RefusedError(Exception):
-    """The run was refused before it started. The message says why."""
+__all__ = [
+    "RefusedError",
+    "RunOutcome",
+    "check_estimate",
+    "dataset_digests",
+    "ensure_frozen",
+    "require_live",
+    "run_target",
+]
 
 
 def dataset_digests() -> dict[str, str]:
@@ -91,8 +98,18 @@ async def run_target(
     ledger: CallLedger,
     out_dir: Path | None,
 ) -> RunOutcome:
-    """Run `target`; write its reports to `out_dir` unless it is None."""
-    result = await target.run(context)
+    """Run `target`; write its reports to `out_dir` unless it is None.
+
+    If the run fails midway, the spend so far is still written down (a content-free
+    `…-aborted.json`) before the error propagates: money spent is never lost with
+    the exception.
+    """
+    try:
+        result = await target.run(context)
+    except BaseException as error:
+        if out_dir is not None and ledger.entries:
+            write_spend_ledger(out_dir, meta, ledger, error_type=type(error).__name__)
+        raise
     if out_dir is None:
         return RunOutcome(result, None, None)
     markdown, machine = write_report(out_dir, meta, result, ledger)

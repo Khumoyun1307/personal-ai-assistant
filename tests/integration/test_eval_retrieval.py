@@ -12,13 +12,16 @@ import json
 import re
 from collections.abc import AsyncIterator, Callable
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import psycopg
 import pytest
 import sqlalchemy as sa
+from evals import cli, live
 from evals.budget import BudgetedLLMClient, CallLedger
 from evals.corpus import LoadedCorpus, isolated_corpus, load_corpus, unload_corpus
+from evals.live import LiveConfig, LiveSetupError, ModelChoice
 from evals.retrieval import (
     QueryVariants,
     RetrievalMode,
@@ -27,10 +30,11 @@ from evals.retrieval import (
 from evals.review import ReviewLedger
 from evals.schema import RetrievalQuery, load_e1, load_queries
 from evals.targets import RunContext, Status
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from assistant.config import Settings
 from assistant.conversations.models import Message
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.llm.port import (
@@ -154,11 +158,17 @@ async def test_the_deterministic_baseline_runs_without_a_model(corpus: LoadedCor
     assert (result.items, result.items_planned, result.complete) == (38, 38, True)
     (metric,) = result.metrics
     assert metric.key == "top5_hit"
-    assert metric.threshold == 0.85
+    assert metric.threshold == 0.85  # the pre-screen comparison only
     assert metric.all_items.denominator == 38
     assert (metric.all_items.ratio or 0.0) >= DETERMINISTIC_FLOOR
-    # No item is owner-confirmed, so the gate is not evaluable, whatever the score.
-    assert metric.gate_status() is Status.NOT_EVALUABLE
+    # The 85 % gate is defined with model-generated variants: with no model the
+    # gate reads INFO, whatever was confirmed.
+    assert metric.gate_status() is Status.INFO
+    everything = ReviewLedger(frozenset(q.id for q in QUERIES), {}, {})
+    confirmed = await target(corpus, RetrievalMode.DETERMINISTIC).run(
+        RunContext(reviews=everything)
+    )
+    assert confirmed.metrics[0].gate_status() is Status.INFO
     assert result.prompts == ()
     assert {"id", "hit_top5", "rank", "top5", "variants"} <= set(result.details[0])
     assert "top-5 hit by intent" in result.breakdowns
@@ -174,6 +184,20 @@ async def test_limit_evaluates_only_the_first_items(corpus: LoadedCorpus) -> Non
     result = await target(corpus, RetrievalMode.DETERMINISTIC).run(RunContext(limit=3))
     assert [d["id"] for d in result.details] == ["r01", "r02", "r03"]
     assert result.items_planned == 3
+    assert result.trial
+    assert not result.complete
+
+
+async def test_a_limited_run_is_never_gate_evaluable_even_fully_confirmed(
+    corpus: LoadedCorpus,
+) -> None:
+    everything = ReviewLedger(frozenset(q.id for q in QUERIES), {}, {})
+    context_ = context(OracleLLM(), CallLedger(), limit=3, reviews=everything)
+    result = await target(corpus, RetrievalMode.VARIANTS).run(context_)
+    assert (result.items, result.trial, result.stopped) == (3, True, False)
+    for metric in result.metrics:
+        assert metric.confirmation() == (3, 38)
+        assert metric.gate_status() is Status.NOT_EVALUABLE
 
 
 async def test_the_gate_is_computed_over_owner_confirmed_queries_only(
@@ -184,6 +208,36 @@ async def test_the_gate_is_computed_over_owner_confirmed_queries_only(
     (metric,) = result.metrics
     assert metric.confirmed.denominator == 2
     assert metric.all_items.denominator == 38
+    assert metric.confirmation() == (2, 38)
+
+
+async def test_a_fully_confirmed_variants_run_has_an_evaluable_gate(corpus: LoadedCorpus) -> None:
+    everything = ReviewLedger(frozenset(q.id for q in QUERIES), {}, {})
+    result = await target(corpus, RetrievalMode.VARIANTS).run(
+        context(OracleLLM(), CallLedger(), reviews=everything)
+    )
+    for metric in result.metrics:
+        assert metric.confirmation() == (38, 38)
+        assert metric.gate_status() in (Status.PASS, Status.FAIL)  # never "not evaluable"
+
+
+async def test_a_distinct_variant_rescues_a_deterministic_miss(corpus: LoadedCorpus) -> None:
+    """r03 ("the address Kamola sent") misses as typed; a variant in the words of
+    the message finds it, and the final answer is then correct."""
+    r03 = next(q for q in QUERIES if q.id == "r03")
+    plain = await RetrievalTarget([r03], mode=RetrievalMode.DETERMINISTIC, corpus=corpus).run(
+        RunContext()
+    )
+    assert plain.details[0]["hit_top5"] is False
+
+    llm = OracleLLM(variants=lambda q: ["Qorasuv-3 17-uy"])
+    rescued = await RetrievalTarget([r03], mode=RetrievalMode.VARIANTS, corpus=corpus).run(
+        context(llm, CallLedger())
+    )
+    record = rescued.details[0]
+    assert record["hit_top5"] is True
+    assert record["variants"] == 2  # the owner's words plus the distinct variant
+    assert record["answer_correct"] is True
 
 
 # ---------------------------------------------------------------- variants mode
@@ -352,12 +406,49 @@ async def test_a_budget_stop_ends_the_run_early_and_the_gate_cannot_pass(
     )
 
     assert not result.complete
+    assert result.stopped
     assert result.items < result.items_planned == 38
     assert any("STOPPED EARLY" in note for note in result.notes)
     assert 0 < ledger.spent <= cap
     for metric in result.metrics:
-        assert metric.gate_status(complete=result.complete) is not Status.PASS
+        assert metric.gate_status() is not Status.PASS
     assert len(llm.requests) == len(ledger.entries)  # nothing was called unmetered
+
+
+def test_a_budget_stopped_run_exits_non_zero_and_still_writes_its_report(
+    tmp_path: Path,
+    test_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The CLI end to end on a throwaway database, with a scripted model whose
+    calls are expensive enough to hit the cap on the third call."""
+    expensive = OracleLLM(usage=Usage(2_000_000, 400_000))  # USD 0.40 per call
+    monkeypatch.setenv("EVAL_DATABASE_URL", test_database_url)
+    monkeypatch.setattr(live, "_settings", _no_settings)
+    monkeypatch.setattr(
+        cli,
+        "load_live_config",
+        lambda route, override: LiveConfig(ModelChoice("gpt-6-luna", None), SecretStr("sk-x")),
+    )
+    monkeypatch.setattr(cli, "build_client", lambda config: expensive)
+
+    code = cli.main(
+        [
+            "run", "retrieval", "--mode", "variants", "--model", "gpt-6-luna", "--live",
+            "--budget-usd", "0.5", "--out-dir", str(tmp_path), "--date", "2026-10-25",
+        ]
+    )  # fmt: skip
+
+    assert code == cli.EXIT_INCOMPLETE
+    (report,) = tmp_path.glob("*.md")
+    assert "STOPPED RUN" in report.read_text(encoding="utf-8")
+    assert len(expensive.requests) == 2  # the third call was refused before it was made
+    assert "STOPPED EARLY" in capsys.readouterr().out
+
+
+def _no_settings() -> Settings:
+    raise LiveSetupError("the settings are invalid (test)")
 
 
 async def test_variants_mode_needs_a_model(corpus: LoadedCorpus) -> None:

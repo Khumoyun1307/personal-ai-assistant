@@ -50,8 +50,10 @@ def _safe(label: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", label).strip("-")
 
 
-def stem_for(meta: RunMeta) -> str:
-    return f"{meta.run_date.isoformat()}-{_safe(meta.set_name)}-{_safe(meta.model_label)}"
+def stem_for(meta: RunMeta, *, trial: bool = False) -> str:
+    """A trial (`--limit`) run never takes a full run's name."""
+    stem = f"{meta.run_date.isoformat()}-{_safe(meta.set_name)}-{_safe(meta.model_label)}"
+    return f"{stem}-trial" if trial else stem
 
 
 def unique_stem(out_dir: Path, stem: str) -> str:
@@ -72,7 +74,8 @@ def _measure_json(measure: Measure) -> dict[str, Any]:
     }
 
 
-def _metric_json(metric: MetricResult, complete: bool) -> dict[str, Any]:
+def _metric_json(metric: MetricResult) -> dict[str, Any]:
+    confirmed, of = metric.confirmation()
     return {
         "key": metric.key,
         "label": metric.label,
@@ -82,15 +85,17 @@ def _metric_json(metric: MetricResult, complete: bool) -> dict[str, Any]:
         "all_items": _measure_json(metric.all_items),
         "confirmed": _measure_json(metric.confirmed),
         "prescreen_status": metric.prescreen_status().value,
-        "gate_status": metric.gate_status(complete=complete).value,
+        "gate_status": metric.gate_status().value,
+        "gated": metric.gated,
+        "confirmed_items": confirmed,
+        "set_size": of,
         "failed_items": list(metric.failed_items),
         "pending": metric.pending,
         "note": metric.note,
     }
 
 
-def to_json(meta: RunMeta, result: TargetResult, ledger: CallLedger) -> dict[str, Any]:
-    items = result.items
+def _cost_json(meta: RunMeta, ledger: CallLedger, items: int) -> dict[str, Any]:
     per_model: dict[str, Any] = {}
     for model, totals in ledger.by_model().items():
         per_100 = totals.per_100_items(items)
@@ -102,6 +107,17 @@ def to_json(meta: RunMeta, result: TargetResult, ledger: CallLedger) -> dict[str
             "cost_per_100_items_usd": None if per_100 is None else str(per_100),
         }
     return {
+        "cap_usd": None if meta.cap_usd is None else str(meta.cap_usd),
+        "spent_usd": str(ledger.spent),
+        "calls": len(ledger.entries),
+        "estimated_calls": sum(entry.estimated for entry in ledger.entries),
+        "per_model": per_model,
+    }
+
+
+def to_json(meta: RunMeta, result: TargetResult, ledger: CallLedger) -> dict[str, Any]:
+    items = result.items
+    return {
         "schema": SCHEMA_VERSION,
         "run_date": meta.run_date.isoformat(),
         "set": meta.set_name,
@@ -112,26 +128,23 @@ def to_json(meta: RunMeta, result: TargetResult, ledger: CallLedger) -> dict[str
         "live": meta.live,
         "effort": meta.effort,
         "complete": result.complete,
+        "trial": result.trial,
+        "stopped": result.stopped,
         "items": items,
         "items_planned": result.items_planned,
+        "items_total": result.items_total,
         "dataset_files": dict(meta.dataset_files),
         "prompts": list(result.prompts),
         "reviews": {
             "source": meta.reviews.source,
             "confirmed_items": len(meta.reviews.confirmed_items),
         },
-        "metrics": [_metric_json(m, result.complete) for m in result.metrics],
+        "metrics": [_metric_json(m) for m in result.metrics],
         "breakdowns": {
             name: {key: _measure_json(m) for key, m in slices.items()}
             for name, slices in result.breakdowns.items()
         },
-        "cost": {
-            "cap_usd": None if meta.cap_usd is None else str(meta.cap_usd),
-            "spent_usd": str(ledger.spent),
-            "calls": len(ledger.entries),
-            "estimated_calls": sum(entry.estimated for entry in ledger.entries),
-            "per_model": per_model,
-        },
+        "cost": _cost_json(meta, ledger, items),
         "notes": list(result.notes),
         "details": [dict(d) for d in result.details],
     }
@@ -163,10 +176,18 @@ def render_markdown(meta: RunMeta, result: TargetResult, ledger: CallLedger) -> 
     data = to_json(meta, result, ledger)
     title = f"{meta.set_name} ({result.target}) - {meta.model_label} - {meta.run_date.isoformat()}"
     lines = [f"# Evaluation: {title}", ""]
-    if not result.complete:
+    if result.stopped:
         lines += [
-            "> **INCOMPLETE RUN.** "
-            f"{result.items} of {result.items_planned} items ran; no gate can pass.",
+            "> **STOPPED RUN.** "
+            f"{result.items} of {result.items_planned} items ran before the run stopped "
+            "(budget cap); no gate can pass.",
+            "",
+        ]
+    if result.trial:
+        lines += [
+            "> **TRIAL RUN.** "
+            f"Only {result.items_planned} of the set's {result.items_total} items were "
+            "selected (`--limit`); a trial is never a gate.",
             "",
         ]
     lines += [
@@ -189,20 +210,21 @@ def render_markdown(meta: RunMeta, result: TargetResult, ledger: CallLedger) -> 
     lines += ["", "## Results", ""]
     lines += [
         "Pre-screen = every item (deterministic checks and judge flags only pre-screen). "
-        "Gate = items the owner has confirmed (IMPLEMENTATION_PLAN §10.1); with none, the gate "
-        "is *not evaluable*, never a pass.",
+        "Gate = items the owner has confirmed (IMPLEMENTATION_PLAN §10.1), and it needs "
+        "every item of the set confirmed: with fewer, the gate is *not evaluable*, never a "
+        'pass (the count is shown as "k of N confirmed").',
         "",
         "| Metric | Threshold | Pre-screen (all items) | Gate (owner-confirmed) | Gate status |",
         "|---|---|---|---|---|",
     ]
     for metric in result.metrics:
-        status = metric.gate_status(complete=result.complete)
+        confirmed, of = metric.confirmation()
         lines.append(
             f"| {metric.label} | {_threshold(metric)} "
             f"| {fmt_measure(metric.all_items, unit=metric.unit)} "
             f"({metric.prescreen_status().value}) "
             f"| {fmt_measure(metric.confirmed, unit=metric.unit)} "
-            f"| **{_status_text(status)}** |"
+            f"| **{_status_text(metric.gate_status())}** ({confirmed} of {of} confirmed) |"
         )
     for metric in result.metrics:
         if metric.failed_items:
@@ -276,7 +298,7 @@ def write_report(
 ) -> tuple[Path, Path]:
     """Write the Markdown and JSON reports; return their paths."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = unique_stem(out_dir, stem_for(meta))
+    stem = unique_stem(out_dir, stem_for(meta, trial=result.trial))
     markdown = out_dir / f"{stem}.md"
     machine = out_dir / f"{stem}.json"
     markdown.write_text(render_markdown(meta, result, ledger), encoding="utf-8", newline="\n")
@@ -286,6 +308,29 @@ def write_report(
         newline="\n",
     )
     return markdown, machine
+
+
+def write_spend_ledger(
+    out_dir: Path, meta: RunMeta, ledger: CallLedger, *, error_type: str
+) -> Path:
+    """What a run that failed midway spent: ids and numbers only, never the
+    error message (it could echo content). Written so money spent is never lost
+    with the exception."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = unique_stem(out_dir, f"{stem_for(meta)}-aborted")
+    path = out_dir / f"{stem}.json"
+    data = {
+        "schema": SCHEMA_VERSION,
+        "aborted": True,
+        "error": error_type,
+        "run_date": meta.run_date.isoformat(),
+        "set": meta.set_name,
+        "mode": meta.mode,
+        "model": meta.model,
+        "cost": _cost_json(meta, ledger, 0),
+    }
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return path
 
 
 # ----------------------------------------------------------------- compare
@@ -298,9 +343,13 @@ def render_comparison(reports: Sequence[Mapping[str, Any]]) -> str:
     ]
     for report in reports:
         per_model = report["cost"]["per_model"]
-        costs = [row["cost_per_100_items_usd"] for row in per_model.values()]
+        costs = [
+            row["cost_per_100_items_usd"]
+            for row in per_model.values()
+            if row["cost_per_100_items_usd"] is not None
+        ]
         cost_text = (
-            "USD 0" if not per_model else ", ".join(f"${Decimal(c):.4f}" for c in costs if c)
+            "USD 0" if not per_model else ", ".join(f"${Decimal(c):.4f}" for c in costs) or "n/a"
         )
         for metric in report["metrics"]:
             all_items = metric["all_items"]
