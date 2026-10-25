@@ -25,6 +25,9 @@ CONNECTION_NOTIFY_TASK = "connections.notify_owner"
 #: Runs a held tool call the owner confirmed (S03.1). Deferred with the
 #: owner's control lock, never scheduled (AGENTS §13).
 APPLY_CONFIRMATION_TASK = "agent.apply_confirmation"
+#: Refreshes one conversation's rolling summary (S03.2). Debounced: deferred
+#: with `schedule_at` and a queueing lock, never a `lock` (AGENTS §13).
+REFRESH_SUMMARY_TASK = "memory.refresh_summary"
 
 
 class JobScheduler(Protocol):
@@ -45,3 +48,8 @@ class JobScheduler(Protocol):
 def owner_control_lock(account_id: int) -> str:
     """Serializes one account's owner turns (ARCHITECTURE §12.2)."""
     return f"acct:{account_id}:control"
+
+
+def summary_queueing_lock(conversation_id: int) -> str:
+    """At most one queued summary refresh per conversation (ARCHITECTURE §12.2)."""
+    return f"sum:{conversation_id}"

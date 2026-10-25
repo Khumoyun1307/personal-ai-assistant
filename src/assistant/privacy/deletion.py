@@ -5,8 +5,9 @@ the same cascade for one chat (a recognised bot chat, FR-OBS-04).
 
 Offered when the owner declines or revokes the `ai_managed` consent. It
 cascades over every content-bearing column that managed chats reach
-(`privacy/content_columns.py`): message rows, contact names, the raw
-business payloads, and control turns that quoted managed content. Ids and
+(`privacy/content_columns.py`): message rows, conversation summaries
+(S03.2), contact names, the raw business payloads, and control turns that
+quoted managed content. Ids and
 tombstones stay where audit needs them; one content-free audit row records
 the counts.
 """
@@ -22,6 +23,7 @@ from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.inbox.models import InboundUpdate
+from assistant.memory.summaries import delete_account_summaries, delete_conversation_summaries
 
 #: Raw updates that carry managed content, or the owner's name from the
 #: connection payload (`business_connection.user`).
@@ -39,6 +41,8 @@ class DeletionReport:
     contacts_cleared: int
     payloads_cleared: int
     control_turns_cleared: int
+    #: `conversation_summaries` rows deleted (S03.2).
+    summaries: int = 0
 
     @property
     def total(self) -> int:
@@ -47,6 +51,7 @@ class DeletionReport:
             + self.contacts_cleared
             + self.payloads_cleared
             + self.control_turns_cleared
+            + self.summaries
         )
 
 
@@ -66,6 +71,7 @@ async def delete_managed_data(
     messages = _count(
         await session.execute(delete(Message).where(Message.account_id == account_id))
     )
+    summaries = await delete_account_summaries(session, account_id)
     contacts = _count(
         await session.execute(
             update(Contact)
@@ -124,12 +130,13 @@ async def delete_managed_data(
                 "contacts_cleared": contacts,
                 "payloads_cleared": payloads,
                 "control_turns_cleared": turns,
+                "summaries_deleted": summaries,
                 "messages_remaining": int(remaining),
             },
         )
     )
     await session.flush()
-    return DeletionReport(messages, contacts, payloads, turns)
+    return DeletionReport(messages, contacts, payloads, turns, summaries)
 
 
 #: Business update kinds whose payload names a chat (`<kind>.chat.id`).
@@ -187,6 +194,7 @@ async def purge_conversation(
             .where(Message.conversation_id == conversation_id)
         )
     )
+    summaries = await delete_conversation_summaries(session, account_id, conversation_id)
     turns = await redact_turns_referring_to(
         session, account_id=account_id, conversation_id=conversation_id, clock=clock
     )
@@ -205,7 +213,7 @@ async def purge_conversation(
         )
     )
     await session.flush()
-    return DeletionReport(messages, contacts, payloads, turns)
+    return DeletionReport(messages, contacts, payloads, turns, summaries)
 
 
 async def redact_turns_referring_to(

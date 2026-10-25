@@ -11,7 +11,8 @@ The rules that matter most, each pinned by an integration test:
   however late, never moves the reply window (TF §12 LV-08/LV-15);
 - a no-op edit (same content hash) touches nothing, not even `edited_at`;
 - a deletion purges content and leaves a tombstone, so a requeued or
-  redelivered update cannot bring the content back;
+  redelivered update cannot bring the content back, and drops the summaries
+  that covered it (S03.2);
 - content is stored whether or not `ai_managed` consent exists; the consent
   gate is at the LLM boundary (§14.3). `pending_ai_since` only remembers that
   something new is waiting.
@@ -44,6 +45,7 @@ from assistant.conversations.models import (
 from assistant.core.clock import Clock
 from assistant.inbox.models import InboundUpdate
 from assistant.memory.search import detect_script, guess_lang, normalize
+from assistant.memory.summaries import invalidate_after_deletion
 from assistant.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -470,6 +472,8 @@ async def record_deletion(
             .where(InboundUpdate.message_id.in_(purged_ids))
             .values(payload=None)
         )
+        # A deleted message must not live on in a summary (S03.2, M03 D63).
+        await invalidate_after_deletion(session, conversation, purged_ids, now=now)
     conversation.updated_at = now
     logger.info(
         "business_messages_deleted",

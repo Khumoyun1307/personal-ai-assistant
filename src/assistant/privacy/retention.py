@@ -15,6 +15,8 @@ Every data class the privacy policy names has a rule here, and the hourly
 | (text, media, search key, hash) | | `summary_gap_before` advanced (rollup: M03) |
 | `contacts` names | while message content is retained | names cleared afterwards |
 | `pending_inputs` | until expiry | rows deleted (questions and cards) |
+| `conversation_summaries` (period) | 30 days | rows deleted (catch-up caches, S03.2) |
+| `conversation_summaries` (rolling) | until deleted | deletion cascades only (R-07) |
 
 Other classes join as their tables arrive.
 """
@@ -38,6 +40,7 @@ from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.db.uow import transaction
 from assistant.inbox.models import InboundUpdate
+from assistant.memory.summaries import sweep_period_summaries
 
 INBOUND_PAYLOAD_RETENTION = timedelta(days=7)
 CONTROL_TURN_TEXT_RETENTION = timedelta(days=90)
@@ -61,6 +64,7 @@ class SweepReport:
     contact_names: int = 0
     expired_inputs: int = 0
     tool_confirmations: int = 0
+    period_summaries: int = 0
 
     @property
     def total(self) -> int:
@@ -76,6 +80,7 @@ class SweepReport:
             + self.message_contents
             + self.contact_names
             + self.expired_inputs
+            + self.period_summaries
         )
 
 
@@ -156,6 +161,8 @@ async def sweep_all(session_factory: async_sessionmaker[AsyncSession], clock: Cl
     message_contents = await sweep_message_content(session_factory, clock)
     contact_names = await sweep_contact_names(session_factory, clock)
     async with transaction(session_factory) as uow:
+        period_summaries = await sweep_period_summaries(uow.session, now)
+    async with transaction(session_factory) as uow:
         expired = await sweep_expired_cards(uow.session, clock)
     return SweepReport(
         inbound,
@@ -169,6 +176,7 @@ async def sweep_all(session_factory: async_sessionmaker[AsyncSession], clock: Cl
         contact_names,
         expired,
         confirmations,
+        period_summaries,
     )
 
 
