@@ -119,7 +119,7 @@ class OwnerRuntime(Protocol):
 
 
 class Applier(Protocol):
-    async def apply(self, confirmation_id: int) -> ApplyOutcome: ...
+    async def apply(self, confirmation_id: int, turn_cutoff: int | None = None) -> ApplyOutcome: ...
 
 
 class SummaryRefresher(Protocol):
@@ -176,8 +176,10 @@ class JobHandlers:
     ) -> str:
         return await self.data_deleter.run(account_id, scope, subject_id, card_id, turn_cutoff)
 
-    async def apply_confirmation(self, confirmation_id: int) -> ApplyOutcome:
-        return await self.confirmation_applier.apply(confirmation_id)
+    async def apply_confirmation(
+        self, confirmation_id: int, turn_cutoff: int | None = None
+    ) -> ApplyOutcome:
+        return await self.confirmation_applier.apply(confirmation_id, turn_cutoff)
 
     async def owner_request(self, turn_id: int) -> RunOutcome:
         outcome = await self.owner_runtime.run(turn_id)
@@ -363,10 +365,12 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
         await handlers.owner_request(turn_id)
 
     @app.task(name=APPLY_CONFIRMATION_TASK, queue=QUEUE_LLM, retry=OWNER_REQUEST_RETRY)
-    async def apply_confirmation(confirmation_id: int) -> None:
+    async def apply_confirmation(confirmation_id: int, turn_cutoff: int | None = None) -> None:
         # Lock `acct:{id}:control` is set at defer; a retry or redelivery is
-        # a no-op once the row has left `confirmed`.
-        await handlers.apply_confirmation(confirmation_id)
+        # a no-op once the row has left `confirmed`. `turn_cutoff` (the
+        # newest control turn at the tap, for deletions; M03 D88) is absent
+        # from a job the reconciler re-created or one queued before it existed.
+        await handlers.apply_confirmation(confirmation_id, turn_cutoff)
 
     @app.task(name=DELETE_DATA_TASK, queue=QUEUE_LLM, retry=DELETE_DATA_RETRY)
     async def delete_data(

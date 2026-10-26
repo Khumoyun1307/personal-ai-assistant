@@ -140,6 +140,12 @@ class ToolContext:
     #: the runtime's check (§14.3, M03 D48). Fail closed: False unless the
     #: runtime established it.
     managed_ok: bool = False
+    #: A held call the owner confirmed: the newest control turn at the
+    #: Confirm tap (an id). A deletion clears the owner's own turns only up to
+    #: it, so a question sent after the tap keeps its text (M03 D88). None:
+    #: all of them (a job re-created by the reconciler; the runtime then asks
+    #: the owner to send an emptied question again).
+    turn_cutoff: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

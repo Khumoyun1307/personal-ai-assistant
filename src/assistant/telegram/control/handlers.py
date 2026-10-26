@@ -762,7 +762,13 @@ async def handle_tool_confirmation_press(
         raw = await connection.get_raw_connection()
         await scheduler.defer(
             APPLY_CONFIRMATION_TASK,
-            args={"confirmation_id": card.ref_id},
+            args={
+                "confirmation_id": card.ref_id,
+                # The newest control turn now, as for a button deletion (M03
+                # D88): a confirmed deletion spares the owner's turns sent
+                # after this tap, which queue behind the job (an id).
+                "turn_cutoff": await deletion.latest_turn_id(session, account.id),
+            },
             lock=owner_control_lock(account.id),
             connection=raw.driver_connection,
         )

@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select, text
 
-from assistant.accounts.models import Account, AuditLogEntry, PendingInput
+from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, PendingInput
 from assistant.agent.models import AgentRunStep, ToolConfirmation
 from assistant.agent.tools.deletion import (
     DeleteContactDataArgs,
@@ -63,6 +63,7 @@ from tests.integration.business_env import (
     connect,
     deliver,
     environment,
+    private_message,
 )
 
 pytestmark = pytest.mark.integration
@@ -238,6 +239,48 @@ async def test_the_deletion_applies_only_after_the_owner_confirms(env: Env) -> N
             .all()
         )
     assert events == ["data_deleted"]
+
+
+async def test_a_question_sent_after_confirming_delete_everything_keeps_its_text(
+    env: Env,
+) -> None:
+    """Fix round 3 (recorded open in fix round 2): the Confirm tap records the
+    newest control turn, as a button deletion's press does (M03 D88). The
+    owner's question sent after the tap waits behind the apply job (same
+    lock) and keeps its text; the request before the tap and the run's
+    answer go."""
+    await seed(env)
+    turn = await ask(env, "OLDQ delete everything please")
+    fake = FakeLLM(
+        tool_response(("c1", "delete_everything", args(scope="everything"))),
+        text_response("Please confirm."),
+    )
+    await runtime(env, fake, FakeChannel(), flags=FLAGS).run(turn)
+    async with env.factory() as session:
+        card = (
+            await session.execute(select(PendingInput).where(PendingInput.kind == "tool_confirm"))
+        ).scalar_one()
+    await deliver(env, callback(f"tool_confirm:{card.token}:confirm"))
+    await deliver(env, private_message(OWNER, "NEWQ asked after the confirm"))
+    async with env.factory() as session:
+        job_args = (
+            await session.execute(
+                text(
+                    "SELECT args FROM procrastinate.procrastinate_jobs "
+                    "WHERE task_name = 'agent.apply_confirmation'"
+                )
+            )
+        ).scalar_one()
+    assert all(isinstance(value, int) for value in job_args.values())  # ids only
+    outcome = await applier(env, FakeChannel(), flags=FLAGS).apply(**job_args)
+    assert outcome.status == "applied"
+    async with env.factory() as session:
+        texts = (
+            (await session.execute(select(ControlTurn.text).where(ControlTurn.text.is_not(None))))
+            .scalars()
+            .all()
+        )
+    assert texts == ["NEWQ asked after the confirm"]
 
 
 async def test_a_rejected_deletion_deletes_nothing(env: Env) -> None:

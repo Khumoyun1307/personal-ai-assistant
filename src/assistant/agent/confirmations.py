@@ -479,7 +479,9 @@ class ConfirmationApplier:
         self._services = services
         self._enabled_flags = enabled_flags
 
-    async def apply(self, confirmation_id: int) -> ApplyOutcome:
+    async def apply(self, confirmation_id: int, turn_cutoff: int | None = None) -> ApplyOutcome:
+        """`turn_cutoff`: the newest control turn at the Confirm tap (an id,
+        from the job's arguments), for the deletion tools (M03 D88)."""
         async with transaction(self._session_factory) as uow:
             session = uow.session
             account_id = await account_of_confirmation(session, confirmation_id)
@@ -527,6 +529,7 @@ class ConfirmationApplier:
                     # It was held because its run was tainted: what it saves
                     # stays marked so, even if the run row is gone (N1).
                     held=True,
+                    turn_cutoff=turn_cutoff,
                 )
                 try:
                     outcome = await tool.handler(context, parsed)

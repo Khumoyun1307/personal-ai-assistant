@@ -11,7 +11,9 @@ deletes nothing.
 
 The domain cascades are `privacy/deletion.py`. Results are counts and ids,
 never names or text (no `ai_managed` needed). A repeated call (the same run
-and call id) deletes once: its audit row is found and reported.
+and call id) deletes once: its audit row is found and reported. Like a
+button deletion, a confirmed one spares the owner's turns sent after the
+Confirm tap (`ToolContext.turn_cutoff`, M03 D88).
 """
 
 from __future__ import annotations
@@ -195,6 +197,7 @@ async def delete_conversation_data_tool(
             actor="agent",
             clock=ctx.services.clock,
             request=request,
+            owner_turns_up_to=ctx.turn_cutoff,
         )
 
     return await _run(ctx, deletion.SCOPE_CONVERSATION, delete, conversation_id=conversation_id)
@@ -229,6 +232,7 @@ async def delete_contact_data_tool(ctx: ToolContext, args: DeleteContactDataArgs
             actor="agent",
             clock=ctx.services.clock,
             request=request,
+            owner_turns_up_to=ctx.turn_cutoff,
         )
 
     return await _run(ctx, deletion.SCOPE_CONTACT, delete, contact_id=args.contact_id)
@@ -263,6 +267,7 @@ async def delete_everything_tool(ctx: ToolContext, args: DeleteEverythingArgs) -
             actor="agent",
             clock=ctx.services.clock,
             request=request,
+            owner_turns_up_to=ctx.turn_cutoff,
         )
 
     return await _run(ctx, deletion.SCOPE_EVERYTHING, delete)

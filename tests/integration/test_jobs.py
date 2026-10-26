@@ -67,9 +67,11 @@ class RecordingApplier:
     """Stands in for the confirmation applier."""
 
     applied: list[int] = field(default_factory=list)
+    cutoffs: list[int | None] = field(default_factory=list)
 
-    async def apply(self, confirmation_id: int) -> ApplyOutcome:
+    async def apply(self, confirmation_id: int, turn_cutoff: int | None = None) -> ApplyOutcome:
         self.applied.append(confirmation_id)
+        self.cutoffs.append(turn_cutoff)
         return ApplyOutcome("applied")
 
 
