@@ -607,6 +607,47 @@ async def delete_for_contact(
     )
 
 
+async def delete_for_scope(
+    session: AsyncSession,
+    account_id: int,
+    *,
+    conversation_ids: Sequence[int] = (),
+    contact_ids: Sequence[int] = (),
+) -> int:
+    """S03.5 per-conversation / per-contact deletion (FR-PRV-04): the items
+    about these conversations (conversation scope) and about these contacts
+    (contact scope), active or forgotten. Owner-scope items stay.
+
+    The one place the deletion cascades ask which items belong to a scope:
+    the S03.3 safety fixes extend it with owner-scope items whose provenance
+    refs point into the scope."""
+    conditions = []
+    if conversation_ids:
+        conditions.append(
+            (MemoryItem.scope == SCOPE_CONVERSATION)
+            & MemoryItem.conversation_id.in_(list(conversation_ids))
+        )
+    if contact_ids:
+        conditions.append(
+            (MemoryItem.scope == SCOPE_CONTACT) & MemoryItem.contact_id.in_(list(contact_ids))
+        )
+    if not conditions:
+        return 0
+    return _rowcount(
+        await session.execute(
+            delete(MemoryItem).where(MemoryItem.account_id == account_id).where(or_(*conditions))
+        )
+    )
+
+
+async def delete_all(session: AsyncSession, account_id: int) -> int:
+    """Delete everything (S03.5): every item of the account, the owner's
+    own instructions, preferences and facts included."""
+    return _rowcount(
+        await session.execute(delete(MemoryItem).where(MemoryItem.account_id == account_id))
+    )
+
+
 async def sweep_forgotten(session: AsyncSession, now: datetime) -> int:
     """Forgotten items whose Undo window has passed are deleted (§10.4)."""
     return _rowcount(
