@@ -149,7 +149,8 @@ connected to: it is not listed, and the drop is not forced, S03.6).
 **Targets.** `retrieval` has four modes over the 38 queries: `deterministic` (the
 query as typed goes to `memory.retrieval.search_messages`; target in the top 5,
 threshold 85 %) and `variants` (a model writes query variants with the eval-side prompt
-`retrieval_variants.v2`, whose rule 1 mirrors the shipped `owner_request.v6` rule 5 — the
+`retrieval_variants.v2`, whose rule 1 mirrors the search bullet of the shipped
+`owner_request` rule 5 (v6, unchanged in v7) — the
 partner's name out of the search phrases, the words the message would contain — E-f, and
 names the chat partner if the owner did; the name is resolved with the product's own
 contact matcher, as the agent's `resolve_contact` would, and an unambiguous match
@@ -181,18 +182,36 @@ reply. The corpus account gets a control chat, `ai_control` and `ai_managed` con
 naming the processor of the run's model, an active connection and the owner language
 (`--owner-language`, default `uz-Latn`). After each query the account's control turns,
 agent runs, memory items, summaries, cards, confirmations and audit rows are deleted and
-its settings and chat modes restored: **no query sees another's history**. A wrapper
-around the `search_messages` handler records what each call returned (instrumentation
+its settings and chat modes restored: **no query sees another's history**. Every stored
+chat has a coverage start, as ingestion sets it (the dataset's pre-connection start, else
+the chat's first message; `corpus.coverage_start`), so the account-wide coverage start a
+search reports is the earliest chat's, not the one labelled chat's. Wrappers around the
+`search_messages` and `get_conversation` handlers record what each call returned, and the
+run's tool sequence is read from `agent_run_steps` before the reset (instrumentation
 only). Metrics (E-aa): **top 5** = a target among the first 5 results of *any*
 `search_messages` call in the run (no search at all is a miss, `no_search`); **correct
 reply with reference** = the run succeeded, at least one citation the runtime verified
 (`[msg:id]` turned into a source, ARCHITECTURE §7.2) points to a target, no citation was
 removed as unverified, and every `answer_values` string is in the model's own words
 (markers removed; the sources the application added do not count) as whole words, or
-with E-s endings only where a cited target message has that very form. Thresholds 85 %
-and 80 %, gated on owner-confirmed items like every gate. The JSON keeps per item the
-searches (phrases, contact filter, `widened`, top 5), the verified citations, the
-unverified count, the run status and the reply (synthetic). **Cost (E-ab):** the agent
+with E-s endings only where a cited target message has that very form. Amounts and clock
+times compare as values (`agent_mode.value_key`): `03:15` = `3:15 a.m.`, `1 500 000` =
+`1,5 mln` = `1 million 500 ming`, `3 mln` = `3 миллион`, `300 ming` = `300 000`; a number
+with no unit or thousands group is left as written, and an Uzbek ending on an amount
+still needs a cited target with that form. Thresholds 85 % and 80 %, gated on
+owner-confirmed items like every gate. Next to them, **target reached the model** (a
+target among *any* search result, past the fifth too, or among the messages
+`get_conversation` showed) is informational only: it would also credit a run that found
+the answer by reading a whole chat, hiding a search-ranking regression, and the answer
+metric already scores the pipeline end to end. **Provider outages:** a run that fails
+with `llm_unavailable` or `llm_rate_limited` is run again from a fresh state after 15 s
+and 60 s (at most 3 attempts, each billed; the evaluation's SDK client retries nothing);
+an item that never gets through is **not evaluated** — neither a hit nor a miss, listed
+in `not_evaluated` — and the run is incomplete (exit 4, no gate, no calibration). The
+JSON keeps per item the tool sequence (names and statuses), the searches (phrases,
+contact filter, `widened`, top 5 and every result), the chats read and the message ids
+they showed, the verified citations, the unverified count, the run status, the provider
+error's SDK class (`exc_type`) and each failed attempt, and the reply (synthetic). **Cost (E-ab):** the agent
 loop's worst case (its token budget, the last call at full output plus one truncation
 retry, and two summary calls per query) is USD 1.34 for 38 queries on gpt-6-luna (USD
 0.035 for one), over the default cap, so a full run is refused unless it is calibrated: run a `--limit 1`
