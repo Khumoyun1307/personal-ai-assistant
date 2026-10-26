@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "aborted": true,
+  "error": "OperationalError",
+  "run_date": "2026-10-26",
+  "set": "summary",
+  "mode": "period-uz-Latn",
+  "model": "gpt-6-luna",
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.0210045",
+    "calls": 60,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 60,
+        "input_tokens": 92165,
+        "output_tokens": 23576,
+        "cost_usd": "0.0210045",
+        "cost_per_100_items_usd": null
+      }
+    }
+  }
+}
