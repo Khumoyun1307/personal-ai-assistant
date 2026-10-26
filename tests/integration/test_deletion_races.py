@@ -251,3 +251,30 @@ async def test_a_question_whose_text_was_deleted_before_its_run_is_not_answered_
     assert outcome.note == "turn_text_deleted"
     [said] = channel.sends
     assert "send it again" in said
+
+
+async def test_the_deleted_question_notice_is_sent_once_when_its_job_runs_again(
+    env: Env,
+) -> None:
+    """Fix round 3, E: a stalled worker's retry runs the turn's job again. The
+    notice is on record before it is sent (a run row, content-free), so the
+    re-run finds it and says nothing more, as for an answered turn."""
+    await seed(env)
+    turn = await ask(env, "OWNSYN a question")
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text("UPDATE app.control_turns SET text = NULL WHERE id = :t"), {"t": turn}
+        )
+    channel = FakeChannel()
+    await runtime(env, FakeLLM(), channel, flags=FLAGS).run(turn)
+    again = await runtime(env, FakeLLM(), channel, flags=FLAGS).run(turn)
+    assert again.note == "already_answered"
+    assert len(channel.sends) == 1
+    async with env.factory() as session:
+        status, error_class = (
+            await session.execute(
+                text("SELECT status, error_class FROM app.agent_runs WHERE trigger_ref = :t"),
+                {"t": f"turn:{turn}"},
+            )
+        ).one()
+    assert (status, error_class) == ("failed", "turn_text_deleted")

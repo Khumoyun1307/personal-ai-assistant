@@ -101,7 +101,13 @@ class RunStatus(StrEnum):
     REFUSED = "refused"
     BUDGET_EXCEEDED = "budget_exceeded"
     SKIPPED = "skipped"
-    """Nothing to do, or nobody to reply to; no run row is written."""
+    """Nothing to do, or nobody to reply to; no model call. No run row is
+    written, except for a question deleted before its run (a `failed` row,
+    `NOTE_TURN_DELETED`, so its notice goes out once)."""
+
+
+#: The question's text was gone when its run started (S03.5, M03 D88).
+NOTE_TURN_DELETED = "turn_text_deleted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,12 +221,13 @@ class OwnerRequestRuntime:
         if isinstance(started, RunOutcome):
             return started
         if started.turn_deleted:
-            # No run row and no model call, as for a missing consent.
+            # No model call; the run row recorded in `_start` makes the notice
+            # at most once (a re-run is "already answered").
             await self._channel.send(
                 account_id=started.account_id, chat_id=started.chat_id, text=TEXT_TURN_DELETED
             )
             return RunOutcome(
-                RunStatus.SKIPPED, note="turn_text_deleted", account_id=started.account_id
+                RunStatus.SKIPPED, note=NOTE_TURN_DELETED, account_id=started.account_id
             )
         if started.no_consent:
             # No run row and no model call: there is nothing to account for.
@@ -290,6 +297,22 @@ class OwnerRequestRuntime:
                 interrupted.error_class = "interrupted"
                 interrupted.finished_at = self._clock.now()
             if turn.text is None and turn.quoted_text is None:
+                # On record before the notice goes out (a run that called no
+                # model): a re-run of this job finds it and stays silent, as
+                # for an answered turn (S03.5 fix round 3, E).
+                AgentRunRepository(session, account_id).add(
+                    AgentRun(
+                        run_type=RUN_TYPE,
+                        trigger_ref=f"turn:{turn_id}",
+                        model=self._config.model,
+                        effort=self._config.effort,
+                        prompt_version=prompt.label,
+                        status=RunStatus.FAILED.value,
+                        started_at=self._clock.now(),
+                        finished_at=self._clock.now(),
+                        error_class=NOTE_TURN_DELETED,
+                    )
+                )
                 return _Started(account_id, chat_id, turn_deleted=True)
 
             control = await active_consent(session, account_id, kind=CONSENT_AI_CONTROL)
