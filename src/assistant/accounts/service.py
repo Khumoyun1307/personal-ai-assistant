@@ -26,10 +26,12 @@ CONSENT_AI_MANAGED = "ai_managed"
 
 #: The privacy-policy version consents are recorded against. v2 adds managed
 #: conversations, v3 deletion and "stop observing", v4 hosting and encrypted
-#: backups (docs/legal/privacy-policy.md). A bump keeps earlier consents valid;
-#: one that widens processing needs an entry in `inbox.policy_notice`, which
-#: tells owners who consented under an older version (AGENTS §16).
-POLICY_VERSION = "v4"
+#: backups, v5 notes and summaries kept until deleted, retention settings and
+#: deletion controls (docs/legal/privacy-policy.md). A bump keeps earlier
+#: consents valid; one that widens processing needs an entry in
+#: `inbox.policy_notice`, which tells owners who consented under an older
+#: version (AGENTS §16).
+POLICY_VERSION = "v5"
 
 #: Named in every consent, because consent has to say who the data goes to
 #: (SEC-02). A new processor needs a new consent, not just a new entry here.
