@@ -321,7 +321,10 @@ async def _retrieval(args: argparse.Namespace) -> int:
     recorded = _recorded(args)
     targets = [
         RetrievalTarget(
-            queries, mode=mode, recorded=recorded if mode is RetrievalMode.REPLAY else None
+            queries,
+            mode=mode,
+            recorded=recorded if mode is RetrievalMode.REPLAY else None,
+            replayed_from=args.replay_from.name if args.replay_from is not None else None,
         )
         for mode in modes
     ]

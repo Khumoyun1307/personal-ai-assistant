@@ -259,6 +259,7 @@ class RetrievalTarget:
         mode: RetrievalMode,
         corpus: LoadedCorpus | None = None,
         recorded: Mapping[str, QueryVariants | None] | None = None,
+        replayed_from: str | None = None,
     ) -> None:
         if (mode is RetrievalMode.REPLAY) != (recorded is not None):
             raise RefusedError(
@@ -270,6 +271,7 @@ class RetrievalTarget:
         self.mode = mode
         self.uses_model = mode is RetrievalMode.VARIANTS
         self._recorded = recorded
+        self._replayed_from = replayed_from
         self._variants_prompt = load_asset("prompts", VARIANTS_PROMPT_ID)
         self._answer_prompt = load_asset("prompts", ANSWER_PROMPT_ID)
 
@@ -277,7 +279,11 @@ class RetrievalTarget:
         """The same target over a loaded corpus. The runner builds a target
         first (to refuse and estimate), and only then pays for a database."""
         return RetrievalTarget(
-            self._queries, mode=self.mode, corpus=corpus, recorded=self._recorded
+            self._queries,
+            mode=self.mode,
+            corpus=corpus,
+            recorded=self._recorded,
+            replayed_from=self._replayed_from,
         )
 
     @property
@@ -545,6 +551,7 @@ class RetrievalTarget:
         ]
         notes: list[str] = []
         if self._recorded is not None:
+            notes.append(f"Replayed: {self._replayed_from or 'a recorded variants run'}.")
             skipped = sorted(r.query_id for r in records if r.error)
             if skipped:
                 notes.append(
