@@ -506,8 +506,8 @@ async def test_each_summary_call_sees_only_its_own_conversation(senv: Env) -> No
     for request in requests:
         body = everything(request)
         assert ("SYNTH-A" in body) != ("SYNTH-B" in body), "one chat per call"
-        assert "Kamola" not in body
-        assert "Bobur" not in body
+        # Each call names its own contact only (S03.7); the next test checks it.
+        assert not ("Kamola" in body and "Bobur" in body)
     a_ids, b_ids = set(await message_ids(senv, a)), set(await message_ids(senv, b))
     for request in requests:
         cited = set(shown_ids(request))
@@ -518,6 +518,182 @@ async def test_each_summary_call_sees_only_its_own_conversation(senv: Env) -> No
     by_id = {e["conversation_id"]: e for e in result.data["conversations"]}
     assert "SUMMARY-OF-A" in by_id[a]["summary"]["overview"]
     assert "SUMMARY-OF-B" in by_id[b]["summary"]["overview"]
+
+
+async def test_each_summary_call_sees_only_its_own_contacts_name(senv: Env) -> None:
+    """§6 invariant 4 (S03.7): the summarize context names the contact of ITS
+    chat, once and wrapped as untrusted, and no other contact."""
+    a, b = await seed(senv)
+    fake = FakeLLM()
+    fake.parsed = [echo, echo, echo]
+
+    await catch_up(senv, fake, since="2026-10-18 08:00", until="2026-10-18 10:00")
+    await summarizer(senv, fake).refresh(b)
+
+    requests = summary_requests(fake)
+    assert len(requests) == 3
+    for request in requests:
+        body = everything(request)
+        own, other = ("Kamola", "Bobur") if "SYNTH-A" in body else ("Bobur", "Kamola")
+        assert f'<untrusted source="contact_name" trust="untrusted">{own}</untrusted>' in body
+        assert body.count(own) == 1
+        assert other not in body
+    assert a != b
+
+
+# ============================================================ attribution (S03.7)
+#: A message line of the summarize context: id and the sender's fixed label.
+_LINE = re.compile(r"^\[(\d+)\] \S+ \S+ (CONTACT|YOU)", re.MULTILINE)
+
+
+def sides(request: LLMRequest) -> dict[str, list[int]]:
+    """The shown message ids by side, as the context labels them."""
+    found: dict[str, list[int]] = {"CONTACT": [], "YOU": []}
+    for message_id, label in _LINE.findall(everything(request)):
+        found[label].append(int(message_id))
+    return found
+
+
+def commitment(by: str, status: str, text: str, ids: list[int]) -> dict[str, Any]:
+    return {"by": by, "status": status, "text": text, "due": None, "message_ids": ids}
+
+
+async def owner_writes(env: Env, *, message_id: int, minutes: int) -> None:
+    """The owner's own message in chat A (Kamola), sent from their account."""
+    await deliver(
+        env,
+        business_message(
+            message_id=message_id,
+            from_id=OWNER,
+            chat_id=CONTACT,
+            message_text="SYNTH-A owner words",
+            first_name="Kamola",
+            date=ts(minutes),
+        ),
+    )
+
+
+async def test_a_misattributed_promise_is_stored_as_a_request(senv: Env) -> None:
+    """RG-17 family (S03.7): a "promise" of the owner that cites only the
+    contact's messages is the contact's request; it is stored as one, never as
+    the owner's promise; a question citing only the owner is dropped."""
+    a, _ = await seed(senv)
+    await owner_writes(senv, message_id=13, minutes=1)
+    fake = FakeLLM()
+
+    def misattributed(request: LLMRequest) -> dict[str, Any]:
+        shown = sides(request)
+        return {
+            **output(questions=[("Own question", shown["YOU"][:1])]),
+            "commitments": [
+                commitment("owner", "promised", "Return the cans", shown["CONTACT"][:1]),
+                commitment("contact", "agreed", "Send the address", shown["CONTACT"][1:2]),
+            ],
+        }
+
+    fake.parsed = [misattributed]
+    assert (await summarizer(senv, fake).refresh(a)).status is SummaryStatus.REFRESHED
+
+    stored = await rolling(senv, a)
+    assert stored is not None
+    assert [(c["by"], c["status"]) for c in stored.summary["commitments"]] == [
+        ("owner", "requested"),
+        ("contact", "promised"),
+    ]
+    assert stored.summary["open_questions_to_owner"] == []
+
+    # The owner's views read who asked from the fields, in fixed words.
+    ctx = await tool_context(senv, None)
+    arguments = GetConversationArgs(conversation_id=a, contact_id=None, cursor=None, limit=None)
+    view = (await get_conversation_tool(ctx, arguments)).data["summary"]
+    assert view["attribution_rule"].startswith("Say who asked")
+    request, promise = view["commitments"]
+    assert request["who"].startswith('<untrusted source="contact_name" trust="untrusted">')
+    assert "Kamola asks you to (not agreed yet)" in request["who"]
+    assert "Kamola promised you" in promise["who"]
+    listed = (await attention(senv, None)).data["conversations"]
+    entry = next(e for e in listed if e["conversation_id"] == a)
+    assert [c["status"] for c in entry["requests_to_owner"]] == ["requested"]
+
+
+async def test_a_rolling_refresh_checks_carried_items_against_stored_authors(
+    senv: Env,
+) -> None:
+    """A refresh shows only the new messages; items carried from the previous
+    summary cite older ones. Their authors come from the database, so a carried
+    misattribution is caught too."""
+    a, _ = await seed(senv)
+    await owner_writes(senv, message_id=13, minutes=1)
+    fake = FakeLLM()
+    first: dict[str, list[int]] = {}
+
+    def initial(request: LLMRequest) -> dict[str, Any]:
+        first.update(sides(request))
+        return output(facts=[("Synthetic fact", first["CONTACT"] + first["YOU"])])
+
+    fake.parsed = [initial]
+    summaries = summarizer(senv, fake)
+    assert (await summaries.refresh(a)).status is SummaryStatus.REFRESHED
+
+    senv.clock.advance(minutes=40)
+    await deliver(senv, business_message(message_id=14, message_text="SYNTH-A NEW", date=ts(40)))
+
+    def carried(request: LLMRequest) -> dict[str, Any]:
+        new = sides(request)
+        assert set(new["CONTACT"]).isdisjoint(first["CONTACT"])  # only the new one shown
+        return {
+            **output(
+                questions=[("Carried owner question", first["YOU"])],
+                facts=[("Synthetic fact", first["CONTACT"])],
+            ),
+            "commitments": [
+                commitment("owner", "promised", "Carried promise", first["CONTACT"][:1]),
+                commitment("contact", "promised", "New promise", new["CONTACT"]),
+            ],
+        }
+
+    fake.parsed = [carried]
+    assert (await summaries.refresh(a)).status is SummaryStatus.REFRESHED
+    stored = await rolling(senv, a)
+    assert stored is not None
+    assert [(c["text"], c["status"]) for c in stored.summary["commitments"]] == [
+        ("Carried promise", "requested"),
+        ("New promise", "promised"),
+    ]
+    assert stored.summary["open_questions_to_owner"] == []
+
+
+async def test_a_period_summary_cached_under_an_older_prompt_version_is_not_served(
+    senv: Env,
+) -> None:
+    """The cache key names the prompt version and the model (S03.7): a v4 period
+    summary (no attribution status) is never served as a v5 one."""
+    a, _ = await seed(senv)
+    fake = FakeLLM()
+    fake.parsed = [echo, echo, echo]
+    since, until = "2026-10-18 08:30", "2026-10-18 10:00"
+
+    await catch_up(senv, fake, since=since, until=until, conversation=a)
+    await catch_up(senv, fake, since=since, until=until, conversation=a)
+    assert len(summary_requests(fake)) == 1  # the same version: cached
+
+    async with senv.factory() as session, session.begin():
+        await session.execute(
+            text("UPDATE app.conversation_summaries SET prompt_version = 'summarize.v4'")
+        )
+    await catch_up(senv, fake, since=since, until=until, conversation=a)
+    assert len(summary_requests(fake)) == 2
+
+    async with senv.factory() as session, session.begin():
+        await session.execute(
+            text("UPDATE app.conversation_summaries SET model = 'an-older-model'")
+        )
+    await catch_up(senv, fake, since=since, until=until, conversation=a)
+    assert len(summary_requests(fake)) == 3
+    periods = [row for row in await summary_rows(senv) if row.kind == "period"]
+    assert [(p.prompt_version, p.model) for p in periods] == [
+        (prompt_registry.active("summarize").label, "gpt-6-luna")
+    ]
 
 
 # ============================================================ consent

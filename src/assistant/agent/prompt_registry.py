@@ -33,8 +33,12 @@ ACTIVE: dict[str, str] = {
     # not a promise, "agreed" only when both sides confirmed. v4 (S03.6):
     # schema: `language` is the first field, set to the owner's tag before any
     # text; the context spells the tag out (v3 still wrote Cyrillic chats in
-    # Cyrillic for a uz-Latn owner). v1-v3 stay.
-    "summarize": "v4",
+    # Cyrillic for a uz-Latn owner). v5 (S03.7, schema v5): fixed line labels
+    # YOU/CONTACT and the contact named once; commitment `status`; texts carry
+    # content only (the application words who asked or promised); edited and
+    # corrected values, done items. Rollback: set "v4" (its schema is kept,
+    # `schemas.output_model_for`). v1-v4 stay.
+    "summarize": "v5",
 }
 
 

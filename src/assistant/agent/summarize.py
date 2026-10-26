@@ -4,8 +4,10 @@ A contact-triggered run type: its input is untrusted chat content, so it
 has **no tools** (§6 invariant 3a, RG-17) — one structured-output call
 through `LLMClient.parse`, the stop reason checked before anything is read,
 the output re-validated by our own model and then `sanitize`d (an item that
-cites no shown message is dropped). Invalid, truncated or refused output
-stores nothing.
+cites no shown message is dropped) and attribution-checked against the cited
+messages' authors (`agent/attribution.py`, S03.7: a "promise" citing only the
+other side is stored as that side's request). Invalid, truncated or refused
+output stores nothing.
 
 Two entry points, each about ONE conversation (§6 invariant 4):
 
@@ -14,8 +16,8 @@ Two entry points, each about ONE conversation (§6 invariant 4):
   (in chunks). Run by `memory.refresh_summary` and, for a stale chat, by the
   attention list (one call at most there, D62).
 - `summarize_period(...)` — one chat's messages in a catch-up range, cached
-  in `conversation_summaries` (kind `period`) while the range's messages
-  are unchanged.
+  in `conversation_summaries` (kind `period`) while the range's messages,
+  the prompt version and the model are unchanged.
 
 **Nothing deleted is stored.** The store re-checks, under the §9.4 locks,
 that every message the model read is still retained with the same content
@@ -53,10 +55,12 @@ from assistant.accounts.service import (
     active_consent,
 )
 from assistant.agent import prompt_registry
+from assistant.agent.attribution import NO_CHANGES, AttributionCounts, check_attribution
 from assistant.agent.context import SummarizeContext, build_summarize
 from assistant.agent.models import AgentRun
 from assistant.agent.persistence import AgentRunRepository, LlmCallRepository, month_start
-from assistant.agent.schemas import ConversationSummaryOutput, cited_ids, sanitize
+from assistant.agent.prompt_registry import Prompt
+from assistant.agent.schemas import SummaryOutput, cited_ids, output_model_for, sanitize
 from assistant.core.clock import Clock
 from assistant.core.model_routes import processor_for_model
 from assistant.db.uow import transaction
@@ -140,6 +144,8 @@ class PeriodOutcome:
     calls: int = 0
     #: DISCARDED only: why (changed, expired, ignored, bot_chat).
     discard_reason: StoreResult | None = None
+    #: SUMMARIZED only: what the attribution check changed (S03.7; counts).
+    attribution: AttributionCounts = NO_CHANGES
 
 
 class _CallFailedError(Exception):
@@ -240,16 +246,27 @@ class Summarizer:
                 messages=batch,
                 previous=None if previous is None else previous.summary,
                 notes=await _notes(session, account_id, conversation_id),
+                contact_name=await summaries.contact_display_name(
+                    session, account_id, conversation_id
+                ),
             )
+            carried = (
+                cited_ids(dict(previous.summary)) if previous is not None else frozenset[int]()
+            )
+            # Who wrote what the model may cite (S03.7): the shown messages, and
+            # the earlier ones its previous summary cites, from the database.
+            authors = await summaries.message_directions(
+                session, account_id, conversation_id, carried - context.shown_ids
+            )
+            authors.update((m.message_id, m.direction) for m in batch)
             run_id = await self._start_run(session, account_id, trigger, prompt.label)
         prepared = _Prepared(account_id, run_id, context)
 
         try:
-            output, calls = await self._call(prepared, prompt.label)
-            allowed = context.shown_ids | (
-                cited_ids(dict(previous.summary)) if previous is not None else frozenset()
-            )
-            clean, uncited, capped = sanitize(output, allowed)
+            output, calls = await self._call(prepared, prompt)
+            sanitized = sanitize(output, context.shown_ids | carried)
+            uncited, capped = sanitized.uncited, sanitized.capped
+            clean, attribution = check_attribution(sanitized.summary, authors)
             async with transaction(self._session_factory) as uow:
                 result = await summaries.store_rolling(
                     uow.session,
@@ -285,6 +302,8 @@ class Summarizer:
             messages=len(batch),
             items_uncited=uncited,
             items_capped=capped,
+            items_demoted=attribution.demoted,
+            items_misattributed=attribution.dropped,
             result=result.value,
             more_pending=more,
         )
@@ -346,7 +365,14 @@ class Summarizer:
             if source.total == 0 or source.digest is None:
                 return PeriodOutcome(SummaryStatus.EMPTY)
             cached = await summaries.cached_period(
-                session, account_id, conversation_id, start=start, end=end_key, digest=source.digest
+                session,
+                account_id,
+                conversation_id,
+                start=start,
+                end=end_key,
+                digest=source.digest,
+                prompt_version=prompt.label,
+                model=config.model,
             )
             if cached is not None:
                 return PeriodOutcome(
@@ -363,14 +389,20 @@ class Summarizer:
                 messages=source.messages,
                 period=(start, end),
                 notes=await _notes(session, account_id, conversation_id),
+                contact_name=await summaries.contact_display_name(
+                    session, account_id, conversation_id
+                ),
             )
             trigger = f"catch_up:run:{parent_run_id}:conv:{conversation_id}"
             run_id = await self._start_run(session, account_id, trigger, prompt.label)
         prepared = _Prepared(account_id, run_id, context)
+        authors = {m.message_id: m.direction for m in source.messages}
 
         try:
-            output, calls = await self._call(prepared, prompt.label)
-            clean, uncited, capped = sanitize(output, context.shown_ids)
+            output, calls = await self._call(prepared, prompt)
+            sanitized = sanitize(output, context.shown_ids)
+            uncited, capped = sanitized.uncited, sanitized.capped
+            clean, attribution = check_attribution(sanitized.summary, authors)
             async with transaction(self._session_factory) as uow:
                 result = await summaries.store_period(
                     uow.session,
@@ -402,6 +434,8 @@ class Summarizer:
             messages=len(source.messages),
             items_uncited=uncited,
             items_capped=capped,
+            items_demoted=attribution.demoted,
+            items_misattributed=attribution.dropped,
             result=result.value,
         )
         if result is not StoreResult.STORED:
@@ -413,17 +447,23 @@ class Summarizer:
                 discard_reason=result if result.discarded else StoreResult.CHANGED,
             )
         return PeriodOutcome(
-            SummaryStatus.SUMMARIZED, clean, source.total, len(source.messages), calls
+            SummaryStatus.SUMMARIZED,
+            clean,
+            source.total,
+            len(source.messages),
+            calls,
+            attribution=attribution,
         )
 
     # ------------------------------------------------------------ the call
-    async def _call(
-        self, prepared: _Prepared, prompt_label: str
-    ) -> tuple[ConversationSummaryOutput, int]:
+    async def _call(self, prepared: _Prepared, prompt: Prompt) -> tuple[SummaryOutput, int]:
         """One structured call — no tools, ever (§6 invariant 3a) — retried
         once with a larger output budget if truncated, never continued by
-        prefilling (AGENTS §8). Stop reason first, then content."""
+        prefilling (AGENTS §8). Stop reason first, then content. The schema
+        is the one the prompt version was written for (`output_model_for`)."""
         config = self._config
+        schema = output_model_for(prompt)
+        prompt_label = prompt.label
         request = LLMRequest(
             account_id=prepared.account_id,
             run_id=prepared.run_id,
@@ -445,13 +485,13 @@ class Summarizer:
             return _CallFailedError(status, run_status, error_class, calls=calls)
 
         try:
-            response = await self._llm.parse(request, ConversationSummaryOutput)
+            response = await self._llm.parse(request, schema)
             calls += 1
             if response.stop_reason is StopReason.MAX_TOKENS:
                 larger = min(request.max_output_tokens * 2, config.max_output_tokens_ceiling)
                 if larger > request.max_output_tokens:
                     response = await self._llm.parse(
-                        replace(request, max_output_tokens=larger), ConversationSummaryOutput
+                        replace(request, max_output_tokens=larger), schema
                     )
                     calls += 1
         except ConsentMissingError:
@@ -467,9 +507,7 @@ class Summarizer:
                     raise failed(SummaryStatus.FAILED, "failed", "invalid_output")
                 try:
                     # Our own model again: the adapter's validation is not the contract.
-                    validated = ConversationSummaryOutput.model_validate(
-                        response.parsed.model_dump()
-                    )
+                    validated = schema.model_validate(response.parsed.model_dump())
                 except pydantic.ValidationError:
                     raise failed(SummaryStatus.FAILED, "failed", "invalid_output") from None
                 return validated, calls

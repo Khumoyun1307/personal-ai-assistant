@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
+from assistant.agent.locales import supported_locale
 from assistant.agent.tools.common import (
     COVERAGE_RULE,
     DIRECTION_LABELS,
@@ -31,6 +32,7 @@ from assistant.agent.tools.common import (
     name,
     one,
     require_contacts,
+    summary_authors,
     summary_view,
 )
 from assistant.agent.tools.registry import (
@@ -211,6 +213,11 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
             limit=args.limit or 30,
         )
         stored = await summaries.rolling_summary(session, ctx.account_id, conversation_id)
+        authors = (
+            {}
+            if stored is None
+            else await summary_authors(session, ctx.account_id, conversation_id, stored.summary)
+        )
         unseen = (
             await session.execute(
                 select(Conversation.pending_ai_since)
@@ -225,7 +232,14 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
         # The chat's running summary (S03.2): model output, wrapped as
         # untrusted like the messages it was written from.
         summary = {
-            **summary_view(stored.summary),
+            **summary_view(
+                stored.summary,
+                contact_name=summaries.preferred_name(
+                    page.conversation.display_name, page.conversation.username
+                ),
+                locale=supported_locale(account.locale_pref),
+                authors=authors,
+            ),
             "updated_at": local_time(stored.updated_at, tz),
             "up_to_date": not unseen,
         }
