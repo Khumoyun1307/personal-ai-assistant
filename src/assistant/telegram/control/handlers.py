@@ -115,8 +115,10 @@ HELP_TEXT = (
     "/start — set up or re-run onboarding\n"
     "/help — this message\n"
     "/status — what I can see: connection, rights, coverage, gaps, consent\n"
-    "/settings — language, timezone, the mode new chats start in, chats by mode\n"
-    "/privacy — what I store, who sees it, and how to delete it\n\n"
+    "/settings — language, timezone, chat modes, replies, how long things are kept, "
+    "deleting data\n"
+    "/privacy — what I store, who sees it, and how to delete it "
+    "(<code>/privacy delete</code> deletes everything, after asking)\n\n"
     "Send me anything else and I will answer it.\n"
     "Send <b>stop</b> at any time to pause everything."
 )
@@ -325,7 +327,10 @@ async def handle_privacy(
         "their message. Everything is on a server in the US (Oracle, Ashburn) with "
         "encrypted daily backups, also kept at Backblaze B2 in the EU, for up to 35 "
         "days.\n\n"
-        "Your messages are never used to train a model."
+        "Your messages are never used to train a model.\n\n"
+        "To delete one chat's data, open its panel from /settings; "
+        "<code>/privacy delete</code> deletes everything (I ask first). /settings also "
+        "lets you keep messages for a shorter time."
     )
     if connected and not managed.granted:
         text += "\n\nSend <code>/privacy managed</code> to decide about your other chats."
@@ -385,9 +390,24 @@ DELETE_CARD_TEXT = (
     "<b>Delete what I stored from your chats?</b>\n\n"
     "This removes every message, name, summary and raw update I kept from the chats "
     "you included under Chat Automation, and your notes about the people in them. It "
-    "cannot be undone. Your own notes and settings stay."
+    "cannot be undone. Your own notes and settings stay.\n\n"
+    "<b>Delete everything</b> also deletes the history of this chat and all your "
+    "notes. To delete one chat only, open its panel from /settings instead."
 )
-DELETE_CARD_BUTTONS = [("Delete", "delete"), ("Keep", "keep")]
+#: The deletion scopes revocation offers (S02.4; S03.5 adds "everything").
+DELETE_CARD_BUTTONS = [("Delete", "delete"), ("Delete everything", "everything"), ("Keep", "keep")]
+
+
+def deletion_receipt(report: deletion.DeletionReport) -> str:
+    """What a deletion removed: counts only (control chat)."""
+    return (
+        f"🗑 Deleted: {report.messages} message(s), {report.contacts_cleared} contact "
+        f"name(s), {report.payloads_cleared} raw update(s), {report.summaries} "
+        f"summary(ies), {report.memory_items} note(s), {report.control_turns_cleared} "
+        "earlier answer(s) in this chat."
+    )
+
+
 MODE_CARD_TEXT = (
     "<b>How should I continue?</b>\n\n"
     "<b>Without AI</b> — I keep observing your included chats for coverage and "
@@ -590,6 +610,16 @@ async def handle_card_press(
                 await _mode_choice_card(session, clock, account),
             )
             note = "deleted"
+        case (k, "everything") if k == MANAGED_DELETE_KIND:
+            report = await deletion.delete_everything(
+                session, account_id=account.id, actor="owner", clock=clock
+            )
+            settlement = _Settlement(
+                "Deleted",
+                deletion_receipt(report),
+                await _mode_choice_card(session, clock, account),
+            )
+            note = "deleted_everything"
         case (k, "keep") if k == MANAGED_DELETE_KIND:
             settlement = _Settlement(
                 "Kept",

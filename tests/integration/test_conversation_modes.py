@@ -130,8 +130,16 @@ async def test_the_panel_switches_to_ignore_only_after_a_confirmation(env: Env) 
     await open_panel(env)
     panel_send = env.sender.sends[-1]
     assert "Mode: observe" in panel_send["text"]
-    assert keyboard_ops(panel_send["reply_markup"]) == ["observe", "ignore"]
-    assert keyboard_labels(panel_send["reply_markup"]) == ["Observe ✓", "Ignore"]
+    assert keyboard_ops(panel_send["reply_markup"]) == [
+        "observe",
+        "ignore",
+        "delete",
+    ]  # S03.5 adds Delete
+    assert keyboard_labels(panel_send["reply_markup"]) == [
+        "Observe ✓",
+        "Ignore",
+        "Delete stored data…",
+    ]
 
     await tap(env, panels.PANEL_CARD, "ignore")
     assert (await conversation_row(env)).mode == "observe"  # asked, not done
@@ -145,7 +153,11 @@ async def test_the_panel_switches_to_ignore_only_after_a_confirmation(env: Env) 
     await tap(env, panels.IGNORE_CARD, "confirm")
     assert (await conversation_row(env)).mode == "ignore"
     panel_again = env.sender.edits[-1]
-    assert keyboard_labels(panel_again["reply_markup"]) == ["Observe", "Ignore ✓"]
+    assert keyboard_labels(panel_again["reply_markup"]) == [
+        "Observe",
+        "Ignore ✓",
+        "Delete stored data…",
+    ]
 
     # Observe applies at once from the panel.
     await tap(env, panels.PANEL_CARD, "observe")
@@ -330,7 +342,7 @@ async def test_settings_lists_chats_by_mode_page_by_page_and_opens_a_panel(env: 
     await tap(env, panels.LIST_CARD, f"o_{target}")
     panel = env.sender.sends[-1]
     assert panel["text"].startswith("<b>Synth0</b>")
-    assert keyboard_ops(panel["reply_markup"]) == ["observe", "ignore"]
+    assert keyboard_ops(panel["reply_markup"]) == ["observe", "ignore", "delete"]
 
 
 async def test_a_list_cannot_open_another_accounts_chat(env: Env) -> None:

@@ -305,6 +305,11 @@ class ControlDispatcher:
                     return await handlers.handle_revoke(
                         session, self._gateway, self._clock, account, message
                     )
+                if argument.strip().lower() == "delete":
+                    # S03.5: the "delete everything" card; it asks first.
+                    return await panels.handle_delete_all_command(
+                        session, self._gateway, self._clock, account, message
+                    )
                 if argument.strip().lower() == "managed":
                     return await handlers.handle_managed_consent_request(
                         session, self._gateway, self._clock, account, message
