@@ -313,6 +313,47 @@ def _strip_suffix(term: str) -> str:
     return term
 
 
+#: Russian case endings, by declension (S03.7 B2), as `normalize` spells them:
+#: квартир-а/-у/-е/-ы/-ой → kvartir-a/-u/-e/-i/-oy; недел-я/-ю/-е/-и/-ей →
+#: nedel-ya/-yu/-e/-i/-ey. Two-letter endings are matched first.
+_HARD_ENDINGS = ("a", "u", "e", "i", "oy")
+_SOFT_ENDINGS = ("ya", "yu", "e", "i", "ey")
+_CASE_ENDINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("oy", _HARD_ENDINGS),
+    ("ya", _SOFT_ENDINGS),
+    ("yu", _SOFT_ENDINGS),
+    ("ey", _SOFT_ENDINGS),
+    ("a", _HARD_ENDINGS),
+    ("u", _HARD_ENDINGS),
+    ("e", _HARD_ENDINGS + _SOFT_ENDINGS),  # квартире or неделе
+    # No "-i" entry: `_strip_suffix` already cuts a final -i (квартиры →
+    # kvartir), and that stem reaches every case form.
+)
+#: Shorter words keep their ending to themselves (Aziza, keldi, hamdi).
+_MIN_CASE_SIBLING = 6
+
+
+def case_siblings(term: str) -> list[str]:
+    """The same word with its other Russian case endings: kvartira →
+    kvartiru, kvartire, kvartiri, kvartiroy (S03.7 B2).
+
+    A sibling swaps one ending for another, so it is never shorter than the
+    stem plus an ending: a woman's name never becomes the man's name (Dilshoda
+    never `dilshod`, Ravshana never `ravshan`). Only for words of six letters
+    or more whose ending follows a consonant, and only where the stem rules
+    (`_strip_suffix`) leave the word whole — a stripped stem already reaches
+    every case form as a prefix (kolodka → kolodk). Query side only, like
+    every alternative: no normalizer change, no reindex.
+    """
+    if len(term) < _MIN_CASE_SIBLING or not term.isalpha() or _strip_suffix(term) != term:
+        return []
+    for ending, family in _CASE_ENDINGS:
+        stem = term[: -len(ending)]
+        if term.endswith(ending) and stem[-1] not in _VOWELS:
+            return [stem + other for other in dict.fromkeys(family) if stem + other != term]
+    return []
+
+
 def stem_variants(term: str) -> list[str]:
     """`term` plus light Uzbek variants: one stripped suffix, and k/q ↔ g
     voicing at the end of the word. All are used as prefixes."""
@@ -369,10 +410,14 @@ def spelling_variants(term: str) -> list[str]:
 
 
 def term_alternatives(term: str, *, limit: int = _MAX_ALTERNATIVES) -> list[str]:
-    """Every prefix a query term may match: the term, its stems, then the
-    spellings of each. Alternatives shorter than two letters are dropped (a
-    one-letter prefix matches almost everything); the term itself is kept."""
+    """Every prefix a query term may match: the term, its Russian case
+    siblings, its stems, then the spellings of each. Alternatives shorter than
+    two letters are dropped (a one-letter prefix matches almost everything);
+    the term itself is kept. Siblings come first so that the cap on a long
+    query never cuts them (S03.7 B2)."""
     out: dict[str, None] = {term: None}
+    for sibling in case_siblings(term)[: max(0, limit - 1)]:
+        out.setdefault(sibling, None)
     for stem in stem_variants(term):
         for variant in spelling_variants(stem):
             if len(out) >= limit:
