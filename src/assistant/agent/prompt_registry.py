@@ -41,8 +41,13 @@ ACTIVE: dict[str, str] = {
     # YOU/CONTACT and the contact named once; commitment `status`; texts carry
     # content only (the application words who asked or promised); edited and
     # corrected values, done items. Rollback: set "v4" (its schema is kept,
-    # `schemas.output_model_for`). v1-v4 stay.
-    "summarize": "v5",
+    # `schemas.output_model_for`). v6 (S03.7 A2, after the v5 E1 run; schema
+    # v5 unchanged): names in the owner's script (transliterate); an edited
+    # message's text is current and its edit time is shown, a stated value is
+    # never "not given"; answered or accepted questions/decisions are settled;
+    # anyone's "I will" is a commitment with `by`, never a key fact; a split of
+    # work is one commitment per side. v1-v5 stay.
+    "summarize": "v6",
 }
 
 

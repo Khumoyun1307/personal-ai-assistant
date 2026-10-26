@@ -20,7 +20,7 @@ from assistant.agent.attribution import (
     render_who,
     you_word,
 )
-from assistant.agent.context import build_summarize
+from assistant.agent.context import build_summarize, summary_participants
 from assistant.agent.locales import SupportedLocale
 from assistant.agent.schemas import (
     ConversationSummaryOutput,
@@ -29,6 +29,7 @@ from assistant.agent.schemas import (
     output_model_for,
     sanitize,
 )
+from assistant.agent.summarize import owner_script_share
 from assistant.agent.tools.common import summary_view
 from assistant.agent.tools.registry import CapabilityClass, default_registry
 from assistant.agent.tools.summaries import GetAttentionListArgs, SummarizePeriodArgs
@@ -161,7 +162,10 @@ def test_the_v5_output_schema_is_plain_strict() -> None:
     commitment = ConversationSummaryOutput.model_json_schema()["$defs"]["Commitment"]
     assert list(commitment["properties"]) == ["by", "status", "text", "due", "message_ids"]
     assert commitment["properties"]["status"]["enum"] == ["promised", "agreed", "requested"]
-    assert output_model_for(prompt_registry.load("summarize", "v5")) is ConversationSummaryOutput
+    for current in ("v5", "v6"):  # v6 (S03.7 A2) changed the prompt only
+        assert output_model_for(prompt_registry.load("summarize", current)) is (
+            ConversationSummaryOutput
+        )
     for old in ("v1", "v2", "v3", "v4"):
         assert output_model_for(prompt_registry.load("summarize", old)) is (
             ConversationSummaryOutputV4
@@ -170,15 +174,26 @@ def test_the_v5_output_schema_is_plain_strict() -> None:
     assert "status" not in v4_commitment["properties"]
 
 
-def test_summarize_v5_is_active_and_v1_to_v4_remain() -> None:
-    assert prompt_registry.ACTIVE["summarize"] == "v5"
-    for version in ("v1", "v2", "v3", "v4"):
+def test_summarize_v6_is_active_and_v1_to_v5_remain() -> None:
+    """S03.7 A2: v5 was used in eval runs, so its fixes are a new version."""
+    assert prompt_registry.ACTIVE["summarize"] == "v6"
+    for version in ("v1", "v2", "v3", "v4", "v5"):
         assert prompt_registry.load("summarize", version).text
     text = prompt_registry.active("summarize").text
     # v4 rule 10's English role example is gone: roles live in fields (S03.7).
     assert "the contact asks whether" not in text
-    for rule in ("(edited)", "requested", "agreed", "YOU", "CONTACT"):
+    for rule in ("(edited at", "requested", "agreed", "YOU", "CONTACT"):
         assert rule in text
+    # c04, c17: names in the owner's script are a must, not a may.
+    assert "may be written in the owner's script" not in text
+    assert "transliterate" in text
+    # c36: never "not given" when a message states the value.
+    assert '"not given"' in text
+    # c28: answered or accepted is settled; a split of work is one item per side.
+    assert "settled" in text
+    assert "one commitment per side" in text
+    # Recall: a person's own "I will" is a commitment, never a doer-less key fact.
+    assert "never a key fact" in text
 
 
 # ------------------------------------------------------------ attribution (S03.7)
@@ -502,7 +517,7 @@ def _message(mid: int, direction: str, text: str | None, **extra: Any) -> Source
         "content_type": "text",
         "text": text,
         "media_kind": None,
-        "edited": False,
+        "edited_at": None,
     }
     values.update(extra)
     return SourceMessage(**values)
@@ -577,6 +592,81 @@ def test_a_chat_without_a_known_name_gets_the_neutral_word() -> None:
     assert '"собеседник"' in participants
     assert '"вы"' in participants
     assert "contact_name" not in participants
+
+
+@pytest.mark.parametrize(
+    ("tag", "language"),
+    [
+        ("uz", "Uzbek written in Latin letters"),
+        ("uz-Latn", "Uzbek written in Latin letters"),
+        ("uz-Cyrl", "Uzbek written in Cyrillic letters"),
+        ("ru", "Russian"),
+        ("en", "English"),
+    ],
+)
+def test_the_header_asks_for_the_contacts_name_in_the_owners_script(
+    tag: str, language: str
+) -> None:
+    """c04, c17 (S03.7 A2): "call them by this name" with a Cyrillic name pulled
+    summaries for a uz-Latn owner into Cyrillic. The name is to be written in the
+    owner's script, transliterated when it is in another one."""
+    participants = summary_participants("Мавлуда хола", tag)
+    assert (
+        f"Call them by this name, written in the owner's script ({language}): "
+        "transliterate it if it is written in another script." in participants
+    )
+    assert "Call them by this name." not in participants
+
+
+def test_without_an_owner_language_the_name_is_used_as_written() -> None:
+    """No language tag: the summary follows the chat's language, so the name
+    needs no transliteration."""
+    participants = summary_participants("Aziza", None)
+    assert "Call them by this name." in participants
+    assert "transliterate" not in participants
+
+
+def test_an_edited_message_says_when_it_was_edited_and_that_its_text_is_current() -> None:
+    """c36 (S03.7 A2): the line showed only the send time and "(edited)", so a
+    later "I changed the time" read as if the new time was never given."""
+    context = build_summarize(
+        prompt=prompt_registry.active("summarize"),
+        account=Account(telegram_user_id=1, timezone="Asia/Tashkent", locale_pref="uz"),
+        messages=[
+            _message(1, "contact", "Soat 18:00 da", edited_at=T + timedelta(minutes=40)),
+            _message(2, "contact", "Vaqtni o'zgartirdim"),
+        ],
+        contact_name="Aziza",
+    )
+    lines = context.items[-1].text.splitlines()[1:]
+    assert lines[0].startswith(
+        "[1] 2026-10-18 14:01 CONTACT (edited at 2026-10-18 14:40; this is its current text): "
+    )
+    assert lines[1].startswith("[2] 2026-10-18 14:02 CONTACT: ")
+    assert _message(1, "contact", "x", edited_at=T).edited
+    assert not _message(1, "contact", "x").edited
+
+
+def test_the_owner_script_share_of_a_summary() -> None:
+    """S03.7 A2 guard: the share of a stored summary's letters in the owner's
+    script, logged (a number, never text) so a wrong-script summary shows up."""
+    latin = _summary(
+        overview="Ertaga uchrashamiz",
+        key_facts=[{"text": "Soat 10:00", "message_ids": [1]}],
+    )
+    assert owner_script_share(latin, "uz-Latn") == 1.0
+    assert owner_script_share(latin, "uz") == 1.0
+    assert owner_script_share(latin, "uz-Cyrl") == 0.0
+    assert owner_script_share(latin, "ru") == 0.0
+    # Labels, ids and the language tag are not the summary's words.
+    mixed = _summary(overview="Шоира sizda", language="uz-Latn")
+    assert owner_script_share(mixed, "uz-Latn") == 0.5
+    commitments = [{"by": "owner", "text": "Олиб", "due": "kech", "message_ids": [1]}]
+    assert owner_script_share(_summary(overview="", commitments=commitments), "en") == 0.5
+    # No owner language, an unnamed one, or no letters: nothing to measure.
+    assert owner_script_share(latin, None) is None
+    assert owner_script_share(latin, "de") is None
+    assert owner_script_share(_summary(overview="10:00"), "en") is None
 
 
 def test_a_period_context_states_the_period_and_has_no_previous_summary() -> None:

@@ -114,6 +114,7 @@ class SummaryOracle(FakeLLM):
         omit: Collection[str] = (),
         truncate_first: bool = False,
         refuse: Collection[str] = (),
+        misquote: Collection[str] = (),
         flags: dict[str, list[dict[str, Any]]] | None = None,
         during_summary: Callable[[LLMRequest], Awaitable[None]] | None = None,
         usage: Usage = Usage(400, 100),  # noqa: B008  (immutable)
@@ -126,6 +127,7 @@ class SummaryOracle(FakeLLM):
         self._omit = set(omit)
         self._truncate_first = truncate_first
         self._refuse = set(refuse)
+        self._misquote = set(misquote)
         self._flags = flags or {}
         self._during_summary = during_summary
         self._usage = usage
@@ -145,11 +147,26 @@ class SummaryOracle(FakeLLM):
             value: dict[str, Any] = {"flags": self._flags.get(self.current.id, [])}
         else:
             assert request.purpose == LOOPS_PURPOSE
-            asked = re.findall(r"^- (c\d\d\.[qc]\d+):", request.items[0].text, re.M)  # type: ignore[union-attr]
-            value = {
-                "items": [{"id": i, "evidence": "", "surfaced": i not in self._omit} for i in asked]
-            }
+            text = request.items[0].text  # type: ignore[union-attr]
+            asked = re.findall(r"^- (c\d\d\.[qc]\d+):", text, re.M)
+            summary = text.split("\n\nSummary:\n", 1)[1]
+            value = {"items": [self._verdict(i, summary) for i in asked]}
         return ParsedResponse(StopReason.COMPLETED, LUNA, self._usage, schema.model_validate(value))
+
+    def _verdict(self, loop_id: str, summary: str) -> dict[str, Any]:
+        """A faithful judge quotes the summary line that carries the loop (S03.7 A2:
+        quotes are checked); `misquote` scripts a quote of a line that is not there."""
+        if loop_id in self._misquote:
+            return {
+                "id": loop_id,
+                "evidence": "A line this summary does not have",
+                "surfaced": True,
+            }
+        if loop_id in self._omit:
+            return {"id": loop_id, "evidence": "", "surfaced": False}
+        loop = next(item for item in open_loops_of(self.current) if item.id == loop_id)
+        line = next(line for line in summary.splitlines() if words_of(loop) in line)
+        return {"id": loop_id, "evidence": line, "surfaced": True}
 
     def _summarize[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> ParsedResponse[T]:
         assert request.tools == ()
@@ -265,8 +282,10 @@ async def test_the_target_runs_the_real_summarize_path_and_produces_every_metric
         # E-w), so the label names the input version; plain "fabrication.v1"
         # was the UTC input of the earlier runs. S03.7: the summary the judge
         # reads names who asked or promised in the product's words (labels.v2).
-        "fabrication.v1+render.v2+labels.v2",
-        "open_loops.v3",
+        # S03.7 A2: both rubrics say "you" in the summary is the owner, and the
+        # judge reads when an edited message was edited (render.v3).
+        "fabrication.v2+render.v3+labels.v2",
+        "open_loops.v4",
     )
     assert all(d["status"] == "summarized" and d["error"] is None for d in result.details)
     # The report keeps the structured summary too: who promised what (attribution
@@ -415,6 +434,24 @@ async def test_a_summary_that_misses_an_open_loop_lowers_recall(
     # Not found by string: undecided (E-s), and the judge rules it missed.
     assert record(flawed, chat.id)["open_loops"][missed.id] is None
     assert record(flawed, chat.id)["open_loops_judged"][missed.id] is False
+
+
+async def test_a_loop_verdict_quoting_a_line_not_in_the_summary_is_reported_as_missed(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """S03.7 A2: the loop judge's quote is checked against the summary it judged;
+    a quote that does not occur is no evidence: the loop is missed in the
+    pre-screen, and the report lists it for the owner's review."""
+    chat = chat_with_unchecked_loops()
+    unchecked = [loop.id for loop in open_loops_of(chat) if not loop.values]
+    result = await target(factory, [chat]).run(
+        context(SummaryOracle([chat], misquote={unchecked[0]}))
+    )
+    detail = record(result, chat.id)
+    assert detail["open_loops_judged"][unchecked[0]] is False
+    assert detail["open_loops_unquoted"] == [unchecked[0]]
+    assert all(detail["open_loops_judged"][loop] for loop in unchecked[1:])
+    assert unchecked[0] in metric(result, "open_loop_recall").failed_items
 
 
 async def test_a_run_whose_caveat_is_dropped_fails_the_caveat_metric(

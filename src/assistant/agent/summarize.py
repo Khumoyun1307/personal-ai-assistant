@@ -36,12 +36,13 @@ is open across the model call (AGENTS §13).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import unicodedata
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Any, Final
 
 import pydantic
 from sqlalchemy import select
@@ -56,7 +57,8 @@ from assistant.accounts.service import (
 )
 from assistant.agent import prompt_registry
 from assistant.agent.attribution import NO_CHANGES, AttributionCounts, check_attribution
-from assistant.agent.context import SummarizeContext, build_summarize
+from assistant.agent.context import SummarizeContext, build_summarize, summary_language
+from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.agent.models import AgentRun
 from assistant.agent.persistence import AgentRunRepository, LlmCallRepository, month_start
 from assistant.agent.prompt_registry import Prompt
@@ -240,6 +242,7 @@ class Summarizer:
                     session, account_id=account_id, conversation_id=conversation_id, marker=marker
                 )
                 return RefreshOutcome(SummaryStatus.UP_TO_DATE, account_id)
+            locale_pref = account.locale_pref
             context = build_summarize(
                 prompt=prompt,
                 account=account,
@@ -304,6 +307,7 @@ class Summarizer:
             items_capped=capped,
             items_demoted=attribution.demoted,
             items_misattributed=attribution.dropped,
+            owner_script_share=owner_script_share(clean, locale_pref),
             result=result.value,
             more_pending=more,
         )
@@ -383,6 +387,7 @@ class Summarizer:
                 )
             if await self._over_budget(session, account_id):
                 return PeriodOutcome(SummaryStatus.OVER_BUDGET, message_count=source.total)
+            locale_pref = account.locale_pref
             context = build_summarize(
                 prompt=prompt,
                 account=account,
@@ -436,6 +441,7 @@ class Summarizer:
             items_capped=capped,
             items_demoted=attribution.demoted,
             items_misattributed=attribution.dropped,
+            owner_script_share=owner_script_share(clean, locale_pref),
             result=result.value,
         )
         if result is not StoreResult.STORED:
@@ -618,6 +624,54 @@ async def _notes(
     return await items.contact_facing(
         session, account_id, conversation_id, include_owner_preferences=False
     )
+
+
+#: The script each owner language the summary prompt names is written in.
+_OWNER_SCRIPTS: Final[dict[SupportedLocale, str]] = {
+    "uz-Latn": "LATIN",
+    "uz-Cyrl": "CYRILLIC",
+    "ru": "CYRILLIC",
+    "en": "LATIN",
+}
+_SUMMARY_LISTS: Final = (
+    "open_questions_to_owner",
+    "commitments",
+    "decisions_requested",
+    "key_facts",
+)
+
+
+def owner_script_share(summary: Mapping[str, Any], locale_pref: str | None) -> float | None:
+    """The share of a summary's letters (its own words: overview, item texts and
+    due dates, the reason) in the owner's script, to two places; None without a
+    named owner language or without letters.
+
+    Logged with each stored summary — a number, never text — so a summary in the
+    wrong script shows in the logs (S03.7 A2: two uz-Cyrl chats came out in
+    Cyrillic for a uz-Latn owner in the v5 eval run). Not a gate: nothing is
+    retried or discarded on it; names kept in another script lower it a little.
+    """
+    if summary_language(locale_pref) is None:
+        return None
+    script = _OWNER_SCRIPTS[supported_locale(locale_pref)]
+    own = total = 0
+    for text in _own_words(summary):
+        for char in text:
+            # Modifier letters (the Uzbek ʻ) belong to no script.
+            if char.isalpha() and unicodedata.category(char) != "Lm":
+                total += 1
+                own += unicodedata.name(char, "").startswith(script)
+    return round(own / total, 2) if total else None
+
+
+def _own_words(summary: Mapping[str, Any]) -> Iterator[str]:
+    for key in ("overview", "needs_reply_reason"):
+        if isinstance(summary.get(key), str):
+            yield summary[key]
+    for key in _SUMMARY_LISTS:
+        for item in summary.get(key) or []:
+            if isinstance(item, Mapping):
+                yield from (v for f in ("text", "due") if isinstance(v := item.get(f), str))
 
 
 def _run_close(result: StoreResult) -> tuple[str, str | None]:

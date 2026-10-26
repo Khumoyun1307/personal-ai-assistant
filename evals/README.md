@@ -254,10 +254,24 @@ supports from the side it names is dropped). The judges read the summary with wh
 promised or agreed written **in the product's own English wording** (`agent/attribution.py`
 `render_who`, with the contact's name — e.g. `- Aziza asks you to (not agreed yet): …`),
 not a harness-only phrasing; that text is `labelled_text`, version `labels.v2`, and the
-fabrication judge's label names it (`fabrication.v1+render.v2+labels.v2`), so flags counted
+fabrication judge's label names it (then `fabrication.v1+render.v2+labels.v2`), so flags counted
 over the older "promised by the owner" text are not compared as one series. The language
 and value checks still read the model's own words only (`plain_text`, E-q). Each
 conversation's JSON record carries `attribution_demoted` and `attribution_dropped` (counts).
+
+**Judges after the summarize.v5 run (S03.7 A2).** Both rubrics now say that "you" in the
+summary (or its translation: siz, сиз, вы) is the owner, the person marked `(owner)` in the
+transcript (`fabrication.v2`, `open_loops.v4`): 3 of the 11 over-flags of that run were
+correct "You promised …" lines. The judge transcript shows when an edited message was
+edited and that its text is the current one, as the summarizer is shown it (`render.v3`),
+so the fabrication judge's label is `fabrication.v2+render.v3+labels.v2`; earlier labels are
+not one series with it. The open-loop judge's quote is checked in code
+(`judge.evidence_in_summary`: every quoted line, split at line breaks and ellipses, must
+occur in the summary, ignoring case, spacing, bullets and apostrophe forms): a "surfaced"
+whose quote is not in the summary — or is empty — counts as **missed** in the pre-screen,
+and the JSON record lists it under `open_loops_unquoted` with the judge's quote kept in
+`open_loops_evidence` for the owner. This changes only the pre-screen; owner verdicts decide
+the gate.
 
 `python -m evals run summary --estimate-only` prints the worst-case cost, and
 `--limit N` (a trial) runs the first N conversations; both leave the set sizes of the

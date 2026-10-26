@@ -197,7 +197,7 @@ def _source_messages(conversation: Conversation) -> list[SourceMessage]:
             content_type=message.media or "text",
             text=message.text,
             media_kind=message.media,
-            edited=message.edited_at is not None,
+            edited_at=message.edited_at,
         )
         for number, message in enumerate(conversation.messages, start=1)
         if not message.deleted
@@ -344,6 +344,9 @@ class _Record:
     screen: ScreenResult
     #: What the product's attribution check changed in this summary (S03.7).
     attribution: AttributionCounts = NO_CHANGES
+    #: Loops the judge called surfaced with a quote that is not in the summary:
+    #: counted as missed in the pre-screen, listed for the owner (S03.7 A2).
+    unquoted: tuple[str, ...] = ()
 
     @property
     def summarized(self) -> bool:
@@ -383,6 +386,8 @@ class _Record:
             },
             "open_loops_judged": dict(self.judged),
             "open_loops_evidence": dict(self.evidence),
+            # Judged surfaced, but the quote is not in the summary: no evidence.
+            "open_loops_unquoted": list(self.unquoted),
             "caveats_expected": self.check.expected,
             "caveats_missing": list(self.check.missing),
             "caveats_spurious": list(self.check.spurious),
@@ -571,6 +576,7 @@ class SummaryTarget:
             screen = ScreenResult(conversation.id, (), screened=False, error="summary_failed")
             judged: dict[str, bool] = {}
             evidence: dict[str, str] = {}
+            unquoted: tuple[str, ...] = ()
             language = LanguageVerdict(False, None, 0.0)
         else:
             screen = await LLMFabricationJudge(
@@ -592,6 +598,13 @@ class SummaryTarget:
             )
             judged = {loop: verdict.surfaced for loop, verdict in verdicts.items()}
             evidence = {loop: verdict.evidence for loop, verdict in verdicts.items()}
+            unquoted = tuple(
+                sorted(
+                    loop
+                    for loop, verdict in verdicts.items()
+                    if verdict.judge_surfaced and not verdict.quoted
+                )
+            )
             language = check_language(plain, self.owner_language)
         return _Record(
             conversation=conversation,
@@ -605,6 +618,7 @@ class SummaryTarget:
             coverage=loops,
             judged=judged,
             evidence=evidence,
+            unquoted=unquoted,
             check=check_caveats(conversation, output),
             caveat_lines=facts.lines,
             screen=screen,

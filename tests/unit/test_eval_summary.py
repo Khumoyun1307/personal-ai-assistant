@@ -170,7 +170,8 @@ def test_the_judge_label_names_the_labelled_text_version() -> None:
     from evals import judge
 
     assert judge.LABELS_VERSION == "labels.v2"
-    assert judge.FABRICATION_LABEL == "fabrication.v1+render.v2+labels.v2"
+    # S03.7 A2: rubric v2 ("you" is the owner) over render v3 (edit times).
+    assert judge.FABRICATION_LABEL == "fabrication.v2+render.v3+labels.v2"
 
 
 def test_the_judges_are_budgeted_for_the_largest_summary_sanitize_can_store() -> None:
