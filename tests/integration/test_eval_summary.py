@@ -68,6 +68,7 @@ LUNA = "gpt-6-luna"
 SLICE = [BY_ID[i] for i in ("c01", "c13", "c18", "c20", "c26")]
 #: Uzbek Latin function words, repeated: the language check needs a clear winner even
 #: when a conversation's values are Cyrillic or English.
+CAVEAT_KEYS = ("caveat_presence", "spurious_caveats")
 UZ_FILLER = "Bu suhbat haqida va men uchun kerak. " * 12
 
 
@@ -326,8 +327,12 @@ async def test_every_conversation_has_its_own_account_and_leaves_nothing_behind(
             return (await session.execute(select(func.count()).select_from(Account))).scalar_one()
 
     before = await accounts()
-    await target(factory).run(context(SummaryOracle(SLICE)))
+    llm = SummaryOracle(SLICE)
+    await target(factory).run(context(llm))
     assert await accounts() == before
+    owners = [r.account_id for r in llm.requests if r.purpose == SUMMARIZE_PURPOSE]
+    assert len(owners) == 5
+    assert len(set(owners)) == 5  # one account per conversation, none shared
 
 
 async def test_the_run_is_reproducible(factory: async_sessionmaker[AsyncSession]) -> None:
@@ -372,8 +377,30 @@ async def test_a_run_whose_caveat_is_dropped_fails_the_caveat_metric(
     presence = metric(result, "caveat_presence")
     assert set(presence.failed_items) == {"c13", "c18"}
     assert presence.all_items.numerator == 1  # only the pre-connection chat kept its caveat
-    assert presence.gate_status() is Status.FAIL
+    assert presence.prescreen_status() is Status.FAIL  # the regression check catches it
+    assert presence.gate_status() is Status.INFO  # and it is never a gate (E-p)
     assert record(result, "c13")["caveats_missing"] == ["c13.v1"]
+
+
+async def test_the_caveat_metrics_are_a_wiring_check_not_a_gate(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The caveats come from the harness's own gap rows and the product renderer, not
+    from the model, so they hold even when every summary failed. They must not read as
+    "the plan's caveat threshold passed": ungated, with a note saying what they are not."""
+    everything = ReviewLedger(frozenset(c.id for c in SLICE), {}, {})
+    result = await target(factory).run(
+        context(SummaryOracle(SLICE, refuse={c.id for c in SLICE}), reviews=everything)
+    )
+    assert all(d["error"] for d in result.details)  # every summary failed
+    for key in CAVEAT_KEYS:
+        caveats = metric(result, key)
+        assert caveats.prescreen_status() is Status.PASS  # true by construction
+        assert caveats.gate_status() is Status.INFO
+        assert not caveats.gated
+        assert "final reply keeps every caveat" in caveats.note
+        assert "E-p" in caveats.note
+    assert metric(result, "open_loop_recall").gate_status() is Status.FAIL
 
 
 async def test_a_caveat_for_a_gap_that_lost_nothing_is_spurious(
@@ -484,9 +511,12 @@ async def test_the_gate_is_not_evaluable_without_owner_confirmations(
 ) -> None:
     result = await target(factory).run(context(SummaryOracle(SLICE)))
     for m in result.metrics:
-        assert m.gate_status() is Status.NOT_EVALUABLE
         assert m.confirmation()[0] == 0
         assert m.prescreen_status() is Status.PASS  # the pre-screen alone is never a gate
+        if m.key in CAVEAT_KEYS:
+            assert m.gate_status() is Status.INFO  # a wiring check, not a gate (E-p)
+        else:
+            assert m.gate_status() is Status.NOT_EVALUABLE, m.key
 
 
 async def test_a_fully_confirmed_set_has_an_evaluable_gate(
@@ -494,11 +524,23 @@ async def test_a_fully_confirmed_set_has_an_evaluable_gate(
 ) -> None:
     everything = ReviewLedger(frozenset(c.id for c in SLICE), {}, {})
     result = await target(factory).run(context(SummaryOracle(SLICE), reviews=everything))
-    for key in ("caveat_presence", "spurious_caveats", "owner_language", "fabricated_facts"):
+    for key in ("owner_language", "fabricated_facts"):
         assert metric(result, key).gate_status() is Status.PASS, key
-    # Recall also needs the owner's verdict on loops that have no `values`.
+    # Recall also needs the owner's verdict on the loops that have no `values`: without
+    # it the gate stays open, with it (for exactly this summary) the gate decides.
     recall = metric(result, "open_loop_recall")
-    assert recall.gate_status() in (Status.PASS, Status.NOT_EVALUABLE)
+    assert recall.pending > 0
+    assert recall.gate_status() is Status.NOT_EVALUABLE
+
+    verdicts: dict[str, str] = {}
+    for chat in SLICE:
+        if record(result, chat.id)["open_loop_keys"]:
+            verdicts.update(verdicts_for(result, chat))
+    assert verdicts, "the slice must hold loops that need the owner's verdict"
+    ruled = ReviewLedger(frozenset(c.id for c in SLICE), {}, verdicts)  # type: ignore[arg-type]
+    final = await target(factory).run(context(SummaryOracle(SLICE), reviews=ruled))
+    assert metric(final, "open_loop_recall").pending == 0
+    assert metric(final, "open_loop_recall").gate_status() is Status.PASS
 
 
 async def test_a_limited_run_is_never_a_gate_even_fully_confirmed(

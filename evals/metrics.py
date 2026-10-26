@@ -82,6 +82,7 @@ def count_metric(
     pending: int = 0,
     note: str = "",
     set_size: int | None = None,
+    gated: bool = True,
 ) -> MetricResult:
     """A "no more than `threshold` offences" metric (zero fabrications)."""
     confirmed_items = {item for item in items if ledger.is_confirmed(item)}
@@ -98,6 +99,7 @@ def count_metric(
         pending=pending,
         note=note,
         set_size=set_size,
+        gated=gated,
     )
 
 
@@ -274,12 +276,16 @@ def caveat_metrics(
     *,
     presence_set_size: int | None = None,
     spurious_set_size: int | None = None,
+    gated: bool = True,
+    note: str = "",
 ) -> list[MetricResult]:
     """Presence (every conversation that has expected caveats carries them all)
     and spurious caveats (none, e.g. for a delayed gap that lost nothing).
 
     The set sizes are the whole set's (a `--limit` or stopped run measures
-    fewer, and its gate must not read as complete); default: the items measured."""
+    fewer, and its gate must not read as complete); default: the items measured.
+    `gated=False` keeps the thresholds as a pre-screen comparison only, with `note`
+    saying why (the summary target: the caveats do not come from the model)."""
     with_caveats = {c.conversation_id: not c.missing for c in checks if c.expected}
     presence = ratio_metric(
         key="caveat_presence",
@@ -288,6 +294,8 @@ def caveat_metrics(
         threshold=CAVEAT_THRESHOLD,
         ledger=ledger,
         set_size=presence_set_size,
+        gated=gated,
+        note=note,
     )
     spurious = count_metric(
         key="spurious_caveats",
@@ -297,6 +305,8 @@ def caveat_metrics(
         threshold=0,
         ledger=ledger,
         set_size=spurious_set_size,
+        gated=gated,
+        note=note,
     )
     return [presence, spurious]
 

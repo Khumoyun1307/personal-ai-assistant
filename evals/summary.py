@@ -130,6 +130,12 @@ MAX_SUMMARY_CHARS = (
     + 300
 )
 
+#: Why the caveat metrics carry no gate (E-p).
+CAVEAT_NOTE = (
+    "Ungated wiring check: the plan's caveat threshold (the final reply keeps every "
+    "caveat, D64) is not measured by this target; see E-p."
+)
+
 GapKey = tuple[str, str, datetime, datetime, int | None]
 CoverageReader = Callable[[AsyncSession, int, int, datetime, datetime], Awaitable[PeriodCoverage]]
 
@@ -647,6 +653,8 @@ class SummaryTarget:
                 ledger,
                 presence_set_size=with_caveats,
                 spurious_set_size=len(everything),
+                gated=False,
+                note=CAVEAT_NOTE,
             ),
             language_metric(
                 {r.conversation.id: r.language for r in records}, ledger, set_size=len(everything)
@@ -654,9 +662,10 @@ class SummaryTarget:
             fabrication_metric([r.screen for r in records], ledger, set_size=len(everything)),
         ]
         notes = [
-            "Caveats come from the product's deterministic renderer over synthetic gap rows, "
-            "not from the model (E-d, E-p): they measure the wiring, not the owner-facing "
-            "relay of the final answer.",
+            "Caveats come from the product's deterministic renderer over the harness's own "
+            "synthetic gap rows, not from the model (E-d, E-p): the two caveat metrics are an "
+            "ungated wiring regression check. Recall and language are measured on the "
+            "per-chat summary (the summarize output), not on the owner-facing reply.",
         ]
         failed = sorted(r.conversation.id for r in records if not r.summarized)
         if failed:
