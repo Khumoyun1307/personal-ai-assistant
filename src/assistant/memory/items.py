@@ -617,23 +617,29 @@ async def delete_for_chats(
     chats, and every item (any scope) saved by a run that drew on the chats
     or their contacts (provenance refs) — it may hold their text. The
     owner's own notes about the people (contact scope, not from their text)
-    stay; `delete_for_contact` takes those too (M03 D79)."""
+    stay; `delete_for_contact` takes those too (M03 D79).
+
+    Built on `delete_for_conversation` (no contact ids, so the owner's own
+    notes about the person stay), plus the items whose refs name only the
+    chat's contact (saved from a read about them, e.g. `list_memories`)."""
     if not conversation_ids:
         return 0
-    condition: Any = MemoryItem.conversation_id.in_(list(conversation_ids))
+    deleted = 0
     for conversation_id in conversation_ids:
-        condition = condition | MemoryItem.provenance.contains(
-            {"refs": {"conversation_ids": [conversation_id]}}
+        deleted += await delete_for_conversation(session, account_id, conversation_id, ())
+    if contact_ids:
+        drawn: Any = or_(
+            *(
+                MemoryItem.provenance.contains({"refs": {"contact_ids": [contact_id]}})
+                for contact_id in contact_ids
+            )
         )
-    for contact_id in contact_ids:
-        condition = condition | MemoryItem.provenance.contains(
-            {"refs": {"contact_ids": [contact_id]}}
+        deleted += _rowcount(
+            await session.execute(
+                delete(MemoryItem).where(MemoryItem.account_id == account_id).where(drawn)
+            )
         )
-    return _rowcount(
-        await session.execute(
-            delete(MemoryItem).where(MemoryItem.account_id == account_id).where(condition)
-        )
-    )
+    return deleted
 
 
 async def delete_all(session: AsyncSession, account_id: int) -> int:
