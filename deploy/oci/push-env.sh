@@ -14,7 +14,9 @@
 #   var/cloud/b2.env       B2_BUCKET, B2_KEY_ID, B2_APP_KEY (B2_ENDPOINT is
 #                          accepted but unused: rclone's native b2 backend
 #                          discovers its API endpoint when it authorizes)
-#   var/cloud/age-identity.txt   only its "# public key:" line is read
+#   var/cloud/age-identity.txt   only its "# public key:" line is read; once
+#                                the key is off the laptop (A8), the public
+#                                key is read from the server's current .env
 #   var/cloud/prod-generated.env POSTGRES_PASSWORD, generated on first run
 #                                and reused afterwards (the database keeps it)
 #
@@ -79,7 +81,11 @@ read_env() {
 
 [ -r "$PROD_ENV" ] || die "var/prod.env is missing (owner step A6 in runbooks/provision.md)"
 [ -r "$B2_ENV" ] || die "var/cloud/b2.env is missing (owner step A4)"
-[ -r "$AGE_IDENTITY" ] || die "var/cloud/age-identity.txt is missing (run: just prod-age-key)"
+# After A8 the identity is off the laptop: the recipient (a public key) is then
+# read back from the server's current .env, which needs the server ip.
+if [ ! -r "$AGE_IDENTITY" ] && [ -z "$ip" ]; then
+  die "var/cloud/age-identity.txt is missing: pass the server ip to reuse its AGE_RECIPIENT (or run: just prod-age-key)"
+fi
 if [ -z "$owner_ids" ]; then
   owner_ids="$(read_env "$PROD_ENV" OWNER_TELEGRAM_IDS)"
 fi
@@ -121,7 +127,12 @@ v[POSTGRES_PASSWORD]="$(read_env "$GENERATED_ENV" POSTGRES_PASSWORD)"
 v[DATABASE_URL]="postgresql+psycopg://${v[POSTGRES_USER]}:${v[POSTGRES_PASSWORD]}@db:5432/${v[POSTGRES_DB]}"
 v[DATA_DIR]=/mnt/data
 v[BACKUP_STATUS_PATH]=/backups/last_success
-v[AGE_RECIPIENT]="$(awk '/^# public key: age1/ { print $4; exit }' "$AGE_IDENTITY")"
+if [ -r "$AGE_IDENTITY" ]; then
+  v[AGE_RECIPIENT]="$(awk '/^# public key: age1/ { print $4; exit }' "$AGE_IDENTITY")"
+else
+  prepare_ssh
+  v[AGE_RECIPIENT]="$(remote "$ip" "sed -n 's/^AGE_RECIPIENT=//p' $PROD_DIR/.env" | head -n 1)"
+fi
 bucket="$(read_env "$B2_ENV" B2_BUCKET)"
 v[BACKUP_REMOTE]="offsite:$bucket"
 v[RCLONE_CONFIG_OFFSITE_TYPE]=b2
@@ -188,7 +199,7 @@ if [ -n "$write_to" ]; then
   exit 0
 fi
 
-prepare_ssh
+[ -n "$SSH_KEY_COPY" ] || prepare_ssh
 # Stream over SSH stdin into a 600 file, then atomically replace .env.
 render | remote "$ip" "set -e; umask 077; test -d $PROD_DIR; cat > $PROD_DIR/.env.new; chmod 600 $PROD_DIR/.env.new; mv $PROD_DIR/.env.new $PROD_DIR/.env"
 remote "$ip" "stat -c '%n %a %U' $PROD_DIR/.env" | sed 's/^/server: /' >&2
