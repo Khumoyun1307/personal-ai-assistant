@@ -38,7 +38,7 @@ The owner develops on **Windows 11 + Docker Desktop (WSL2 backend)**. All Python
 | First-time setup | `just setup` | — |
 | Start / stop dev stack (app + Postgres) | `just up` / `just down` | — |
 | Install git hooks | `just hooks` | — |
-| Full check (DoD gate) | `just check` | ruff check + format check + mypy + lint-imports + pytest |
+| Full check (DoD gate; runs in CI — not on the owner's machine, §11) | `just check` | ruff check + format check + mypy + lint-imports + pytest |
 | Run all tests | `just test` | `uv run pytest` |
 | Lint + format check | `just lint` | `uv run ruff check . && uv run ruff format --check .` |
 | Type check | `just typecheck` | `uv run mypy src evals` |
@@ -167,6 +167,8 @@ Every change must preserve these. Each invariant gets a named regression test in
 - Any change touching sending, policy, classification, ingestion, or consent must keep the **mandatory regression suite** green (IMPLEMENTATION_PLAN §10) and add a test for the new behaviour.
 - Bug fixes start with a failing test.
 - Tests are deterministic: no sleeps for timing (use the fake clock), no reliance on wall-clock ordering.
+- **Where tests run (owner decision 2026-10-26).** GitHub CI runs the full suite; it is the test gate. Never run `just check` or the full pytest suite on the owner's machine. Locally, run only the tests directly relevant to the change, and only when they are short (a few files, minutes — not tens of minutes); lint, format and mypy on the changed files are fine. Reviewers likewise read the diff and run only the relevant tests.
+- **Per-slice loop.** Build (implement; relevant tests locally) → review (reviewers on the diff; relevant tests only) → fix → push so CI runs the full suite. If CI fails or the review finds more, fix and repeat until CI is green and the review is clean.
 
 ## 12. Database and migrations
 
@@ -186,15 +188,16 @@ Every change must preserve these. Each invariant gets a named regression test in
 
 ## 14. Dependencies and upgrades
 
-- Versions pinned in `uv.lock`. Upgrades are deliberate: read the changelog (especially aiogram — Bot API changes; openai — API changes; procrastinate — migrations), run the full suite, and note the upgrade in the commit.
+- Versions pinned in `uv.lock`. Upgrades are deliberate: read the changelog (especially aiogram — Bot API changes; openai — API changes; procrastinate — migrations), let CI run the full suite (§11), and note the upgrade in the commit.
 - Do not move to Python 3.15 until aiogram and pydantic-core support it.
 - Re-check Bot API changes against TELEGRAM_FEASIBILITY when upgrading aiogram; if behaviour changed, add the finding to TF §13 and report it to the owner (§2).
 
 ## 15. Git and commits
 
 - Branch per slice (`m01/s01.2-durable-ingestion`); small, focused commits; Conventional Commit style (`feat:`, `fix:`, `test:`, `docs:`, `refactor:`, `chore:`).
-- Never commit secrets, `.env`, `var/`, probe dumps, or database files. Before committing, run `just check`. The pre-commit hook (installed by `just hooks`; runs gitleaks and ruff inside the container) must pass; never use `--no-verify`.
-- Commit or push only when asked by the owner (or as part of an approved workflow).
+- Never commit secrets, `.env`, `var/`, probe dumps, or database files. Before committing, run the tests relevant to the change (§11); CI runs the full suite. The pre-commit hook (installed by `just hooks`; runs gitleaks and ruff inside the container) must pass; never use `--no-verify`.
+- **Stacked draft PRs (owner decision 2026-10-26).** Each slice gets a draft PR as soon as it is ready for CI; CI is the test gate. Each slice branches from the previous slice, and its PR targets the previous slice's branch (main for the first). The owner merges everything at the end of each milestone, in stack order; after the merges the agent removes the merged slices' worktrees, containers and volumes and updates local `main`.
+- Commit or push only when asked by the owner (or as part of an approved workflow — the per-slice loop above is one).
 
 ## 16. Documentation rules
 
