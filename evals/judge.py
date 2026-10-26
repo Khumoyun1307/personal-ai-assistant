@@ -34,12 +34,16 @@ from assistant.llm.port import (
 )
 from evals.assets import load_asset
 from evals.metrics import SummaryOutput, open_loops
-from evals.render import render_conversation
+from evals.render import RENDER_VERSION, render_conversation
 from evals.review import FindingStatus, ReviewLedger, finding_id
 from evals.schema import Commitment, Conversation, QuestionToOwner
 from evals.targets import Measure, MetricResult
 
 RUBRIC_ID = "fabrication.v1"
+#: The fabrication judge as a report names it: the rubric plus the version of the
+#: conversation rendering it reads (`evals.render.RENDER_VERSION`), so runs whose
+#: judge read UTC times are told apart from runs whose judge read local ones.
+FABRICATION_LABEL = f"{RUBRIC_ID}+{RENDER_VERSION}"
 LOOPS_RUBRIC_ID = "open_loops.v3"
 MAX_OUTPUT_TOKENS = 3000
 TIMEOUT_SECONDS = 120.0

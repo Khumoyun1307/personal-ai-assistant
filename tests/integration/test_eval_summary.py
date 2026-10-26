@@ -248,7 +248,10 @@ async def test_the_target_runs_the_real_summarize_path_and_produces_every_metric
     assert (result.items, result.items_planned, result.items_total) == (5, 5, 5)
     assert result.prompts == (
         prompt_registry.active("summarize").label,
-        "fabrication.v1",
+        # S03.6 review: the judge input changed (times in the owner's timezone,
+        # E-w), so the label names the input version; plain "fabrication.v1"
+        # was the UTC input of the earlier runs.
+        "fabrication.v1+render.v2",
         "open_loops.v3",
     )
     assert all(d["status"] == "summarized" and d["error"] is None for d in result.details)

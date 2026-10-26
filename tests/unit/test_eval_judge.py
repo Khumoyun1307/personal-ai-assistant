@@ -65,6 +65,7 @@ def test_the_rendering_shows_times_in_the_owners_timezone() -> None:
     assert "UTC" not in rendered
     assert "Asia/Tashkent" in rendered
     assert render.OWNER_TIMEZONE == corpus.OWNER_TIMEZONE
+    assert render.RENDER_VERSION == "render.v2"  # v1 showed UTC
 
 
 # -------------------------------------------------------- fabrication judge

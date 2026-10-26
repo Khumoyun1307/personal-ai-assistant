@@ -75,9 +75,9 @@ from evals.corpus import (
     scratch_database,
     unload_corpus,
 )
+from evals.judge import FABRICATION_LABEL as FABRICATION_RUBRIC
 from evals.judge import LOOPS_RUBRIC_ID as LOOPS_RUBRIC
 from evals.judge import MAX_OUTPUT_TOKENS as JUDGE_MAX_OUTPUT_TOKENS
-from evals.judge import RUBRIC_ID as FABRICATION_RUBRIC
 from evals.judge import (
     LLMFabricationJudge,
     LLMOpenLoopJudge,

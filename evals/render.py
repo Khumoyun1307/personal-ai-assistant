@@ -21,6 +21,10 @@ from evals.schema import Conversation, Message
 #: The dataset's owner timezone (README: relative dates resolve here); the same
 #: value as `evals.corpus.OWNER_TIMEZONE`, which the product context uses.
 OWNER_TIMEZONE = "Asia/Tashkent"
+#: Version of what `render_conversation` produces, part of the judge's label in a
+#: report: v1 showed UTC times (the 2026-10-26 baseline and summarize.v3 runs), v2
+#: the owner's local times (E-w, from the summarize.v4 runs on).
+RENDER_VERSION = "render.v2"
 
 _MEDIA = {
     "photo": "[photo]",
