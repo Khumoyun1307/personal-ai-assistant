@@ -280,6 +280,67 @@ async def test_conversation_summaries_go_with_purge_and_managed_data_deletion(en
     assert await _columns_containing(env, "OTHER-SYNTH") == []
 
 
+async def test_memory_items_go_with_purge_and_managed_data_deletion(env: Env) -> None:
+    """S03.3's content column `memory_items.content`: purging a chat takes
+    its notes and its contact's; managed-data deletion takes every note about
+    a contact or chat; the owner's own items stay (M03 D71)."""
+    from assistant.memory import items
+
+    await connect(env)
+    await deliver(env, business_message(message_text="Synthetic one"))
+    await deliver(
+        env,
+        business_message(from_id=7000000006, chat_id=7000000006, message_text="Synthetic two"),
+    )
+    account_id = await _account_id(env, OWNER)
+    async with env.factory() as session:
+        rows = {
+            int(chat): (int(conv), int(contact))
+            for chat, conv, contact in (
+                await session.execute(
+                    text("SELECT business_chat_id, id, contact_id FROM app.conversations")
+                )
+            ).all()
+        }
+    (first, first_contact), (second, second_contact) = rows[CONTACT_CHAT], rows[7000000006]
+    async with env.factory() as session, session.begin():
+        for content, target in (
+            (f"{CANARY} contact note", {"contact_id": first_contact}),
+            (f"{CANARY} chat note", {"conversation_id": first}),
+            ("OTHER-SYNTH contact note", {"contact_id": second_contact}),
+            ("OTHER-SYNTH chat note", {"conversation_id": second}),
+            ("OWNER-SYNTH own fact", {}),
+        ):
+            await items.save(
+                session,
+                account_id=account_id,
+                content=content,
+                kind="fact",
+                actor="owner",
+                now=env.clock.now(),
+                **target,  # type: ignore[arg-type]
+            )
+    assert "app.memory_items.content" in await _columns_containing(env, CANARY)
+
+    async with env.factory() as session, session.begin():
+        report = await purge_conversation(
+            session,
+            account_id=account_id,
+            conversation_id=first,
+            business_chat_id=CONTACT_CHAT,
+            clock=env.clock,
+        )
+    assert report.memory_items == 2
+    assert await _columns_containing(env, CANARY) == []
+    assert "app.memory_items.content" in await _columns_containing(env, "OTHER-SYNTH")
+
+    async with env.factory() as session, session.begin():
+        report = await delete_managed_data(session, account_id=account_id, clock=env.clock)
+    assert report.memory_items == 2
+    assert await _columns_containing(env, "OTHER-SYNTH") == []
+    assert "app.memory_items.content" in await _columns_containing(env, "OWNER-SYNTH")
+
+
 async def test_deletion_leaves_other_accounts_intact(migrated_url: str) -> None:
     from tests.integration.business_env import connection_update
 

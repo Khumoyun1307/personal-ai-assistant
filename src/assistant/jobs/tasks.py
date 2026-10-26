@@ -260,7 +260,13 @@ class JobHandlers:
         return len(lost) + len(unapplied) + len(interrupted) + len(stale_summaries)
 
     async def retention_sweep(self) -> SweepReport:
-        report = await sweep_all(self.session_factory, self.clock)
+        report = await sweep_all(
+            self.session_factory,
+            self.clock,
+            scheduler=self.scheduler,
+            # The rollup is a background summary: same flag (M03 D61, D72).
+            rollups_enabled=self.summaries_enabled,
+        )
         if report.total:
             logger.info(
                 "retention_swept",
@@ -276,6 +282,8 @@ class JobHandlers:
                 expired_inputs=report.expired_inputs,
                 tool_confirmations=report.tool_confirmations,
                 period_summaries=report.period_summaries,
+                forgotten_memories=report.forgotten_memories,
+                rollups_scheduled=report.rollups_scheduled,
             )
         return report
 

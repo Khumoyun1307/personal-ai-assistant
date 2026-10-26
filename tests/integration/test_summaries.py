@@ -450,7 +450,7 @@ async def test_refresh_is_incremental_and_records_what_it_covers(senv: Env) -> N
     assert second is not None
     assert second.covers_through_message_id == max(await message_ids(senv, a))
     assert second.message_count == 3
-    assert second.prompt_version == "summarize.v1"
+    assert second.prompt_version == "summarize.v2"
     # Nothing new: no call, and the flag stays clear.
     assert (await summaries.refresh(a)).status is SummaryStatus.UP_TO_DATE
     assert len(summary_requests(fake)) == 2
@@ -472,7 +472,7 @@ async def test_rg17_summarize_runs_are_given_no_tools(senv: Env) -> None:
     assert all(request.tools == () for request in requests)
     runs = await summarize_runs(senv)
     assert {(run.run_type, run.prompt_version, run.status) for run in runs} == {
-        ("summarize", "summarize.v1", "succeeded")
+        ("summarize", "summarize.v2", "succeeded")
     }
     registry = default_registry()
     every_flag = frozenset(tool.release_flag for tool in registry.all())

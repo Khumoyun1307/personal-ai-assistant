@@ -51,6 +51,17 @@ READ_FLAGS = frozenset(
 )
 NOTE_FLAG = "tool.test_set_note"
 ALL_FLAGS = READ_FLAGS | {NOTE_FLAG}
+#: The S03.3 memory, preference and mode tools (not in ALL_FLAGS, so the
+#: S03.1/S03.2 tests keep the tool offer they were written against).
+MEMORY_FLAGS = frozenset(
+    {
+        "tool.remember",
+        "tool.forget",
+        "tool.list_memories",
+        "tool.update_preferences",
+        "tool.set_conversation_mode",
+    }
+)
 
 
 class SetNoteArgs(BaseModel):

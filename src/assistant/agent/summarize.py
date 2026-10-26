@@ -61,7 +61,7 @@ from assistant.core.clock import Clock
 from assistant.core.model_routes import processor_for_model
 from assistant.db.uow import transaction
 from assistant.llm.port import LLMClient, LLMError, LLMErrorKind, LLMRequest, StopReason
-from assistant.memory import summaries
+from assistant.memory import items, summaries
 from assistant.memory.summaries import StoreResult
 from assistant.observability.logging import get_logger
 
@@ -239,6 +239,7 @@ class Summarizer:
                 account=account,
                 messages=batch,
                 previous=None if previous is None else previous.summary,
+                notes=await _notes(session, account_id, conversation_id),
             )
             run_id = await self._start_run(session, account_id, trigger, prompt.label)
         prepared = _Prepared(account_id, run_id, context)
@@ -357,7 +358,11 @@ class Summarizer:
             if await self._over_budget(session, account_id):
                 return PeriodOutcome(SummaryStatus.OVER_BUDGET, message_count=source.total)
             context = build_summarize(
-                prompt=prompt, account=account, messages=source.messages, period=(start, end)
+                prompt=prompt,
+                account=account,
+                messages=source.messages,
+                period=(start, end),
+                notes=await _notes(session, account_id, conversation_id),
             )
             trigger = f"catch_up:run:{parent_run_id}:conv:{conversation_id}"
             run_id = await self._start_run(session, account_id, trigger, prompt.label)
@@ -564,6 +569,17 @@ class Summarizer:
                 run_id=prepared.run_id,
                 exc_type=type(close_error).__name__,
             )
+
+
+async def _notes(
+    session: AsyncSession, account_id: int, conversation_id: int
+) -> list[items.MemoryView]:
+    """The owner's notes a summary of this chat may see (§7.3, S03.3): this
+    contact's and this chat's — no owner-scope item, nothing about anyone
+    else (§6 invariant 4, FR-MEM-06)."""
+    return await items.contact_facing(
+        session, account_id, conversation_id, include_owner_preferences=False
+    )
 
 
 def _run_close(result: StoreResult) -> tuple[str, str | None]:
