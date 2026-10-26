@@ -61,6 +61,7 @@ from tests.fakes.llm import FakeLLM, text_response, tool_response
 from tests.integration.agent_env import (
     MEMORY_FLAGS,
     READ_FLAGS,
+    S035_PREFS_UNCHANGED,
     applier,
     args,
     ask,
@@ -260,7 +261,12 @@ async def test_preferences_and_modes_are_echoed_with_undo(env: Env) -> None:
             (
                 "c1",
                 "update_preferences",
-                args(preferred_language=None, timezone="Asia/Tashkent", default_mode="ignore"),
+                args(
+                    preferred_language=None,
+                    timezone="Asia/Tashkent",
+                    default_mode="ignore",
+                    **S035_PREFS_UNCHANGED,
+                ),
             ),
             (
                 "c2",
@@ -572,7 +578,12 @@ async def test_update_preferences_refuses_values_it_cannot_apply(env: Env) -> No
     await seed(env)
     outcome = await update_preferences_tool(
         await ctx(env),
-        UpdatePreferencesArgs(preferred_language=None, timezone="Mars/Olympus", default_mode=None),
+        UpdatePreferencesArgs(
+            preferred_language=None,
+            timezone="Mars/Olympus",
+            default_mode=None,
+            **S035_PREFS_UNCHANGED,
+        ),
     )
     assert outcome.status == "error"
     async with env.factory() as session:

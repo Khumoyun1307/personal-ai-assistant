@@ -94,5 +94,5 @@ def test_the_schemas_are_plain_strict(model: type[BaseModel]) -> None:
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == set(schema["properties"])
     dumped = str(schema)
-    for keyword in ("minimum", "maximum", "pattern", "format", "minLength", "maxLength"):
+    for keyword in ("minimum", "maximum", "pattern", "format", "minLength", "maxLength", "default"):
         assert f"'{keyword}'" not in dumped

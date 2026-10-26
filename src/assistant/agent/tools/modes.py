@@ -188,28 +188,25 @@ class UpdatePreferencesArgs(BaseModel):
     )
     # S03.5: reply defaults (used for drafts from M04) and retention.
     reply_language: Annotated[str | None, AfterValidator(_reply_language)] = Field(
-        default=None,
         description=(
             "The language replies to contacts are drafted in: 'match' (the contact's own "
             "language) or a code (uz, ru, en); or null."
         ),
     )
     reply_tone: Literal["neutral", "friendly", "formal"] | None = Field(
-        default=None, description="The default tone of replies to contacts, or null."
+        description="The default tone of replies to contacts, or null."
     )
     reply_style: Literal["brief", "detailed"] | None = Field(
-        default=None, description="The default length of replies to contacts, or null."
+        description="The default length of replies to contacts, or null."
     )
     message_retention_days: Annotated[int | None, AfterValidator(_days(MESSAGES))] = Field(
-        default=None,
         description="Keep message text this many days (14-90; older text is deleted), or null.",
     )
     control_chat_retention_days: Annotated[int | None, AfterValidator(_days(CONTROL_CHAT))] = Field(
-        default=None,
         description="Keep this chat's history this many days (14-90), or null.",
     )
     raw_update_retention_days: Annotated[int | None, AfterValidator(_days(RAW_UPDATES))] = Field(
-        default=None, description="Keep raw Telegram updates this many days (1-7), or null."
+        description="Keep raw Telegram updates this many days (1-7), or null."
     )
 
     @model_validator(mode="after")

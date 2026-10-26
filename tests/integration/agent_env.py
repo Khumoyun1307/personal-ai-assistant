@@ -62,6 +62,18 @@ MEMORY_FLAGS = frozenset(
         "tool.set_conversation_mode",
     }
 )
+
+#: `update_preferences`' S03.5 fields, unchanged. Every field of a strict
+#: tool schema is required (null = leave as is; D52), so S03.3's calls
+#: name them too.
+S035_PREFS_UNCHANGED: dict[str, None] = {
+    "reply_language": None,
+    "reply_tone": None,
+    "reply_style": None,
+    "message_retention_days": None,
+    "control_chat_retention_days": None,
+    "raw_update_retention_days": None,
+}
 #: The S03.5 deletion tools (always a confirmation card).
 DELETION_FLAGS = frozenset(
     {
