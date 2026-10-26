@@ -34,6 +34,7 @@ EXPECTED_TABLES = {
     "foreign_connections",
     "inbound_updates",
     "llm_calls",
+    "memory_items",
     "pending_inputs",
     "system_state",
     "tool_confirmations",
@@ -317,6 +318,109 @@ def test_0011_conversation_summaries_reverse(scratch_url: str) -> None:
     run_alembic(scratch_url, "0010", down=True)
     assert "conversation_summaries" not in tables_in(scratch_url, "app")
     run_alembic(scratch_url, "head")
+
+
+def test_0012_memory_items_reverse(scratch_url: str) -> None:
+    """S03.3: memory items scoped by exactly the FK their scope names, the
+    enum CHECKs, an archived item carries its time, one item per (run, tool
+    call), cascades from contact and conversation, and a symmetric downgrade."""
+    run_alembic(scratch_url, "base")
+    run_alembic(scratch_url, "0012")
+    assert "memory_items" in tables_in(scratch_url, "app")
+    assert "uq_memory_items_run_id_tool_call_id" in _constraints(scratch_url, "memory_items")
+    _seed_message(scratch_url, "synthetic")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT account_id, id, contact_id FROM app.conversations WHERE business_chat_id = 77"
+        ).fetchone()
+        assert row is not None
+        account_id, conversation_id, contact_id = row
+        run = conn.execute(
+            "INSERT INTO app.agent_runs (account_id, run_type, model) "
+            "VALUES (%s, 'owner_request', 'gpt-6-luna') RETURNING id",
+            (account_id,),
+        ).fetchone()
+        assert run is not None
+        insert = (
+            "INSERT INTO app.memory_items (account_id, scope, contact_id, conversation_id, "
+            "kind, content, status, archived_at, applies_to_replies, run_id, tool_call_id) "
+            "VALUES (%s, %s, %s, %s, %s, 'synthetic note', %s, %s, %s, %s, %s)"
+        )
+
+        def add(
+            scope: str,
+            contact: int | None,
+            conversation: int | None,
+            *,
+            kind: str = "fact",
+            status: str = "active",
+            archived_at: str | None = None,
+            applies: bool = False,
+            run_id: int | None = None,
+            call: str | None = None,
+        ) -> None:
+            conn.execute(
+                insert,
+                (
+                    account_id,
+                    scope,
+                    contact,
+                    conversation,
+                    kind,
+                    status,
+                    archived_at,
+                    applies,
+                    run_id,
+                    call,
+                ),
+            )
+
+        add("owner", None, None, kind="instruction", applies=True, run_id=run[0], call="c1")
+        add("contact", contact_id, None)
+        add("conversation", None, conversation_id, kind="preference")
+        add("owner", None, None, status="archived", archived_at="2026-10-25 08:00+00")
+        with pytest.raises(psycopg.errors.UniqueViolation):  # one item per tool call
+            add("owner", None, None, run_id=run[0], call="c1")
+        for bad in (
+            lambda: add("owner", contact_id, None),  # owner scope names a contact
+            lambda: add("contact", None, None),  # contact scope without the contact
+            lambda: add("contact", contact_id, conversation_id),  # two targets
+            lambda: add("conversation", None, None),
+            lambda: add("delegation", None, None),  # not built yet
+            lambda: add("owner", None, None, kind="shareable"),  # R2
+            lambda: add("owner", None, None, status="archived"),  # no archived_at
+            lambda: add("owner", None, None, archived_at="2026-10-25 08:00+00"),
+            lambda: add("owner", None, None, kind="fact", applies=True),  # instructions only
+        ):
+            with pytest.raises(psycopg.errors.CheckViolation):
+                bad()
+        conn.execute("DELETE FROM app.agent_runs WHERE id = %s", (run[0],))
+        kept = conn.execute(
+            "SELECT count(*) FROM app.memory_items WHERE run_id IS NULL AND tool_call_id = 'c1'"
+        ).fetchone()
+        assert kept == (1,)  # the run's accounting goes after a year; the note stays
+        conn.execute("DELETE FROM app.messages WHERE conversation_id = %s", (conversation_id,))
+        conn.execute("DELETE FROM app.conversations WHERE id = %s", (conversation_id,))
+        conn.execute("DELETE FROM app.contacts WHERE id = %s", (contact_id,))
+        left = conn.execute(
+            "SELECT scope, count(*) FROM app.memory_items GROUP BY scope ORDER BY scope"
+        ).fetchall()
+        assert left == [("owner", 2)]
+
+    run_alembic(scratch_url, "0011", down=True)
+    assert "memory_items" not in tables_in(scratch_url, "app")
+    run_alembic(scratch_url, "head")
+
+
+def _constraints(url: str, table: str) -> set[str]:
+    with psycopg.connect(libpq(url)) as conn:
+        rows = conn.execute(
+            "SELECT conname FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid "
+            "JOIN pg_namespace n ON n.oid = t.relnamespace "
+            "WHERE n.nspname = 'app' AND t.relname = %s",
+            (table,),
+        ).fetchall()
+    return {row[0] for row in rows}
 
 
 def test_identity_primary_keys_reject_a_client_supplied_id(scratch_url: str) -> None:

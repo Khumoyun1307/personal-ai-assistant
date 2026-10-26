@@ -21,7 +21,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Integer, Text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
@@ -93,3 +101,94 @@ class ConversationSummary(Base):
     model: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[CreatedAt]
     updated_at: Mapped[CreatedAt]
+
+
+# ------------------------------------------------------------------ memory items
+SCOPE_OWNER = "owner"
+SCOPE_CONTACT = "contact"
+SCOPE_CONVERSATION = "conversation"
+#: `delegation` scope arrives with delegations (M06); not built yet.
+MEMORY_SCOPES = (SCOPE_OWNER, SCOPE_CONTACT, SCOPE_CONVERSATION)
+#: `shareable` (FR-MEM-08) is R2; not built yet.
+MEMORY_KINDS = ("instruction", "preference", "fact", "style")
+#: `agent_inferred` (FR-MEM-05) is R2 and needs a review flow first.
+MEMORY_SOURCES = ("owner_stated",)
+STATUS_ACTIVE = "active"
+#: Forgotten: never used again, hard-deleted once the Undo window has passed.
+STATUS_ARCHIVED = "archived"
+MEMORY_STATUSES = (STATUS_ACTIVE, STATUS_ARCHIVED)
+
+
+def _in(column: str, values: tuple[str, ...]) -> str:
+    return f"{column} IN ({', '.join(repr(v) for v in values)})"
+
+
+class MemoryItem(Base):
+    """An owner instruction, preference, fact or contact note (ARCHITECTURE
+    §10.3, §11.1; S03.3, FR-MEM-01/03).
+
+    Scoped by foreign key, so deleting a contact or a conversation deletes its
+    notes (§10.4): `scope` names exactly which FK is set (none for `owner`).
+
+    CONTENT-BEARING: `content` (the owner's words; registered in
+    `privacy/content_columns.py`). `provenance` holds flags only (whether the
+    item came from a run that had third-party text in it).
+    """
+
+    __tablename__ = "memory_items"
+    __table_args__ = (
+        CheckConstraint(_in("scope", MEMORY_SCOPES), name="scope"),
+        CheckConstraint(_in("kind", MEMORY_KINDS), name="kind"),
+        CheckConstraint(_in("source", MEMORY_SOURCES), name="source"),
+        CheckConstraint(_in("status", MEMORY_STATUSES), name="status"),
+        CheckConstraint(
+            "(scope = 'owner' AND contact_id IS NULL AND conversation_id IS NULL) "
+            "OR (scope = 'contact' AND contact_id IS NOT NULL AND conversation_id IS NULL) "
+            "OR (scope = 'conversation' AND conversation_id IS NOT NULL AND contact_id IS NULL)",
+            name="scope_target",
+        ),
+        CheckConstraint("(status = 'archived') = (archived_at IS NOT NULL)", name="archived_at"),
+        CheckConstraint(
+            "NOT applies_to_replies OR kind = 'instruction'", name="applies_to_replies"
+        ),
+        UniqueConstraint("run_id", "tool_call_id", name="uq_memory_items_run_id_tool_call_id"),
+        Index("ix_memory_items_account_id_status", "account_id", "status"),
+        Index("ix_memory_items_contact_id", "contact_id"),
+        Index("ix_memory_items_conversation_id", "conversation_id"),
+    )
+
+    id: Mapped[IdPk]
+    account_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app.accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    scope: Mapped[str] = mapped_column(Text, nullable=False)
+    contact_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("app.contacts.id", ondelete="CASCADE"), nullable=True
+    )
+    conversation_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("app.conversations.id", ondelete="CASCADE"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    #: CONTENT.
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=sql_text("'owner_stated'")
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=sql_text("'active'"))
+    #: Flags only, e.g. `{"tainted": true}`: saved from a run that had other
+    #: people's text in its context (the owner confirmed it on a card).
+    provenance: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=sql_text("'{}'")
+    )
+    #: Owner-set: an owner instruction that reply drafting must follow (§7.3).
+    applies_to_replies: Mapped[bool] = mapped_column(
+        nullable=False, server_default=sql_text("false")
+    )
+    #: The run and tool call that saved it: a repeated call saves nothing new.
+    run_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("app.agent_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    tool_call_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[CreatedAt]
+    updated_at: Mapped[CreatedAt]
+    archived_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.conversations.window import window_closes_at, window_open
+from assistant.memory import items, summaries
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +41,11 @@ class ConversationPanel:
     window_open: bool
     window_closes_at: datetime | None
     unresolved_gaps: int
+    #: The rolling summary's overview (model output; owner-facing only), S03.3.
+    summary_overview: str | None = None
+    #: The owner's notes about this contact and chat, newest first (J12).
+    notes: tuple[str, ...] = ()
+    notes_total: int = 0
 
     @property
     def total(self) -> int:
@@ -47,16 +53,27 @@ class ConversationPanel:
 
 
 async def conversation_panel(
-    session: AsyncSession, *, account_id: int, business_chat_id: int, now: datetime
+    session: AsyncSession,
+    *,
+    account_id: int,
+    now: datetime,
+    business_chat_id: int | None = None,
+    conversation_id: int | None = None,
 ) -> ConversationPanel | None:
-    row = (
-        await session.execute(
-            select(Conversation, Contact)
-            .join(Contact, Contact.id == Conversation.contact_id)
-            .where(Conversation.account_id == account_id)
-            .where(Conversation.business_chat_id == business_chat_id)
-        )
-    ).first()
+    """By the deep link's chat id, or by our conversation id (the /settings
+    lists); always within the account."""
+    statement = (
+        select(Conversation, Contact)
+        .join(Contact, Contact.id == Conversation.contact_id)
+        .where(Conversation.account_id == account_id)
+    )
+    if business_chat_id is not None:
+        statement = statement.where(Conversation.business_chat_id == business_chat_id)
+    elif conversation_id is not None:
+        statement = statement.where(Conversation.id == conversation_id)
+    else:
+        return None
+    row = (await session.execute(statement)).first()
     if row is None:
         return None
     conversation, contact = row
@@ -94,6 +111,9 @@ async def conversation_panel(
             .where(CoverageGap.certainty.in_(["possible", "definite"]))
         )
     ).scalar_one()
+    rolling = await summaries.rolling_summary(session, account_id, conversation.id)
+    overview = None if rolling is None else rolling.summary.get("overview")
+    notes, notes_total = await items.notes_for_panel(session, account_id, conversation.id)
 
     return ConversationPanel(
         conversation_id=conversation.id,
@@ -114,4 +134,7 @@ async def conversation_panel(
         window_open=window_open(conversation, now),
         window_closes_at=window_closes_at(conversation),
         unresolved_gaps=int(gaps),
+        summary_overview=overview if isinstance(overview, str) and overview else None,
+        notes=tuple(note.content for note in notes),
+        notes_total=notes_total,
     )

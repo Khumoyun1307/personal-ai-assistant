@@ -27,6 +27,7 @@ from assistant.accounts.models import Account, ControlTurn
 from assistant.agent.prompt_registry import Prompt
 from assistant.agent.untrusted import Source, wrap
 from assistant.llm.port import Provenance, TextItem
+from assistant.memory.items import MemoryView
 from assistant.memory.summaries import SourceMessage
 
 #: How many earlier control turns an owner request sees.
@@ -52,16 +53,26 @@ def build_owner_request(
     turn: ControlTurn,
     now: datetime,
     managed_allowed: bool = False,
+    memory: Sequence[MemoryView] = (),
 ) -> OwnerRequestContext:
     profile = [
         "Owner profile:",
         f"- preferred language: {account.locale_pref or 'not set'}",
         f"- timezone: {account.timezone}",
     ]
-    run_context = [f"Current time (UTC): {now:%Y-%m-%d %H:%M}"]
-    instructions = "\n\n".join([prompt.text, "\n".join(profile), "\n".join(run_context)])
+    sections = [prompt.text, "\n".join(profile), f"Current time (UTC): {now:%Y-%m-%d %H:%M}"]
+    instructions = "\n\n".join(sections)
 
-    items = [
+    items: list[TextItem] = []
+    if memory:
+        # The owner's saved items travel as an input item with provenance, so
+        # the consent wrapper sees them (safety review V2/N3). Only the
+        # owner's own words appear; an item from other people's text is a
+        # placeholder, read with `list_memories` (which taints the run, V1).
+        items.append(
+            TextItem("user", render_owner_memory(memory, managed_allowed), Provenance.OWNER_CONTROL)
+        )
+    items += [
         TextItem(
             role="user" if past.role == "owner" else "assistant",
             text=render_turn(past),
@@ -87,6 +98,42 @@ def build_owner_request(
     return OwnerRequestContext(
         instructions=instructions, items=tuple(items), tainted=tainted, directly_tainted=direct
     )
+
+
+def note_text(item: MemoryView) -> str:
+    """A note's words as a contact-facing run sees them: wrapped as
+    untrusted when they may be someone else's (M03 D70)."""
+    if item.tainted:
+        return wrap(item.content, Source.MEMORY_FROM_TAINTED_RUN) or ""
+    return item.content
+
+
+def owner_memory_line(item: MemoryView, *, managed_allowed: bool) -> str | None:
+    """One owner item in an owner run. Never the text of an item saved from
+    other people's text (safety review V1): a placeholder points the model at
+    `list_memories`, whose result taints the run; without `ai_managed` such
+    an item is not mentioned at all (it may hold managed content, V2)."""
+    flags = " (for replies)" if item.applies_to_replies else ""
+    if item.tainted or item.managed:
+        if item.managed and not managed_allowed:
+            return None
+        return (
+            f"- [memory {item.memory_id}] {item.kind}{flags}: (saved from other people's text; "
+            "not shown here — read it with list_memories if the request needs it)"
+        )
+    return f"- [memory {item.memory_id}] {item.kind}{flags}: {item.content}"
+
+
+def render_owner_memory(memory: Sequence[MemoryView], managed_allowed: bool) -> str:
+    """The owner's own saved instructions, preferences and facts (owner
+    scope only; contact notes come through `list_memories`)."""
+    lines = ["What the owner asked you to remember (owner's notes, newest first):"]
+    lines += [
+        line
+        for item in memory
+        if (line := owner_memory_line(item, managed_allowed=managed_allowed)) is not None
+    ]
+    return "\n".join(lines)
 
 
 WITHHELD_FORWARD = (
@@ -145,11 +192,14 @@ def build_summarize(
     messages: Sequence[SourceMessage],
     previous: Mapping[str, Any] | None = None,
     period: tuple[datetime, datetime] | None = None,
+    notes: Sequence[MemoryView] = (),
 ) -> SummarizeContext:
     """The context of one `summarize` run: ONE conversation's messages and,
     when updating, that conversation's own previous summary — nothing from
     any other chat (§6 invariant 4). Contact text and the earlier summary
-    are wrapped as untrusted; sender labels come from classification."""
+    are wrapped as untrusted; sender labels come from classification.
+    `notes` are the owner's notes about this contact and this chat only,
+    loaded by the §7.3 rule (`memory/items.py::contact_facing`, S03.3)."""
     timezone = account.timezone
     profile = [
         "Owner profile:",
@@ -172,6 +222,15 @@ def build_summarize(
     instructions = "\n\n".join([prompt.text, "\n".join(profile), task])
 
     items: list[TextItem] = []
+    if notes:
+        lines = ["The owner's notes about this contact and chat (background, not chat messages):"]
+        # No ids: a note must never be citable as a message (review nit; the
+        # uncited-item guard, D65, accepts only shown message ids).
+        lines += [f"- ({note.kind}) {note_text(note)}" for note in notes]
+        provenance = (
+            Provenance.MANAGED if any(n.managed for n in notes) else Provenance.OWNER_CONTROL
+        )
+        items.append(TextItem("user", "\n".join(lines), provenance))
     if previous is not None and period is None:
         body = wrap(json.dumps(previous, ensure_ascii=False, sort_keys=True), Source.SUMMARY)
         items.append(

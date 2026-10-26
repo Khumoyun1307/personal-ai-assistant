@@ -28,6 +28,8 @@ CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("inbound_updates", "payload"),
         # Model-written summaries of one managed chat (S03.2).
         ("conversation_summaries", "summary"),
+        # Owner instructions, preferences, facts and contact notes (S03.3).
+        ("memory_items", "content"),
     }
 )
 
@@ -99,6 +101,13 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("conversation_summaries", "model"),
         # A hash over (message id, updated_at) pairs: no content goes in.
         ("conversation_summaries", "source_digest"),
+        ("memory_items", "scope"),
+        ("memory_items", "kind"),
+        ("memory_items", "source"),
+        ("memory_items", "status"),
+        # Flags only (`{"tainted": bool}`).
+        ("memory_items", "provenance"),
+        ("memory_items", "tool_call_id"),
         # Alembic's own bookkeeping table.
         ("alembic_version", "version_num"),
     }

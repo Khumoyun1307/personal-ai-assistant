@@ -29,7 +29,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts.models import AuditLogEntry
+from assistant.accounts.models import Account, AuditLogEntry
+from assistant.accounts.preferences import FALLBACK_DEFAULT_MODE, default_mode
 from assistant.accounts.service import active_consent
 from assistant.conversations.events import (
     Direction,
@@ -155,13 +156,55 @@ async def _upsert_contact(
     return int((await session.execute(upsert)).scalar_one())
 
 
+async def _refresh_names(
+    session: AsyncSession,
+    *,
+    contact_id: int,
+    display_name: str | None,
+    username: str | None,
+    clock: Clock,
+) -> None:
+    """Names are refreshed from messages (§10.3); a message without a name
+    does not erase one we have."""
+    if display_name is None and username is None:
+        return
+    await session.execute(
+        update(Contact)
+        .where(Contact.id == contact_id)
+        .values(
+            display_name=func.coalesce(display_name, Contact.display_name),
+            username=func.coalesce(username, Contact.username),
+            updated_at=clock.now(),
+        )
+    )
+
+
+async def new_chat_mode(session: AsyncSession, account_id: int) -> str:
+    """The mode a conversation created now starts in: the owner's default
+    (PRD §11.1; /settings, S03.3), Observe unless they chose otherwise."""
+    account = await session.get(Account, account_id)
+    return FALLBACK_DEFAULT_MODE if account is None else default_mode(account)
+
+
 async def _lock_conversation(
-    session: AsyncSession, *, account_id: int, business_chat_id: int, contact_id: int
+    session: AsyncSession,
+    *,
+    account_id: int,
+    business_chat_id: int,
+    contact_id: int,
+    mode: str | None = None,
 ) -> Conversation:
-    """Upsert, then lock: every write to a conversation goes through here."""
+    """Upsert, then lock: every write to a conversation goes through here.
+    `mode` applies only if the conversation is created now."""
+    values: dict[str, Any] = {
+        "account_id": account_id,
+        "business_chat_id": business_chat_id,
+        "contact_id": contact_id,
+    }
+    values["mode"] = mode or await new_chat_mode(session, account_id)
     await session.execute(
         insert(Conversation)
-        .values(account_id=account_id, business_chat_id=business_chat_id, contact_id=contact_id)
+        .values(**values)
         .on_conflict_do_nothing(constraint="uq_conversations_account_id_business_chat_id")
     )
     result = await session.execute(
@@ -223,24 +266,41 @@ async def record_message(
     conversation_probe = await _find_conversation(
         session, account_id=account_id, business_chat_id=event.business_chat_id
     )
-    metadata_only = conversation_probe is not None and conversation_probe.mode == "ignore"
+    # A new chat starts in the owner's default mode (S03.3).
+    mode = (
+        conversation_probe.mode
+        if conversation_probe is not None
+        else await new_chat_mode(session, account_id)
+    )
     contact_id = await _upsert_contact(
         session,
         account_id=account_id,
         telegram_user_id=event.counterpart.telegram_user_id,
-        display_name=event.counterpart.display_name,
-        username=event.counterpart.username,
+        display_name=None,
+        username=None,
         is_bot=event.counterpart.is_bot,
         clock=clock,
-        write_names=not metadata_only,
+        write_names=False,
     )
     conversation = await _lock_conversation(
         session,
         account_id=account_id,
         business_chat_id=event.business_chat_id,
         contact_id=contact_id,
+        mode=mode,
     )
+    # The mode read under the conversation lock decides — not the probe,
+    # which may predate a concurrent creation or Ignore switch. In Ignore not
+    # even the contact's name is stored (S03.3, safety review N2).
     metadata_only = conversation.mode == "ignore"
+    if not metadata_only:
+        await _refresh_names(
+            session,
+            contact_id=contact_id,
+            display_name=event.counterpart.display_name,
+            username=event.counterpart.username,
+            clock=clock,
+        )
 
     # Step 2: the message.
     if event.is_edit:
