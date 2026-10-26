@@ -6,9 +6,9 @@ The required S03.3 tests (IMPLEMENTATION_PLAN §5), each findable by name:
 - Ignore-mode non-storage — `test_ignore_mode_stores_nothing_from_the_next_message_on`;
 - existing data kept after switching to Ignore —
   `test_existing_data_is_kept_after_switching_to_ignore`;
-- conversation panel buttons, the Ignore confirmation (no deletion option
-  until S03.5) — `test_the_panel_switches_to_ignore_only_after_a_confirmation`,
-  `test_the_ignore_confirmation_offers_no_deletion_before_s03_5`;
+- conversation panel buttons, the Ignore confirmation (its deletion option
+  since S03.5) — `test_the_panel_switches_to_ignore_only_after_a_confirmation`,
+  `test_the_ignore_confirmation_offers_the_deletion_option` (S03.5 wired it);
 - /settings: default mode for new chats —
   `test_new_chats_start_in_the_default_mode_set_in_settings`; chats listed by
   mode, paginated, opening the panel —
@@ -168,16 +168,20 @@ async def test_the_panel_switches_to_ignore_only_after_a_confirmation(env: Env) 
     ]
 
 
-async def test_the_ignore_confirmation_offers_no_deletion_before_s03_5(env: Env) -> None:
-    """The "Also delete existing data" option needs `delete_conversation_data`
-    (S03.5): until then the confirmation offers Ignore and Cancel only — a
-    marked hook, not a button that pretends to delete."""
-    assert panels.IGNORE_DELETE_OPTION is None
+async def test_the_ignore_confirmation_offers_the_deletion_option(env: Env) -> None:
+    """S03.5 wired "Also delete existing data" (`delete_conversation_data`);
+    the deletion itself is tested in `test_deletion_cards.py`. A forged op
+    still does nothing."""
+    assert panels.IGNORE_DELETE_OPTION is not None
     await connect(env)
     await deliver(env, business_message(message_id=1, message_text=FIRST))
     await open_panel(env)
     await tap(env, panels.PANEL_CARD, "ignore")
-    assert keyboard_ops(env.sender.edits[-1]["reply_markup"]) == ["confirm", "cancel"]
+    assert keyboard_ops(env.sender.edits[-1]["reply_markup"]) == [
+        "confirm",
+        panels.IGNORE_DELETE_OPTION[1],
+        "cancel",
+    ]
     await tap(env, panels.IGNORE_CARD, "purge")  # a forged op does nothing
     assert (await conversation_row(env)).mode == "observe"
 

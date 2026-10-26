@@ -62,6 +62,14 @@ MEMORY_FLAGS = frozenset(
         "tool.set_conversation_mode",
     }
 )
+#: The S03.5 deletion tools (always a confirmation card).
+DELETION_FLAGS = frozenset(
+    {
+        "tool.delete_conversation_data",
+        "tool.delete_contact_data",
+        "tool.delete_everything",
+    }
+)
 
 
 class SetNoteArgs(BaseModel):

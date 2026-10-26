@@ -62,7 +62,7 @@ async def test_declining_managed_consent_offers_the_deletion_card(env: Env) -> N
     assert "Delete what I stored" in env.sender.texts[-1]
     keyboard = env.sender.sends[-1]["reply_markup"]
     labels = [b.text for row in keyboard.inline_keyboard for b in row]
-    assert labels == ["Delete", "Keep"]
+    assert labels == ["Delete", "Delete everything", "Keep"]  # S03.5 scopes
     assert all(
         f":{card.token}:" in b.callback_data for row in keyboard.inline_keyboard for b in row
     )
