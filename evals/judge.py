@@ -40,10 +40,16 @@ from evals.schema import Commitment, Conversation, QuestionToOwner
 from evals.targets import Measure, MetricResult
 
 RUBRIC_ID = "fabrication.v1"
+#: The version of the summary text the judges read (`evals.summary.labelled_text`).
+#: v1: "promised by the owner/contact" from the summary's fields; v2 (S03.7): who
+#: asked, promised or agreed in the product's own English wording
+#: (`agent/attribution.py`), with the contact's name.
+LABELS_VERSION = "labels.v2"
 #: The fabrication judge as a report names it: the rubric plus the version of the
 #: conversation rendering it reads (`evals.render.RENDER_VERSION`), so runs whose
-#: judge read UTC times are told apart from runs whose judge read local ones.
-FABRICATION_LABEL = f"{RUBRIC_ID}+{RENDER_VERSION}"
+#: judge read UTC times are told apart from runs whose judge read local ones, plus
+#: the version of the summary text it reads (`LABELS_VERSION`).
+FABRICATION_LABEL = f"{RUBRIC_ID}+{RENDER_VERSION}+{LABELS_VERSION}"
 LOOPS_RUBRIC_ID = "open_loops.v3"
 MAX_OUTPUT_TOKENS = 3000
 TIMEOUT_SECONDS = 120.0

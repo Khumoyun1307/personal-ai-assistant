@@ -51,6 +51,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from assistant.accounts.models import Account, BusinessConnection
 from assistant.accounts.service import CONSENT_AI_CONTROL, CONSENT_AI_MANAGED, grant_consent
 from assistant.agent import prompt_registry
+from assistant.agent.attribution import (
+    MAX_NAME,
+    NO_CHANGES,
+    WHO_TEMPLATES,
+    AttributionCounts,
+    render_who,
+)
 from assistant.agent.context import build_summarize
 from assistant.agent.models import AgentRun
 from assistant.agent.schemas import (
@@ -124,6 +131,12 @@ _EVAL_OWNER_CHAT_ID = 7_000_000_098
 #: the pre-run estimate only.
 _ID_SLACK_CHARS = 500
 
+#: The longest `who` line `labelled_text` can write: the longest English template
+#: with the longest name, in every slot it has.
+_MAX_WHO_CHARS = max(
+    len(template.replace("{name}", "")) + template.count("{name}") * MAX_NAME
+    for template in WHO_TEMPLATES["en"].values()
+)
 #: The longest summary text `sanitize` can store (every list at its cap, every
 #: text at its limit) plus the labels of `labelled_text`: an upper bound on what a
 #: judge can be asked to read, for the pre-run estimate.
@@ -131,6 +144,7 @@ MAX_SUMMARY_CHARS = (
     MAX_OVERVIEW
     + 3 * MAX_ITEMS * (MAX_ITEM_TEXT + 4)
     + MAX_ITEMS * (MAX_ITEM_TEXT + MAX_DUE + 40)
+    + 3 * MAX_ITEMS * (_MAX_WHO_CHARS + 2)
     + MAX_REASON
     + 300
 )
@@ -208,22 +222,27 @@ def plain_text(summary: Mapping[str, Any]) -> str:
     return "\n".join(part for part in parts if part)
 
 
-def labelled_text(summary: Mapping[str, Any]) -> str:
+def labelled_text(summary: Mapping[str, Any], *, contact_name: str | None) -> str:
     """The summary with its structure named, for the judges (who must know that
-    an item is a commitment of the owner, say). English labels: never used for the
-    language check."""
+    an item is a commitment of the owner, say). Who asked, promised or agreed is
+    written exactly as the product words it for the owner (`render_who`, English,
+    with the contact's name; `judge.LABELS_VERSION`). English labels: never used
+    for the language check."""
+
+    def line(key: str, item: Mapping[str, Any]) -> str:
+        who = render_who(key, item, contact_name, "en")
+        return f"- {who}: {item['text']}" if who else f"- {item['text']}"
 
     def points(title: str, key: str) -> list[str]:
         items = summary.get(key) or []
-        return [title, *(f"- {item['text']}" for item in items)] if items else [title, "- (none)"]
+        return [title, *(line(key, item) for item in items)] if items else [title, "- (none)"]
 
     commitments = summary.get("commitments") or []
     lines = [f"Overview: {summary.get('overview') or ''}"]
     lines += points("Open questions to the owner:", "open_questions_to_owner")
     lines.append("Commitments not yet done:")
     lines += [
-        f"- promised by the {item['by']}: {item['text']}"
-        + (f" (due: {item['due']})" if item.get("due") else "")
+        line("commitments", item) + (f" (due: {item['due']})" if item.get("due") else "")
         for item in commitments
     ] or ["- (none)"]
     lines += points("Decisions requested from the owner:", "decisions_requested")
@@ -323,6 +342,8 @@ class _Record:
     check: CaveatCheck
     caveat_lines: int
     screen: ScreenResult
+    #: What the product's attribution check changed in this summary (S03.7).
+    attribution: AttributionCounts = NO_CHANGES
 
     @property
     def summarized(self) -> bool:
@@ -347,6 +368,11 @@ class _Record:
             "error": self.error,
             "summary_calls": self.calls,
             "items": dict(self.counts),
+            # Items the attribution check demoted (a "promise" citing only the
+            # other side became a request) or dropped (no cited message of the
+            # side it names): counts, written before the judges read the summary.
+            "attribution_demoted": self.attribution.demoted,
+            "attribution_dropped": self.attribution.dropped,
             "open_loops": dict(self.coverage),
             # The ledger key of each loop awaiting the owner's verdict: it names the
             # summary the verdict is about (a re-run's summary has other keys).
@@ -465,6 +491,7 @@ class SummaryTarget:
             account=Account(timezone=OWNER_TIMEZONE, locale_pref=self.owner_language),
             messages=_source_messages(conversation),
             period=catch_up_window(conversation),
+            contact_name=conversation.contact.display_name,
         )
         return (
             len(built.instructions) + sum(len(item.text) for item in built.items) + _ID_SLACK_CHARS
@@ -534,7 +561,8 @@ class SummaryTarget:
         if summary is None:
             error = await self._failure_code(loaded, outcome)
         else:
-            text, plain, counts = labelled_text(summary), plain_text(summary), _item_counts(summary)
+            text = labelled_text(summary, contact_name=conversation.contact.display_name)
+            plain, counts = plain_text(summary), _item_counts(summary)
         output = SummaryOutput(
             conversation.id, text, self.owner_language, facts.gap_ids, facts.pre_connection
         )
@@ -580,6 +608,7 @@ class SummaryTarget:
             check=check_caveats(conversation, output),
             caveat_lines=facts.lines,
             screen=screen,
+            attribution=outcome.attribution,
         )
 
     async def _failure_code(self, loaded: _Loaded, outcome: PeriodOutcome) -> str:

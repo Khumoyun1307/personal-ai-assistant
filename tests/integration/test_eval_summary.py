@@ -163,26 +163,39 @@ class SummaryOracle(FakeLLM):
         if self._truncate_first and self._attempts == 1:
             return ParsedResponse(StopReason.MAX_TOKENS, LUNA, self._usage)
         self._attempts = 0
-        shown = [int(i) for i in re.findall(r"^\[(\d+)\]", request.items[-1].text, re.M)]  # type: ignore[union-attr]
+        lines = request.items[-1].text  # type: ignore[union-attr]
+        # Cite as a faithful summarizer would (S03.7 checks who a cited message is
+        # from): a question cites the contact, a promise its maker's side.
+        sides = {
+            label: [
+                int(i)
+                for i, side in re.findall(r"^\[(\d+)\] \S+ \S+ (\w+)", lines, re.M)
+                if side == label
+            ]
+            for label in ("CONTACT", "YOU")
+        }
         return ParsedResponse(
             StopReason.COMPLETED,
             LUNA,
             self._usage,
-            schema.model_validate(self._summary(conversation, shown[0])),
+            schema.model_validate(self._summary(conversation, sides)),
         )
 
-    def _summary(self, conversation: Conversation, cite: int) -> dict[str, Any]:
+    def _summary(self, conversation: Conversation, sides: dict[str, list[int]]) -> dict[str, Any]:
+        contact = sides["CONTACT"][:1] or sides["YOU"][:1]
+        owner = sides["YOU"][:1] or contact
         questions = [
-            {"text": words_of(q), "message_ids": [cite]}
+            {"text": words_of(q), "message_ids": contact}
             for q in conversation.labels.questions_to_owner
             if q.status == "open" and q.id not in self._omit
         ]
         commitments = [
             {
                 "by": "owner" if c.who == "owner" else "contact",
+                "status": "promised",
                 "text": words_of(c),
                 "due": c.when,
-                "message_ids": [cite],
+                "message_ids": owner if c.who == "owner" else contact,
             }
             for c in conversation.labels.commitments
             if c.status == "open" and c.id not in self._omit
@@ -250,14 +263,19 @@ async def test_the_target_runs_the_real_summarize_path_and_produces_every_metric
         prompt_registry.active("summarize").label,
         # S03.6 review: the judge input changed (times in the owner's timezone,
         # E-w), so the label names the input version; plain "fabrication.v1"
-        # was the UTC input of the earlier runs.
-        "fabrication.v1+render.v2",
+        # was the UTC input of the earlier runs. S03.7: the summary the judge
+        # reads names who asked or promised in the product's words (labels.v2).
+        "fabrication.v1+render.v2+labels.v2",
         "open_loops.v3",
     )
     assert all(d["status"] == "summarized" and d["error"] is None for d in result.details)
     # The report keeps the structured summary too: who promised what (attribution
     # cannot be reviewed from the plain text the checks read).
     assert all("Commitments not yet done:" in d["summary_labelled"] for d in result.details)
+    # S03.7: what the attribution check changed is counted per conversation.
+    for detail in result.details:
+        assert detail["attribution_demoted"] >= 0
+        assert detail["attribution_dropped"] == 0  # the oracle cites the right sides
     # A perfect summarizer and judge: every open loop surfaced, nothing flagged.
     assert metric(result, "open_loop_recall").all_items.ratio == 1.0
     assert metric(result, "owner_language").all_items.ratio == 1.0

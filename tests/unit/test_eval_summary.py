@@ -98,8 +98,27 @@ SUMMARY: dict[str, Any] = {
     "overview": "Bu suhbat haqida",
     "open_questions_to_owner": [{"text": "Qaysi manzil?", "message_ids": [1]}],
     "commitments": [
-        {"by": "owner", "text": "Hujjatni yuboraman", "due": "juma 10:00", "message_ids": [2]},
-        {"by": "contact", "text": "Pulni beradi", "due": None, "message_ids": [3]},
+        {
+            "by": "owner",
+            "status": "promised",
+            "text": "Hujjatni yuboraman",
+            "due": "juma 10:00",
+            "message_ids": [2],
+        },
+        {
+            "by": "contact",
+            "status": "promised",
+            "text": "Pulni beradi",
+            "due": None,
+            "message_ids": [3],
+        },
+        {
+            "by": "owner",
+            "status": "requested",
+            "text": "Bidonlarni qaytarish",
+            "due": None,
+            "message_ids": [6],
+        },
     ],
     "decisions_requested": [{"text": "Soat nechada?", "message_ids": [4]}],
     "key_facts": [{"text": "Manzil: Qorasuv 3", "message_ids": [5]}],
@@ -127,11 +146,31 @@ def test_the_plain_text_is_the_summarys_own_words_and_nothing_else() -> None:
 
 
 def test_the_judges_text_names_who_promised_what() -> None:
-    text = labelled_text(SUMMARY)
-    assert "promised by the owner: Hujjatni yuboraman (due: juma 10:00)" in text
-    assert "promised by the contact: Pulni beradi" in text
+    text = labelled_text(SUMMARY, contact_name="Aziza")
+    assert "- You promised Aziza: Hujjatni yuboraman (due: juma 10:00)" in text
+    assert "- Aziza promised you: Pulni beradi" in text
     assert "Needs a reply from the owner: yes - Savol berildi" in text
-    assert labelled_text({**SUMMARY, "commitments": []}).count("(none)") == 1
+    assert labelled_text({**SUMMARY, "commitments": []}, contact_name="Aziza").count("(none)") == 1
+
+
+def test_labelled_text_uses_the_products_attribution_wording() -> None:
+    """S03.7: the judges read who asked or promised in the words the owner gets
+    (`agent/attribution.py`, English), not a harness-only phrasing."""
+    text = labelled_text(SUMMARY, contact_name="Aziza")
+    assert "- Aziza asks you: Qaysi manzil?" in text
+    assert "- Aziza is waiting for your decision: Soat nechada?" in text
+    assert "- Aziza asks you to (not agreed yet): Bidonlarni qaytarish" in text
+    assert "promised by the" not in text
+    # A key fact names nobody; a chat without a known name gets the neutral word.
+    assert "- Manzil: Qorasuv 3" in text
+    assert "- the contact asks you: Qaysi manzil?" in labelled_text(SUMMARY, contact_name=None)
+
+
+def test_the_judge_label_names_the_labelled_text_version() -> None:
+    from evals import judge
+
+    assert judge.LABELS_VERSION == "labels.v2"
+    assert judge.FABRICATION_LABEL == "fabrication.v1+render.v2+labels.v2"
 
 
 def test_the_judges_are_budgeted_for_the_largest_summary_sanitize_can_store() -> None:
@@ -143,6 +182,7 @@ def test_the_judges_are_budgeted_for_the_largest_summary_sanitize_can_store() ->
         commitments=[
             Commitment(
                 by="owner",
+                status="agreed",
                 text="c" * (MAX_ITEM_TEXT + 50),
                 due="d" * (MAX_DUE + 50),
                 message_ids=[1],
@@ -161,7 +201,8 @@ def test_the_judges_are_budgeted_for_the_largest_summary_sanitize_can_store() ->
     )
     stored, _, capped = sanitize(biggest, frozenset({1}))
     assert capped == 4 * 5  # the lists really were at their caps
-    assert len(labelled_text(stored)) <= MAX_SUMMARY_CHARS
+    longest_name = "N" * 129  # Telegram: first name (64) + space + last name (64)
+    assert len(labelled_text(stored, contact_name=longest_name)) <= MAX_SUMMARY_CHARS
     assert len(stored["open_questions_to_owner"]) == MAX_ITEMS
 
 
