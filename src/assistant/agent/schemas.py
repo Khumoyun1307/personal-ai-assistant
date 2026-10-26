@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class SummaryPoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    text: str = Field(description="One short statement in the owner's language.")
+    text: str = Field(description="One short statement in the owner's language and script.")
     message_ids: list[int] = Field(
         description="Ids (from the brackets) of the messages that support it."
     )
@@ -34,7 +34,7 @@ class Commitment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     by: Literal["owner", "contact"] = Field(description="Who promised.")
-    text: str = Field(description="What was promised, to whom.")
+    text: str = Field(description="What was promised, to whom, in the owner's language and script.")
     due: str | None = Field(description="When, as stated in the messages, or null.")
     message_ids: list[int] = Field(description="Supporting message ids.")
 
@@ -44,6 +44,15 @@ class ConversationSummaryOutput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # First, so the model commits to the owner's language and script before it
+    # writes a word of the summary (S03.6: Cyrillic chats were summarized in
+    # Cyrillic for a uz-Latn owner while this field came last).
+    language: str = Field(
+        description=(
+            "The owner's preferred language tag, e.g. 'uz-Latn': every text below "
+            "is written in that language and script."
+        )
+    )
     overview: str = Field(description="What the chat is about and what happened, briefly.")
     open_questions_to_owner: list[SummaryPoint] = Field(
         description="Questions the contact asked the owner that are still unanswered."
@@ -63,7 +72,6 @@ class ConversationSummaryOutput(BaseModel):
     needs_reply_reason: str | None = Field(
         description="Why a reply is or is not needed, briefly; null if obvious."
     )
-    language: str = Field(description="The language you wrote the summary in, e.g. 'uz'.")
 
 
 #: Deterministic limits applied after validation.
