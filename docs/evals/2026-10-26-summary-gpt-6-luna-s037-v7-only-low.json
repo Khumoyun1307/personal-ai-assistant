@@ -1,0 +1,387 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-26",
+  "set": "summary",
+  "target": "summary",
+  "dataset": "e1",
+  "mode": "period-uz-Latn",
+  "model": "gpt-6-luna",
+  "live": true,
+  "effort": "low",
+  "complete": false,
+  "trial": true,
+  "stopped": false,
+  "items": 3,
+  "items_planned": 3,
+  "items_total": 40,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "summarize.v7",
+    "fabrication.v2+render.v3+labels.v2",
+    "open_loops.v4"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "open_loop_recall",
+      "label": "Open question/commitment recall",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.95,
+      "all_items": {
+        "numerator": 6,
+        "denominator": 8,
+        "ratio": 0.75
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "fail",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 103,
+      "failed_items": [
+        "c15.c2",
+        "c28.c2"
+      ],
+      "pending": 0,
+      "note": "5 open loop(s) not matched on `values` (none, or not found literally, e.g. translated): judge pre-screen only, the gate needs the owner's verdict (0 unresolved among the owner-confirmed items)"
+    },
+    {
+      "key": "caveat_presence",
+      "label": "Coverage caveat present whenever gaps exist",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "not evaluable",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 6,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "spurious_caveats",
+      "label": "Caveats for gaps that lost nothing",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 3,
+        "ratio": 0.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "owner_language",
+      "label": "Owner-facing language and script correct",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 3,
+        "denominator": 3,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "fabricated_facts",
+      "label": "Fabricated facts (zero allowed)",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 3,
+        "denominator": 3,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "fail",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [
+        "c36#6ef2cf37",
+        "c36#489197e8",
+        "c36#9466f11e"
+      ],
+      "pending": 3,
+      "note": "3 flagged statement(s) pending owner confirmation"
+    }
+  ],
+  "breakdowns": {
+    "open-loop recall (pre-screen) by variant": {
+      "en": {
+        "numerator": 2,
+        "denominator": 3,
+        "ratio": 0.6666666666666666
+      },
+      "uz-Cyrl": {
+        "numerator": 2,
+        "denominator": 3,
+        "ratio": 0.6666666666666666
+      },
+      "uz-ru-mix": {
+        "numerator": 2,
+        "denominator": 2,
+        "ratio": 1.0
+      }
+    },
+    "owner-language check by variant": {
+      "en": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "uz-Cyrl": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "uz-ru-mix": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.0036539",
+    "calls": 8,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 8,
+        "input_tokens": 16729,
+        "output_tokens": 3962,
+        "cost_usd": "0.0036539",
+        "cost_per_100_items_usd": "0.1217966666666666666666666667"
+      }
+    }
+  },
+  "notes": [
+    "Caveats come from the product's deterministic renderer over the harness's own synthetic gap rows, not from the model (E-d, E-p): the two caveat metrics are an ungated wiring regression check. Recall and language are measured on the per-chat summary (the summarize output), not on the owner-facing reply."
+  ],
+  "details": [
+    {
+      "id": "c15",
+      "variant": "uz-Cyrl",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 4,
+        "decisions_requested": 1,
+        "key_facts": 5
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c15.c1": true,
+        "c15.c2": null,
+        "c15.c3": null
+      },
+      "open_loop_keys": {
+        "c15.c2": "c15.c2#e2c0c095",
+        "c15.c3": "c15.c3#e2c0c095"
+      },
+      "open_loops_judged": {
+        "c15.c2": false,
+        "c15.c3": true
+      },
+      "open_loops_evidence": {
+        "c15.c2": "Agreed with Ойим: you will do it: Farhodni aeroportdan olib kelish (due: 2026-10-20)",
+        "c15.c3": "- Reys raqamini Farhodning o‘zi yozadi."
+      },
+      "open_loops_unquoted": [],
+      "open_loops_near_quotes": [],
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Oyim yakshanba kuni oilaviy yig‘in va osh bo‘lishini, Farhodning Moskvadan kelishini hamda 1-noyabrdagi to‘yga borishni aytdi. Siz un va guruch olib borishga va Farhodni aeroportdan olib kelishga rozi bo‘ldingiz; sovg‘a turi va unga ajratiladigan mablag‘ bo‘yicha masalalar ochiq.\nUyg‘ondingizmi?\nNonushtani unutmaslik\nYakshanba kungi osh uchun ikki qop un va o‘n kilogramm guruch olib borish yakshanba\nFarhodni aeroportdan olib kelish 2026-10-20\nSovg‘a uchun 500 ming ajratib qo‘yish\nSovg‘a pul bo‘ladimi yoki biror buyum bo‘ladimi?\nYakshanba kuni hamma Oyimnikiga yig‘ilib, osh qiladi.\nUn va guruch shanba kechqurun Chorsudan olinadi.\nFarhod seshanba kuni Moskvadan keladi; samolyot 23:40 da qo‘nadi.\nReys raqamini Farhodning o‘zi yozadi.\nQo‘shni Zuhra opaning qizining to‘yi 1-noyabrda.\nOyim sovg‘a pul bo‘lishi yoki buyum bo‘lishi haqida sizning tanlovingizni kutyapti.",
+      "summary_labelled": "Overview: Oyim yakshanba kuni oilaviy yig‘in va osh bo‘lishini, Farhodning Moskvadan kelishini hamda 1-noyabrdagi to‘yga borishni aytdi. Siz un va guruch olib borishga va Farhodni aeroportdan olib kelishga rozi bo‘ldingiz; sovg‘a turi va unga ajratiladigan mablag‘ bo‘yicha masalalar ochiq.\nOpen questions to the owner:\n- Ойим asks you: Uyg‘ondingizmi?\nCommitments not yet done:\n- Ойим asks you to (not agreed yet): Nonushtani unutmaslik\n- Agreed with Ойим: you will do it: Yakshanba kungi osh uchun ikki qop un va o‘n kilogramm guruch olib borish (due: yakshanba)\n- Agreed with Ойим: you will do it: Farhodni aeroportdan olib kelish (due: 2026-10-20)\n- Ойим asks you to (not agreed yet): Sovg‘a uchun 500 ming ajratib qo‘yish\nDecisions requested from the owner:\n- Ойим is waiting for your decision: Sovg‘a pul bo‘ladimi yoki biror buyum bo‘ladimi?\nKey facts:\n- Yakshanba kuni hamma Oyimnikiga yig‘ilib, osh qiladi.\n- Un va guruch shanba kechqurun Chorsudan olinadi.\n- Farhod seshanba kuni Moskvadan keladi; samolyot 23:40 da qo‘nadi.\n- Reys raqamini Farhodning o‘zi yozadi.\n- Qo‘shni Zuhra opaning qizining to‘yi 1-noyabrda.\nNeeds a reply from the owner: yes - Oyim sovg‘a pul bo‘lishi yoki buyum bo‘lishi haqida sizning tanlovingizni kutyapti."
+    },
+    {
+      "id": "c28",
+      "variant": "en",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 3,
+        "decisions_requested": 0,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c28.q2": null,
+        "c28.c1": null,
+        "c28.c2": null
+      },
+      "open_loop_keys": {
+        "c28.q2": "c28.q2#97ddf868",
+        "c28.c1": "c28.c1#97ddf868",
+        "c28.c2": "c28.c2#97ddf868"
+      },
+      "open_loops_judged": {
+        "c28.q2": true,
+        "c28.c1": true,
+        "c28.c2": false
+      },
+      "open_loops_evidence": {
+        "c28.q2": "- Laylo asks you to (not agreed yet): O‘quv xonasini band qilish (due: yakshanba 17:00)",
+        "c28.c1": "- Agreed with Laylo: Laylo will do it: 1–4-slaydlardagi kirish qismi va so‘rovnoma ma’lumotlarini tayyorlash",
+        "c28.c2": "- You promised Laylo: 5–9-slaydlardagi tahlil va tavsiyalarni tayyorlash (due: shanba kechqurun)"
+      },
+      "open_loops_unquoted": [],
+      "open_loops_near_quotes": [],
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Laylo taqdimot 26-oktabr, dushanba kuni 09:00 ga ko‘chirilganini aytdi. Slaydlar bo‘yicha ish taqsimoti kelishildi; yakuniy taqdimot yakshanba 21:00 gacha tayyor bo‘lishi kerak.\nKutubxonaga kirish huquqi hali ham bormi?\n5–9-slaydlardagi tahlil va tavsiyalarni tayyorlash shanba kechqurun\n1–4-slaydlardagi kirish qismi va so‘rovnoma ma’lumotlarini tayyorlash\nO‘quv xonasini band qilish yakshanba 17:00\nTaqdimot 26-oktabr, dushanba kuni 09:00 ga ko‘chirilgan.\nYakuniy taqdimot yakshanba 21:00 gacha tayyor bo‘lishi kerak.\nSo‘rovnomada 126 ta javob olingan; diagrammalar umumiy papkaga yuklangan.\nTaqdimot uchun maksimal vaqt 12 daqiqa; undan keyin professor taqdimotni to‘xtatadi.\nLaylo o‘quv xonasini band qilishni so‘radi va kutubxonaga kirish huquqi haqida so‘radi.",
+      "summary_labelled": "Overview: Laylo taqdimot 26-oktabr, dushanba kuni 09:00 ga ko‘chirilganini aytdi. Slaydlar bo‘yicha ish taqsimoti kelishildi; yakuniy taqdimot yakshanba 21:00 gacha tayyor bo‘lishi kerak.\nOpen questions to the owner:\n- Laylo asks you: Kutubxonaga kirish huquqi hali ham bormi?\nCommitments not yet done:\n- You promised Laylo: 5–9-slaydlardagi tahlil va tavsiyalarni tayyorlash (due: shanba kechqurun)\n- Agreed with Laylo: Laylo will do it: 1–4-slaydlardagi kirish qismi va so‘rovnoma ma’lumotlarini tayyorlash\n- Laylo asks you to (not agreed yet): O‘quv xonasini band qilish (due: yakshanba 17:00)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Taqdimot 26-oktabr, dushanba kuni 09:00 ga ko‘chirilgan.\n- Yakuniy taqdimot yakshanba 21:00 gacha tayyor bo‘lishi kerak.\n- So‘rovnomada 126 ta javob olingan; diagrammalar umumiy papkaga yuklangan.\n- Taqdimot uchun maksimal vaqt 12 daqiqa; undan keyin professor taqdimotni to‘xtatadi.\nNeeds a reply from the owner: yes - Laylo o‘quv xonasini band qilishni so‘radi va kutubxonaga kirish huquqi haqida so‘radi."
+    },
+    {
+      "id": "c36",
+      "variant": "uz-ru-mix",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 2,
+        "decisions_requested": 0,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c36.q2": true,
+        "c36.c1": true
+      },
+      "open_loop_keys": {},
+      "open_loops_judged": {},
+      "open_loops_evidence": {},
+      "open_loops_unquoted": [],
+      "open_loops_near_quotes": [],
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c36#6ef2cf37",
+          "reason": "contradicts_source",
+          "evidence": [
+            "c36.m06"
+          ],
+          "statement": "“Nigora promised you: Tort buyurtma qilish”",
+          "status": "pending_owner"
+        },
+        {
+          "id": "c36#489197e8",
+          "reason": "superseded_value",
+          "evidence": [
+            "c36.m02",
+            "c36.m03"
+          ],
+          "statement": "“Yig‘ilish soat 18:00 da”",
+          "status": "pending_owner"
+        },
+        {
+          "id": "c36#9466f11e",
+          "reason": "contradicts_source",
+          "evidence": [
+            "c36.m02",
+            "c36.m03"
+          ],
+          "statement": "“Dildora opa ishdan 18:30 da keladi”",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Dildora opaning 11-oktabr, yakshanba kuni bo‘ladigan tug‘ilgan kuniga syurpriz rejalashtirildi. Yig‘ilish vaqti yangilandi; sharlar va tort bo‘yicha ishlar taqsimlandi.\nTort uchun har kimdan 100 mingdan yig‘ishga rozilik kerak.\n20 ta oq va tilla rang shar sotib olish\nTort buyurtma qilish\nDildora opaning tug‘ilgan kuni 11-oktabr, yakshanba kuni; uyida syurpriz qilinadi.\nYig‘ilish soat 18:00 da; Dildora opa ishdan 18:30 da keladi.\nTort narxi 350 ming.\nSyurprizni Dildora opaga bildirmaslik kerak.\nNigora tort uchun har kimdan 100 mingdan yig‘ishga roziligingizni so‘radi.",
+      "summary_labelled": "Overview: Dildora opaning 11-oktabr, yakshanba kuni bo‘ladigan tug‘ilgan kuniga syurpriz rejalashtirildi. Yig‘ilish vaqti yangilandi; sharlar va tort bo‘yicha ishlar taqsimlandi.\nOpen questions to the owner:\n- Nigora asks you: Tort uchun har kimdan 100 mingdan yig‘ishga rozilik kerak.\nCommitments not yet done:\n- You promised Nigora: 20 ta oq va tilla rang shar sotib olish\n- Nigora promised you: Tort buyurtma qilish\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Dildora opaning tug‘ilgan kuni 11-oktabr, yakshanba kuni; uyida syurpriz qilinadi.\n- Yig‘ilish soat 18:00 da; Dildora opa ishdan 18:30 da keladi.\n- Tort narxi 350 ming.\n- Syurprizni Dildora opaga bildirmaslik kerak.\nNeeds a reply from the owner: yes - Nigora tort uchun har kimdan 100 mingdan yig‘ishga roziligingizni so‘radi."
+    }
+  ]
+}

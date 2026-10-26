@@ -1,0 +1,146 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-26",
+  "set": "retrieval-agent",
+  "target": "retrieval",
+  "dataset": "retrieval",
+  "mode": "agent",
+  "model": "gpt-6-luna",
+  "live": true,
+  "effort": "low",
+  "complete": false,
+  "trial": true,
+  "stopped": false,
+  "items": 1,
+  "items_planned": 1,
+  "items_total": 38,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "owner_request.v6"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "top5_hit",
+      "label": "Target message in the top 5 of any search in the agent run",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.85,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 38,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "answer_correct",
+      "label": "Correct reply with a verified citation of a target",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.8,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 38,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    }
+  ],
+  "breakdowns": {
+    "top-5 hit by intent": {
+      "exact": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.0010616",
+    "calls": 2,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 2,
+        "input_tokens": 9751,
+        "output_tokens": 173,
+        "cost_usd": "0.0010616",
+        "cost_per_100_items_usd": "0.1061600"
+      }
+    }
+  },
+  "notes": [
+    "Agent mode: the real owner_request runtime with the shipped prompt, the production release flags and the product's citation step (E-aa)."
+  ],
+  "details": [
+    {
+      "id": "r01",
+      "intents": [
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "miss": null,
+      "searches": [
+        {
+          "queries": [
+            "Qorasuv-3 17-uy",
+            "Қорасув-3 17-уй",
+            "Корасув-3 дом 17",
+            "Qorasuv 3 house 17"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c09.m05",
+            "c16.m02",
+            "c17.m03",
+            "c35.m02",
+            "c08.m05"
+          ]
+        }
+      ],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c09.m05"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "reply": "Kamola yuborgan manzil: Mirzo Ulug‘bek tumani, Qorasuv-3 mavzesi, 17-uy, 45-xonadon. Mo‘ljal: 64-maktab yonida. (Kamola, 2026-10-20 10:22)"
+    }
+  ]
+}
