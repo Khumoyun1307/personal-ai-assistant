@@ -7,10 +7,12 @@ confirmation, and the gate counts only flags the owner confirmed
 
 from __future__ import annotations
 
+from evals import corpus, render
 from evals.judge import (
     FabricationFinding,
     LLMFabricationJudge,
     LLMOpenLoopJudge,
+    LoopVerdict,
     ScreenResult,
     fabrication_metric,
 )
@@ -53,6 +55,17 @@ def test_the_rendering_shows_current_text_markers_and_coverage_facts() -> None:
     assert "Coverage gap c90.g1 (possible, outage)" in rendered
     assert "Coverage gap c90.g2 (delayed, outage)" in rendered
     assert "c90.q1" not in rendered  # label ids are not shown
+
+
+def test_the_rendering_shows_times_in_the_owners_timezone() -> None:
+    """E-w, the defect: judges read UTC while the summary is written from local
+    times, so a correct "15:01" (10:01 UTC in Tashkent) read as a contradiction."""
+    rendered = render_conversation(conversation())
+    assert "[c90.m01] 2026-10-20 15:01 Dilnoza (contact)" in rendered
+    assert "UTC" not in rendered
+    assert "Asia/Tashkent" in rendered
+    assert render.OWNER_TIMEZONE == corpus.OWNER_TIMEZONE
+    assert render.RENDER_VERSION == "render.v2"  # v1 showed UTC
 
 
 # -------------------------------------------------------- fabrication judge
@@ -206,7 +219,12 @@ def test_an_unscreened_conversation_leaves_the_gate_open() -> None:
 async def test_the_loop_judge_asks_only_about_loops_without_values() -> None:
     llm = FakeLLM()
     llm.parsed = [
-        {"items": [{"id": "c90.c2", "surfaced": True}, {"id": "c90.q1", "surfaced": True}]}
+        {
+            "items": [
+                {"id": "c90.c2", "evidence": "Dilnoza manzilni aytadi.", "surfaced": True},
+                {"id": "c90.q1", "evidence": "", "surfaced": True},
+            ]
+        }
     ]
     verdicts = await LLMOpenLoopJudge(llm, model="gpt-6-luna").judge(conversation(), OUTPUT)
 
@@ -215,7 +233,46 @@ async def test_the_loop_judge_asks_only_about_loops_without_values() -> None:
     text = request.items[0].text  # type: ignore[union-attr]
     assert "c90.c2" in text
     assert "c90.q1" not in text  # checkable by values: not sent
-    assert "Dilnoza" in text  # the commitment's description, not the conversation
+    assert "Dilnoza" in text  # the commitment's description
+    # v3: the message the loop cites, and no other message of the chat.
+    assert "[contact] Manzil: Qorasuv-3, 17-uy" in text
+    assert "Rahmat" not in text
+
+
+async def test_the_loop_judge_is_asked_about_values_the_string_match_did_not_find() -> None:
+    """E-s: a loop whose values were not found literally goes to the judge, with its
+    values, which it must find in the summary in any language or format."""
+    llm = FakeLLM()
+    llm.parsed = [
+        {
+            "items": [
+                {"id": "c90.q2", "evidence": "250 ming so'm?", "surfaced": True},
+                {"id": "c90.c2", "evidence": "", "surfaced": False},
+            ]
+        }
+    ]
+    verdicts = await LLMOpenLoopJudge(llm, model="gpt-6-luna").judge(
+        conversation(), OUTPUT, ["c90.q2", "c90.c2"]
+    )
+
+    assert verdicts == {"c90.q2": True, "c90.c2": False}
+    (request,) = llm.requests
+    text = request.items[0].text  # type: ignore[union-attr]
+    assert "c90.q2" in text
+    assert "[key values: 250 ming]" in text
+    assert "c90.q1" not in text
+    assert "c90.c1" not in text
+    assert "same meaning, in any language, script or format" in request.instructions
+
+
+async def test_the_loop_judge_quotes_its_evidence_before_the_verdict() -> None:
+    """v3: the judge copies the summary line that surfaces a loop (kept in the
+    report for the owner's review); its schema puts the evidence first."""
+    llm = FakeLLM()
+    llm.parsed = [{"items": [{"id": "c90.c2", "evidence": "Manzilni aytadi.", "surfaced": True}]}]
+    verdicts = await LLMOpenLoopJudge(llm, model="gpt-6-luna").verdicts(conversation(), OUTPUT)
+    assert verdicts["c90.c2"].evidence == "Manzilni aytadi."
+    assert list(LoopVerdict.model_json_schema()["properties"]) == ["id", "evidence", "surfaced"]
 
 
 async def test_the_loop_judge_makes_no_call_when_every_loop_is_checkable() -> None:

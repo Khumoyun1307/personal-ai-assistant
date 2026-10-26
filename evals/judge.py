@@ -18,7 +18,7 @@ budget guard meters it. Tests use `FakeLLM`; nothing here talks to a provider.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -34,13 +34,17 @@ from assistant.llm.port import (
 )
 from evals.assets import load_asset
 from evals.metrics import SummaryOutput, open_loops
-from evals.render import render_conversation
+from evals.render import RENDER_VERSION, render_conversation
 from evals.review import FindingStatus, ReviewLedger, finding_id
 from evals.schema import Commitment, Conversation, QuestionToOwner
 from evals.targets import Measure, MetricResult
 
 RUBRIC_ID = "fabrication.v1"
-LOOPS_RUBRIC_ID = "open_loops.v1"
+#: The fabrication judge as a report names it: the rubric plus the version of the
+#: conversation rendering it reads (`evals.render.RENDER_VERSION`), so runs whose
+#: judge read UTC times are told apart from runs whose judge read local ones.
+FABRICATION_LABEL = f"{RUBRIC_ID}+{RENDER_VERSION}"
+LOOPS_RUBRIC_ID = "open_loops.v3"
 MAX_OUTPUT_TOKENS = 3000
 TIMEOUT_SECONDS = 120.0
 #: Fabrication threshold (S03.4): none.
@@ -168,6 +172,9 @@ class LoopVerdict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    #: The summary line(s) that tell the owner about the item, copied, or "" (v3):
+    #: written before the verdict, and kept in the report for the owner's review.
+    evidence: str
     surfaced: bool
 
 
@@ -178,13 +185,17 @@ class LoopVerdicts(BaseModel):
 
 
 class LLMOpenLoopJudge:
-    """Pre-screens open loops that have no `values` to match by string.
+    """Pre-screens the open loops string matching could not decide: those with no
+    `values`, and (E-s) those whose `values` were not found literally, e.g.
+    because the summary translated them.
 
-    It sees only the summary and a one-line description of each loop (never the
-    conversation), and answers whether the summary tells the owner about it.
-    Its verdicts feed `recall_metric(..., judged=...)`, which counts them in the
-    pre-screen only: the gate needs the owner's verdict (`ReviewLedger.coverage`).
-    A judge failure returns no verdicts, so those loops stay *missed*.
+    It sees the summary and, for each loop, a one-line description with the
+    loop's key values and the chat messages the loop cites (never the rest of the
+    conversation); it quotes the summary line that surfaces the loop (or nothing)
+    before it answers (v3). Its verdicts feed `recall_metric(..., judged=...)`,
+    which counts them in the pre-screen only: the gate needs the owner's verdict
+    (`ReviewLedger.coverage`). A judge failure returns no verdicts, so those loops
+    stay *missed*.
     """
 
     def __init__(
@@ -196,11 +207,32 @@ class LLMOpenLoopJudge:
         self._account_id = account_id
         self._rubric = load_asset("rubrics", LOOPS_RUBRIC_ID)
 
-    async def judge(self, conversation: Conversation, output: SummaryOutput) -> dict[str, bool]:
-        pending = [loop for loop in open_loops(conversation) if not loop.values]
+    async def judge(
+        self,
+        conversation: Conversation,
+        output: SummaryOutput,
+        loop_ids: Collection[str] | None = None,
+    ) -> dict[str, bool]:
+        """Verdicts on the open loops named by `loop_ids` (default: the loops with
+        no `values`); no call when there are none."""
+        verdicts = await self.verdicts(conversation, output, loop_ids)
+        return {loop: verdict.surfaced for loop, verdict in verdicts.items()}
+
+    async def verdicts(
+        self,
+        conversation: Conversation,
+        output: SummaryOutput,
+        loop_ids: Collection[str] | None = None,
+    ) -> dict[str, LoopVerdict]:
+        """`judge` with the evidence the judge quoted."""
+        pending = [
+            loop
+            for loop in open_loops(conversation)
+            if (loop.id in loop_ids if loop_ids is not None else not loop.values)
+        ]
         if not pending:
             return {}
-        lines = [f"- {loop.id}: {_describe(loop)}" for loop in pending]
+        lines = [_item_block(conversation, loop) for loop in pending]
         request = LLMRequest(
             account_id=self._account_id,
             purpose="eval_open_loop_screen",
@@ -224,14 +256,25 @@ class LLMOpenLoopJudge:
         if response.stop_reason is not StopReason.COMPLETED or response.parsed is None:
             return {}
         asked = {loop.id for loop in pending}
-        return {v.id: v.surfaced for v in response.parsed.items if v.id in asked}
+        return {v.id: v for v in response.parsed.items if v.id in asked}
+
+
+def _item_block(conversation: Conversation, loop: QuestionToOwner | Commitment) -> str:
+    """One open item for the loop judge: its description and key values, then the
+    chat messages the item cites (v3: the judge can recognise a translation of
+    them in the summary). Only those messages, never the rest of the chat."""
+    by_id = {message.id: message for message in conversation.messages}
+    cited = [by_id[i] for i in loop.source_message_ids if i in by_id]
+    quoted = [f"    [{m.direction}] {m.text}" for m in cited if m.text and not m.deleted]
+    return "\n".join([f"- {loop.id}: {_describe(loop)}", *quoted])
 
 
 def _describe(loop: QuestionToOwner | Commitment) -> str:
+    values = f" [key values: {'; '.join(loop.values)}]" if loop.values else ""
     if isinstance(loop, QuestionToOwner):
-        return f"the contact asked the owner: {loop.summary}"
+        return f"the contact asked the owner: {loop.summary}{values}"
     due = f" (due {loop.when})" if loop.when else ""
-    return f"commitment by {loop.who_name} ({loop.who}): {loop.what}{due}"
+    return f"commitment by {loop.who_name} ({loop.who}): {loop.what}{due}{values}"
 
 
 def _judge_input(conversation: Conversation, output: SummaryOutput) -> str:
@@ -257,12 +300,13 @@ def screen_input_chars(conversation: Conversation, summary_chars: int) -> int:
 
 
 def loops_input_chars(conversation: Conversation, summary_chars: int) -> int | None:
-    """The same for the open-loop judge; None when the conversation has no
-    open loop without `values`, so the judge is never called for it."""
-    pending = [loop for loop in open_loops(conversation) if not loop.values]
+    """The same for the open-loop judge, at its worst: every open loop asked about
+    (any loop whose `values` are not found literally goes to the judge, E-s);
+    None when the conversation has no open loop, so the judge is never called."""
+    pending = open_loops(conversation)
     if not pending:
         return None
-    lines = "\n".join(f"- {loop.id}: {_describe(loop)}" for loop in pending)
+    lines = "\n".join(_item_block(conversation, loop) for loop in pending)
     return (
         len(load_asset("rubrics", LOOPS_RUBRIC_ID).text)
         + len("Open items:\n" + lines + "\n\nSummary:\n")

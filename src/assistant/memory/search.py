@@ -173,10 +173,37 @@ def normalize(text: str) -> str:
 
 
 # ------------------------------------------------------------------- queries
-#: Short Uzbek suffixes stripped for a stem variant, longest first. A stem
-#: must keep at least `_MIN_STEM` letters, so short words are left alone.
-_SUFFIXES = ("larni", "imiz", "ning", "lar", "dan", "ing", "ni", "ga", "da", "im")
-_MIN_STEM = 3
+#: Short suffixes stripped for a stem variant, longest first (one per term),
+#: each with the shortest stem it may leave. Uzbek case, possessive and plural
+#: endings keep a 3-letter stem (pulni → pul); the common verb endings need 4
+#: (S03.6: kelishgan and kelishdik share `kelish`, but keldi never becomes
+#: `kel`, which would match kelin and kelajak); a final -i (Uzbek possessive,
+#: Russian plural: narxi → narx) needs 4.
+_SUFFIXES: tuple[tuple[str, int], ...] = (
+    ("larni", 3),
+    ("moqda", 4),
+    ("yapti", 4),
+    ("imiz", 3),
+    ("ning", 3),
+    ("lar", 3),
+    ("dan", 3),
+    ("ing", 3),
+    ("gan", 4),
+    ("dik", 4),
+    ("ni", 3),
+    ("ga", 3),
+    ("da", 3),
+    ("di", 4),
+    ("im", 3),
+    ("i", 4),
+)
+#: A final -a/-o/-u/-e/-y (Russian case endings: kolodka and kolodki share
+#: `kolodk`) is stripped only after two consonants: Uzbek women's names are
+#: men's names plus -a (Aziza/Aziz, Nodira/Nodir, Kamola/Kamol), so `aziza`
+#: must not become the prefix `aziz` (S03.6 review).
+_FINAL_VOWELS = "aouey"
+_MIN_STEM_FINAL_VOWEL = 4
+_VOWELS = "aeiouy"
 #: Voicing alternations (yurak → yuragim, qishloq → qishlogʻi) only for words
 #: long enough that the variant is not a different common word.
 _MIN_VOICING = 4
@@ -197,16 +224,101 @@ def query_terms(query: str) -> list[str]:
     return list(seen)
 
 
+#: Function and question words of owner questions, by language (normalized
+#: ASCII forms; Russian both in Cyrillic and typed in Latin). As prefixes they
+#: match almost every message ("the", "na", "va"), so in an any-word search they
+#: rank chatter above the message asked about, and in an all-words search they
+#: demand words a message has no reason to contain ("where", "qachon"). Query
+#: side only (M03 S03.6).
+_FUNCTION_WORDS: dict[str, frozenset[str]] = {
+    "en": frozenset(
+        {
+            *("a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does"),
+            *("for", "from", "had", "has", "have", "he", "her", "his", "how", "i"),
+            *("in", "is", "it", "its", "me", "my", "of", "on", "or", "our", "she"),
+            *("that", "the", "their", "them", "they", "this", "to", "was", "we"),
+            *("were", "what", "when", "where", "which", "who", "whom", "why", "will"),
+            *("with", "you", "your"),
+        }
+    ),
+    "ru": frozenset(
+        {
+            *("a", "by", "i", "v", "vo", "vi", "da", "dlya", "do", "ego", "eyo", "yego"),
+            *("yeyo", "ili", "iz", "k", "kak", "kakoy", "kakaya", "kogda", "kto", "gde"),
+            *("li", "mi", "mne", "na", "ne", "no", "o", "ob", "ot", "po", "pro", "s"),
+            *("so", "u", "uje", "chto", "eto", "ya", "ti", "on", "ona", "oni", "vas"),
+            *("nas", "nam", "vam", "za", "skolko"),
+        }
+    ),
+    "uz": frozenset(
+        {
+            *("u", "bu", "shu", "va", "bilan", "uchun", "ham", "edi", "ekan", "emas"),
+            *("qayerda", "qachon", "nima", "nimaga", "qanday", "qaysi", "kimga"),
+            *("qancha", "necha", "mi", "mu", "esa", "yoki", "lekin", "degan"),
+        }
+    ),
+}
+#: Function words that, once folded to ASCII, are also common content words:
+#: o'n (ten), ona (mother), ot / o't (horse, a name; fire, grass), is (soot,
+#: smell), it (dog), iz (trace), nam (damp), his (feeling), or / o'r, and the
+#: English "no". Each is dropped only when the query's other function words
+#: show the language it is a function word in ("where is the…" drops "is";
+#: "Ona uchun dori" keeps "ona"); with no such evidence it is searched. "kim"
+#: (who) is not on any list: Kim is a common surname.
+_AMBIGUOUS: frozenset[str] = frozenset(
+    {"on", "ona", "ot", "is", "it", "iz", "nam", "his", "or", "no"}
+)
+#: The words that identify a query's language: on one list only, and not ambiguous.
+_LANGUAGE_EVIDENCE: dict[str, str] = {
+    word: lang
+    for lang, words in _FUNCTION_WORDS.items()
+    for word in words
+    if word not in _AMBIGUOUS and sum(word in other for other in _FUNCTION_WORDS.values()) == 1
+}
+#: Every function word that is never a content word: always dropped.
+QUERY_STOPWORDS = frozenset().union(*_FUNCTION_WORDS.values()) - _AMBIGUOUS
+
+
+def content_terms(terms: Sequence[str]) -> list[str]:
+    """`terms` without function words, unless nothing else is left (a query of
+    function words only is searched as typed).
+
+    `QUERY_STOPWORDS` always go; an `_AMBIGUOUS` word goes only when another word
+    of the query shows the language it is a function word in (S03.6 review)."""
+    languages = {_LANGUAGE_EVIDENCE[term] for term in terms if term in _LANGUAGE_EVIDENCE}
+
+    def is_function_word(term: str) -> bool:
+        if term in QUERY_STOPWORDS:
+            return True
+        return term in _AMBIGUOUS and any(term in _FUNCTION_WORDS[lang] for lang in languages)
+
+    kept = [term for term in terms if not is_function_word(term)]
+    return kept or list(terms)
+
+
+def _strip_suffix(term: str) -> str:
+    """`term` without its first listed suffix that leaves a long enough stem, or
+    `term` itself."""
+    for suffix, minimum in _SUFFIXES:
+        if term.endswith(suffix) and len(term) - len(suffix) >= minimum:
+            return term[: -len(suffix)]
+    if term[-1:] and term[-1] in _FINAL_VOWELS:
+        stem = term[:-1]
+        if (
+            len(stem) >= _MIN_STEM_FINAL_VOWEL
+            and stem[-1] not in _VOWELS
+            and stem[-2] not in _VOWELS
+        ):
+            return stem
+    return term
+
+
 def stem_variants(term: str) -> list[str]:
     """`term` plus light Uzbek variants: one stripped suffix, and k/q ↔ g
     voicing at the end of the word. All are used as prefixes."""
     variants: dict[str, None] = {term: None}
-    stem = term
-    for suffix in _SUFFIXES:
-        if term.endswith(suffix) and len(term) - len(suffix) >= _MIN_STEM:
-            stem = term[: -len(suffix)]
-            variants.setdefault(stem, None)
-            break
+    stem = _strip_suffix(term)
+    variants.setdefault(stem, None)
     for word in (term, stem):
         if len(word) >= _MIN_VOICING and word[-1] in "kq":
             variants.setdefault(word[:-1] + "g", None)

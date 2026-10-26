@@ -23,7 +23,7 @@ import evals.summary as summary_module
 import psycopg
 import pytest
 import sqlalchemy as sa
-from evals import cli, live
+from evals import cli, corpus, live
 from evals.budget import BudgetedLLMClient, CallLedger, _request_chars, estimate, worst_case
 from evals.live import LiveConfig, LiveSetupError, ModelChoice
 from evals.metrics import values_matcher
@@ -97,7 +97,7 @@ def distinctive_loop() -> tuple[Conversation, Any]:
             if not loop.values:
                 continue
             rest = UZ_FILLER + " ".join(words_of(other) for other in loops if other is not loop)
-            if values_matcher(loop, rest) is False:
+            if values_matcher(loop, rest) is not True:
                 return conversation, loop
     raise AssertionError("E1 has no distinctive open loop")
 
@@ -146,7 +146,9 @@ class SummaryOracle(FakeLLM):
         else:
             assert request.purpose == LOOPS_PURPOSE
             asked = re.findall(r"^- (c\d\d\.[qc]\d+):", request.items[0].text, re.M)  # type: ignore[union-attr]
-            value = {"items": [{"id": i, "surfaced": i not in self._omit} for i in asked]}
+            value = {
+                "items": [{"id": i, "evidence": "", "surfaced": i not in self._omit} for i in asked]
+            }
         return ParsedResponse(StopReason.COMPLETED, LUNA, self._usage, schema.model_validate(value))
 
     def _summarize[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> ParsedResponse[T]:
@@ -246,10 +248,16 @@ async def test_the_target_runs_the_real_summarize_path_and_produces_every_metric
     assert (result.items, result.items_planned, result.items_total) == (5, 5, 5)
     assert result.prompts == (
         prompt_registry.active("summarize").label,
-        "fabrication.v1",
-        "open_loops.v1",
+        # S03.6 review: the judge input changed (times in the owner's timezone,
+        # E-w), so the label names the input version; plain "fabrication.v1"
+        # was the UTC input of the earlier runs.
+        "fabrication.v1+render.v2",
+        "open_loops.v3",
     )
     assert all(d["status"] == "summarized" and d["error"] is None for d in result.details)
+    # The report keeps the structured summary too: who promised what (attribution
+    # cannot be reviewed from the plain text the checks read).
+    assert all("Commitments not yet done:" in d["summary_labelled"] for d in result.details)
     # A perfect summarizer and judge: every open loop surfaced, nothing flagged.
     assert metric(result, "open_loop_recall").all_items.ratio == 1.0
     assert metric(result, "owner_language").all_items.ratio == 1.0
@@ -386,7 +394,9 @@ async def test_a_summary_that_misses_an_open_loop_lowers_recall(
     assert recall.all_items.ratio is not None
     assert recall.all_items.ratio < 1.0
     assert recall.all_items.numerator == recall.all_items.denominator - 1
-    assert record(flawed, chat.id)["open_loops"][missed.id] is False
+    # Not found by string: undecided (E-s), and the judge rules it missed.
+    assert record(flawed, chat.id)["open_loops"][missed.id] is None
+    assert record(flawed, chat.id)["open_loops_judged"][missed.id] is False
 
 
 async def test_a_run_whose_caveat_is_dropped_fails_the_caveat_metric(
@@ -768,6 +778,35 @@ def test_cleanup_lists_and_drops_only_the_leftover_evaluation_databases(
     finally:
         drop_scratch_database(test_database_url, leftover)
         drop_scratch_database(test_database_url, lookalike)
+
+
+def test_cleanup_never_touches_a_database_a_run_is_using(
+    test_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """S03.6, the hazard: `cleanup --yes` (here, in the test above) dropped a live
+    run's throwaway database mid-run. A database with an open connection belongs to a
+    run in progress: it is neither listed nor dropped, and the drop is never forced."""
+    monkeypatch.setenv("EVAL_DATABASE_URL", test_database_url)
+    busy, leftover = "assistant_eval_0badc0de", "assistant_eval_deadbeef"
+    create_scratch_database(test_database_url, busy)
+    create_scratch_database(test_database_url, leftover)
+    run_url = sa.engine.make_url(test_database_url).set(drivername="postgresql", database=busy)
+    try:
+        with psycopg.connect(run_url.render_as_string(hide_password=False)):  # the "run"
+            assert cli.main(["cleanup", "--yes"]) == 0
+            out = capsys.readouterr().out
+            assert busy not in out
+            assert leftover in out
+            assert busy in _databases(test_database_url)
+            assert leftover not in _databases(test_database_url)
+            # Even named explicitly, a database in use is not dropped.
+            assert corpus.drop_leftover_databases(test_database_url, [busy]) == []
+            assert busy in _databases(test_database_url)
+    finally:
+        drop_scratch_database(test_database_url, busy)
+        drop_scratch_database(test_database_url, leftover)
 
 
 # ------------------------------------------------------------------ the CLI, live

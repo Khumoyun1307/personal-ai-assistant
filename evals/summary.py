@@ -75,9 +75,9 @@ from evals.corpus import (
     scratch_database,
     unload_corpus,
 )
+from evals.judge import FABRICATION_LABEL as FABRICATION_RUBRIC
 from evals.judge import LOOPS_RUBRIC_ID as LOOPS_RUBRIC
 from evals.judge import MAX_OUTPUT_TOKENS as JUDGE_MAX_OUTPUT_TOKENS
-from evals.judge import RUBRIC_ID as FABRICATION_RUBRIC
 from evals.judge import (
     LLMFabricationJudge,
     LLMOpenLoopJudge,
@@ -318,6 +318,8 @@ class _Record:
     language: LanguageVerdict
     coverage: Mapping[str, bool | None]
     judged: Mapping[str, bool]
+    #: The summary line(s) the loop judge quoted for each loop it was asked about.
+    evidence: Mapping[str, str]
     check: CaveatCheck
     caveat_lines: int
     screen: ScreenResult
@@ -354,6 +356,7 @@ class _Record:
                 if checked is None
             },
             "open_loops_judged": dict(self.judged),
+            "open_loops_evidence": dict(self.evidence),
             "caveats_expected": self.check.expected,
             "caveats_missing": list(self.check.missing),
             "caveats_spurious": list(self.check.spurious),
@@ -376,6 +379,9 @@ class _Record:
                 for finding in self.screen.findings
             ],
             "summary_text": self.plain,
+            # The same summary with its structure (who promised what, due dates) as
+            # the judges read it: attribution cannot be reviewed from the plain text.
+            "summary_labelled": self.output.text,
         }
 
 
@@ -532,9 +538,11 @@ class SummaryTarget:
         output = SummaryOutput(
             conversation.id, text, self.owner_language, facts.gap_ids, facts.pre_connection
         )
+        loops = _loop_coverage(conversation, plain, summarized=summary is not None)
         if summary is None:
             screen = ScreenResult(conversation.id, (), screened=False, error="summary_failed")
             judged: dict[str, bool] = {}
+            evidence: dict[str, str] = {}
             language = LanguageVerdict(False, None, 0.0)
         else:
             screen = await LLMFabricationJudge(
@@ -544,12 +552,18 @@ class SummaryTarget:
                 effort=context.effort,
                 account_id=loaded.account_id,
             ).screen(conversation, output)
-            judged = await LLMOpenLoopJudge(
+            verdicts = await LLMOpenLoopJudge(
                 context.llm,
                 model=context.model,
                 effort=context.effort,
                 account_id=loaded.account_id,
-            ).judge(conversation, output)
+            ).verdicts(
+                conversation,
+                output,
+                [loop for loop, checked in loops.items() if checked is None],
+            )
+            judged = {loop: verdict.surfaced for loop, verdict in verdicts.items()}
+            evidence = {loop: verdict.evidence for loop, verdict in verdicts.items()}
             language = check_language(plain, self.owner_language)
         return _Record(
             conversation=conversation,
@@ -560,8 +574,9 @@ class SummaryTarget:
             plain=plain,
             counts=counts,
             language=language,
-            coverage=_loop_coverage(conversation, plain, summarized=summary is not None),
+            coverage=loops,
             judged=judged,
+            evidence=evidence,
             check=check_caveats(conversation, output),
             caveat_lines=facts.lines,
             screen=screen,

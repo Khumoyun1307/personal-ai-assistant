@@ -1,0 +1,135 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-26",
+  "set": "retrieval",
+  "target": "retrieval",
+  "dataset": "retrieval",
+  "mode": "variants",
+  "model": "gpt-6-luna",
+  "live": true,
+  "effort": "low",
+  "complete": false,
+  "trial": true,
+  "stopped": false,
+  "items": 1,
+  "items_planned": 1,
+  "items_total": 38,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "retrieval_variants.v2",
+    "retrieval_answer.v1"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "top5_hit",
+      "label": "Target message in the top 5 results",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.85,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 38,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "answer_correct",
+      "label": "Correct final answer with reference",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.8,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 38,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    }
+  ],
+  "breakdowns": {
+    "top-5 hit by intent": {
+      "exact": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.0003300",
+    "calls": 2,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 2,
+        "input_tokens": 1315,
+        "output_tokens": 397,
+        "cost_usd": "0.0003300",
+        "cost_per_100_items_usd": "0.0330000"
+      }
+    }
+  },
+  "notes": [],
+  "details": [
+    {
+      "id": "r01",
+      "intents": [
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c09.m05",
+        "c16.m02",
+        "c17.m03",
+        "c35.m02",
+        "c08.m05"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "Qorasuv-3 17-uy",
+        "Қорасув-3 17-уй",
+        "Корасув-3 дом 17",
+        "Qorasuv-3 house 17"
+      ],
+      "contact": null,
+      "contact_filter": null
+    }
+  ]
+}

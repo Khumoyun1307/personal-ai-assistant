@@ -2,6 +2,7 @@
 
     python -m evals verify
     python -m evals run retrieval [--mode deterministic|variants|both] [--live] ...
+    python -m evals run retrieval --mode replay --replay-from docs/evals/<variants run>.json
     python -m evals run summary [--owner-language uz-Latn|uz-Cyrl|ru|en] [--live] ...
     python -m evals compare docs/evals/<run>.json [...]
     python -m evals cleanup [--yes]        # list (or drop) throwaway databases a killed run left
@@ -44,7 +45,7 @@ from evals.errors import EvalsError
 from evals.live import ModelChoice, build_client, load_live_config, resolve_model
 from evals.metrics import OwnerLanguage
 from evals.report import RunMeta, fmt_measure, render_comparison
-from evals.retrieval import RetrievalMode, RetrievalTarget
+from evals.retrieval import QueryVariants, RetrievalMode, RetrievalTarget, load_recorded
 from evals.review import ReviewLedger
 from evals.runner import (
     RefusedError,
@@ -93,7 +94,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=[m.value for m in RetrievalMode] + ["both"],
         default=RetrievalMode.DETERMINISTIC.value,
-        help="retrieval only: deterministic (no model, default), variants (a model), both",
+        help=(
+            "retrieval only: deterministic (no model, default), variants (a model), both, "
+            "replay (no model: a recorded variants run searched again, see --replay-from)"
+        ),
+    )
+    run.add_argument(
+        "--replay-from",
+        type=Path,
+        metavar="REPORT.json",
+        help="retrieval --mode replay: the JSON report of the variants run to replay",
     )
     run.add_argument(
         "--owner-language",
@@ -203,7 +213,8 @@ def _cleanup(*, drop: bool) -> int:
     """A run drops its throwaway database when it ends, fails or is interrupted; a
     process that is killed cannot. This lists such leftovers on the evaluation
     server (`assistant_eval_` and 8 hex digits, nothing else) and drops them with
-    `--yes`. Do not run it while another evaluation is running."""
+    `--yes`. A database a run is using (an open connection) is never listed or
+    dropped."""
     base = eval_database_url()
     names = leftover_databases(base)
     if not names:
@@ -307,7 +318,16 @@ async def _retrieval(args: argparse.Namespace) -> int:
         else [RetrievalMode(args.mode)]
     )
     queries = load_queries()
-    targets = [RetrievalTarget(queries, mode=mode) for mode in modes]
+    recorded = _recorded(args)
+    targets = [
+        RetrievalTarget(
+            queries,
+            mode=mode,
+            recorded=recorded if mode is RetrievalMode.REPLAY else None,
+            replayed_from=args.replay_from.name if args.replay_from is not None else None,
+        )
+        for mode in modes
+    ]
     choices = _guard(targets, [t.mode.value for t in targets], args, cap, prices, reviews)
     if args.estimate_only:
         return 0
@@ -333,7 +353,7 @@ async def _retrieval(args: argparse.Namespace) -> int:
                 context = RunContext(reviews=reviews, limit=args.limit)
             meta = RunMeta(
                 run_date=run_date,
-                set_name=target.name,
+                set_name=_set_name(target),
                 mode=target.mode.value,
                 model=None if choice is None else choice.model,
                 live=choice is not None,
@@ -359,6 +379,22 @@ async def _retrieval(args: argparse.Namespace) -> int:
             )
             code = max(code, exit_code(outcome.result))
     return code
+
+
+def _recorded(args: argparse.Namespace) -> dict[str, QueryVariants | None] | None:
+    """The recorded variants run a replay searches again; refused before any database."""
+    if args.mode != RetrievalMode.REPLAY.value:
+        if args.replay_from is not None:
+            raise RefusedError("--replay-from is only for --mode replay")
+        return None
+    if args.replay_from is None:
+        raise RefusedError("--mode replay needs --replay-from <the variants run's JSON report>")
+    return load_recorded(args.replay_from)
+
+
+def _set_name(target: RetrievalTarget) -> str:
+    """A replay's report must not take the name of the deterministic baseline's."""
+    return f"{target.name}-replay" if target.mode is RetrievalMode.REPLAY else target.name
 
 
 def _guard(

@@ -33,6 +33,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select, text
 
+from assistant.agent import prompt_registry
 from assistant.agent.models import AgentRun
 from assistant.agent.summarize import SummaryStatus
 from assistant.agent.tools.conversations import GetConversationArgs, get_conversation_tool
@@ -452,7 +453,7 @@ async def test_refresh_is_incremental_and_records_what_it_covers(senv: Env) -> N
     assert second is not None
     assert second.covers_through_message_id == max(await message_ids(senv, a))
     assert second.message_count == 3
-    assert second.prompt_version == "summarize.v2"
+    assert second.prompt_version == prompt_registry.active("summarize").label
     # Nothing new: no call, and the flag stays clear.
     assert (await summaries.refresh(a)).status is SummaryStatus.UP_TO_DATE
     assert len(summary_requests(fake)) == 2
@@ -474,7 +475,7 @@ async def test_rg17_summarize_runs_are_given_no_tools(senv: Env) -> None:
     assert all(request.tools == () for request in requests)
     runs = await summarize_runs(senv)
     assert {(run.run_type, run.prompt_version, run.status) for run in runs} == {
-        ("summarize", "summarize.v2", "succeeded")
+        ("summarize", prompt_registry.active("summarize").label, "succeeded")
     }
     registry = default_registry()
     every_flag = frozenset(tool.release_flag for tool in registry.all())
