@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import Boolean, delete, func, literal_column, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,6 +69,21 @@ class MemoryView:
     #: May hold content from the managed chats: needs `ai_managed` to reach
     #: a model, and goes with managed-data deletion (invariant 9).
     managed: bool = False
+    #: The chats and contacts its run drew on (`provenance.refs`).
+    ref_conversation_ids: tuple[int, ...] = ()
+    ref_contact_ids: tuple[int, ...] = ()
+
+    @property
+    def conversation_refs(self) -> frozenset[int]:
+        """Every chat this item is about or was drawn from (for `refs` of a
+        result that shows it, and for deletion; verification item 1)."""
+        own = {self.conversation_id} if self.conversation_id is not None else set()
+        return frozenset(own | set(self.ref_conversation_ids))
+
+    @property
+    def contact_refs(self) -> frozenset[int]:
+        own = {self.contact_id} if self.contact_id is not None else set()
+        return frozenset(own | set(self.ref_contact_ids))
 
 
 def provenance(
@@ -85,15 +100,27 @@ def provenance(
     return value
 
 
-#: SQL conditions on the provenance flags.
+#: SQL conditions on the provenance flags. A tainted item counts as managed
+#: even without the key: rows saved before `managed` existed carried only
+#: `{"tainted": true}` (verification item 4).
 IS_TAINTED = MemoryItem.provenance.contains({"tainted": True})
-IS_MANAGED = MemoryItem.provenance.contains({"managed": True})
+IS_MANAGED = MemoryItem.provenance.contains({"managed": True}) | IS_TAINTED
+
+
+def _ids(value: object) -> tuple[int, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(i for i in value if isinstance(i, int) and not isinstance(i, bool))
 
 
 def _view(row: MemoryItem) -> MemoryView:
     flags = row.provenance or {}
+    raw_refs = flags.get("refs")
+    refs: dict[str, Any] = raw_refs if isinstance(raw_refs, dict) else {}
     return MemoryView(
-        managed=bool(flags.get("managed")),
+        managed=bool(flags.get("managed")) or bool(flags.get("tainted")),
+        ref_conversation_ids=_ids(refs.get("conversation_ids")),
+        ref_contact_ids=_ids(refs.get("contact_ids")),
         memory_id=row.id,
         scope=row.scope,
         kind=row.kind,
@@ -235,6 +262,19 @@ async def save(
         ).scalar_one_or_none()
         if replaced is None:
             raise LookupError("memory item not found in this account")
+        old = _view(replaced)
+        if old.tainted or old.managed:
+            # A correction of a note from other people's text is one too: it
+            # keeps the flags and the chats/contacts it came from, so the
+            # per-chat deletion still finds it (verification item 1).
+            tainted = True
+            managed = True
+            refs = {
+                "conversation_ids": sorted(
+                    set((refs or {}).get("conversation_ids", [])) | old.conversation_refs
+                ),
+                "contact_ids": sorted(set((refs or {}).get("contact_ids", [])) | old.contact_refs),
+            }
     values: dict[str, Any] = {
         "account_id": account_id,
         "scope": scope,
@@ -435,9 +475,30 @@ async def contact_facing(
     ).scalar_one_or_none()
     if contact_id is None:
         return []
+    # A note saved from another chat's text may carry that chat's content:
+    # it never reaches this chat's run, even about this contact (invariant
+    # 4; verification item 2). Only items from other people's text carry refs.
+    drawn_elsewhere = or_(
+        func.jsonb_path_exists(
+            MemoryItem.provenance,
+            literal_column("'$.refs.conversation_ids[*] ? (@ != $c)'::jsonpath"),
+            func.jsonb_build_object("c", conversation_id),
+            type_=Boolean,
+        ),
+        func.jsonb_path_exists(
+            MemoryItem.provenance,
+            literal_column("'$.refs.contact_ids[*] ? (@ != $k)'::jsonpath"),
+            func.jsonb_build_object("k", int(contact_id)),
+            type_=Boolean,
+        ),
+    )
     allowed = [
-        (MemoryItem.scope == SCOPE_CONTACT) & (MemoryItem.contact_id == contact_id),
-        (MemoryItem.scope == SCOPE_CONVERSATION) & (MemoryItem.conversation_id == conversation_id),
+        (MemoryItem.scope == SCOPE_CONTACT)
+        & (MemoryItem.contact_id == contact_id)
+        & ~drawn_elsewhere,
+        (MemoryItem.scope == SCOPE_CONVERSATION)
+        & (MemoryItem.conversation_id == conversation_id)
+        & ~drawn_elsewhere,
     ]
     if include_owner_preferences:
         allowed.append(

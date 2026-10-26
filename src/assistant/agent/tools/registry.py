@@ -136,6 +136,10 @@ class ToolContext:
     held: bool = False
     #: Conversations and contacts the run's results drew on so far.
     refs: ToolRefs = field(default_factory=ToolRefs)
+    #: `ai_managed` is active AND names the processor of this run's model —
+    #: the runtime's check (§14.3, M03 D48). Fail closed: False unless the
+    #: runtime established it.
+    managed_ok: bool = False
 
 
 @dataclass(frozen=True, slots=True)
