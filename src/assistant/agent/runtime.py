@@ -115,6 +115,12 @@ class RunOutcome:
 
 
 # Owner-facing texts. Each says plainly what happened (§6 invariant 11).
+#: The question's text was deleted before its run (an owner deletion that ran
+#: first, or retention): never answer a blank (S03.5 fix round 2, M03 D88).
+TEXT_TURN_DELETED = (
+    "Your message was deleted before I could read it (a deletion ran first), so I "
+    "have not answered it. Please send it again."
+)
 TEXT_NEEDS_CONSENT = (
     "I cannot answer with AI until you agree to it. Send /start to see what that means."
 )
@@ -176,6 +182,7 @@ class _Started:
     account_id: int
     chat_id: int
     no_consent: bool = False
+    turn_deleted: bool = False
     state: _RunState | None = None
     managed_consent: bool = False
     over_budget: bool = False
@@ -207,6 +214,14 @@ class OwnerRequestRuntime:
         started = await self._start(turn_id, prompt)
         if isinstance(started, RunOutcome):
             return started
+        if started.turn_deleted:
+            # No run row and no model call, as for a missing consent.
+            await self._channel.send(
+                account_id=started.account_id, chat_id=started.chat_id, text=TEXT_TURN_DELETED
+            )
+            return RunOutcome(
+                RunStatus.SKIPPED, note="turn_text_deleted", account_id=started.account_id
+            )
         if started.no_consent:
             # No run row and no model call: there is nothing to account for.
             await self._channel.send(
@@ -274,6 +289,8 @@ class OwnerRequestRuntime:
                 interrupted.status = RunStatus.FAILED.value
                 interrupted.error_class = "interrupted"
                 interrupted.finished_at = self._clock.now()
+            if turn.text is None and turn.quoted_text is None:
+                return _Started(account_id, chat_id, turn_deleted=True)
 
             control = await active_consent(session, account_id, kind=CONSENT_AI_CONTROL)
             if not control.granted:
