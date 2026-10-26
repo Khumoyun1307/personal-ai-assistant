@@ -6,6 +6,10 @@ is offered only with `ai_managed` consent (`returns_managed`), every string
 is wrapped as untrusted, and a result taints the run (invariant 3b). The
 model is asked to send the question in several spellings (Latin, Cyrillic,
 Russian, English); the service searches each and merges by best score.
+
+A search narrowed to a contact or conversation that finds nothing is run
+again over all chats and says so (`widened`, S03.7 B1): the owner may have
+named the wrong person. Every result is citable in the reply (B3).
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 from sqlalchemy import select
 
 from assistant.accounts.models import Account
+from assistant.agent.citations import CitableMessage
 from assistant.agent.tools.common import (
     DIRECTION_LABELS,
     OptionalId,
@@ -42,6 +47,17 @@ from assistant.memory.retrieval import MAX_LIMIT, MAX_QUERIES, SearchFilters, se
 
 RELEASE_FLAG = "tool.search_messages"
 SNIPPET_LIMIT = 400
+#: Fixed, for the model (S03.7 B1): a widened result must not be attributed
+#: to the contact the owner named.
+WIDENED_NOTE = (
+    "Nothing matched in the chosen chat; these results come from all chats: check each "
+    "result's contact before attributing it."
+)
+WIDENED_EMPTY_NOTE = (
+    "Nothing matched in the chosen chat, nor in any other stored chat. That does not "
+    "mean it was never said: it may predate coverage, be deleted or expired, or use "
+    "other words."
+)
 
 
 def _queries(value: list[str]) -> list[str]:
@@ -124,6 +140,7 @@ async def search_messages_tool(ctx: ToolContext, args: SearchMessagesArgs) -> To
                 until=end,
             ),
             limit=args.limit or 10,
+            widen_empty_scope=True,
         )
         contact_ids = sorted({hit.contact_id for hit in result.hits})
         names: dict[int, str | None] = {
@@ -153,10 +170,13 @@ async def search_messages_tool(ctx: ToolContext, args: SearchMessagesArgs) -> To
         "results": results,
         "result_count": len(results),
         "matched_any_word_only": result.relaxed,
+        "widened": result.widened,
         "timezone": account.timezone,
         "coverage": coverage,
     }
-    if not results:
+    if result.widened:
+        data["note"] = WIDENED_NOTE if results else WIDENED_EMPTY_NOTE
+    elif not results:
         data["note"] = (
             "Nothing found in the stored messages. That does not mean it was never "
             "said: it may predate coverage, be deleted or expired, or use other words."
@@ -169,6 +189,15 @@ async def search_messages_tool(ctx: ToolContext, args: SearchMessagesArgs) -> To
             conversation_ids=frozenset(hit.conversation_id for hit in result.hits),
             contact_ids=frozenset(contact_ids),
         ),
+        citable={
+            hit.message_id: CitableMessage(
+                conversation_id=hit.conversation_id,
+                contact_name=names.get(hit.contact_id),
+                sent_at=hit.sent_at,
+                direction=hit.direction,
+            )
+            for hit in result.hits
+        },
     )
 
 
@@ -179,7 +208,9 @@ SEARCH_MESSAGES = ToolDefinition(
         "question as several short phrases in different scripts and languages (Uzbek "
         "Latin, Uzbek Cyrillic, Russian, English). Optional filters: one contact "
         "(use resolve_contact first for a name), one conversation, a date range. "
-        "Returns the best matches with contact, time and text, plus coverage limits."
+        "Returns the best matches with message_id, contact, time and text, plus coverage "
+        "limits. If nothing matches in the chosen contact's or conversation's chat, all "
+        "chats are searched and the result says widened: true."
     ),
     args_model=SearchMessagesArgs,
     capability=CapabilityClass.READ,

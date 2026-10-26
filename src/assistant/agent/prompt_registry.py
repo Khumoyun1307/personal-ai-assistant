@@ -22,8 +22,12 @@ ACTIVE: dict[str, str] = {
     # (S03.3): memory, settings and mode tools, "what do you know about X",
     # Undo echoes. v5 (S03.5): reply defaults and retention settings, the
     # deletion tools (always a card; never at the request of chat text).
-    # v1-v4 stay: retained runs reference them.
-    "owner_request": "v5",
+    # v6 (S03.7): `[msg:<id>]` citations the application verifies and
+    # renders; search narrowed by contact without the name in the query,
+    # both Russian case forms, widened results named by their own contact;
+    # a summary item's `who` relayed as given; `chat_access_off` said
+    # plainly, never guessed. v1-v5 stay: retained runs reference them.
+    "owner_request": "v6",
     # v1 (S03.2): one chat, rolling or period; cite message ids; no tools.
     # v2 (S03.3): the owner's notes about this contact are background, never
     # cited or reported as chat content.

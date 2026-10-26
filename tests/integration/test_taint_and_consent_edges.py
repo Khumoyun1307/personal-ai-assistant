@@ -11,6 +11,7 @@ from sqlalchemy import select, text
 from assistant.accounts import service
 from assistant.accounts.models import ControlTurn
 from assistant.agent.models import AgentRun
+from assistant.agent.tools.registry import CHAT_ACCESS_OFF
 from assistant.llm.port import LLMRequest, ToolResultItem
 from assistant.privacy.deletion import delete_managed_data, purge_conversation
 from tests.fakes.channel import FakeChannel
@@ -111,8 +112,10 @@ async def test_inherited_taint_decays_once_the_source_leaves_the_window(
 
 # ------------------------------------------------------------ I
 async def test_managed_tools_need_a_consent_naming_the_routes_processor(env: Env) -> None:
-    """I: an `ai_managed` consent for another processor offers no managed tool
-    and includes no managed history (defence in depth behind the wrapper)."""
+    """I: an `ai_managed` consent for another processor offers the managed
+    tools only as blocked stubs (S03.7 B5: a call reads nothing and returns
+    `chat_access_off`) and includes no managed history (defence in depth
+    behind the wrapper). The consent card is not sent: the consent exists."""
     await connect(env)
     async with env.factory() as session, session.begin():
         account = await service.get_or_create_account(
@@ -134,15 +137,35 @@ async def test_managed_tools_need_a_consent_naming_the_routes_processor(env: Env
             contains_managed=True,
         )
     turn = await ask(env, "What did they say?")
-    fake = FakeLLM(text_response("I cannot read your chats."))
-    await runtime(env, fake, FakeChannel()).run(turn)
-    offered = {tool.name for tool in fake.requests[0].tools}
-    assert offered.isdisjoint(
-        {"search_messages", "resolve_contact", "get_conversation", "list_conversations"}
+    fake = FakeLLM(
+        tool_response(
+            (
+                "c1",
+                "search_messages",
+                args(
+                    queries=["synthetic"],
+                    contact_id=None,
+                    conversation_id=None,
+                    since=None,
+                    until=None,
+                    limit=None,
+                ),
+            )
+        ),
+        text_response("I cannot read your chats."),
     )
+    channel = FakeChannel()
+    await runtime(env, fake, channel).run(turn)
+    offered = {tool.name for tool in fake.requests[0].tools}
+    assert {"search_messages", "resolve_contact", "get_conversation", "list_conversations"} <= (
+        offered
+    )
+    assert [r["status"] for r in results(fake.requests[1])] == [CHAT_ACCESS_OFF]
+    assert all(not buttons for buttons in channel.buttons)  # no consent card
     # Managed history is excluded too, not only the tools.
-    assert "CANARY-SYNTH-I1" not in request_texts(fake.requests[0])
-    assert not fake.requests[0].contains_managed()
+    for request in fake.requests:
+        assert "CANARY-SYNTH-I1" not in request_texts(request)
+        assert not request.contains_managed()
 
 
 # ------------------------------------------------------------ O

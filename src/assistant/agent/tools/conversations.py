@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
+from assistant.agent.citations import CitableMessage
 from assistant.agent.tools.common import (
     COVERAGE_RULE,
     DIRECTION_LABELS,
@@ -263,6 +264,16 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
             conversation_ids=frozenset({page.conversation.conversation_id}),
             contact_ids=frozenset({page.conversation.contact_id}),
         ),
+        # The page's messages may be cited in the reply (S03.7 B3).
+        citable={
+            m.message_id: CitableMessage(
+                conversation_id=page.conversation.conversation_id,
+                contact_name=page.conversation.display_name,
+                sent_at=m.sent_at,
+                direction=m.direction,
+            )
+            for m in page.messages
+        },
     )
 
 

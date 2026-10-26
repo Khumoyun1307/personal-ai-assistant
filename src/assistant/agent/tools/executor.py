@@ -33,8 +33,15 @@ from dataclasses import dataclass, field, replace
 from pydantic import ValidationError
 
 from assistant.agent import confirmations
+from assistant.agent.citations import CitableMessage
 from assistant.agent.persistence import args_digest
-from assistant.agent.tools.registry import ToolContext, ToolDefinition, ToolOutcome, ToolRefs
+from assistant.agent.tools.registry import (
+    CHAT_ACCESS_OFF,
+    ToolContext,
+    ToolDefinition,
+    ToolOutcome,
+    ToolRefs,
+)
 from assistant.core.clock import Clock
 from assistant.llm.port import Provenance, ToolCall, ToolResultItem
 from assistant.observability.logging import get_logger
@@ -64,6 +71,10 @@ class ToolExecutor:
     refs: ToolRefs = field(default_factory=ToolRefs)
     #: A result in this run carried contact-authored text.
     saw_untrusted: bool = False
+    #: Every message the results showed, by id: what the reply may cite (B3).
+    citable: dict[int, CitableMessage] = field(default_factory=dict)
+    #: A chat-reading tool was called while chat access is off (B5).
+    saw_chat_access_off: bool = False
     _done: dict[str, ToolResultItem] = field(default_factory=dict)
 
     @property
@@ -83,6 +94,9 @@ class ToolExecutor:
         latency_ms = int((self.clock.now() - started).total_seconds() * 1000)
         await self.record_step(call.name, digest, outcome.status, latency_ms)
         self.refs = self.refs | outcome.refs
+        self.citable.update(outcome.citable)
+        if outcome.status == CHAT_ACCESS_OFF:
+            self.saw_chat_access_off = True
         if outcome.taints:
             # This run's OWN input carried third-party text (D56): its reply
             # will taint later runs, even if the run was already tainted.

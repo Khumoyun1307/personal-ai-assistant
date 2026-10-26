@@ -38,6 +38,8 @@ from assistant.agent.models import AgentRun
 from assistant.agent.summarize import SummaryStatus
 from assistant.agent.tools.conversations import GetConversationArgs, get_conversation_tool
 from assistant.agent.tools.registry import (
+    CHAT_ACCESS_OFF,
+    CHAT_ACCESS_OFF_REASON,
     CapabilityTier,
     ToolContext,
     ToolOutcome,
@@ -53,7 +55,14 @@ from assistant.agent.tools.summaries import (
 from assistant.conversations.models import Conversation
 from assistant.inbox.notify import OwnerAlerts
 from assistant.jobs.tasks import JobHandlers
-from assistant.llm.port import LLMError, LLMErrorKind, LLMRequest, StopReason, TextItem
+from assistant.llm.port import (
+    LLMError,
+    LLMErrorKind,
+    LLMRequest,
+    StopReason,
+    TextItem,
+    ToolResultItem,
+)
 from assistant.memory.models import ConversationSummary
 from tests.fakes.channel import FakeChannel
 from tests.fakes.deletions import RecordingDeleter
@@ -1099,16 +1108,30 @@ async def test_a_repeated_catch_up_call_id_summarizes_once(senv: Env) -> None:
     assert len(owner_calls) == 3
 
 
-async def test_without_managed_consent_the_summary_tools_are_absent(senv: Env) -> None:
+async def test_without_managed_consent_the_summary_tools_are_blocked_stubs(senv: Env) -> None:
+    """Invariant 9. S03.7 B5 (D104): without `ai_managed` the summary tools
+    are offered only as blocked stubs — a call makes no summary and reads
+    nothing — and nothing managed reaches the model."""
     await seed(senv, managed=False)
     turn = await ask(senv, "Nima bo'ldi?")
-    fake = FakeLLM(text_response("I cannot see your chats."))
+    fake = FakeLLM(
+        tool_response(("c1", "get_attention_list", args(active_within_days=None, limit=None))),
+        text_response("I cannot see your chats."),
+    )
 
     await runtime(senv, fake, FakeChannel(), flags=SUMMARY_FLAGS, with_summaries=True).run(turn)
 
     offered = {tool.name for tool in fake.requests[0].tools}
-    assert not offered & {"summarize_period", "get_attention_list", "get_conversation"}
+    assert {"summarize_period", "get_attention_list", "get_conversation"} <= offered
+    [blocked] = [
+        json.loads(item.output)
+        for item in fake.requests[1].items
+        if isinstance(item, ToolResultItem)
+    ]
+    assert blocked == {"status": CHAT_ACCESS_OFF, "reason": CHAT_ACCESS_OFF_REASON}
+    assert summary_requests(fake) == []
     assert "SYNTH-" not in json.dumps([everything(r) for r in fake.requests])
+    assert not any(request.contains_managed() for request in fake.requests)
 
 
 # ============================================================ retention
