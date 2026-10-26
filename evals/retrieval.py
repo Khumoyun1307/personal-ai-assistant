@@ -1,6 +1,6 @@
 """The retrieval target (S03.4): the real search service over the synthetic corpus.
 
-Two modes, both over the 38-query owner-style set:
+Three modes, all over the 38-query owner-style set:
 
 - **deterministic** (no model): the query exactly as typed goes to
   `memory.retrieval.search_messages`; measures *target message in the top 5*
@@ -11,6 +11,10 @@ Two modes, both over the 38-query owner-style set:
   asks, `owner_request.v2.md` rule 5); the original query plus the variants are
   searched together; a second call writes the final answer from the top 5 and
   the answer is checked deterministically (threshold 80 %).
+- **replay** (no model): the variants and the chat partner a recorded
+  **variants** run searched (its JSON report), searched again with the current
+  search code; top 5 only (S03.6 review: a search change is measured offline,
+  reproducibly, without paying for a model).
 
 Answer correctness (`check_answer`) is deliberately strict and mechanical:
 the answer must say it found something, reference a **target** message, name
@@ -28,15 +32,17 @@ from __future__ import annotations
 import html
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict
 
 from assistant.agent.untrusted import Source, wrap
+from assistant.conversations import read
 from assistant.llm.port import (
     LLMError,
     LLMRequest,
@@ -44,11 +50,12 @@ from assistant.llm.port import (
     StopReason,
     TextItem,
 )
-from assistant.memory.retrieval import MAX_QUERIES, SearchHit, search_messages
+from assistant.memory.retrieval import MAX_QUERIES, SearchFilters, SearchHit, search_messages
 from evals.assets import load_asset
 from evals.budget import BudgetExceededError
 from evals.corpus import LoadedCorpus
-from evals.metrics import contains_words, ratio_metric, word_key
+from evals.errors import RefusedError
+from evals.metrics import contains_value, contains_words, ratio_metric, word_key
 from evals.review import ReviewLedger
 from evals.schema import RetrievalQuery
 from evals.targets import (
@@ -63,7 +70,7 @@ from evals.targets import (
 TOP_N = 5
 HIT_THRESHOLD = 0.85
 ANSWER_THRESHOLD = 0.80
-VARIANTS_PROMPT_ID = "retrieval_variants.v1"
+VARIANTS_PROMPT_ID = "retrieval_variants.v2"
 ANSWER_PROMPT_ID = "retrieval_answer.v1"
 #: Output budgets include hidden reasoning tokens, so they are generous; the
 #: budget guard prices every call at this worst case before making it.
@@ -83,6 +90,7 @@ MIN_QUOTE_CHARS = 8
 class RetrievalMode(StrEnum):
     DETERMINISTIC = "deterministic"
     VARIANTS = "variants"
+    REPLAY = "replay"
 
 
 # ---------------------------------------------------------- structured output
@@ -90,6 +98,9 @@ class QueryVariants(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     queries: list[str]
+    #: The chat partner the owner named, as typed, or None (E-t): resolved like the
+    #: product's `resolve_contact` and applied as the search's contact filter.
+    contact: str | None
 
 
 class Reference(BaseModel):
@@ -156,6 +167,8 @@ def check_answer(answer: Answer, query: RetrievalQuery, hits: Sequence[HitView])
     problems: list[str] = []
     cited_targets = 0
     quotes: list[str] = []
+    #: Word keys of the quotes found word for word in the message they cite.
+    exact_quotes: list[str] = []
     for reference in answer.references:
         hit = by_ref.get(reference.ref)
         if hit is None:
@@ -169,14 +182,22 @@ def check_answer(answer: Answer, query: RetrievalQuery, hits: Sequence[HitView])
         message, quote = _compact(hit.text), _compact(reference.quote)
         if not contains_words(message, quote):
             problems.append("quote_not_in_message")
-        elif len(quote) < MIN_QUOTE_CHARS and quote != message:
-            problems.append("quote_too_short")
+        else:
+            exact_quotes.append(quote)
+            if len(quote) < MIN_QUOTE_CHARS and quote != message:
+                problems.append("quote_too_short")
         quotes.append(reference.quote)
     if not cited_targets:
         problems.append("no_target_cited")
     carried = _compact(f"{answer.answer} {' '.join(quotes)}")
     for value in query.answer_values:
-        if not contains_words(carried, _compact(value)):
+        needle = _compact(value)
+        # Whole words in the model's text; only an exact quote of the message may
+        # carry the value as the message inflected it ("500 mingni" for "500
+        # ming", E-u; S03.6 review).
+        if not contains_words(carried, needle) and not any(
+            contains_value(exact, needle) for exact in exact_quotes
+        ):
             problems.append("missing_value")
     return AnswerVerdict(not problems, tuple(dict.fromkeys(problems)))
 
@@ -193,6 +214,18 @@ class _Record:
     answer_correct: bool | None
     problems: tuple[str, ...]
     error: str | None
+    #: What was searched (the owner's words, then the model's variants) and the
+    #: chat partner the model named and the contact it resolved to: model output
+    #: over synthetic queries, kept so a miss can be diagnosed (E-t).
+    searched: tuple[str, ...] = ()
+    contact: str | None = None
+    #: The contact filter that produced the hits; None when there was none, or when
+    #: the filtered search found nothing and was searched again unfiltered
+    #: (`widened`; S03.6 review).
+    contact_filter: str | None = None
+    widened: bool = False
+    #: The final answer the model wrote (synthetic data), for review.
+    answer: Answer | None = None
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -205,6 +238,11 @@ class _Record:
             "answer_correct": self.answer_correct,
             "answer_problems": list(self.problems),
             "error": self.error,
+            "searched": list(self.searched),
+            "contact": self.contact,
+            "contact_filter": self.contact_filter,
+            "widened": self.widened,
+            "answer": self.answer.model_dump() if self.answer is not None else None,
         }
 
 
@@ -220,18 +258,33 @@ class RetrievalTarget:
         *,
         mode: RetrievalMode,
         corpus: LoadedCorpus | None = None,
+        recorded: Mapping[str, QueryVariants | None] | None = None,
+        replayed_from: str | None = None,
     ) -> None:
+        if (mode is RetrievalMode.REPLAY) != (recorded is not None):
+            raise RefusedError(
+                "a replay needs a recorded variants run (--replay-from), "
+                "and only a replay takes one"
+            )
         self._bound = corpus
         self._queries = list(queries)
         self.mode = mode
         self.uses_model = mode is RetrievalMode.VARIANTS
+        self._recorded = recorded
+        self._replayed_from = replayed_from
         self._variants_prompt = load_asset("prompts", VARIANTS_PROMPT_ID)
         self._answer_prompt = load_asset("prompts", ANSWER_PROMPT_ID)
 
     def bind(self, corpus: LoadedCorpus) -> RetrievalTarget:
         """The same target over a loaded corpus. The runner builds a target
         first (to refuse and estimate), and only then pays for a database."""
-        return RetrievalTarget(self._queries, mode=self.mode, corpus=corpus)
+        return RetrievalTarget(
+            self._queries,
+            mode=self.mode,
+            corpus=corpus,
+            recorded=self._recorded,
+            replayed_from=self._replayed_from,
+        )
 
     @property
     def _corpus(self) -> LoadedCorpus:
@@ -284,16 +337,32 @@ class RetrievalTarget:
         return self._result(records, planned=len(queries), ledger=context.reviews, stopped=stopped)
 
     async def _evaluate(self, query: RetrievalQuery, context: RunContext) -> _Record:
-        variants: list[str] = []
+        proposed = QueryVariants(queries=[], contact=None)
         if self.uses_model:
             try:
-                variants = await self._variants(query, context)
+                proposed = await self._variants(query, context)
             except _ModelFailureError as failure:
                 return _Record(
                     query.id, tuple(query.intents), False, None, (), 0, False, (), failure.code
                 )
-        search_queries = _search_queries(query.text, variants)
-        hits = await self._search(search_queries)
+        elif self._recorded is not None:
+            replayed = self._recorded.get(query.id)
+            if replayed is None:  # the recorded run did not search this item
+                return _Record(
+                    query.id,
+                    tuple(query.intents),
+                    False,
+                    None,
+                    (),
+                    0,
+                    None,
+                    (),
+                    "replay:not_searched",
+                )
+            proposed = replayed
+        search_queries = _search_queries(query.text, proposed.queries)
+        contact = await self._resolve_contact(proposed.contact)
+        hits, widened = await self._search(search_queries, contact)
         top = tuple(self._corpus.refs[hit.message_id] for hit in hits)
         rank = next(
             (i for i, ref in enumerate(top, start=1) if ref in query.target_message_ids), None
@@ -308,6 +377,10 @@ class RetrievalTarget:
             None,
             (),
             None,
+            searched=tuple(search_queries) if self.mode is not RetrievalMode.DETERMINISTIC else (),
+            contact=proposed.contact,
+            contact_filter=contact.name if contact is not None and not widened else None,
+            widened=widened,
         )
         if not self.uses_model:
             return record
@@ -318,10 +391,41 @@ class RetrievalTarget:
         except _ModelFailureError as failure:
             return _with_answer(record, False, (), failure.code)
         verdict = check_answer(answer, query, self._views(hits))
-        return _with_answer(record, verdict.correct, verdict.problems, None)
+        return replace(_with_answer(record, verdict.correct, verdict.problems, None), answer=answer)
 
-    async def _search(self, queries: Sequence[str]) -> Sequence[SearchHit]:
+    async def _resolve_contact(self, name: str | None) -> _ContactFilter | None:
+        """The chat partner the model named, resolved the way the product's
+        `resolve_contact` tool does (`conversations.read.match_contacts`). As the
+        agent is told to, an ambiguous name (two best candidates of the same kind)
+        is not used: the agent would ask the owner instead (E-t)."""
+        if not name or not name.strip():
+            return None
         async with self._corpus.session_factory() as session:
+            directory = await read.contact_directory(session, self._corpus.account_id)
+        matches = read.match_contacts(directory, name, limit=2)
+        if not matches or (len(matches) > 1 and matches[0].kind == matches[1].kind):
+            return None
+        best = matches[0].entry
+        return _ContactFilter(best.contact_id, best.display_name or "")
+
+    async def _search(
+        self, queries: Sequence[str], contact: _ContactFilter | None = None
+    ) -> tuple[Sequence[SearchHit], bool]:
+        """The service's top results; narrowed to the named contact when there is
+        one, and searched again without the filter if that finds nothing (the agent
+        would widen a search that came back empty). The flag says it was widened."""
+        async with self._corpus.session_factory() as session:
+            if contact is not None:
+                narrowed = await search_messages(
+                    session,
+                    self._corpus.account_id,
+                    queries,
+                    now=self._corpus.now,
+                    filters=SearchFilters(contact_ids=(contact.contact_id,)),
+                    limit=TOP_N,
+                )
+                if narrowed.hits:
+                    return narrowed.hits, False
             result = await search_messages(
                 session,
                 self._corpus.account_id,
@@ -329,10 +433,10 @@ class RetrievalTarget:
                 now=self._corpus.now,
                 limit=TOP_N,
             )
-        return result.hits
+        return result.hits, contact is not None
 
     # ------------------------------------------------------------ model calls
-    async def _variants(self, query: RetrievalQuery, context: RunContext) -> list[str]:
+    async def _variants(self, query: RetrievalQuery, context: RunContext) -> QueryVariants:
         assert context.llm is not None  # checked in run()
         assert context.model is not None
         request = LLMRequest(
@@ -351,7 +455,7 @@ class RetrievalTarget:
             raise _ModelFailureError(f"variants:{error.kind.value}") from None
         if response.stop_reason is not StopReason.COMPLETED or response.parsed is None:
             raise _ModelFailureError(f"variants:{response.stop_reason.value}")
-        return response.parsed.queries
+        return response.parsed
 
     async def _answer(
         self, query: RetrievalQuery, hits: Sequence[SearchHit], context: RunContext
@@ -442,16 +546,18 @@ class RetrievalTarget:
                 # The 85 % is defined with model-generated variants: without a
                 # model it is only the pre-screen comparison, with no gate.
                 gated=self.uses_model,
-                note=(
-                    "Baseline without a model; the S03.4 gate measures retrieval with "
-                    "model-generated query variants (mode `variants`), so 85 % is a "
-                    "pre-screen comparison here, not a gate."
-                    if not self.uses_model
-                    else ""
-                ),
+                note=_TOP5_NOTES[self.mode],
             )
         ]
         notes: list[str] = []
+        if self._recorded is not None:
+            notes.append(f"Replayed: {self._replayed_from or 'a recorded variants run'}.")
+            skipped = sorted(r.query_id for r in records if r.error)
+            if skipped:
+                notes.append(
+                    f"{len(skipped)} item(s) the recorded run did not search count as misses: "
+                    + ", ".join(skipped)
+                )
         prompts: list[str] = []
         if self.uses_model:
             answers = {r.query_id: bool(r.answer_correct) for r in records}
@@ -466,6 +572,12 @@ class RetrievalTarget:
                 )
             )
             prompts = [VARIANTS_PROMPT_ID, ANSWER_PROMPT_ID]
+            widened = sorted(r.query_id for r in records if r.widened)
+            if widened:
+                notes.append(
+                    f"{len(widened)} item(s) searched without their contact filter after the "
+                    "filtered search found nothing (`widened`, E-t): " + ", ".join(widened)
+                )
             failed = sorted(r.query_id for r in records if r.error)
             if failed:
                 notes.append(
@@ -488,6 +600,50 @@ class RetrievalTarget:
         )
 
 
+#: What the top-5 metric means in each mode.
+_TOP5_NOTES = {
+    RetrievalMode.DETERMINISTIC: (
+        "Baseline without a model; the S03.4 gate measures retrieval with "
+        "model-generated query variants (mode `variants`), so 85 % is a "
+        "pre-screen comparison here, not a gate."
+    ),
+    RetrievalMode.VARIANTS: "",
+    RetrievalMode.REPLAY: (
+        "Replay without a model: the variants and chat partners a recorded `variants` run "
+        "searched, searched again with the current search code (no answer step). 85 % is a "
+        "pre-screen comparison here, not a gate."
+    ),
+}
+
+
+def load_recorded(path: Path) -> dict[str, QueryVariants | None]:
+    """What a recorded **variants** run searched, per item: the model's variants (the
+    report's `searched` minus the owner's words, which come first) and the chat
+    partner it named; None for an item it did not search (a failed model call)."""
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RefusedError(f"cannot read the recorded run {path.name}: {error}") from None
+    if not isinstance(report, dict) or (report.get("target"), report.get("mode")) != (
+        "retrieval",
+        RetrievalMode.VARIANTS.value,
+    ):
+        raise RefusedError(f"{path.name} is not a retrieval report of mode `variants`")
+    recorded: dict[str, QueryVariants | None] = {}
+    for detail in report.get("details", []):
+        searched = list(detail.get("searched") or [])
+        recorded[str(detail["id"])] = (
+            QueryVariants(queries=searched[1:], contact=detail.get("contact")) if searched else None
+        )
+    return recorded
+
+
+@dataclass(frozen=True, slots=True)
+class _ContactFilter:
+    contact_id: int
+    name: str
+
+
 class _ModelFailureError(Exception):
     """A model call failed in a way that counts the item as a miss."""
 
@@ -499,17 +655,7 @@ class _ModelFailureError(Exception):
 def _with_answer(
     record: _Record, correct: bool, problems: tuple[str, ...], error: str | None
 ) -> _Record:
-    return _Record(
-        record.query_id,
-        record.intents,
-        record.hit,
-        record.rank,
-        record.top,
-        record.variants,
-        correct,
-        problems,
-        error,
-    )
+    return replace(record, answer_correct=correct, problems=problems, error=error)
 
 
 def _search_queries(original: str, variants: Sequence[str]) -> list[str]:

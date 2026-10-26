@@ -1,0 +1,1172 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-26",
+  "set": "retrieval",
+  "target": "retrieval",
+  "dataset": "retrieval",
+  "mode": "variants",
+  "model": "gpt-6-luna",
+  "live": true,
+  "effort": "low",
+  "complete": true,
+  "trial": false,
+  "stopped": false,
+  "items": 38,
+  "items_planned": 38,
+  "items_total": 38,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "retrieval_variants.v2",
+    "retrieval_answer.v1"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "top5_hit",
+      "label": "Target message in the top 5 results",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.85,
+      "all_items": {
+        "numerator": 34,
+        "denominator": 38,
+        "ratio": 0.8947368421052632
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 38,
+      "failed_items": [
+        "r04",
+        "r11",
+        "r19",
+        "r33"
+      ],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "answer_correct",
+      "label": "Correct final answer with reference",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.8,
+      "all_items": {
+        "numerator": 31,
+        "denominator": 38,
+        "ratio": 0.8157894736842105
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 38,
+      "failed_items": [
+        "r04",
+        "r08",
+        "r11",
+        "r19",
+        "r23",
+        "r25",
+        "r33"
+      ],
+      "pending": 0,
+      "note": ""
+    }
+  ],
+  "breakdowns": {
+    "top-5 hit by intent": {
+      "cross_language": {
+        "numerator": 5,
+        "denominator": 5,
+        "ratio": 1.0
+      },
+      "cross_script": {
+        "numerator": 14,
+        "denominator": 14,
+        "ratio": 1.0
+      },
+      "exact": {
+        "numerator": 10,
+        "denominator": 10,
+        "ratio": 1.0
+      },
+      "new_alphabet": {
+        "numerator": 2,
+        "denominator": 3,
+        "ratio": 0.6666666666666666
+      },
+      "no_apostrophe": {
+        "numerator": 4,
+        "denominator": 5,
+        "ratio": 0.8
+      },
+      "paraphrase": {
+        "numerator": 21,
+        "denominator": 25,
+        "ratio": 0.84
+      },
+      "translit": {
+        "numerator": 3,
+        "denominator": 3,
+        "ratio": 1.0
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.0101732",
+    "calls": 76,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 76,
+        "input_tokens": 42147,
+        "output_tokens": 11917,
+        "cost_usd": "0.0101732",
+        "cost_per_100_items_usd": "0.02677157894736842105263157895"
+      }
+    }
+  },
+  "notes": [],
+  "details": [
+    {
+      "id": "r01",
+      "intents": [
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c09.m05",
+        "c16.m02",
+        "c17.m03",
+        "c35.m02",
+        "c09.m04"
+      ],
+      "variants": 1,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "Qorasuv-3 17-uy"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r02",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c09.m05"
+      ],
+      "variants": 5,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "Kamola yuborgan manzil",
+        "yuborgan manzil",
+        "юборган манзил",
+        "отправленный адрес",
+        "sent address"
+      ],
+      "contact": "Kamola",
+      "contact_filter": "Kamola"
+    },
+    {
+      "id": "r03",
+      "intents": [
+        "paraphrase",
+        "cross_language"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c09.m05"
+      ],
+      "variants": 5,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "the address Kamola sent",
+        "manzil yubordi",
+        "манзил юборди",
+        "адрес отправила",
+        "address sent"
+      ],
+      "contact": "Kamola",
+      "contact_filter": "Kamola"
+    },
+    {
+      "id": "r04",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": false,
+      "rank": null,
+      "top5": [
+        "c11.m02",
+        "c11.m06"
+      ],
+      "variants": 5,
+      "answer_correct": false,
+      "answer_problems": [
+        "not_found"
+      ],
+      "error": null,
+      "searched": [
+        "Nilufar opa bilan uchrashuv vaqtini qayerda kelishgan edik",
+        "uchrashuv vaqtini kelishgan",
+        "учрашув вақтини келишган",
+        "договорились о времени встречи",
+        "agreed on meeting time"
+      ],
+      "contact": "Nilufar opa",
+      "contact_filter": "Nilufar opa (rahbar)"
+    },
+    {
+      "id": "r05",
+      "intents": [
+        "paraphrase",
+        "cross_language"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c11.m03",
+        "c11.m06",
+        "c11.m02"
+      ],
+      "variants": 5,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "find the conversation where we agreed on the meeting time with Nilufar",
+        "uchrashuv vaqtini kelishdik",
+        "учрашув вақтини келишдик",
+        "согласовали время встречи",
+        "agreed on meeting time"
+      ],
+      "contact": "Nilufar",
+      "contact_filter": "Nilufar opa (rahbar)"
+    },
+    {
+      "id": "r06",
+      "intents": [
+        "cross_script",
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c17.m03"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "Chilonzor 9 mavze 15 uy",
+        "Чилонзор 9 мавзе 15 уй",
+        "Chilonzor 9 микрорайон 15 дом",
+        "Chilonzor 9 neighborhood 15 house"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r07",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c09.m05",
+        "c35.m02",
+        "c29.m03",
+        "c27.m07",
+        "c35.m05"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "Қорасув манзили",
+        "Qorasuv manzili",
+        "адрес Қорасув",
+        "Қорасув address"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r08",
+      "intents": [
+        "no_apostrophe",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c12.m02",
+        "c37.m01",
+        "c08.m02",
+        "c02.m08",
+        "c02.m02"
+      ],
+      "variants": 4,
+      "answer_correct": false,
+      "answer_problems": [
+        "missing_value"
+      ],
+      "error": null,
+      "searched": [
+        "tog asali narxi",
+        "тоғ асали нархи",
+        "цена горного мёда",
+        "mountain honey price"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r09",
+      "intents": [
+        "no_apostrophe",
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c14.m02",
+        "c21.m04",
+        "c23.m03",
+        "c15.m09",
+        "c12.m07"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "yolak tamiri uchun pul",
+        "йўлак таъмири учун пул",
+        "деньги на ремонт тротуара",
+        "money for sidewalk repair"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r10",
+      "intents": [
+        "no_apostrophe",
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 2,
+      "top5": [
+        "c15.m08",
+        "c01.m07"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "sovga uchun 300 ming",
+        "совға учун 300 минг",
+        "подарок за 300 тысяч",
+        "300 thousand for a gift"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r11",
+      "intents": [
+        "no_apostrophe",
+        "new_alphabet",
+        "paraphrase"
+      ],
+      "hit_top5": false,
+      "rank": null,
+      "top5": [
+        "c31.m06",
+        "c34.m06",
+        "c27.m07",
+        "c29.m05",
+        "c10.m09"
+      ],
+      "variants": 5,
+      "answer_correct": false,
+      "answer_problems": [
+        "not_found"
+      ],
+      "error": null,
+      "searched": [
+        "Sherzod oglini drelga yuboraman degan xabar",
+        "Sherzod oglini drelga yuboraman",
+        "Шерзод ўғлини дрелга юбораман",
+        "сына Шерзода отправлю на дрель",
+        "I'll send Sherzod's son to the drill"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r12",
+      "intents": [
+        "new_alphabet",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c10.m01"
+      ],
+      "variants": 5,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "yakshanba futbol qaysi stadionda",
+        "yakshanba futbol stadion",
+        "якшанба футбол стадион",
+        "воскресенье футбол стадион",
+        "Sunday football stadium"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r13",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c07.m03"
+      ],
+      "variants": 5,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "когда придёт сантехник",
+        "santexnik keladi",
+        "сантехник келади",
+        "придёт сантехник",
+        "plumber coming"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r14",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c07.m07"
+      ],
+      "variants": 5,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "сколько будет аренда с декабря",
+        "аренда с декабря",
+        "dekabrdan ijara",
+        "декабрдан ижара",
+        "rent from December"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r15",
+      "intents": [
+        "translit",
+        "cross_script"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c08.m05",
+        "c29.m03",
+        "c17.m03",
+        "c09.m05",
+        "c27.m07"
+      ],
+      "variants": 5,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "adres Iriny Yunusabad",
+        "manzil Iriny Yunusabad",
+        "манзил Iriny Yunusabad",
+        "адрес Iriny Yunusabad",
+        "address Iriny Yunusabad"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r16",
+      "intents": [
+        "cross_script",
+        "translit"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c21.m02",
+        "c12.m03",
+        "c15.m08",
+        "c15.m09",
+        "c01.m07"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "подарок Лене наушники",
+        "Лене sovg‘a quloqchinlar",
+        "Лене совға қулоқчинлар",
+        "gift Лене headphones"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r17",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 2,
+      "top5": [
+        "c27.m01",
+        "c27.m04",
+        "c27.m02",
+        "c27.m08",
+        "c08.m10"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "glass jar price per piece",
+        "shisha banka dona narxi",
+        "шиша банка дона нархи",
+        "цена стеклянной банки за штуку"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r18",
+      "intents": [
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c32.m06",
+        "c32.m01",
+        "c32.m03",
+        "c16.m03",
+        "c32.m02"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "market stall number",
+        "bozor rastasi raqami",
+        "бозор растаси рақами",
+        "номер торгового места на рынке"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r19",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": false,
+      "rank": null,
+      "top5": [
+        "c30.m01",
+        "c30.m03"
+      ],
+      "variants": 5,
+      "answer_correct": false,
+      "answer_problems": [
+        "no_target_cited",
+        "missing_value"
+      ],
+      "error": null,
+      "searched": [
+        "when does Daniel land",
+        "qo'nish vaqti",
+        "қўниш вақти",
+        "время прилёта",
+        "landing time"
+      ],
+      "contact": "Daniel",
+      "contact_filter": "Daniel"
+    },
+    {
+      "id": "r20",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 2,
+      "top5": [
+        "c21.m04",
+        "c03.m03",
+        "c23.m03",
+        "c17.m08",
+        "c31.m06"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "томни таъмирлаш пули",
+        "tomni tamirlash puli",
+        "деньги на ремонт крыши",
+        "roof repair money"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r21",
+      "intents": [
+        "cross_script",
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c03.m02",
+        "c03.m03",
+        "c29.m05",
+        "c31.m06",
+        "c06.m03"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "tom ustasi Hamid",
+        "том устаси Hamid",
+        "кровельщик Hamid",
+        "roof repairman Hamid"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r22",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c18.m01"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "ota-onalar majlisi qachon",
+        "ота-оналар мажлиси қачон",
+        "родительское собрание когда",
+        "parents' meeting when"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r23",
+      "intents": [
+        "cross_script",
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c19.m01",
+        "c39.m05",
+        "c28.m01",
+        "c25.m02",
+        "c13.m07"
+      ],
+      "variants": 4,
+      "answer_correct": false,
+      "answer_problems": [
+        "missing_value"
+      ],
+      "error": null,
+      "searched": [
+        "kadastr hokimiyat dushanba",
+        "кадастр ҳокимият душанба",
+        "кадастр администрация понедельник",
+        "cadastre administration Monday"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r24",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 5,
+      "top5": [
+        "c29.m05",
+        "c29.m04",
+        "c27.m03",
+        "c05.m08",
+        "c05.m04"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "Зоминдаги дача нархи",
+        "Zomindagi dacha narxi",
+        "цена дачи в Зомин",
+        "dacha price in Зомин"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r25",
+      "intents": [
+        "cross_script",
+        "exact",
+        "new_alphabet"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c10.m04",
+        "c10.m02"
+      ],
+      "variants": 5,
+      "answer_correct": false,
+      "answer_problems": [
+        "missing_value"
+      ],
+      "error": null,
+      "searched": [
+        "Шерзодга қарз 500 минг",
+        "қарз 500 минг",
+        "qarz 500 ming",
+        "долг 500 тысяч",
+        "debt 500 thousand"
+      ],
+      "contact": "Шерзод",
+      "contact_filter": "Sherzod"
+    },
+    {
+      "id": "r26",
+      "intents": [
+        "cross_language",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c37.m04",
+        "c37.m01",
+        "c37.m03"
+      ],
+      "variants": 5,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "предоплата за мёд Эргаш",
+        "предоплата за мёд",
+        "asal uchun avans",
+        "асал учун аванс",
+        "advance payment for honey"
+      ],
+      "contact": "Эргаш",
+      "contact_filter": "Ergash aka (asalchi)"
+    },
+    {
+      "id": "r27",
+      "intents": [
+        "cross_script",
+        "cross_language"
+      ],
+      "hit_top5": true,
+      "rank": 3,
+      "top5": [
+        "c22.m03",
+        "c08.m03",
+        "c08.m02",
+        "c02.m08",
+        "c02.m02"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "kuraga narxi",
+        "курага нархи",
+        "цена кураги",
+        "dried apricot price"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r28",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 2,
+      "top5": [
+        "c02.m09",
+        "c33.m07",
+        "c18.m04",
+        "c05.m06",
+        "c18.m05"
+      ],
+      "variants": 5,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "who covers for Rob on Friday",
+        "cover for Rob Friday",
+        "Rob o'rniga juma kuni",
+        "Rob ўрнига жума куни",
+        "заменяет Rob в пятницу"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r29",
+      "intents": [
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c06.m03",
+        "c17.m07",
+        "c09.m07",
+        "c08.m08",
+        "c08.m02"
+      ],
+      "variants": 1,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "+998 90 000 00 12"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r30",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c06.m03"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "Shahlo Karimovaning telefoni",
+        "Shahlo Karimovaning телефони",
+        "телефон Shahlo Karimova",
+        "Shahlo Karimova phone"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r31",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 5,
+      "top5": [
+        "c16.m01",
+        "c32.m07",
+        "c33.m02",
+        "c10.m02",
+        "c16.m02"
+      ],
+      "variants": 5,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "ombor ijarasi va elektr puli",
+        "ombor ijarasi elektr puli",
+        "омбор ижараси электр пули",
+        "аренда склада оплата электричества",
+        "warehouse rent electricity bill"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r32",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c19.m07",
+        "c40.m06",
+        "c05.m09",
+        "c19.m10",
+        "c19.m05"
+      ],
+      "variants": 5,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "notariusga qachon borish kerak",
+        "notariusga borish vaqti",
+        "нотариусга бориш вақти",
+        "время идти к нотариусу",
+        "time to go to the notary"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r33",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": false,
+      "rank": null,
+      "top5": [
+        "c13.m04",
+        "c12.m07",
+        "c02.m08",
+        "c02.m02",
+        "c16.m09"
+      ],
+      "variants": 5,
+      "answer_correct": false,
+      "answer_problems": [
+        "not_found"
+      ],
+      "error": null,
+      "searched": [
+        "сколько стоит замена колодок",
+        "стоимость замены колодок",
+        "kolodka almashtirish narxi",
+        "колодка алмаштириш нархи",
+        "brake pad replacement cost"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r34",
+      "intents": [
+        "cross_language",
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c25.m04",
+        "c07.m06",
+        "c34.m07",
+        "c07.m02",
+        "c27.m05"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "suzish uchun noyabr to'lovi",
+        "сузиш учун ноябр тўлови",
+        "оплата за плавание в ноябре",
+        "November swimming payment"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r35",
+      "intents": [
+        "no_apostrophe",
+        "cross_script",
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 4,
+      "top5": [
+        "c17.m01",
+        "c09.m10",
+        "c09.m03",
+        "c09.m02",
+        "c09.m01"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "yongoq magzi narxi",
+        "ёнғоқ мағзи нархи",
+        "цена ядра грецкого ореха",
+        "walnut kernel price"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r36",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c28.m05"
+      ],
+      "variants": 5,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "Laylo study room booking",
+        "study room booking",
+        "o‘quv xonasini band qilish",
+        "ўқув хонасини банд қилиш",
+        "бронирование учебной комнаты"
+      ],
+      "contact": "Laylo",
+      "contact_filter": "Laylo"
+    },
+    {
+      "id": "r37",
+      "intents": [
+        "translit",
+        "exact"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c38.m01"
+      ],
+      "variants": 5,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "sobranie opazdyvayu",
+        "собрание опаздываю",
+        "yig'ilishga kechikyapman",
+        "йиғилишга кечикияпман",
+        "meeting I'm running late"
+      ],
+      "contact": null,
+      "contact_filter": null
+    },
+    {
+      "id": "r38",
+      "intents": [
+        "paraphrase"
+      ],
+      "hit_top5": true,
+      "rank": 1,
+      "top5": [
+        "c19.m03",
+        "c19.m04"
+      ],
+      "variants": 4,
+      "answer_correct": true,
+      "answer_problems": [],
+      "error": null,
+      "searched": [
+        "тоғамнинг техпаспорти",
+        "tog'amning texpasporti",
+        "техпаспорт дяди",
+        "uncle's vehicle registration certificate"
+      ],
+      "contact": null,
+      "contact_filter": null
+    }
+  ]
+}

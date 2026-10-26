@@ -139,19 +139,89 @@ def contains_words(haystack: str, needle: str) -> bool:
     return bool(needle) and f" {needle} " in f" {haystack} "
 
 
-def values_matcher(item: QuestionToOwner | Commitment, summary_text: str) -> bool | None:
-    """True when every `values` entry of `item` occurs in the summary.
+#: An inflected value keeps at least this many letters of its last word.
+MIN_INFLECTED_STEM = 3
+#: The endings an Uzbek text puts on a word it quotes (ASCII key forms): case
+#: (-ni, -ning, -ga/-ka/-qa, -da/-ta, -dan/-tan, -dagi, -gacha), possessive (-i,
+#: -si, -im, -ing, -imiz, -ingiz), plural -lar, and -li/-lik/-cha/-dek, -ta and
+#: ordinal -inchi. They chain (`nusxa-si-ni`, `oktabr-da-gi`). Nothing else: no
+#: negation (-ma-: bormaydi, kelishmadi), no letters that make another stem
+#: (Ali → Alisher, Olim → Olimpiada, Aziz → Aziza, Karim → Karimov), and no
+#: Russian case endings (no value in E1 needs one, and -a/-ov make names).
+INFLECTIONS = frozenset(
+    {
+        *("ni", "ning", "ga", "ka", "qa", "da", "ta", "dan", "tan", "dagi", "tagi"),
+        *("gacha", "kacha", "qacha", "gi", "ki"),
+        *("i", "si", "im", "ing", "imiz", "ingiz", "miz", "ngiz", "lar"),
+        *("li", "lik", "cha", "dek", "day", "inchi", "nchi"),
+    }
+)
+#: At most this many endings in a row.
+MAX_INFLECTIONS = 3
 
-    Conservative on both sides: a paraphrase that drops a value counts as a
-    miss, and an item with no `values` cannot be checked here (None). The
-    summary may be in any language or script; values are compared in the
-    product's ASCII form.
+
+def is_inflection(suffix: str, limit: int = MAX_INFLECTIONS) -> bool:
+    """`suffix` is a chain of at most `limit` `INFLECTIONS` ("" is the empty chain)."""
+    if not suffix:
+        return True
+    if limit == 0:
+        return False
+    return any(
+        suffix.startswith(ending) and is_inflection(suffix[len(ending) :], limit - 1)
+        for ending in INFLECTIONS
+    )
+
+
+def contains_value(haystack: str, needle: str) -> bool:
+    """`needle` occurs in `haystack` as whole words, except that its **last**
+    word may carry Uzbek case and possessive endings (both are `word_key`s).
+
+    Uzbek is agglutinative and a summary inflects what it quotes: "900 ming" is
+    written "900 mingga", "15-oktabr" "15-oktabrdagi", "narxlar ro'yxati"
+    "narxlar ro'yxatini" (E-s). Only a chain of `INFLECTIONS` may follow, so "80"
+    never matches "800", "Ali" never "Alisher" and "bor" never "bormaydi"; a last
+    word shorter than `MIN_INFLECTED_STEM` letters must match whole, so "12-й"
+    ("12 y") never matches "12 yanvar". The other words of the value still match
+    whole.
+    """
+    if contains_words(haystack, needle):
+        return True
+    words = needle.split()
+    if not words:
+        return False
+    *head, last = words
+    if last.isalpha() and len(last) < MIN_INFLECTED_STEM:
+        return False
+    tokens = haystack.split()
+    for start in range(len(tokens) - len(words) + 1):
+        window = tokens[start : start + len(words)]
+        if window[:-1] != head:
+            continue
+        candidate = window[-1]
+        if candidate.startswith(last) and is_inflection(candidate[len(last) :]):
+            return True
+    return False
+
+
+def values_matcher(item: QuestionToOwner | Commitment, summary_text: str) -> bool | None:
+    """True when every `values` entry of `item` occurs in the summary; else None.
+
+    A literal match is **sufficient** evidence that the loop was surfaced, but a
+    failed one is **not** evidence that it was not (E-s): the summary is written
+    in the owner's language, so a value from the chat is often translated or
+    reformatted ("до пятницы" → "juma kunigacha", "6 pm" → "18:00", a date as
+    `2026-10-14`). Such an item, like one with no `values`, is left to the judge
+    (pre-screen) and to the owner's verdict (gate): None. Values are compared in
+    the product's ASCII form (script and apostrophes do not matter), whole words
+    except for an inflectional suffix on the value's last word (`contains_value`).
     """
     needles = [word_key(value) for value in item.values]
     if not needles:
         return None
     haystack = word_key(summary_text)
-    return all(contains_words(haystack, needle) for needle in needles)
+    if all(contains_value(haystack, needle) for needle in needles):
+        return True
+    return None
 
 
 def open_loops(conversation: Conversation) -> list[QuestionToOwner | Commitment]:
@@ -178,15 +248,17 @@ def recall_metric(
 ) -> MetricResult:
     """Open-loop recall, with three sources of truth for "was it surfaced":
 
-    1. the deterministic `values` match (`open_loop_coverage`), for items with
-       `values`;
-    2. for the rest, the owner's verdict in the ledger (`coverage`): the gate
-       uses only this;
+    1. the deterministic `values` match (`open_loop_coverage`): True when every
+       value is found; it never decides a miss (E-s);
+    2. the owner's verdict in the ledger (`coverage`): the gate's source for an
+       item not matched on `values`, and it **overrides** a string pass (a value
+       can be found in a sentence that does not surface the loop; S03.6 review);
     3. for the rest, an optional judge verdict (`judged`): pre-screen only.
 
     An item with no verdict from any source counts as **missed** in the
     pre-screen. In the gate it is *unresolved*: it leaves the metric pending
-    (never a pass) until the owner rules on it.
+    (never a pass) until the owner rules on it. A definite miss (False: the
+    conversation was not summarized) stays a miss whatever the ledger says.
 
     With `summary_texts` (loop id -> the text of the summary it was judged in), the
     owner's verdict is looked up under `coverage_key(loop, text)`: it belongs to that
@@ -203,15 +275,18 @@ def recall_metric(
             continue
         key = item if summary_texts is None else coverage_key(item, summary_texts.get(item, ""))
         owner = ledger.coverage_verdict(key)
-        if checked is not None:
-            gate[item] = checked
+        if checked is False:
+            gate[item] = False
         elif owner is not None:
             gate[item] = owner
+        elif checked:
+            gate[item] = True
         else:
             unresolved.append(item)
     uncheckable = sorted(item for item, checked in coverage.items() if checked is None)
     note = (
-        f"{len(uncheckable)} open loop(s) have no `values` to match: judge pre-screen only, "
+        f"{len(uncheckable)} open loop(s) not matched on `values` (none, or not found "
+        "literally, e.g. translated): judge pre-screen only, "
         f"the gate needs the owner's verdict ({len(unresolved)} unresolved among the "
         "owner-confirmed items)"
         if uncheckable
@@ -485,8 +560,13 @@ def _script_share(text: str, script: Literal["latin", "cyrillic"]) -> float:
     return counts[script] / total if total else 0.0
 
 
+#: Apostrophe-like characters: inside a word they join it ("to‘lov", "don't"), so
+#: the raw-word tokenizer must not split there (E-v: "to‘lov" read as English "to").
+_APOSTROPHES = str.maketrans(dict.fromkeys("ʻʼ‘’'`´ʹʽ′‛ꞌˈˊˋ", None))
+
+
 def detect_language(text: str) -> str | None:
-    raw = _LETTERS.findall(text.casefold())
+    raw = _LETTERS.findall(text.translate(_APOSTROPHES).casefold())
     latin = [w for w in raw if _script_share(w, "latin") == 1.0]
     cyrillic = [w for w in raw if _script_share(w, "cyrillic") == 1.0]
     uzbek_words = _LETTERS.findall(normalize(text))

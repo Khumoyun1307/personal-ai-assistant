@@ -21,11 +21,13 @@ import sqlalchemy as sa
 from evals import cli, live
 from evals.budget import BudgetedLLMClient, CallLedger
 from evals.corpus import LoadedCorpus, isolated_corpus, load_corpus, unload_corpus
+from evals.errors import EvalsError
 from evals.live import LiveConfig, LiveSetupError, ModelChoice
 from evals.retrieval import (
     QueryVariants,
     RetrievalMode,
     RetrievalTarget,
+    load_recorded,
 )
 from evals.review import ReviewLedger
 from evals.schema import RetrievalQuery, load_e1, load_queries
@@ -240,6 +242,113 @@ async def test_a_distinct_variant_rescues_a_deterministic_miss(corpus: LoadedCor
     assert record["answer_correct"] is True
 
 
+async def test_a_named_chat_partner_narrows_the_search_like_resolve_contact(
+    corpus: LoadedCorpus,
+) -> None:
+    """E-t: the owner names the person ("…with Nilufar"), and the messages of that
+    chat rarely contain the name. The product agent resolves the name and filters by
+    contact; the harness does the same with the product's own matcher."""
+    r04 = next(q for q in QUERIES if q.id == "r04")
+    llm = OracleLLM(variants=lambda q: ["kelishdik"], contact=lambda q: "Nilufar")
+    result = await RetrievalTarget([r04], mode=RetrievalMode.VARIANTS, corpus=corpus).run(
+        context(llm, CallLedger())
+    )
+    record = result.details[0]
+    assert record["contact"] == "Nilufar"
+    assert record["contact_filter"] == "Nilufar opa (rahbar)"
+    assert record["widened"] is False
+    assert record["top5"]
+    assert all(ref.startswith("c11.") for ref in record["top5"])
+    assert record["hit_top5"] is True
+    assert record["searched"] == [r04.text, "kelishdik"]
+
+
+async def test_an_ambiguous_or_unknown_name_is_not_used_as_a_filter(corpus: LoadedCorpus) -> None:
+    """Two contacts are called Rustam (Рустам амаки, Rustam (kuryer)): the agent would
+    ask the owner, so the harness searches unfiltered; an unknown name likewise."""
+    r21 = next(q for q in QUERIES if q.id == "r21")
+    for name in ("Rustam", "Zebiniso"):
+        llm = OracleLLM(contact=lambda q, name=name: name)  # type: ignore[misc]
+        result = await RetrievalTarget([r21], mode=RetrievalMode.VARIANTS, corpus=corpus).run(
+            context(llm, CallLedger())
+        )
+        assert result.details[0]["contact"] == name
+        assert result.details[0]["contact_filter"] is None
+        assert result.details[0]["widened"] is False
+
+
+async def test_a_filtered_search_that_finds_nothing_is_widened(corpus: LoadedCorpus) -> None:
+    r01 = next(q for q in QUERIES if q.id == "r01")  # "Qorasuv-3 17-uy", in Kamola's chat
+    llm = OracleLLM(contact=lambda q: "Daniel")  # a real contact, but the wrong chat
+    result = await RetrievalTarget([r01], mode=RetrievalMode.VARIANTS, corpus=corpus).run(
+        context(llm, CallLedger())
+    )
+    record = result.details[0]
+    # S03.6 review: the report says the filter was dropped, and does not show it
+    # as the filter that produced the hits.
+    assert record["contact"] == "Daniel"
+    assert record["widened"] is True
+    assert record["contact_filter"] is None
+    assert record["hit_top5"] is True  # found again without the filter
+    assert any("widened" in note and "r01" in note for note in result.notes)
+
+
+# ---------------------------------------------------------------- replay mode
+def recorded_report(tmp_path: Path, details: list[dict[str, Any]], **meta: Any) -> Path:
+    report = {"target": "retrieval", "mode": "variants", "details": details, **meta}
+    path = tmp_path / "variants.json"
+    path.write_text(json.dumps(report), encoding="utf-8")
+    return path
+
+
+async def test_replay_searches_the_recorded_variants_and_partner_without_a_model(
+    corpus: LoadedCorpus, tmp_path: Path
+) -> None:
+    """S03.6 review: the offline replay is reproducible: what a variants run searched
+    and the partner it named, searched again with the current search code."""
+    r04 = next(q for q in QUERIES if q.id == "r04")
+    path = recorded_report(
+        tmp_path,
+        [{"id": "r04", "searched": [r04.text, "kelishdik"], "contact": "Nilufar"}],
+    )
+    target = RetrievalTarget(
+        [r04],
+        mode=RetrievalMode.REPLAY,
+        recorded=load_recorded(path),
+        replayed_from=path.name,
+        corpus=corpus,
+    )
+    assert target.uses_model is False
+    result = await target.run(RunContext(reviews=ReviewLedger.empty()))
+    record = result.details[0]
+    assert record["searched"] == [r04.text, "kelishdik"]
+    assert record["contact_filter"] == "Nilufar opa (rahbar)"
+    assert record["hit_top5"] is True
+    assert [m.key for m in result.metrics] == ["top5_hit"]  # no answer without a model
+    assert result.metrics[0].gated is False
+    assert result.prompts == ()
+    assert "Replayed: variants.json." in result.notes
+
+
+async def test_replay_counts_an_item_the_recorded_run_did_not_search_as_a_miss(
+    corpus: LoadedCorpus, tmp_path: Path
+) -> None:
+    r01 = next(q for q in QUERIES if q.id == "r01")
+    path = recorded_report(tmp_path, [{"id": "r01", "searched": [], "contact": None}])
+    result = await RetrievalTarget(
+        [r01], mode=RetrievalMode.REPLAY, recorded=load_recorded(path), corpus=corpus
+    ).run(RunContext(reviews=ReviewLedger.empty()))
+    assert result.details[0]["hit_top5"] is False
+    assert result.details[0]["error"] == "replay:not_searched"
+
+
+def test_only_a_variants_report_can_be_replayed(tmp_path: Path) -> None:
+    with pytest.raises(EvalsError):
+        load_recorded(recorded_report(tmp_path, [], mode="deterministic"))
+    with pytest.raises(EvalsError):
+        RetrievalTarget(QUERIES[:1], mode=RetrievalMode.REPLAY)
+
+
 # ---------------------------------------------------------------- variants mode
 def unwrap(value: str) -> str:
     return html.unescape(re.sub(r"^<untrusted[^>]*>|</untrusted>$", "", value))
@@ -253,11 +362,13 @@ class OracleLLM(FakeLLM):
     def __init__(
         self,
         variants: Callable[[RetrievalQuery], list[str]] | None = None,
+        contact: Callable[[RetrievalQuery], str | None] | None = None,
         usage: Usage = Usage(400, 100),  # noqa: B008  (immutable)
     ) -> None:
         super().__init__()
         self._by_text = {q.text: q for q in QUERIES}
         self._variants = variants or (lambda q: [q.text])
+        self._contact = contact or (lambda q: None)
         self._usage = usage
 
     async def parse[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> ParsedResponse[T]:
@@ -265,7 +376,7 @@ class OracleLLM(FakeLLM):
         query = self._by_text[request.items[0].text]  # type: ignore[union-attr]
         value: dict[str, Any]
         if schema is QueryVariants:
-            value = {"queries": self._variants(query)}
+            value = {"queries": self._variants(query), "contact": self._contact(query)}
         else:
             value = self._answer(query, request.items[1].text)  # type: ignore[union-attr]
         return ParsedResponse(
@@ -310,7 +421,7 @@ async def test_variants_mode_with_a_perfect_model_answers_every_retrieved_query_
     # are answered correctly, which exercises the whole reference check.
     assert answered.all_items.numerator == hit.all_items.numerator
     assert hit.all_items.numerator > 0
-    assert result.prompts == ("retrieval_variants.v1", "retrieval_answer.v1")
+    assert result.prompts == ("retrieval_variants.v2", "retrieval_answer.v1")
     # Metered: a variants call per query plus an answer call per query with hits.
     purposes = [e.purpose for e in ledger.entries]
     assert purposes.count("eval_retrieval_variants") == 38

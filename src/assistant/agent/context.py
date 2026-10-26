@@ -176,6 +176,35 @@ SUMMARY_SENDER_LABELS = {
 #: One message's text is cut here in a summarize context.
 SUMMARY_MESSAGE_CHARS = 2000
 
+#: How a summary run names the owner's language tag (`accounts.locale_pref`):
+#: the script spelled out, since a bare `uz-Latn` lost to Cyrillic chats (S03.6).
+#: Bare `uz` (and `uz-UZ`) is Latin: Unicode CLDR's likely subtags expand `uz` to
+#: `uz-Latn-UZ`, and Latin is Uzbekistan's official script (S03.6 review).
+SUMMARY_LANGUAGE_NAMES = {
+    "uz-latn": "Uzbek written in Latin letters",
+    "uz-cyrl": "Uzbek written in Cyrillic letters",
+    "uz": "Uzbek written in Latin letters",
+    "uz-uz": "Uzbek written in Latin letters",
+    "ru": "Russian",
+    "en": "English",
+}
+#: Languages whose region subtag never changes the script we name: `ru-RU`,
+#: `en-US` fall back to `ru`, `en` (`accounts.preferences.check_language` keeps
+#: region tags). Not Uzbek: `uz-AF` is written in Arabic script.
+_REGION_FALLBACK = frozenset({"ru", "en"})
+
+
+def summary_language(tag: str | None) -> str | None:
+    """The owner's language as the summary run names it, or None (no tag, or
+    one we have no name for: the prompt then falls back to the tag alone)."""
+    if not tag:
+        return None
+    key = tag.strip().lower()
+    if key in SUMMARY_LANGUAGE_NAMES:
+        return SUMMARY_LANGUAGE_NAMES[key]
+    primary = key.partition("-")[0]
+    return SUMMARY_LANGUAGE_NAMES.get(primary) if primary in _REGION_FALLBACK else None
+
 
 @dataclass(frozen=True, slots=True)
 class SummarizeContext:
@@ -201,9 +230,11 @@ def build_summarize(
     `notes` are the owner's notes about this contact and this chat only,
     loaded by the §7.3 rule (`memory/items.py::contact_facing`, S03.3)."""
     timezone = account.timezone
+    language = summary_language(account.locale_pref)
     profile = [
         "Owner profile:",
-        f"- preferred language: {account.locale_pref or 'not set'}",
+        f"- preferred language: {account.locale_pref or 'not set'}"
+        + (f" ({language})" if language else ""),
         f"- timezone: {timezone} (message times below are in it)",
     ]
     if period is not None:
@@ -219,6 +250,13 @@ def build_summarize(
         )
     else:
         task = "Task: write the running summary of this chat from its messages."
+    if language:
+        # Last in the instructions: in S03.6 the bare tag lost to chats written
+        # in another script.
+        task += (
+            f" Write every part of the summary in {language}, whatever the chat's "
+            "language or script."
+        )
     instructions = "\n\n".join([prompt.text, "\n".join(profile), task])
 
     items: list[TextItem] = []

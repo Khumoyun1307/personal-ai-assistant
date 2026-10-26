@@ -1,0 +1,241 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-26",
+  "set": "summary",
+  "target": "summary",
+  "dataset": "e1",
+  "mode": "period-uz-Latn",
+  "model": "gpt-6-luna",
+  "live": true,
+  "effort": "low",
+  "complete": false,
+  "trial": true,
+  "stopped": false,
+  "items": 1,
+  "items_planned": 1,
+  "items_total": 40,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "summarize.v4",
+    "fabrication.v1",
+    "open_loops.v3"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "open_loop_recall",
+      "label": "Open question/commitment recall",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.95,
+      "all_items": {
+        "numerator": 4,
+        "denominator": 5,
+        "ratio": 0.8
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "fail",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 103,
+      "failed_items": [
+        "c01.c3"
+      ],
+      "pending": 0,
+      "note": "2 open loop(s) not matched on `values` (none, or not found literally, e.g. translated): judge pre-screen only, the gate needs the owner's verdict (0 unresolved among the owner-confirmed items)"
+    },
+    {
+      "key": "caveat_presence",
+      "label": "Coverage caveat present whenever gaps exist",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "not evaluable",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 6,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "spurious_caveats",
+      "label": "Caveats for gaps that lost nothing",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 1,
+        "ratio": 0.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "owner_language",
+      "label": "Owner-facing language and script correct",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "fabricated_facts",
+      "label": "Fabricated facts (zero allowed)",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 1,
+        "ratio": 0.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    }
+  ],
+  "breakdowns": {
+    "open-loop recall (pre-screen) by variant": {
+      "uz-Latn": {
+        "numerator": 4,
+        "denominator": 5,
+        "ratio": 0.8
+      }
+    },
+    "owner-language check by variant": {
+      "uz-Latn": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.0010929",
+    "calls": 3,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 3,
+        "input_tokens": 4904,
+        "output_tokens": 1205,
+        "cost_usd": "0.0010929",
+        "cost_per_100_items_usd": "0.1092900"
+      }
+    }
+  },
+  "notes": [
+    "Caveats come from the product's deterministic renderer over the harness's own synthetic gap rows, not from the model (E-d, E-p): the two caveat metrics are an ungated wiring regression check. Recall and language are measured on the per-chat summary (the summarize output), not on the owner-facing reply."
+  ],
+  "details": [
+    {
+      "id": "c01",
+      "variant": "uz-Latn",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 2,
+        "decisions_requested": 2,
+        "key_facts": 4
+      },
+      "open_loops": {
+        "c01.q2": true,
+        "c01.q3": null,
+        "c01.c1": true,
+        "c01.c2": true,
+        "c01.c3": null
+      },
+      "open_loop_keys": {
+        "c01.q3": "c01.q3#16e2cf00",
+        "c01.c3": "c01.c3#16e2cf00"
+      },
+      "open_loops_judged": {
+        "c01.q3": true,
+        "c01.c3": false
+      },
+      "open_loops_evidence": {
+        "c01.q3": "- Kontakt Nodira opalar ham keladimi va ularga kim qo‘ng‘iroq qilishini so‘ragan; javob ko‘rsatilmagan.",
+        "c01.c3": "- Kontakt sovg‘aga katta ro‘mol va choynak to‘plamini olmoqchi; pulni shanba kuni naqd berish mumkinligini aytgan."
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Oyimning tug‘ilgan kunini nishonlash uchun kafe, tort, buvini olib kelish va sovg‘a masalalari muhokama qilingan. Menyu tanlovi va ayrim kelishuvlar hali javob kutmoqda.\nKontakt Nodira opalar ham keladimi va ularga kim qo‘ng‘iroq qilishini so‘ragan; javob ko‘rsatilmagan.\nKontaktga shokoladli tort buyurtma qilishini aytgan.\nBuvini uyidan olib kelishini aytgan. 17-oktabr soat 18:00\nKontakt sovg‘a uchun har kim 300 ming so‘mdan berishga rozilikni so‘ragan; javob ko‘rsatilmagan.\nKontakt menyu uchun osh yoki shashlik tanlashni so‘ragan; tanlov hali bildirilmagan.\nTug‘ilgan kun 17-oktabr, shanba kuni; «Gulzor» kafesida soat 19:00 ga 12 kishilik joy band qilingan.\nKontakt kafe so‘ragan 600 ming so‘mlik 50% oldindan to‘lovni amalga oshirgan.\nKontakt sovg‘aga katta ro‘mol va choynak to‘plamini olmoqchi; pulni shanba kuni naqd berish mumkinligini aytgan.\nKafe administratori menyuni 15-oktabr soat 12:00 gacha tasdiqlashni so‘ragan.\nKontakt menyu tanlovini, sovg‘a uchun pul yig‘ishga rozilikni va Nodira opalar masalasida javob kutmoqda.",
+      "summary_labelled": "Overview: Oyimning tug‘ilgan kunini nishonlash uchun kafe, tort, buvini olib kelish va sovg‘a masalalari muhokama qilingan. Menyu tanlovi va ayrim kelishuvlar hali javob kutmoqda.\nOpen questions to the owner:\n- Kontakt Nodira opalar ham keladimi va ularga kim qo‘ng‘iroq qilishini so‘ragan; javob ko‘rsatilmagan.\nCommitments not yet done:\n- promised by the owner: Kontaktga shokoladli tort buyurtma qilishini aytgan.\n- promised by the owner: Buvini uyidan olib kelishini aytgan. (due: 17-oktabr soat 18:00)\nDecisions requested from the owner:\n- Kontakt sovg‘a uchun har kim 300 ming so‘mdan berishga rozilikni so‘ragan; javob ko‘rsatilmagan.\n- Kontakt menyu uchun osh yoki shashlik tanlashni so‘ragan; tanlov hali bildirilmagan.\nKey facts:\n- Tug‘ilgan kun 17-oktabr, shanba kuni; «Gulzor» kafesida soat 19:00 ga 12 kishilik joy band qilingan.\n- Kontakt kafe so‘ragan 600 ming so‘mlik 50% oldindan to‘lovni amalga oshirgan.\n- Kontakt sovg‘aga katta ro‘mol va choynak to‘plamini olmoqchi; pulni shanba kuni naqd berish mumkinligini aytgan.\n- Kafe administratori menyuni 15-oktabr soat 12:00 gacha tasdiqlashni so‘ragan.\nNeeds a reply from the owner: yes - Kontakt menyu tanlovini, sovg‘a uchun pul yig‘ishga rozilikni va Nodira opalar masalasida javob kutmoqda."
+    }
+  ]
+}

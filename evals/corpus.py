@@ -189,17 +189,34 @@ _EVAL_DATABASE_NAME = re.compile(rf"^{EVAL_DATABASE_PREFIX}[0-9a-f]{{8}}$")
 
 def leftover_databases(base_url: str) -> list[str]:
     """Throwaway databases a killed run left on the server of `base_url` (a normal
-    run, a failure and Ctrl+C all drop theirs; a killed process cannot)."""
+    run, a failure and Ctrl+C all drop theirs; a killed process cannot).
+
+    A database with an open connection belongs to a run in progress (its engine
+    keeps pooled connections for the whole run) and is **not** a leftover (S03.6:
+    a test calling `cleanup --yes` dropped a live run's database mid-run)."""
     with psycopg.connect(_admin_url(base_url), autocommit=True) as conn:
-        rows = conn.execute("SELECT datname FROM pg_database ORDER BY datname").fetchall()
+        rows = conn.execute(
+            "SELECT d.datname FROM pg_database d WHERE NOT EXISTS "
+            "(SELECT 1 FROM pg_stat_activity a WHERE a.datname = d.datname) "
+            "ORDER BY d.datname"
+        ).fetchall()
     return [name for (name,) in rows if _EVAL_DATABASE_NAME.fullmatch(name)]
 
 
 def drop_leftover_databases(base_url: str, names: list[str]) -> list[str]:
-    """Drop the named leftovers; a name that is not one of ours is ignored."""
-    dropped = [name for name in names if _EVAL_DATABASE_NAME.fullmatch(name)]
-    for name in dropped:
-        _drop_database(base_url, name)
+    """Drop the named leftovers; a name that is not one of ours is ignored, and so
+    is one somebody connected to meanwhile: the drop is **not** forced, so Postgres
+    refuses it while a run uses the database."""
+    dropped: list[str] = []
+    for name in names:
+        if not _EVAL_DATABASE_NAME.fullmatch(name):
+            continue
+        try:
+            with psycopg.connect(_admin_url(base_url), autocommit=True) as conn:
+                conn.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        except psycopg.errors.ObjectInUse:
+            continue
+        dropped.append(name)
     return dropped
 
 

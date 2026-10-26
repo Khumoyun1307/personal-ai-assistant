@@ -218,7 +218,9 @@ def test_the_estimate_covers_the_summarize_call_its_truncation_retry_and_both_ju
     assert purposes[(SUMMARIZE_PURPOSE, larger)] == len(E1)
     assert purposes[(FABRICATION_PURPOSE, 3000)] == len(E1)
     assert purposes[(LOOPS_PURPOSE, 3000)] == with_loops
-    assert 0 < with_loops < len(E1)  # the judge is planned only where it will be called
+    # Any open loop can reach the judge (no `values`, or values not found literally,
+    # E-s), so it is planned wherever the chat has one.
+    assert 0 < with_loops <= len(E1)
     assert len(plan) == 3 * len(E1) + with_loops
 
 
@@ -227,7 +229,7 @@ def _loops_call_expected(conversation: Conversation) -> bool:
         *(q for q in conversation.labels.questions_to_owner if q.status == "open"),
         *(c for c in conversation.labels.commitments if c.status == "open"),
     ]
-    return any(not item.values for item in open_items)
+    return bool(open_items)
 
 
 def test_the_summarize_estimate_counts_the_real_prompt_and_the_messages() -> None:
