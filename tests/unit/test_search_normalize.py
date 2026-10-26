@@ -218,6 +218,12 @@ def test_a_query_of_function_words_only_is_searched_as_typed() -> None:
         ("yurak", {"yurak", "yurag"}),
         ("qishloq", {"qishloq", "qishlog"}),
         ("ga", {"ga"}),
+        # S03.6: verb forms and final vowels (kelishgan / kelishdik, kolodka / kolodki)
+        ("kelishgan", {"kelishgan", "kelish"}),
+        ("kelishdik", {"kelishdik", "kelish", "kelishdig"}),
+        ("kolodka", {"kolodka", "kolodk", "kolodg"}),
+        ("narxi", {"narxi", "narx"}),
+        ("uyi", {"uyi"}),  # a final vowel is stripped only from longer words
     ],
 )
 def test_light_uzbek_stem_variants(term: str, expected: set[str]) -> None:

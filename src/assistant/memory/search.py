@@ -173,10 +173,38 @@ def normalize(text: str) -> str:
 
 
 # ------------------------------------------------------------------- queries
-#: Short Uzbek suffixes stripped for a stem variant, longest first. A stem
-#: must keep at least `_MIN_STEM` letters, so short words are left alone.
-_SUFFIXES = ("larni", "imiz", "ning", "lar", "dan", "ing", "ni", "ga", "da", "im")
+#: Short suffixes stripped for a stem variant, longest first (one per term). A
+#: stem must keep at least `_MIN_STEM` letters, so short words are left alone.
+#: Uzbek case and plural endings, the common verb endings (S03.6: kelishgan and
+#: kelishdik share `kelish`) and a final vowel (Uzbek -i, Russian -a/-i/-y/-u:
+#: kolodka and kolodki share `kolodk`).
+_SUFFIXES = (
+    "larni",
+    "moqda",
+    "yapti",
+    "imiz",
+    "ning",
+    "lar",
+    "dan",
+    "ing",
+    "gan",
+    "dik",
+    "ni",
+    "ga",
+    "da",
+    "di",
+    "im",
+    "a",
+    "i",
+    "u",
+    "e",
+    "o",
+    "y",
+)
 _MIN_STEM = 3
+#: A one-letter ending (a final vowel: Uzbek -i, Russian -a/-i/-y/-u) is
+#: stripped only from longer words.
+_MIN_STEM_ONE_LETTER = 4
 #: Voicing alternations (yurak → yuragim, qishloq → qishlogʻi) only for words
 #: long enough that the variant is not a different common word.
 _MIN_VOICING = 4
@@ -359,7 +387,8 @@ def stem_variants(term: str) -> list[str]:
     variants: dict[str, None] = {term: None}
     stem = term
     for suffix in _SUFFIXES:
-        if term.endswith(suffix) and len(term) - len(suffix) >= _MIN_STEM:
+        minimum = _MIN_STEM_ONE_LETTER if len(suffix) == 1 else _MIN_STEM
+        if term.endswith(suffix) and len(term) - len(suffix) >= minimum:
             stem = term[: -len(suffix)]
             variants.setdefault(stem, None)
             break
