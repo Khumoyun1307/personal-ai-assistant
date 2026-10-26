@@ -165,7 +165,7 @@ prod-restore-test ip:
 prod-restore ip file:
     {{ _ops }} -e SSH_STDIN_FILE=/cloud/age-identity.txt --entrypoint bash {{ oci_image }} deploy/oci/ssh.sh {{ ip }} restore {{ file }}
 
-# Any other deploy/server.sh action: offsite-list, post-restore <ts>, app-stop, app-start, restart-timing, reboot.
+# Any other deploy/server.sh action: offsite-list, post-restore <ts>, app-stop, app-start, restart-timing, reboot, reindex-search, nfr04 [days].
 prod ip +args:
     {{ ops }} deploy/oci/ssh.sh {{ ip }} {{ args }}
 

@@ -382,7 +382,7 @@ async def test_managed_consent_is_asked_and_recorded_with_the_policy_and_process
 
     state = await managed_consent(env)
     assert state.granted
-    assert (state.policy_version, state.processors) == ("v4", ("OpenAI",))
+    assert (state.policy_version, state.processors) == ("v5", ("OpenAI",))
 
 
 async def test_declining_managed_consent_grants_nothing(env: Env) -> None:
@@ -458,5 +458,10 @@ async def test_privacy_says_connected_chats_are_saved_whether_or_not_ai_is_on(en
     assert "discarded" not in shown
     assert "I save new messages (text kept up to 90 days), whether or not AI is on" in shown
     assert "If someone else writes to me directly, I don't keep their message." in shown
+    # Policy v5: what outlives the 90-day message limit.
+    assert (
+        "Notes you ask me to remember and summaries of your chats are kept until you "
+        "delete them." in shown
+    )
     assert "a server in the US (Oracle, Ashburn)" in shown
     assert "Backblaze B2 in the EU, for up to 35 days" in shown

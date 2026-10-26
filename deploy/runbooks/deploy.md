@@ -41,6 +41,12 @@ Rules:
   retained message in short batches beside the running app (an edit made
   meanwhile always wins), records the new version and prints counts only.
   Running it again is a no-op. Locally: `just reindex-search`.
+- **Answer times (NFR-04, M03 onwards).** `just prod <ip> nfr04 [days]`
+  (default 30) prints, per class of owner request (simple answer, catch-up,
+  attention list, all), the count, p50/p95 of the run and of the wait from
+  the owner's message to the finished reply, the p95 limit and a verdict.
+  It reads `deploy/sql/nfr04.sql` in a read-only transaction: timings, run
+  types, statuses and tool names only, never a content column.
 - A `backup_upload_stale` alert means dumps are produced but no longer reach
   B2: run `just prod-backup <ip>` and read its log lines (`off-site sync of
   … failed` / `… refused`); see `restore.md` §C for the delete guard —
