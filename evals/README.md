@@ -139,8 +139,8 @@ run **stopped before its planned items** (budget cap; its report is still writte
 `…-aborted.json` with what it spent. A run drops its throwaway database when it ends, fails
 or is interrupted, but **a killed process cannot**: it leaves an `assistant_eval_<8 hex>`
 database on the server. `python -m evals cleanup` lists such leftovers and
-`python -m evals cleanup --yes` drops them (only names of exactly that form; never run it
-while another evaluation is running).
+`python -m evals cleanup --yes` drops them (only names of exactly that form, and never a database a running evaluation is
+connected to: it is not listed, and the drop is not forced, S03.6).
 
 **Targets.** `retrieval` has two modes over the 38 queries: `deterministic` (the
 query as typed goes to `memory.retrieval.search_messages`; target in the top 5,

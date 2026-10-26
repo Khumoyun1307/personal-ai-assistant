@@ -98,5 +98,6 @@ contact filter and the final answer (synthetic data, for review; E-s, E-t, E-u).
 | 2026-10-26 | `retrieval-gpt-6-luna` (baseline) | retrieval_variants.v1, retrieval_answer.v1 | 0.0094 |
 | 2026-10-26 | `retrieval-gpt-6-luna-s036-trial`, `retrieval-gpt-6-luna-s036` (S03.6) | retrieval_variants.v2, retrieval_answer.v1 | 0.0003 + 0.0102 |
 | 2026-10-26 | `summary-gpt-6-luna-s036-v3-trial`, `summary-gpt-6-luna-s036-v3` (S03.6) | summarize.v3, fabrication.v1, open_loops.v2 | 0.0011 + 0.0359 |
+| 2026-10-26 | `summary-gpt-6-luna-s036-v4-trial`, `…-s036-v4-aborted.json` (run lost its database, no results), `summary-gpt-6-luna-s036-v4` (S03.6) | summarize.v4, fabrication.v1, open_loops.v3 | 0.0011 + 0.0210 + 0.0392 |
 
-The S03.4/S03.6 total is tracked against the owner's USD 1 here and in M03.md S03.6.
+Total so far: USD 0.1523 of the owner's USD 1 (baseline 0.0435, S03.6 0.1088), tracked here and in M03.md S03.6.
