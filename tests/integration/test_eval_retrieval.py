@@ -172,7 +172,6 @@ async def test_the_deterministic_baseline_runs_without_a_model(corpus: LoadedCor
     )
     assert confirmed.metrics[0].gate_status() is Status.INFO
     assert result.prompts == ()
-    assert "Replayed: variants.json." in result.notes
     assert {"id", "hit_top5", "rank", "top5", "variants"} <= set(result.details[0])
     assert "top-5 hit by intent" in result.breakdowns
 
@@ -328,6 +327,7 @@ async def test_replay_searches_the_recorded_variants_and_partner_without_a_model
     assert [m.key for m in result.metrics] == ["top5_hit"]  # no answer without a model
     assert result.metrics[0].gated is False
     assert result.prompts == ()
+    assert "Replayed: variants.json." in result.notes
 
 
 async def test_replay_counts_an_item_the_recorded_run_did_not_search_as_a_miss(
