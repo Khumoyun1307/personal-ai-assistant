@@ -212,7 +212,11 @@ class _Record:
     #: over synthetic queries, kept so a miss can be diagnosed (E-t).
     searched: tuple[str, ...] = ()
     contact: str | None = None
+    #: The contact filter that produced the hits; None when there was none, or when
+    #: the filtered search found nothing and was searched again unfiltered
+    #: (`widened`; S03.6 review).
     contact_filter: str | None = None
+    widened: bool = False
     #: The final answer the model wrote (synthetic data), for review.
     answer: Answer | None = None
 
@@ -230,6 +234,7 @@ class _Record:
             "searched": list(self.searched),
             "contact": self.contact,
             "contact_filter": self.contact_filter,
+            "widened": self.widened,
             "answer": self.answer.model_dump() if self.answer is not None else None,
         }
 
@@ -320,7 +325,7 @@ class RetrievalTarget:
                 )
         search_queries = _search_queries(query.text, proposed.queries)
         contact = await self._resolve_contact(proposed.contact)
-        hits = await self._search(search_queries, contact)
+        hits, widened = await self._search(search_queries, contact)
         top = tuple(self._corpus.refs[hit.message_id] for hit in hits)
         rank = next(
             (i for i, ref in enumerate(top, start=1) if ref in query.target_message_ids), None
@@ -337,7 +342,8 @@ class RetrievalTarget:
             None,
             searched=tuple(search_queries) if self.uses_model else (),
             contact=proposed.contact,
-            contact_filter=contact.name if contact is not None else None,
+            contact_filter=contact.name if contact is not None and not widened else None,
+            widened=widened,
         )
         if not self.uses_model:
             return record
@@ -367,10 +373,10 @@ class RetrievalTarget:
 
     async def _search(
         self, queries: Sequence[str], contact: _ContactFilter | None = None
-    ) -> Sequence[SearchHit]:
+    ) -> tuple[Sequence[SearchHit], bool]:
         """The service's top results; narrowed to the named contact when there is
         one, and searched again without the filter if that finds nothing (the agent
-        would widen a search that came back empty)."""
+        would widen a search that came back empty). The flag says it was widened."""
         async with self._corpus.session_factory() as session:
             if contact is not None:
                 narrowed = await search_messages(
@@ -382,7 +388,7 @@ class RetrievalTarget:
                     limit=TOP_N,
                 )
                 if narrowed.hits:
-                    return narrowed.hits
+                    return narrowed.hits, False
             result = await search_messages(
                 session,
                 self._corpus.account_id,
@@ -390,7 +396,7 @@ class RetrievalTarget:
                 now=self._corpus.now,
                 limit=TOP_N,
             )
-        return result.hits
+        return result.hits, contact is not None
 
     # ------------------------------------------------------------ model calls
     async def _variants(self, query: RetrievalQuery, context: RunContext) -> QueryVariants:
@@ -527,6 +533,12 @@ class RetrievalTarget:
                 )
             )
             prompts = [VARIANTS_PROMPT_ID, ANSWER_PROMPT_ID]
+            widened = sorted(r.query_id for r in records if r.widened)
+            if widened:
+                notes.append(
+                    f"{len(widened)} item(s) searched without their contact filter after the "
+                    "filtered search found nothing (`widened`, E-t): " + ", ".join(widened)
+                )
             failed = sorted(r.query_id for r in records if r.error)
             if failed:
                 notes.append(

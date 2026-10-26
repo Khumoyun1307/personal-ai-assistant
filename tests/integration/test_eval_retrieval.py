@@ -254,6 +254,7 @@ async def test_a_named_chat_partner_narrows_the_search_like_resolve_contact(
     record = result.details[0]
     assert record["contact"] == "Nilufar"
     assert record["contact_filter"] == "Nilufar opa (rahbar)"
+    assert record["widened"] is False
     assert record["top5"]
     assert all(ref.startswith("c11.") for ref in record["top5"])
     assert record["hit_top5"] is True
@@ -271,6 +272,7 @@ async def test_an_ambiguous_or_unknown_name_is_not_used_as_a_filter(corpus: Load
         )
         assert result.details[0]["contact"] == name
         assert result.details[0]["contact_filter"] is None
+        assert result.details[0]["widened"] is False
 
 
 async def test_a_filtered_search_that_finds_nothing_is_widened(corpus: LoadedCorpus) -> None:
@@ -280,8 +282,13 @@ async def test_a_filtered_search_that_finds_nothing_is_widened(corpus: LoadedCor
         context(llm, CallLedger())
     )
     record = result.details[0]
-    assert record["contact_filter"] == "Daniel"
+    # S03.6 review: the report says the filter was dropped, and does not show it
+    # as the filter that produced the hits.
+    assert record["contact"] == "Daniel"
+    assert record["widened"] is True
+    assert record["contact_filter"] is None
     assert record["hit_top5"] is True  # found again without the filter
+    assert any("widened" in note and "r01" in note for note in result.notes)
 
 
 # ---------------------------------------------------------------- variants mode
