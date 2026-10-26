@@ -32,7 +32,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account, ControlTurn
-from assistant.accounts.service import CONSENT_AI_MANAGED, active_consent
 from assistant.agent.context import OWNER_HISTORY_TURNS
 from assistant.agent.models import AgentRun
 from assistant.agent.tools.common import OptionalId, check_id, local_time
@@ -433,11 +432,10 @@ async def list_memories_tool(ctx: ToolContext, args: ListMemoriesArgs) -> ToolOu
         if account is None:
             raise LookupError("account")
         # Items that may hold managed-chat content reach a model only with
-        # `ai_managed` (invariant 9); the consent wrapper checks the
-        # processor too, because such a result is marked managed below.
-        managed_ok = (
-            await active_consent(uow.session, ctx.account_id, kind=CONSENT_AI_MANAGED)
-        ).granted
+        # `ai_managed` naming this run's processor — the runtime's own check
+        # (verification item 3), so a consent for another processor
+        # withholds them instead of failing the whole run in the wrapper.
+        managed_ok = ctx.managed_ok
         found, total = await items.list_items(
             uow.session,
             ctx.account_id,
@@ -482,6 +480,13 @@ async def list_memories_tool(ctx: ToolContext, args: ListMemoriesArgs) -> ToolOu
         # Text that may be someone else's taints the run: a configure call
         # after it needs the owner's tap (invariant 3b, safety review V1).
         untrusted=any(item.tainted for item in found),
+        # The chats and contacts the shown items are about or came from: the
+        # reply and anything this run saves keep them, so deleting one of
+        # those chats finds them (verification item 1).
+        refs=ToolRefs(
+            conversation_ids=frozenset(c for item in found for c in item.conversation_refs),
+            contact_ids=frozenset(c for item in found for c in item.contact_refs),
+        ),
     )
 
 

@@ -232,6 +232,7 @@ class OwnerRequestRuntime:
                 run_id=state.run_id,
                 run_type=RUN_TYPE,
                 tainted=state.tainted,
+                managed_ok=started.managed_consent,
                 services=ToolServices(
                     session_factory=self._session_factory,
                     clock=self._clock,

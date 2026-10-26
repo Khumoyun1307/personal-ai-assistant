@@ -131,8 +131,9 @@ class MemoryItem(Base):
     notes (§10.4): `scope` names exactly which FK is set (none for `owner`).
 
     CONTENT-BEARING: `content` (the owner's words; registered in
-    `privacy/content_columns.py`). `provenance` holds flags only (whether the
-    item came from a run that had third-party text in it).
+    `privacy/content_columns.py`). `provenance` holds flags and ids only:
+    `tainted` and `managed` (the item may be someone else's words or hold
+    managed-chat content) and `refs` (the chats and contacts its run drew on).
     """
 
     __tablename__ = "memory_items"
@@ -175,8 +176,11 @@ class MemoryItem(Base):
         Text, nullable=False, server_default=sql_text("'owner_stated'")
     )
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=sql_text("'active'"))
-    #: Flags only, e.g. `{"tainted": true}`: saved from a run that had other
-    #: people's text in its context (the owner confirmed it on a card).
+    #: Flags and ids, never content: `{"tainted": bool, "managed": bool,
+    #: "refs": {"conversation_ids": [...], "contact_ids": [...]}}` — saved by a
+    #: run that had other people's text in its context, and the chats and
+    #: contacts that run drew on (`memory/items.py::provenance`). Rows from
+    #: before `managed` existed count as managed when tainted.
     provenance: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=sql_text("'{}'")
     )
