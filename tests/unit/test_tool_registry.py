@@ -231,14 +231,50 @@ def test_release_flags_still_hide_blocked_stubs() -> None:
     assert contact_run == {}
 
 
-def test_owner_request_v6_is_active_and_v1_to_v5_remain() -> None:
-    assert prompt_registry.ACTIVE["owner_request"] == "v6"
-    for version in ("v1", "v2", "v3", "v4", "v5", "v6"):
+def test_owner_request_v7_is_active_and_v1_to_v6_remain() -> None:
+    assert prompt_registry.ACTIVE["owner_request"] == "v7"
+    for version in ("v1", "v2", "v3", "v4", "v5", "v6", "v7"):
         assert prompt_registry.load("owner_request", version).text
     v6 = prompt_registry.load("owner_request", "v6").text
     assert "[msg:" in v6
     assert "chat_access_off" in v6
     assert "widened" in v6
+
+
+def _rule(prompt: str, number: int) -> str:
+    """Rule `number` of a prompt (up to the next numbered rule)."""
+    start = prompt.index(f"\n{number}. ")
+    end = prompt.find(f"\n{number + 1}. ", start)
+    return prompt[start : end if end != -1 else None]
+
+
+def test_owner_request_v7_is_v6_plus_the_search_and_language_rules() -> None:
+    """S03.7 fix round (owner decisions 1-3, 2026-10-26): a bare phrase is a
+    search of the owner's chats; a name that is no contact is searched for; an
+    empty narrowed search reads the chat before saying "not there"; the whole
+    reply in the owner's language and script, values copied as written."""
+    v6 = prompt_registry.load("owner_request", "v6").text
+    v7 = prompt_registry.load("owner_request", "v7").text
+    assert v7.split("\n1. ")[0] == v6.split("\n1. ")[0]
+    for number in range(1, 18):
+        if number == 16:  # rewritten
+            continue
+        if number in (5, 6):  # v6 word for word, with additions
+            v7_lines = _rule(v7, number).splitlines()
+            for line in _rule(v6, number).splitlines():
+                assert any(new.startswith(line) for new in v7_lines), (number, line)
+            continue
+        assert _rule(v7, number) == _rule(v6, number), number
+    rule5 = _rule(v7, 5)
+    assert "only a name, a number, an address, a phrase or a few keywords" in rule5
+    assert "the owner's own words, exactly as written, as the first phrase" in rule5
+    assert "something to remember, a message to draft or send, or a general-knowledge" in rule5
+    assert "If `resolve_contact` finds no contact" in rule5
+    assert "read that chat with `get_conversation` before saying it is not there" in rule5
+    assert "exactly as the message writes them" in _rule(v7, 6)
+    rule16 = _rule(v7, 16)
+    assert "whole reply" in rule16
+    assert "script" in rule16
 
 
 def test_duplicate_names_are_refused() -> None:

@@ -57,9 +57,15 @@ def build_owner_request(
     managed_allowed: bool = False,
     memory: Sequence[MemoryView] = (),
 ) -> OwnerRequestContext:
+    # The tag spelled out with its script, as the summarize context does: a
+    # bare `uz-Latn` lost to the script of the chats (S03.6; S03.7 fix round).
+    spelled = summary_language(account.locale_pref)
+    language = account.locale_pref or "not set"
     profile = [
         "Owner profile:",
-        f"- preferred language: {account.locale_pref or 'not set'}",
+        f"- preferred language: {language} ({spelled})"
+        if spelled
+        else f"- preferred language: {language}",
         f"- timezone: {account.timezone}",
     ]
     sections = [prompt.text, "\n".join(profile), f"Current time (UTC): {now:%Y-%m-%d %H:%M}"]

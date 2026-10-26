@@ -26,8 +26,15 @@ ACTIVE: dict[str, str] = {
     # renders; search narrowed by contact without the name in the query,
     # both Russian case forms, widened results named by their own contact;
     # a summary item's `who` relayed as given; `chat_access_off` said
-    # plainly, never guessed. v1-v5 stay: retained runs reference them.
-    "owner_request": "v6",
+    # plainly, never guessed. v7 (S03.7 fix round, owner decisions 1-3 of
+    # 2026-10-26): a bare name, number, address, phrase or keywords is a search
+    # of the chats with the owner's own words first, never a note, a draft or a
+    # general-knowledge question; a name `resolve_contact` cannot find is
+    # searched for across all chats; an empty narrowed search reads the chat
+    # before "not there"; values copied as the message writes them; the whole
+    # reply in the owner's language and script. v1-v6 stay: retained runs
+    # reference them.
+    "owner_request": "v7",
     # v1 (S03.2): one chat, rolling or period; cite message ids; no tools.
     # v2 (S03.3): the owner's notes about this contact are background, never
     # cited or reported as chat content.
