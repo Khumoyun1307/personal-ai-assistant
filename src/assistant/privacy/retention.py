@@ -27,7 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import BigInteger, column, delete, func, select, text, update, values
+from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import (
@@ -49,6 +50,9 @@ from assistant.memory.summaries import (
     rollup_candidates,
     sweep_period_summaries,
 )
+from assistant.observability.logging import get_logger
+
+logger = get_logger(__name__)
 
 INBOUND_PAYLOAD_RETENTION = timedelta(days=7)
 CONTROL_TURN_TEXT_RETENTION = timedelta(days=90)
@@ -180,12 +184,6 @@ async def sweep_all(
                 )
             )
         )
-    # The rollup is tried first; the purge right after never waits for it.
-    rollups = (
-        await schedule_rollups(session_factory, clock, scheduler)
-        if rollups_enabled and scheduler is not None
-        else 0
-    )
     message_contents = await sweep_message_content(session_factory, clock)
     contact_names = await sweep_contact_names(session_factory, clock)
     async with transaction(session_factory) as uow:
@@ -194,6 +192,15 @@ async def sweep_all(
         expired = await sweep_expired_cards(uow.session, clock)
     async with transaction(session_factory) as uow:
         forgotten = await sweep_forgotten(uow.session, now)
+    # The rollup (content 80-90 days old) runs last and on its own: the
+    # purges never depend on it, and a failure here is logged, not raised
+    # (review item 1). It retries at the next hourly sweep.
+    rollups = 0
+    if rollups_enabled and scheduler is not None:
+        try:
+            rollups = await schedule_rollups(session_factory, clock, scheduler)
+        except Exception as error:
+            logger.error("rollup_scheduling_failed", exc_type=type(error).__name__)
     return SweepReport(
         inbound,
         turns,
@@ -278,24 +285,41 @@ async def schedule_rollups(
     of chats queued."""
     now = clock.now()
     rollup_cutoff = now - (MESSAGE_CONTENT_RETENTION - ROLLUP_LEAD)
+    flagged: list[int] = []
     async with transaction(session_factory) as uow:
         due = await rollup_candidates(uow.session, rollup_cutoff)
-        # One short transaction with no account lock and no network call
-        # (AGENTS §13); conversation rows are taken in id order (§9.4), and a
-        # chat set to Ignore meanwhile is left alone.
-        for conversation_id, oldest_change in due:
+        if due:
+            # One short transaction with no account lock and no network call
+            # (AGENTS §13): the conversation rows are locked in id order
+            # (§9.4), then flagged in one UPDATE; a chat set to Ignore
+            # meanwhile is left alone and not queued (review item 8).
+            ids = sorted(conversation_id for conversation_id, _ in due)
             await uow.session.execute(
+                select(Conversation.id)
+                .where(Conversation.id.in_(ids))
+                .order_by(Conversation.id)
+                .with_for_update()
+            )
+            batch = values(
+                column("cid", BigInteger),
+                column("oldest", TIMESTAMP(timezone=True)),
+                name="due",
+            ).data(due)
+            returned = await uow.session.execute(
                 update(Conversation)
-                .where(Conversation.id == conversation_id)
+                .where(Conversation.id == batch.c.cid)
                 .where(Conversation.mode != "ignore")
                 .values(
                     pending_ai_since=func.least(
-                        func.coalesce(Conversation.pending_ai_since, oldest_change), oldest_change
+                        func.coalesce(Conversation.pending_ai_since, batch.c.oldest),
+                        batch.c.oldest,
                     )
                 )
+                .returning(Conversation.id)
             )
+            flagged = sorted(int(row) for row in returned.scalars().all())
     queued = 0
-    for conversation_id, _ in due:
+    for conversation_id in flagged:
         # After the commit: a queueing-lock conflict (a refresh already
         # queued) must not roll the flag back; that queued job does the work.
         if await defer_refresh(scheduler, conversation_id, at=None) is not None:

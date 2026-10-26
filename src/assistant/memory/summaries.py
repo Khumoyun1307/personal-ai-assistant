@@ -784,7 +784,11 @@ async def rollup_candidates(
         .where(func.coalesce(Message.edited_at, Message.sent_at) < expiring_before)
         .where(Message.id > func.coalesce(rolling, 0))
         .group_by(Message.conversation_id)
-        .order_by(Message.conversation_id)
+        # Soonest to expire first, so a chat whose refresh keeps failing
+        # cannot starve the others past the batch limit (review item 8).
+        .order_by(
+            func.min(func.coalesce(Message.edited_at, Message.sent_at)), Message.conversation_id
+        )
         .limit(limit)
     )
     return [(int(c), changed) for c, changed in rows.all()]

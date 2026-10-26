@@ -405,10 +405,13 @@ async def contact_facing(
         .where(MemoryItem.account_id == account_id)
         .where(MemoryItem.status == STATUS_ACTIVE)
         .where(or_(*allowed))
-        .order_by(MemoryItem.created_at, MemoryItem.id)
+        # The newest `limit`, shown oldest first (review item 4).
+        .order_by(MemoryItem.created_at.desc(), MemoryItem.id.desc())
         .limit(limit)
     )
-    return [_view(row) for row in rows.scalars().all()]
+    newest = [_view(row) for row in rows.scalars().all()]
+    newest.reverse()
+    return newest
 
 
 async def notes_for_panel(
