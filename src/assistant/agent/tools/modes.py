@@ -258,8 +258,17 @@ async def update_preferences_tool(ctx: ToolContext, args: UpdatePreferencesArgs)
                 f"{FIELD_LABELS[f]}: {html.escape(str(old or 'auto'))} → {html.escape(str(new))}"
                 for f, (old, new) in change.changes.items()
             ]
+            # A retention period has no Undo (M03 D85): the owner changes it
+            # again in /settings, where a shorter one asks first.
+            undoable = not preferences.changes_retention(change.changes)
+            if not undoable:
+                lines.append(RETENTION_NO_UNDO)
             echo = await queue_echo(
-                ctx, session, change.audit_id, "⚙️ Settings changed\n" + "\n".join(lines)
+                ctx,
+                session,
+                change.audit_id,
+                "⚙️ Settings changed\n" + "\n".join(lines),
+                undo=undoable,
             )
     changed = {f: new for f, (_, new) in change.changes.items()}
     if echo is None:
@@ -274,20 +283,41 @@ def _sets_retention(args: Any) -> bool:
     return isinstance(args, UpdatePreferencesArgs) and bool(args.retention())
 
 
+#: Said with a confirmed retention change (M03 D85).
+RETENTION_NO_UNDO = (
+    "A retention change has no Undo: change it again in /settings → Retention…. A "
+    "shorter period deletes older data at the next hourly cleanup; with a longer one, "
+    "data already deleted does not come back."
+)
+
+
 async def describe_preferences(
     session: AsyncSession, account_id: int, args: Mapping[str, Any]
 ) -> str | None:
-    """For the confirmation card: what a retention value deletes, and when."""
+    """For the confirmation card: what a retention value does compared with
+    the period in force now — only a shorter one deletes (review item 12)."""
+    account = await session.get(Account, account_id)
+    settings = account.settings if account is not None else None
     lines = []
     for key, field in preferences.FIELD_RETENTION.items():
         days = args.get(field)
-        if isinstance(days, int):
-            label = retention_policy.CLASSES[key].label.lower()
+        if not isinstance(days, int) or isinstance(days, bool):
+            continue
+        label = retention_policy.CLASSES[key].label
+        now = retention_policy.days(settings, key)
+        if days < now:
             lines.append(
-                f"{label} older than {days} days are deleted at the next hourly cleanup "
-                "and cannot be restored"
+                f"{label}: {now} → {days} days. Anything older than {days} days is "
+                "deleted at the next hourly cleanup and cannot be restored."
             )
-    return "; ".join(lines) or None
+        elif days > now:
+            lines.append(
+                f"{label}: {now} → {days} days. Nothing is deleted; data already deleted "
+                "does not come back."
+            )
+        else:
+            lines.append(f"{label}: already {days} days; nothing changes.")
+    return " ".join(lines) or None
 
 
 UPDATE_PREFERENCES = ToolDefinition(
@@ -297,8 +327,8 @@ UPDATE_PREFERENCES = ToolDefinition(
         "new chats start in, the default reply language, tone and style for replies "
         "to contacts, and how long messages, this chat and raw updates are kept "
         "(shorter only). The owner sees the change with an Undo button; a retention "
-        "change needs the owner's tap on a card first. Free-text style wishes are not "
-        "settings: save them with remember."
+        "change needs the owner's tap on a card first and has no Undo. Free-text "
+        "style wishes are not settings: save them with remember."
     ),
     args_model=UpdatePreferencesArgs,
     capability=CapabilityClass.CONFIGURE,

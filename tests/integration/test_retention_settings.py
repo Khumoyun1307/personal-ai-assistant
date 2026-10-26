@@ -6,7 +6,7 @@ The required S03.5 test (IMPLEMENTATION_PLAN §5), findable by name:
   `test_a_retention_change_takes_effect_at_the_next_sweep`.
 
 Plus: overrides are per account; values outside the allowed ranges are
-refused and stored garbage falls back to the default; the inbound metadata
+refused and stored garbage reads as the shortest period; the inbound metadata
 row goes after 30 days; the /settings retention screen asks before
 shortening; `update_preferences` with a retention value is always a card;
 reply language, tone and style are settings.
@@ -34,7 +34,7 @@ from assistant.privacy.retention import sweep_all
 from assistant.telegram.control import panels
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response, tool_response
-from tests.integration.agent_env import MEMORY_FLAGS, args, ask, one_id, runtime
+from tests.integration.agent_env import MEMORY_FLAGS, applier, args, ask, one_id, runtime
 from tests.integration.business_env import (
     NOW,
     OWNER,
@@ -183,10 +183,8 @@ async def test_retention_values_outside_the_allowed_ranges_are_refused(env: Env)
             await set_retention(env, **days)
     owner = await account(env)
     assert retention_policy.days(owner.settings, "messages") == 90
-    # Garbage stored by hand never widens or breaks the sweep.
-    for garbage in ("x", 5, 9999, None, [1]):
-        assert retention_policy.days({"retention_days": {"messages": garbage}}, "messages") == 90
-    assert retention_policy.days({"retention_days": "junk"}, "raw_updates") == 7
+    # Garbage stored by hand never widens or breaks the sweep: see
+    # test_an_invalid_stored_retention_reads_as_the_shortest_period.
 
 
 async def test_inbound_metadata_rows_go_after_thirty_days(env: Env) -> None:
@@ -319,3 +317,117 @@ async def test_update_preferences_with_a_retention_value_always_needs_a_card(env
     assert row.args is not None
     assert row.args["message_retention_days"] == 30
     assert await one_id(env, "SELECT count(*) FROM app.messages") == 0  # nothing touched
+
+
+# ------------------------------------------------------------ review (S03.5)
+async def test_a_retention_card_says_whether_the_change_deletes_anything(env: Env) -> None:
+    """General review item 12: only a shorter period deletes; a longer one or
+    the same one says so instead of "cannot be restored"."""
+    await connect(env)
+    await set_retention(env, messages=30)
+    turn = await ask(env, "Change how long things are kept")
+    fake = FakeLLM(
+        tool_response(
+            ("c1", "update_preferences", prefs_args(message_retention_days=60)),
+            ("c2", "update_preferences", prefs_args(message_retention_days=14)),
+            ("c3", "update_preferences", prefs_args(message_retention_days=30)),
+            ("c4", "update_preferences", prefs_args(control_chat_retention_days=14)),
+        ),
+        text_response("Please confirm."),
+    )
+    channel = FakeChannel()
+    await runtime(env, fake, channel, flags=MEMORY_FLAGS).run(turn)
+    longer, shorter, same, chat = channel.sends[:4]
+    assert "cannot be restored" not in longer
+    assert "30 → 60 days" in longer
+    assert "nothing is deleted" in longer.lower()
+    assert "already deleted does not come back" in longer
+    assert "cannot be restored" in shorter
+    assert "older than 14 days" in shorter
+    assert "cannot be restored" not in same
+    assert "already" in same.lower()
+    assert "this chat older than" not in chat.lower()  # grammar (review nit)
+    assert "cannot be restored" in chat
+
+
+async def test_a_retention_change_has_no_undo(env: Env) -> None:
+    """Safety review item 7 / general item 11: an Undo would change a
+    retention period without the card (a revert to a shorter period deletes
+    at the next sweep; a revert to a longer one brings nothing back). The
+    echo of a confirmed retention change carries no Undo and says how to
+    change it."""
+    await connect(env)
+    await set_retention(env, messages=30)
+    turn = await ask(env, "Keep messages for 60 days and reply formally")
+    fake = FakeLLM(
+        tool_response(
+            (
+                "c1",
+                "update_preferences",
+                prefs_args(message_retention_days=60, reply_tone="formal"),
+            ),
+        ),
+        text_response("Please confirm."),
+    )
+    channel = FakeChannel()
+    await runtime(env, fake, channel, flags=MEMORY_FLAGS).run(turn)
+    async with env.factory() as session:
+        held = (await session.execute(select(ToolConfirmation))).scalar_one()
+        token = (
+            await session.execute(
+                text("SELECT token FROM app.pending_inputs WHERE kind = 'tool_confirm'")
+            )
+        ).scalar_one()
+    await deliver(env, callback(f"tool_confirm:{token}:confirm"))
+    applied = FakeChannel()
+    outcome = await applier(env, applied, flags=MEMORY_FLAGS).apply(held.id)
+    assert outcome.status == "applied"
+    assert retention_policy.days((await account(env)).settings, "messages") == 60
+    echo = next(i for i, sent in enumerate(applied.sends) if "Settings changed" in sent)
+    assert applied.buttons[echo] == ()
+    assert "/settings" in applied.sends[echo]
+    assert "already deleted does not come back" in applied.sends[echo]
+    async with env.factory() as session:
+        undo_cards = await session.execute(
+            text("SELECT count(*) FROM app.pending_inputs WHERE kind = 'undo'")
+        )
+        assert undo_cards.scalar_one() == 0
+
+
+async def test_an_old_undo_of_a_retention_change_changes_nothing(env: Env) -> None:
+    """Defensive: an audit row with a retention change is not reversible."""
+    from assistant.memory import undo
+
+    await connect(env)
+    await set_retention(env, messages=30)
+    async with env.factory() as session:
+        change_id = (
+            await session.execute(
+                select(AuditLogEntry.id).where(AuditLogEntry.event == "preferences_changed")
+            )
+        ).scalar_one()
+    owner = await account(env)
+    async with env.factory() as session, session.begin():
+        outcome = await undo.undo(
+            session, account_id=owner.id, change_id=change_id, clock=env.clock
+        )
+    assert outcome.status is undo.UndoStatus.NOT_FOUND
+    assert retention_policy.days((await account(env)).settings, "messages") == 30
+
+
+async def test_the_panel_says_a_longer_period_brings_nothing_back(env: Env) -> None:
+    await connect(env)
+    await deliver(env, private_message(OWNER, "/settings"))
+    await tap(env, panels.SETTINGS_CARD, "retention")
+    assert "already deleted does not come back" in env.sender.edits[-1]["text"]
+
+
+def test_an_invalid_stored_retention_reads_as_the_shortest_period() -> None:
+    """Safety review item 7: fail safe. Unset is the default; a value that is
+    set but invalid (hand-written, left over) is the shortest period."""
+    assert retention_policy.days({}, "messages") == 90
+    assert retention_policy.days({"retention_days": {}}, "messages") == 90
+    assert retention_policy.days({"retention_days": {"messages": None}}, "messages") == 90
+    for garbage in ("x", 5, 9999, [1], True):
+        assert retention_policy.days({"retention_days": {"messages": garbage}}, "messages") == 14
+    assert retention_policy.days({"retention_days": "junk"}, "raw_updates") == 1

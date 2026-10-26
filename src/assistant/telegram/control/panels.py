@@ -617,7 +617,9 @@ async def retention_screen(session: AsyncSession, clock: Clock, account: Account
         "Messages: text from your chats. This chat: our conversation here. Raw "
         "updates: what Telegram delivers, kept briefly for recovery.\n\n"
         "You can shorten each period; a shorter one deletes older data at the next "
-        "hourly cleanup. Summaries and your notes are kept until you delete them."
+        "hourly cleanup. Going back to a longer one keeps new data longer; what was "
+        "already deleted does not come back. Summaries and your notes are kept until "
+        "you delete them."
     )
     rows: Rows = []
     for prefix, key in RETENTION_OPS.items():

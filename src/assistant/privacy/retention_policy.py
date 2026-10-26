@@ -11,9 +11,10 @@ update first — the owner's call, not a setting. Classes not listed here
 (summaries and notes until deleted, the activity log and run accounting one
 year, metadata rows) keep their fixed rules.
 
-A stored value that is not a whole number inside its range — written by
-hand, or left over from a narrower range — reads as the default (never
-longer than the policy, never a crash in the sweep).
+An unset value reads as the default. A stored value that is not a whole
+number inside its range — written by hand, or left over from a narrower
+range — reads as the class's shortest period (fail safe: never longer than
+the owner may have meant, never a crash in the sweep; M03 D85).
 """
 
 from __future__ import annotations
@@ -65,11 +66,19 @@ def days(settings: Mapping[str, Any] | None, key: str) -> int:
     """The retention of class `key` for an account with these settings."""
     cls = CLASSES[key]
     overrides = (settings or {}).get(SETTINGS_KEY)
-    value: Any = overrides.get(key) if isinstance(overrides, Mapping) else None
+    if overrides is None:
+        return cls.default_days
+    if not isinstance(overrides, Mapping):
+        return cls.min_days  # set, but not readable: fail safe
+    value: Any = overrides.get(key)
+    if value is None:
+        return cls.default_days
     try:
         return cls.check(value)
     except ValueError:
-        return cls.default_days
+        # Set but invalid: the shortest period, never longer than meant
+        # (safety review item 7, M03 D85).
+        return cls.min_days
 
 
 def period(settings: Mapping[str, Any] | None, key: str) -> timedelta:

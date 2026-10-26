@@ -20,7 +20,7 @@ Undo as the rest.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import cache
 from typing import Any
@@ -280,6 +280,14 @@ class Reverted:
     restored: tuple[str, ...]
     #: Fields changed again since: left as they are.
     kept: tuple[str, ...]
+
+
+def changes_retention(fields: Iterable[str]) -> bool:
+    """A change that sets a retention period has no Undo (M03 D85): a revert
+    to a shorter period would delete at the next sweep without the card that
+    a shorter period needs, and one to a longer period brings nothing back.
+    The owner changes it again in /settings → Retention…"""
+    return any(field in _RETENTION_OF_FIELD for field in fields)
 
 
 async def revert(session: AsyncSession, account: Account, details: Mapping[str, Any]) -> Reverted:
