@@ -589,6 +589,64 @@ async def test_the_pressed_panel_stops_showing_what_is_being_deleted(env: Env) -
     assert "Ignore ✓" in keyboard_labels(env.sender.edits[-1]["reply_markup"])
 
 
+async def paused_reason(env: Env, conversation: int) -> str | None:
+    async with env.factory() as session:
+        return (
+            await session.execute(
+                select(Conversation.autonomy_paused_reason).where(Conversation.id == conversation)
+            )
+        ).scalar_one()
+
+
+@pytest.mark.parametrize("scope", ["chat", "everything"])
+async def test_a_deletion_settles_the_dead_letters_it_cleared(env: Env, scope: str) -> None:
+    """Fix round 3, F: a failed update of the chat can never be requeued once
+    a deletion cleared it (D89). Its definite gap and the chat's ingest pause
+    stayed for good, so /status kept saying the chat could not be processed
+    and automation stayed paused. The deletion settles both; a catch-up over
+    that time says the chat's data was deleted at the owner's request."""
+    conversation, _ = await seed(env)
+    poison = business_message(message_text="CHATK poison", extra={"message_id": None})
+    for _ in range(3):
+        await deliver(env, poison)
+    assert (await inbound(env, poison)).status == "failed"
+    assert await paused_reason(env, conversation) == "ingest_error"
+    if scope == "chat":
+        await open_panel(env)
+        await tap(env, panels.PANEL_CARD, "delete")
+        await tap(env, panels.DELETE_CARD, "chat")
+    else:
+        await deliver(env, private_message(OWNER, "/privacy delete"))
+        await tap(env, panels.DELETE_ALL_CARD, "everything")
+    await run_deletion_jobs(env)
+    assert await payload_is_sql_null(env, poison)
+    assert await paused_reason(env, conversation) is None
+    async with env.factory() as session:
+        open_gaps = (
+            await session.execute(
+                text("SELECT count(*) FROM app.coverage_gaps WHERE resolved_at IS NULL")
+            )
+        ).scalar_one()
+        account_id = (
+            await session.execute(
+                select(Conversation.account_id).where(Conversation.id == conversation)
+            )
+        ).scalar_one()
+        coverage = await catch_up.period_coverage(
+            session,
+            account_id,
+            start=env.clock.now() - timedelta(days=30),
+            end=env.clock.now() + timedelta(hours=1),
+            conversation_ids=[conversation],
+        )
+    assert open_gaps == 0
+    assert any(
+        "deleted at the owner's request" in line for line in catch_up.caveats(coverage, "UTC")
+    )
+    await deliver(env, private_message(OWNER, "/status"))
+    assert "chat(s) could not be processed" not in env.sender.texts[-1]
+
+
 async def test_a_dead_letter_cleared_by_a_deletion_is_not_requeued_empty(env: Env) -> None:
     """Fix round 2, item 7: the deletion clears a dead-lettered control
     update too (its text may quote the chat); `inbox requeue` then leaves it

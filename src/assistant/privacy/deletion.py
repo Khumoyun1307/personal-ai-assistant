@@ -24,7 +24,7 @@ from sqlalchemy import ColumnElement, delete, func, or_, select, text, true, upd
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
-from assistant.conversations.models import Contact, Conversation, Message
+from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.core.clock import Clock
 from assistant.inbox.models import InboundUpdate
 from assistant.memory import items
@@ -199,6 +199,7 @@ async def delete_managed_data(
     # (a panel press carries the rendered summary, a forward): as for every
     # other scope (fix round 2, item 6).
     payloads += await _clear_control_payloads(session, account)
+    await _settle_dead_letters(session, account_id, None, clock)
     turns = _count(
         await session.execute(
             update(ControlTurn)
@@ -460,6 +461,65 @@ async def _clear_chat_payloads(
     )
 
 
+#: `conversations.autonomy_paused_reason` of a chat whose update was
+#: dead-lettered (`conversations/service.py`; not imported: conversations
+#: imports this module).
+_PAUSED_BY_INGEST_ERROR = "ingest_error"
+
+
+async def _settle_dead_letters(
+    session: AsyncSession, account_id: int, conversation_ids: Sequence[int] | None, clock: Clock
+) -> None:
+    """Dead-lettered updates of these chats (None: the whole account) whose
+    payload is now gone can never be requeued (M03 D89). Their definite gaps
+    are resolved and a chat's ingest pause is lifted once no open dead letter
+    remains — what `resolve_ingest_failure` does after a requeue. The gap
+    stood for a message that is not stored; after the owner's deletion
+    nothing from before it is, and the deletion's audit row says so to every
+    catch-up over that time (D86; fix round 3, F)."""
+    unrecoverable = or_(
+        CoverageGap.inbound_update_id.is_(None),  # its row aged out already
+        CoverageGap.inbound_update_id.in_(
+            select(InboundUpdate.id).where(InboundUpdate.payload.is_(None))
+        ),
+    )
+    statement = (
+        update(CoverageGap)
+        .where(CoverageGap.account_id == account_id)
+        .where(CoverageGap.kind == "dead_letter")
+        .where(CoverageGap.resolved_at.is_(None))
+        .where(unrecoverable)
+    )
+    if conversation_ids is not None:
+        statement = statement.where(CoverageGap.conversation_id.in_(list(conversation_ids)))
+    settled = (
+        (
+            await session.execute(
+                statement.values(resolved_at=clock.now()).returning(CoverageGap.conversation_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    chats = sorted({int(chat) for chat in settled if chat is not None})
+    if not chats:
+        return
+    still_open = (
+        select(CoverageGap.conversation_id)
+        .where(CoverageGap.kind == "dead_letter")
+        .where(CoverageGap.resolved_at.is_(None))
+        .where(CoverageGap.conversation_id.is_not(None))
+    )
+    await session.execute(
+        update(Conversation)
+        .where(Conversation.account_id == account_id)
+        .where(Conversation.id.in_(chats))
+        .where(Conversation.autonomy_paused_reason == _PAUSED_BY_INGEST_ERROR)
+        .where(Conversation.id.not_in(still_open))
+        .values(autonomy_paused_reason=None, updated_at=clock.now())
+    )
+
+
 async def _redact_turns(
     session: AsyncSession,
     account_id: int,
@@ -588,6 +648,7 @@ async def _purge_chats(
     conversation_ids = [chat.conversation_id for chat in chats]
     contact_ids = sorted({chat.contact_id for chat in chats} | set(person_ids))
     payloads = await _clear_chat_payloads(session, account_id, chats)
+    await _settle_dead_letters(session, account_id, conversation_ids, clock)
     # The owner's own raw control-chat updates may quote the chat (a forward,
     # a press whose message is the rendered panel, a confirmed card); they
     # exist only for recovery, so all of them go (safety review item 2).
@@ -858,6 +919,7 @@ async def delete_everything(
         )
     )
     payloads += await _clear_control_payloads(session, account)
+    await _settle_dead_letters(session, account_id, None, clock)
     messages = _rows(await session.execute(delete(Message).where(Message.account_id == account_id)))
     summaries = await delete_account_summaries(session, account_id)
     notes = await items.delete_all(session, account_id)
