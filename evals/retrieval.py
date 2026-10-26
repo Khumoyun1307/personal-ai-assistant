@@ -1,6 +1,6 @@
 """The retrieval target (S03.4): the real search service over the synthetic corpus.
 
-Two modes, both over the 38-query owner-style set:
+Three modes, all over the 38-query owner-style set:
 
 - **deterministic** (no model): the query exactly as typed goes to
   `memory.retrieval.search_messages`; measures *target message in the top 5*
@@ -11,6 +11,10 @@ Two modes, both over the 38-query owner-style set:
   asks, `owner_request.v2.md` rule 5); the original query plus the variants are
   searched together; a second call writes the final answer from the top 5 and
   the answer is checked deterministically (threshold 80 %).
+- **replay** (no model): the variants and the chat partner a recorded
+  **variants** run searched (its JSON report), searched again with the current
+  search code; top 5 only (S03.6 review: a search change is measured offline,
+  reproducibly, without paying for a model).
 
 Answer correctness (`check_answer`) is deliberately strict and mechanical:
 the answer must say it found something, reference a **target** message, name
@@ -31,6 +35,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -49,6 +54,7 @@ from assistant.memory.retrieval import MAX_QUERIES, SearchFilters, SearchHit, se
 from evals.assets import load_asset
 from evals.budget import BudgetExceededError
 from evals.corpus import LoadedCorpus
+from evals.errors import RefusedError
 from evals.metrics import contains_value, contains_words, ratio_metric, word_key
 from evals.review import ReviewLedger
 from evals.schema import RetrievalQuery
@@ -84,6 +90,7 @@ MIN_QUOTE_CHARS = 8
 class RetrievalMode(StrEnum):
     DETERMINISTIC = "deterministic"
     VARIANTS = "variants"
+    REPLAY = "replay"
 
 
 # ---------------------------------------------------------- structured output
@@ -251,18 +258,27 @@ class RetrievalTarget:
         *,
         mode: RetrievalMode,
         corpus: LoadedCorpus | None = None,
+        recorded: Mapping[str, QueryVariants | None] | None = None,
     ) -> None:
+        if (mode is RetrievalMode.REPLAY) != (recorded is not None):
+            raise RefusedError(
+                "a replay needs a recorded variants run (--replay-from), "
+                "and only a replay takes one"
+            )
         self._bound = corpus
         self._queries = list(queries)
         self.mode = mode
         self.uses_model = mode is RetrievalMode.VARIANTS
+        self._recorded = recorded
         self._variants_prompt = load_asset("prompts", VARIANTS_PROMPT_ID)
         self._answer_prompt = load_asset("prompts", ANSWER_PROMPT_ID)
 
     def bind(self, corpus: LoadedCorpus) -> RetrievalTarget:
         """The same target over a loaded corpus. The runner builds a target
         first (to refuse and estimate), and only then pays for a database."""
-        return RetrievalTarget(self._queries, mode=self.mode, corpus=corpus)
+        return RetrievalTarget(
+            self._queries, mode=self.mode, corpus=corpus, recorded=self._recorded
+        )
 
     @property
     def _corpus(self) -> LoadedCorpus:
@@ -323,6 +339,21 @@ class RetrievalTarget:
                 return _Record(
                     query.id, tuple(query.intents), False, None, (), 0, False, (), failure.code
                 )
+        elif self._recorded is not None:
+            replayed = self._recorded.get(query.id)
+            if replayed is None:  # the recorded run did not search this item
+                return _Record(
+                    query.id,
+                    tuple(query.intents),
+                    False,
+                    None,
+                    (),
+                    0,
+                    None,
+                    (),
+                    "replay:not_searched",
+                )
+            proposed = replayed
         search_queries = _search_queries(query.text, proposed.queries)
         contact = await self._resolve_contact(proposed.contact)
         hits, widened = await self._search(search_queries, contact)
@@ -340,7 +371,7 @@ class RetrievalTarget:
             None,
             (),
             None,
-            searched=tuple(search_queries) if self.uses_model else (),
+            searched=tuple(search_queries) if self.mode is not RetrievalMode.DETERMINISTIC else (),
             contact=proposed.contact,
             contact_filter=contact.name if contact is not None and not widened else None,
             widened=widened,
@@ -509,16 +540,17 @@ class RetrievalTarget:
                 # The 85 % is defined with model-generated variants: without a
                 # model it is only the pre-screen comparison, with no gate.
                 gated=self.uses_model,
-                note=(
-                    "Baseline without a model; the S03.4 gate measures retrieval with "
-                    "model-generated query variants (mode `variants`), so 85 % is a "
-                    "pre-screen comparison here, not a gate."
-                    if not self.uses_model
-                    else ""
-                ),
+                note=_TOP5_NOTES[self.mode],
             )
         ]
         notes: list[str] = []
+        if self._recorded is not None:
+            skipped = sorted(r.query_id for r in records if r.error)
+            if skipped:
+                notes.append(
+                    f"{len(skipped)} item(s) the recorded run did not search count as misses: "
+                    + ", ".join(skipped)
+                )
         prompts: list[str] = []
         if self.uses_model:
             answers = {r.query_id: bool(r.answer_correct) for r in records}
@@ -559,6 +591,44 @@ class RetrievalTarget:
             notes=tuple(notes),
             prompts=tuple(prompts),
         )
+
+
+#: What the top-5 metric means in each mode.
+_TOP5_NOTES = {
+    RetrievalMode.DETERMINISTIC: (
+        "Baseline without a model; the S03.4 gate measures retrieval with "
+        "model-generated query variants (mode `variants`), so 85 % is a "
+        "pre-screen comparison here, not a gate."
+    ),
+    RetrievalMode.VARIANTS: "",
+    RetrievalMode.REPLAY: (
+        "Replay without a model: the variants and chat partners a recorded `variants` run "
+        "searched, searched again with the current search code (no answer step). 85 % is a "
+        "pre-screen comparison here, not a gate."
+    ),
+}
+
+
+def load_recorded(path: Path) -> dict[str, QueryVariants | None]:
+    """What a recorded **variants** run searched, per item: the model's variants (the
+    report's `searched` minus the owner's words, which come first) and the chat
+    partner it named; None for an item it did not search (a failed model call)."""
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RefusedError(f"cannot read the recorded run {path.name}: {error}") from None
+    if not isinstance(report, dict) or (report.get("target"), report.get("mode")) != (
+        "retrieval",
+        RetrievalMode.VARIANTS.value,
+    ):
+        raise RefusedError(f"{path.name} is not a retrieval report of mode `variants`")
+    recorded: dict[str, QueryVariants | None] = {}
+    for detail in report.get("details", []):
+        searched = list(detail.get("searched") or [])
+        recorded[str(detail["id"])] = (
+            QueryVariants(queries=searched[1:], contact=detail.get("contact")) if searched else None
+        )
+    return recorded
 
 
 @dataclass(frozen=True, slots=True)

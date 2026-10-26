@@ -116,6 +116,7 @@ python -m evals verify                                  # datasets match MANIFES
 python -m evals run retrieval                           # deterministic baseline: no model, no cost
 python -m evals run retrieval --mode variants --estimate-only   # worst-case cost, calls nothing
 python -m evals run retrieval --mode variants --live    # REAL model; owner's go-ahead + cost approval
+python -m evals run retrieval --mode replay --replay-from docs/evals/<variants run>.json  # no model, no cost
 python -m evals run summary --estimate-only             # worst-case cost of the summary run, calls nothing
 python -m evals run summary --live                      # REAL model; owner's go-ahead + cost approval
 python -m evals run summary --live --owner-language ru  # summaries in another owner language (default uz-Latn)
@@ -142,18 +143,26 @@ database on the server. `python -m evals cleanup` lists such leftovers and
 `python -m evals cleanup --yes` drops them (only names of exactly that form, and never a database a running evaluation is
 connected to: it is not listed, and the drop is not forced, S03.6).
 
-**Targets.** `retrieval` has two modes over the 38 queries: `deterministic` (the
+**Targets.** `retrieval` has three modes over the 38 queries: `deterministic` (the
 query as typed goes to `memory.retrieval.search_messages`; target in the top 5,
 threshold 85 %) and `variants` (a model writes query variants and names the chat
 partner if the owner did; the name is resolved with the product's own contact matcher,
 as the agent's `resolve_contact` would, and an unambiguous match narrows the search to
 that contact, widened again if it finds nothing, E-t; the original plus variants are
-searched; the JSON report keeps what was searched and the contact filter; a second call
-writes the final answer from the top 5, which
+searched; the JSON report keeps what was searched, the partner named, the contact filter
+that produced the hits and `widened` (the filter was dropped because the filtered search
+found nothing; the filter is then not shown); a second call writes the final answer from
+the top 5, which
 is checked mechanically: it must reference a target message, name the contact and
 the day (whole-word name match), quote the message verbatim (a quote of fewer than 8
-word characters must be the whole message) and carry every `answer_values` string;
-threshold 80 %).
+word characters must be the whole message) and carry every `answer_values` string as
+whole words, except that a quote found verbatim in the message may carry it as the
+message inflected it (E-u); threshold 80 %). `replay` (no model, no cost) searches again
+what a recorded `variants` run searched (its variants and named partner, from the JSON
+report given with `--replay-from`) with the current search code: top 5 only, a
+pre-screen, written as `<date>-retrieval-replay-deterministic`. It measures a search
+change without paying for a model, but the variants are those the model wrote for the
+old code.
 
 `summary` (`evals/summary.py`) runs the **real S03.2 `summarize` path** over the 40 E1
 conversations, always with a model (so `--live` is always needed). Each conversation

@@ -21,11 +21,13 @@ import sqlalchemy as sa
 from evals import cli, live
 from evals.budget import BudgetedLLMClient, CallLedger
 from evals.corpus import LoadedCorpus, isolated_corpus, load_corpus, unload_corpus
+from evals.errors import EvalsError
 from evals.live import LiveConfig, LiveSetupError, ModelChoice
 from evals.retrieval import (
     QueryVariants,
     RetrievalMode,
     RetrievalTarget,
+    load_recorded,
 )
 from evals.review import ReviewLedger
 from evals.schema import RetrievalQuery, load_e1, load_queries
@@ -289,6 +291,57 @@ async def test_a_filtered_search_that_finds_nothing_is_widened(corpus: LoadedCor
     assert record["contact_filter"] is None
     assert record["hit_top5"] is True  # found again without the filter
     assert any("widened" in note and "r01" in note for note in result.notes)
+
+
+# ---------------------------------------------------------------- replay mode
+def recorded_report(tmp_path: Path, details: list[dict[str, Any]], **meta: Any) -> Path:
+    report = {"target": "retrieval", "mode": "variants", "details": details, **meta}
+    path = tmp_path / "variants.json"
+    path.write_text(json.dumps(report), encoding="utf-8")
+    return path
+
+
+async def test_replay_searches_the_recorded_variants_and_partner_without_a_model(
+    corpus: LoadedCorpus, tmp_path: Path
+) -> None:
+    """S03.6 review: the offline replay is reproducible: what a variants run searched
+    and the partner it named, searched again with the current search code."""
+    r04 = next(q for q in QUERIES if q.id == "r04")
+    path = recorded_report(
+        tmp_path,
+        [{"id": "r04", "searched": [r04.text, "kelishdik"], "contact": "Nilufar"}],
+    )
+    target = RetrievalTarget(
+        [r04], mode=RetrievalMode.REPLAY, recorded=load_recorded(path), corpus=corpus
+    )
+    assert target.uses_model is False
+    result = await target.run(RunContext(reviews=ReviewLedger.empty()))
+    record = result.details[0]
+    assert record["searched"] == [r04.text, "kelishdik"]
+    assert record["contact_filter"] == "Nilufar opa (rahbar)"
+    assert record["hit_top5"] is True
+    assert [m.key for m in result.metrics] == ["top5_hit"]  # no answer without a model
+    assert result.metrics[0].gated is False
+    assert result.prompts == ()
+
+
+async def test_replay_counts_an_item_the_recorded_run_did_not_search_as_a_miss(
+    corpus: LoadedCorpus, tmp_path: Path
+) -> None:
+    r01 = next(q for q in QUERIES if q.id == "r01")
+    path = recorded_report(tmp_path, [{"id": "r01", "searched": [], "contact": None}])
+    result = await RetrievalTarget(
+        [r01], mode=RetrievalMode.REPLAY, recorded=load_recorded(path), corpus=corpus
+    ).run(RunContext(reviews=ReviewLedger.empty()))
+    assert result.details[0]["hit_top5"] is False
+    assert result.details[0]["error"] == "replay:not_searched"
+
+
+def test_only_a_variants_report_can_be_replayed(tmp_path: Path) -> None:
+    with pytest.raises(EvalsError):
+        load_recorded(recorded_report(tmp_path, [], mode="deterministic"))
+    with pytest.raises(EvalsError):
+        RetrievalTarget(QUERIES[:1], mode=RetrievalMode.REPLAY)
 
 
 # ---------------------------------------------------------------- variants mode

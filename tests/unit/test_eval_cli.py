@@ -190,6 +190,19 @@ def test_a_bad_budget_is_refused(cap: str, no_settings: None) -> None:
     assert cli.main(["run", "retrieval", "--budget-usd", cap]) == cli.EXIT_REFUSED
 
 
+def test_a_replay_needs_a_recorded_variants_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Refused before any database: no report, or a report that is not a variants run."""
+    assert cli.main(["run", "retrieval", "--mode", "replay"]) == cli.EXIT_REFUSED
+    assert "--replay-from" in capsys.readouterr().err
+    other = tmp_path / "deterministic.json"
+    other.write_text('{"target": "retrieval", "mode": "deterministic", "details": []}')
+    code = cli.main(["run", "retrieval", "--mode", "replay", "--replay-from", str(other)])
+    assert code == cli.EXIT_REFUSED
+    assert cli.main(["run", "retrieval", "--replay-from", str(other)]) == cli.EXIT_REFUSED
+
+
 @pytest.mark.parametrize("limit", ["0", "-3", "x"])
 def test_a_limit_below_one_is_rejected(limit: str, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as stop:
