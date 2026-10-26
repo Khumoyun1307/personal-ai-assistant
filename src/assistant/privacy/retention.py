@@ -280,10 +280,14 @@ async def schedule_rollups(
     rollup_cutoff = now - (MESSAGE_CONTENT_RETENTION - ROLLUP_LEAD)
     async with transaction(session_factory) as uow:
         due = await rollup_candidates(uow.session, rollup_cutoff)
+        # One short transaction with no account lock and no network call
+        # (AGENTS §13); conversation rows are taken in id order (§9.4), and a
+        # chat set to Ignore meanwhile is left alone.
         for conversation_id, oldest_change in due:
             await uow.session.execute(
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
+                .where(Conversation.mode != "ignore")
                 .values(
                     pending_ai_since=func.least(
                         func.coalesce(Conversation.pending_ai_since, oldest_change), oldest_change
