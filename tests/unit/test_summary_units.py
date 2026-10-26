@@ -304,6 +304,13 @@ def test_background_summaries_need_their_flag_and_have_bounded_timing(clean_env:
         ("uz-Latn", "Uzbek written in Latin letters"),
         ("uz-Cyrl", "Uzbek written in Cyrillic letters"),
         ("ru", "Russian"),
+        # S03.6 review: a region tag (as `check_language` stores it) falls back to its
+        # language; bare `uz` and `uz-UZ` are Latin (CLDR likely subtags: uz-Latn-UZ)
+        ("ru-RU", "Russian"),
+        ("en-US", "English"),
+        ("en-GB", "English"),
+        ("uz-UZ", "Uzbek written in Latin letters"),
+        ("uz", "Uzbek written in Latin letters"),
     ],
 )
 def test_the_owner_language_and_script_are_spelled_out_last(tag: str, spelled: str) -> None:
@@ -324,7 +331,8 @@ def test_the_owner_language_and_script_are_spelled_out_last(tag: str, spelled: s
 
 
 def test_an_unknown_or_missing_language_tag_adds_no_instruction() -> None:
-    for tag in (None, "kk"):
+    # uz-AF: CLDR's likely script is Arabic, which has no name here: the bare tag.
+    for tag in (None, "kk", "kk-KZ", "uz-AF"):
         account = Account(telegram_user_id=1, timezone="UTC", locale_pref=tag)
         context = build_summarize(
             prompt=prompt_registry.active("summarize"),

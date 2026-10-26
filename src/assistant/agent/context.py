@@ -178,13 +178,20 @@ SUMMARY_MESSAGE_CHARS = 2000
 
 #: How a summary run names the owner's language tag (`accounts.locale_pref`):
 #: the script spelled out, since a bare `uz-Latn` lost to Cyrillic chats (S03.6).
+#: Bare `uz` (and `uz-UZ`) is Latin: Unicode CLDR's likely subtags expand `uz` to
+#: `uz-Latn-UZ`, and Latin is Uzbekistan's official script (S03.6 review).
 SUMMARY_LANGUAGE_NAMES = {
     "uz-latn": "Uzbek written in Latin letters",
     "uz-cyrl": "Uzbek written in Cyrillic letters",
-    "uz": "Uzbek",
+    "uz": "Uzbek written in Latin letters",
+    "uz-uz": "Uzbek written in Latin letters",
     "ru": "Russian",
     "en": "English",
 }
+#: Languages whose region subtag never changes the script we name: `ru-RU`,
+#: `en-US` fall back to `ru`, `en` (`accounts.preferences.check_language` keeps
+#: region tags). Not Uzbek: `uz-AF` is written in Arabic script.
+_REGION_FALLBACK = frozenset({"ru", "en"})
 
 
 def summary_language(tag: str | None) -> str | None:
@@ -192,7 +199,11 @@ def summary_language(tag: str | None) -> str | None:
     one we have no name for: the prompt then falls back to the tag alone)."""
     if not tag:
         return None
-    return SUMMARY_LANGUAGE_NAMES.get(tag.strip().lower())
+    key = tag.strip().lower()
+    if key in SUMMARY_LANGUAGE_NAMES:
+        return SUMMARY_LANGUAGE_NAMES[key]
+    primary = key.partition("-")[0]
+    return SUMMARY_LANGUAGE_NAMES.get(primary) if primary in _REGION_FALLBACK else None
 
 
 @dataclass(frozen=True, slots=True)
