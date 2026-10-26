@@ -17,6 +17,7 @@ from hypothesis import strategies as st
 from assistant.memory.search import (
     NORMALIZER_VERSION,
     build_tsquery,
+    case_siblings,
     content_terms,
     detect_script,
     guess_lang,
@@ -345,6 +346,62 @@ def test_typed_spellings_reach_the_stored_key_both_ways(typed: str, stored: str)
     """Query-side alternatives (D54): each spelling's terms include the other's key."""
     assert normalize(stored) in term_alternatives(normalize(typed))
     assert normalize(typed) in term_alternatives(normalize(stored))
+
+
+def _meets(query: str, stored: str) -> bool:
+    """A query word reaches a stored word: one of its prefixes starts it."""
+    [term] = query_terms(query)
+    [word] = query_terms(stored)
+    return any(word.startswith(alternative) for alternative in term_alternatives(term))
+
+
+@pytest.mark.parametrize(
+    "forms",
+    [
+        ("квартира", "квартиру", "квартире", "квартиры", "kvartira", "kvartiru"),
+        ("машина", "машину", "mashina", "mashinu"),
+        ("неделя", "неделю", "nedelya", "nedelyu"),
+    ],
+)
+def test_russian_case_endings_meet(forms: tuple[str, ...]) -> None:
+    """S03.7 B2: a Russian noun's case forms find each other, in either script."""
+    for query in forms:
+        for stored in forms:
+            assert _meets(query, stored), (query, stored)
+
+
+@pytest.mark.parametrize(
+    ("term", "bare"),
+    [
+        ("aziza", "aziz"),
+        ("nodira", "nodir"),
+        ("kamola", "kamol"),
+        ("dilshoda", "dilshod"),
+        ("ravshana", "ravshan"),
+        ("hamdi", "ham"),
+        ("keldi", "kel"),
+        ("morgan", "mor"),
+    ],
+)
+def test_case_siblings_never_strip_to_a_bare_stem(term: str, bare: str) -> None:
+    """A sibling swaps one ending for another of the same kind: it is never
+    shorter than the word, so a woman's name never becomes the man's name
+    (Dilshoda never `dilshod`) and a verb never its bare root."""
+    siblings = case_siblings(term)
+    assert all(len(sibling) >= len(term) for sibling in siblings)
+    assert not any(bare.startswith(sibling) for sibling in siblings)
+
+
+@pytest.mark.parametrize("term", ["aziza", "hamdi", "keldi", "morgan", "kolodka", "ertaga"])
+def test_short_words_and_words_with_a_stem_rule_get_no_case_siblings(term: str) -> None:
+    """Five letters or fewer, no vowel ending, or an ending the stem rules
+    already strip (kolodka → kolodk, ertaga → erta): nothing to add."""
+    assert case_siblings(term) == []
+
+
+def test_case_siblings_come_early_in_the_alternatives() -> None:
+    alternatives = term_alternatives("kvartira", limit=6)
+    assert {"kvartiru", "kvartire"} <= set(alternatives)
 
 
 def test_spelling_alternatives_are_bounded() -> None:

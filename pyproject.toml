@@ -96,6 +96,9 @@ allowed-confusables = ["ʻ", "ʼ", "‘", "’"]
 "src/assistant/agent/untrusted.py" = ["RUF001"]
 "tests/unit/test_untrusted.py" = ["RUF001"]
 "tests/scenarios/test_find_the_agreed_meeting_time.py" = ["RUF001", "RUF002", "RUF003"]
+# S03.7: the localized fixed texts of the retrieval answer (Uzbek Cyrillic, Russian).
+"src/assistant/agent/owner_texts.py" = ["RUF001"]
+"tests/unit/test_citations.py" = ["RUF001"]
 # AGENTS §5: only these modules may touch the Bot API. ingress/ is limited to
 # getUpdates, getMe and deleteWebhook; gateway.py owns everything with a
 # visible effect. An AST test additionally bans aiogram shortcuts in control/.

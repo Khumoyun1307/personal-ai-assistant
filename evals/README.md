@@ -117,6 +117,8 @@ python -m evals run retrieval                           # deterministic baseline
 python -m evals run retrieval --mode variants --estimate-only   # worst-case cost, calls nothing
 python -m evals run retrieval --mode variants --live    # REAL model; owner's go-ahead + cost approval
 python -m evals run retrieval --mode replay --replay-from docs/evals/<variants run>.json  # no model, no cost
+python -m evals run retrieval --mode agent --live --limit 1   # REAL model: a one-query trial of the agent loop
+python -m evals run retrieval --mode agent --live --calibrate-from docs/evals/<agent trial>.json  # full agent run (E-ab)
 python -m evals run summary --estimate-only             # worst-case cost of the summary run, calls nothing
 python -m evals run summary --live                      # REAL model; owner's go-ahead + cost approval
 python -m evals run summary --live --owner-language ru  # summaries in another owner language (default uz-Latn)
@@ -134,7 +136,8 @@ flags: `--limit N` (N >= 1: a **trial** run, named `…-trial`, never a gate),
 `--model ID` (model-choice comparison; default is the route's configured model),
 `--price MODEL=IN:OUT` (positive USD per 1M tokens, for a model the product's price
 table lacks; refused for a model it already prices), `--budget-usd` (default 1),
-`--owner-language uz-Latn|uz-Cyrl|ru|en` (summary only, default `uz-Latn`).
+`--owner-language uz-Latn|uz-Cyrl|ru|en` (summary and retrieval `--mode agent`, default
+`uz-Latn`), `--calibrate-from TRIAL.json` (retrieval `--mode agent` only, E-ab).
 Exit codes: 0 done (a deliberate trial included), 2 refused or misconfigured, 4 the
 run **stopped before its planned items** (budget cap; its report is still written). A run that fails midway writes a content-free
 `…-aborted.json` with what it spent. A run drops its throwaway database when it ends, fails
@@ -143,12 +146,16 @@ database on the server. `python -m evals cleanup` lists such leftovers and
 `python -m evals cleanup --yes` drops them (only names of exactly that form, and never a database a running evaluation is
 connected to: it is not listed, and the drop is not forced, S03.6).
 
-**Targets.** `retrieval` has three modes over the 38 queries: `deterministic` (the
+**Targets.** `retrieval` has four modes over the 38 queries: `deterministic` (the
 query as typed goes to `memory.retrieval.search_messages`; target in the top 5,
-threshold 85 %) and `variants` (a model writes query variants and names the chat
-partner if the owner did; the name is resolved with the product's own contact matcher,
-as the agent's `resolve_contact` would, and an unambiguous match narrows the search to
-that contact, widened again if it finds nothing, E-t; the original plus variants are
+threshold 85 %) and `variants` (a model writes query variants with the eval-side prompt
+`retrieval_variants.v2`, whose rule 1 mirrors the shipped `owner_request.v6` rule 5 — the
+partner's name out of the search phrases, the words the message would contain — E-f, and
+names the chat partner if the owner did; the name is resolved with the product's own
+contact matcher, as the agent's `resolve_contact` would, and an unambiguous match
+narrows the search to that contact; a narrowed search that finds nothing is widened by
+the **product's** search service (`widen_empty_scope`, as the `search_messages` tool
+does), not by the harness, E-t, E-z; the original plus variants are
 searched; the JSON report keeps what was searched, the partner named, the contact filter
 that produced the hits and `widened` (the filter was dropped because the filtered search
 found nothing; the filter is then not shown); a second call writes the final answer from
@@ -163,6 +170,38 @@ report given with `--replay-from`) with the current search code: top 5 only, a
 pre-screen, written as `<date>-retrieval-replay-deterministic`. It measures a search
 change without paying for a model, but the variants are those the model wrote for the
 old code.
+
+`agent` (`evals/agent_mode.py`, S03.7) measures **the pipeline exactly as the product
+runs it**: per query, the question is stored as an owner control turn and the real
+`OwnerRequestRuntime` answers it, with the shipped `owner_request` prompt (the prompt
+registry's active version), `default_registry()` with the production release flags (the
+`FEATURE_FLAGS` line of the M03 owner guide), a real `Summarizer`, the product's
+`AgentConfig` budgets, a fixed clock and an eval-side control channel that keeps the
+reply. The corpus account gets a control chat, `ai_control` and `ai_managed` consents
+naming the processor of the run's model, an active connection and the owner language
+(`--owner-language`, default `uz-Latn`). After each query the account's control turns,
+agent runs, memory items, summaries, cards, confirmations and audit rows are deleted and
+its settings and chat modes restored: **no query sees another's history**. A wrapper
+around the `search_messages` handler records what each call returned (instrumentation
+only). Metrics (E-aa): **top 5** = a target among the first 5 results of *any*
+`search_messages` call in the run (no search at all is a miss, `no_search`); **correct
+reply with reference** = the run succeeded, at least one citation the runtime verified
+(`[msg:id]` turned into a source, ARCHITECTURE §7.2) points to a target, no citation was
+removed as unverified, and every `answer_values` string is in the model's own words
+(markers removed; the sources the application added do not count) as whole words, or
+with E-s endings only where a cited target message has that very form. Thresholds 85 %
+and 80 %, gated on owner-confirmed items like every gate. The JSON keeps per item the
+searches (phrases, contact filter, `widened`, top 5), the verified citations, the
+unverified count, the run status and the reply (synthetic). **Cost (E-ab):** the agent
+loop's worst case (its token budget, the last call at full output plus one truncation
+retry, and two summary calls per query) is USD 1.34 for 38 queries on gpt-6-luna (USD
+0.035 for one), over the default cap, so a full run is refused unless it is calibrated: run a `--limit 1`
+trial first, then pass its JSON report with `--calibrate-from`. The run then starts when
+the trial's spend per query × the queries × 1.5 fits the cap (the trial must be a
+finished agent-mode run of the same model and the shipped prompt, with spend recorded),
+and the hard in-flight cap still refuses every call that could pass it: a run that hits
+the cap is **stopped**, incomplete (exit 4), never a gate. Without `--calibrate-from` the
+usual worst-case rule applies.
 
 `summary` (`evals/summary.py`) runs the **real S03.2 `summarize` path** over the 40 E1
 conversations, always with a model (so `--live` is always needed). Each conversation

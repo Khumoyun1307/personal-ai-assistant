@@ -14,8 +14,11 @@ same question in Latin, Cyrillic, Russian and English), merged by best score:
 - all words must match first (AND); when no variant matched on all its words
   (only weak trigram hits, or nothing), any word will do (OR), and the
   result says so (`relaxed`).
-- query terms carry typed-spelling alternatives (zh/j, kh/x, y/i, …) on
-  the query side only (`memory/search.py::term_alternatives`).
+- query terms carry typed-spelling alternatives (zh/j, kh/x, y/i, …) and
+  Russian case siblings on the query side only
+  (`memory/search.py::term_alternatives`);
+- on request, a search narrowed to a contact or conversation that finds
+  nothing is run again over all the account's chats (`widened`, S03.7 B1).
 
 Every value reaches Postgres as a bound parameter. The tsquery string is
 built from `[a-z0-9]+` terms only (`memory/search.py`), so it cannot carry
@@ -25,7 +28,7 @@ operators either.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -97,6 +100,9 @@ class SearchResult:
     searched: tuple[str, ...] = ()
     #: True when no variant matched on all words and any-word matching was used.
     relaxed: bool = False
+    #: True when a search narrowed to a contact or conversation found nothing
+    #: and was run again over all chats (`widen_empty_scope`, S03.7 B1).
+    widened: bool = False
 
 
 def _statement(
@@ -209,11 +215,38 @@ async def search_messages(
     now: datetime,
     filters: SearchFilters | None = None,
     limit: int = 10,
+    widen_empty_scope: bool = False,
 ) -> SearchResult:
-    """The best `limit` messages matching any of `queries`, best first."""
+    """The best `limit` messages matching any of `queries`, best first.
+
+    With `widen_empty_scope`, a search narrowed to a contact or conversation
+    that finds nothing runs again without those two filters — dates,
+    directions and the account scope stay — and says so (`widened`): the
+    owner may have named the wrong person, or the message is in another chat
+    (S03.7 B1). The caller must tell the owner whose messages they are.
+    """
     if account_id <= 0:
         raise ValueError("a positive account_id is required")
     filters = filters or SearchFilters()
+    result = await _search(session, account_id, queries, now=now, filters=filters, limit=limit)
+    if result.hits or not widen_empty_scope:
+        return result
+    if not (filters.contact_ids or filters.conversation_ids):
+        return result
+    wider = replace(filters, contact_ids=(), conversation_ids=())
+    result = await _search(session, account_id, queries, now=now, filters=wider, limit=limit)
+    return replace(result, widened=True)
+
+
+async def _search(
+    session: AsyncSession,
+    account_id: int,
+    queries: Sequence[str],
+    *,
+    now: datetime,
+    filters: SearchFilters,
+    limit: int,
+) -> SearchResult:
     limit = max(1, min(limit, MAX_LIMIT))
     variants: dict[str, list[str]] = {}
     for raw in list(queries)[:MAX_QUERIES]:

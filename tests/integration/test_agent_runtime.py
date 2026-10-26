@@ -156,7 +156,7 @@ async def test_an_owner_turn_gets_a_reply_and_everything_is_recorded(
     assert channel.sends == ["Synthetic answer."]
     assert channel.events == ["typing", "send"]
     [run] = await rows(factory, AgentRun)
-    assert (run.status, run.iterations, run.prompt_version) == ("succeeded", 1, "owner_request.v5")
+    assert (run.status, run.iterations, run.prompt_version) == ("succeeded", 1, "owner_request.v6")
     assert run.trigger_ref == f"turn:{turn_id}"
     assert run.finished_at is not None
     reply = (await rows(factory, ControlTurn))[-1]
@@ -192,7 +192,7 @@ async def test_the_request_carries_the_prompt_profile_and_history(
         ("assistant", "Reply"),
         ("user", "Synthetic question?"),
     ]
-    assert request.prompt_cache_key == "owner_request:owner_request.v5"
+    assert request.prompt_cache_key == "owner_request:owner_request.v6"
     assert request.effort == "low"
 
 

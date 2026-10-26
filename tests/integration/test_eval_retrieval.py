@@ -19,6 +19,8 @@ import psycopg
 import pytest
 import sqlalchemy as sa
 from evals import cli, live
+from evals import retrieval as retrieval_module
+from evals.agent_mode import PRODUCTION_FLAGS, AgentModeTarget
 from evals.budget import BudgetedLLMClient, CallLedger
 from evals.corpus import LoadedCorpus, isolated_corpus, load_corpus, unload_corpus
 from evals.errors import EvalsError
@@ -36,6 +38,8 @@ from pydantic import BaseModel, SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from assistant.agent import prompt_registry
+from assistant.agent.tools.registry import default_registry
 from assistant.config import Settings
 from assistant.conversations.models import Message
 from assistant.db.engine import build_engine, build_session_factory
@@ -43,10 +47,14 @@ from assistant.llm.port import (
     LLMError,
     LLMErrorKind,
     LLMRequest,
+    LLMResponse,
     ParsedResponse,
     Provenance,
+    ProviderItems,
     StopReason,
     TextItem,
+    ToolCall,
+    ToolResultItem,
     Usage,
 )
 from tests.fakes.llm import FakeLLM
@@ -291,6 +299,40 @@ async def test_a_filtered_search_that_finds_nothing_is_widened(corpus: LoadedCor
     assert record["contact_filter"] is None
     assert record["hit_top5"] is True  # found again without the filter
     assert any("widened" in note and "r01" in note for note in result.notes)
+
+
+async def test_variants_and_replay_use_the_products_widening(
+    corpus: LoadedCorpus, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S03.7 E1 (E-z): the harness no longer widens by itself. Each item makes
+    one call to the product's `search_messages` with `widen_empty_scope=True`,
+    and `widened` is the service's own answer."""
+    calls: list[dict[str, Any]] = []
+    real = retrieval_module.search_messages
+
+    async def spy(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(retrieval_module, "search_messages", spy)
+    r01 = next(q for q in QUERIES if q.id == "r01")  # in Kamola's chat
+    llm = OracleLLM(contact=lambda q: "Daniel")  # a real contact, but the wrong chat
+    variants = await RetrievalTarget([r01], mode=RetrievalMode.VARIANTS, corpus=corpus).run(
+        context(llm, CallLedger())
+    )
+    path = recorded_report(tmp_path, [{"id": "r01", "searched": [r01.text], "contact": "Daniel"}])
+    replayed = await RetrievalTarget(
+        [r01], mode=RetrievalMode.REPLAY, recorded=load_recorded(path), corpus=corpus
+    ).run(RunContext(reviews=ReviewLedger.empty()))
+
+    assert len(calls) == 2  # one search per item: the service widens, not the harness
+    for kwargs in calls:
+        assert kwargs["widen_empty_scope"] is True
+        assert kwargs["filters"].contact_ids  # narrowed to Daniel's chat first
+    for result in (variants, replayed):
+        assert result.details[0]["widened"] is True
+        assert result.details[0]["contact_filter"] is None
+        assert result.details[0]["hit_top5"] is True
 
 
 # ---------------------------------------------------------------- replay mode
@@ -586,3 +628,215 @@ async def test_the_throwaway_database_is_migrated_isolated_and_dropped(
             "SELECT count(*) FROM pg_database WHERE datname = %s", (name,)
         ).fetchone()
     assert left == (0,)
+
+
+# ------------------------------------------------------------------ agent mode
+QUERIES_BY_ID = {q.id: q for q in QUERIES}
+
+
+class AgentOracle(FakeLLM):
+    """Plays the agent's model in `--mode agent` (S03.7 E2): calls
+    `search_messages` with each scripted list of phrases, one call per turn,
+    then answers. It finds the target among the results by its text (the
+    dataset is read only to *play the model*; the code under test never does)."""
+
+    def __init__(
+        self,
+        searches: Callable[[RetrievalQuery], list[list[str]]] | None = None,
+        reply: Callable[[RetrievalQuery, list[dict[str, Any]]], str] | None = None,
+        usage: Usage = Usage(400, 100),  # noqa: B008  (immutable)
+    ) -> None:
+        super().__init__()
+        self._searches = searches or (lambda q: [[q.text]])
+        self._reply = reply or cite_a_target
+        self._usage = usage
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        assert request.purpose == "owner_request"
+        query = asked(request)
+        outputs = [
+            json.loads(item.output) for item in request.items if isinstance(item, ToolResultItem)
+        ]
+        planned = self._searches(query)
+        if len(outputs) < len(planned):
+            arguments = json.dumps(
+                {
+                    "queries": planned[len(outputs)],
+                    "contact_id": None,
+                    "conversation_id": None,
+                    "since": None,
+                    "until": None,
+                    "limit": None,
+                }
+            )
+            call = ToolCall(f"call-{len(outputs)}", "search_messages", arguments)
+            return LLMResponse(
+                StopReason.TOOL_CALLS,
+                "gpt-6-luna",
+                self._usage,
+                tool_calls=(call,),
+                output_items=ProviderItems("fake", ({"type": "function_call"},)),
+            )
+        results = [r for output in outputs for r in output.get("results", [])]
+        return LLMResponse(
+            StopReason.COMPLETED,
+            "gpt-6-luna",
+            self._usage,
+            text=self._reply(query, results),
+            output_items=ProviderItems("fake", ({"type": "message"},)),
+        )
+
+
+def asked(request: LLMRequest) -> RetrievalQuery:
+    """The owner's question this run answers (the last owner text item)."""
+    texts = [item.text for item in request.items if isinstance(item, TextItem)]
+    for text in reversed(texts):
+        for query in QUERIES:
+            if query.text in text:
+                return query
+    raise AssertionError("no dataset question in the request")
+
+
+def is_target(query: RetrievalQuery, result: dict[str, Any]) -> bool:
+    targets = {MESSAGES[t].text for t in query.target_message_ids}
+    return unwrap(result["text"] or "") in targets
+
+
+def cite_a_target(query: RetrievalQuery, results: list[dict[str, Any]]) -> str:
+    for result in results:
+        if is_target(query, result):
+            return f"{' '.join(query.answer_values)} [msg:{result['message_id']}]"
+    return "I found nothing about that."
+
+
+def agent_target(corpus: LoadedCorpus, *ids: str) -> AgentModeTarget:
+    return AgentModeTarget([QUERIES_BY_ID[i] for i in ids], corpus=corpus)
+
+
+async def test_agent_mode_runs_the_owner_request_runtime_with_the_shipped_prompt_and_production_flags(  # noqa: E501
+    corpus: LoadedCorpus,
+) -> None:
+    oracle, ledger = AgentOracle(), CallLedger()
+    result = await agent_target(corpus, "r01").run(context(oracle, ledger))
+
+    shipped = prompt_registry.active("owner_request")
+    first = oracle.requests[0]
+    assert first.purpose == "owner_request"
+    assert first.instructions.startswith(shipped.text)
+    registry_tools = {tool.name for tool in default_registry().all()}
+    assert {tool.name for tool in first.tools} == registry_tools
+    assert {tool.release_flag for tool in default_registry().all()} <= PRODUCTION_FLAGS
+    assert result.prompts == (shipped.label,)
+    [record] = result.details
+    assert record["hit_top5"] is True
+    assert record["answer_correct"] is True, record["answer_problems"]
+    assert record["citations"]
+    assert set(record["citations"]) <= set(QUERIES_BY_ID["r01"].target_message_ids)
+    assert "[msg:" not in record["reply"]
+    assert record["unverified_citations"] == 0
+    assert [m.key for m in result.metrics] == ["top5_hit", "answer_correct"]
+    assert len(ledger.entries) == len(oracle.requests) == 2  # a search turn, then the answer
+
+
+async def test_agent_mode_top5_counts_any_search_call_in_the_run(corpus: LoadedCorpus) -> None:
+    two_searches = AgentOracle(searches=lambda q: [["zzqx synthetic nothing"], [q.text]])
+    result = await agent_target(corpus, "r01").run(context(two_searches, CallLedger()))
+    [record] = result.details
+    assert len(record["searches"]) == 2
+    assert record["searches"][0]["top5"] == []
+    assert record["hit_top5"] is True
+
+    no_search = AgentOracle(searches=lambda q: [], reply=lambda q, r: "I can't tell.")
+    result = await agent_target(corpus, "r01").run(context(no_search, CallLedger()))
+    [record] = result.details
+    assert record["hit_top5"] is False
+    assert record["miss"] == "no_search"
+    assert record["answer_correct"] is False
+
+
+async def test_agent_mode_needs_a_verified_citation_of_a_target(corpus: LoadedCorpus) -> None:
+    def cite_another(query: RetrievalQuery, results: list[dict[str, Any]]) -> str:
+        other = next(r for r in results if not is_target(query, r))
+        return f"{' '.join(query.answer_values)} [msg:{other['message_id']}]"
+
+    def no_marker(query: RetrievalQuery, results: list[dict[str, Any]]) -> str:
+        return " ".join(query.answer_values)
+
+    for reply, problem in ((cite_another, "no_target_cited"), (no_marker, "no_citation")):
+        oracle = AgentOracle(searches=lambda q: [[q.text], ["salom"]], reply=reply)
+        result = await agent_target(corpus, "r01").run(context(oracle, CallLedger()))
+        [record] = result.details
+        assert record["hit_top5"] is True
+        assert record["answer_correct"] is False
+        assert problem in record["answer_problems"]
+
+
+async def test_agent_mode_an_unverified_citation_is_a_problem(corpus: LoadedCorpus) -> None:
+    def cite_target_and_more(query: RetrievalQuery, results: list[dict[str, Any]]) -> str:
+        return cite_a_target(query, results) + " Also [msg:987654321]."
+
+    oracle = AgentOracle(reply=cite_target_and_more)
+    result = await agent_target(corpus, "r01").run(context(oracle, CallLedger()))
+    [record] = result.details
+    assert record["unverified_citations"] == 1
+    assert "unverified_citation" in record["answer_problems"]
+    assert record["answer_correct"] is False
+    assert "987654321" not in record["reply"]
+
+
+async def test_agent_mode_starts_each_query_without_history(corpus: LoadedCorpus) -> None:
+    oracle = AgentOracle()
+    result = await agent_target(corpus, "r01", "r02").run(context(oracle, CallLedger()))
+
+    assert [d["id"] for d in result.details] == ["r01", "r02"]
+    first_reply = result.details[0]["reply"]
+    second_run = [r for r in oracle.requests if asked(r).id == "r02"]
+    assert second_run
+    for request in second_run:
+        texts = " ".join(item.text for item in request.items if isinstance(item, TextItem))
+        assert QUERIES_BY_ID["r01"].text not in texts
+        assert first_reply not in texts
+    async with corpus.session_factory() as session:
+        for table in ("control_turns", "agent_runs", "memory_items", "conversation_summaries"):
+            left = (
+                await session.execute(
+                    sa.text(f"SELECT count(*) FROM app.{table} WHERE account_id = :a"),  # noqa: S608
+                    {"a": corpus.account_id},
+                )
+            ).scalar_one()
+            assert left == 0, table
+
+
+def test_agent_mode_requires_live_and_records_its_spend(
+    tmp_path: Path,
+    test_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    oracle = AgentOracle()
+    monkeypatch.setenv("EVAL_DATABASE_URL", test_database_url)
+    monkeypatch.setattr(live, "_settings", _no_settings)
+    monkeypatch.setattr(
+        cli,
+        "load_live_config",
+        lambda route, override: LiveConfig(ModelChoice("gpt-6-luna", None), SecretStr("sk-x")),
+    )
+    monkeypatch.setattr(cli, "build_client", lambda config: oracle)
+    base = ["run", "retrieval", "--mode", "agent", "--model", "gpt-6-luna", "--limit", "1"]
+
+    refused = cli.main([*base, "--out-dir", str(tmp_path)])
+    assert refused == cli.EXIT_REFUSED
+    assert "--live" in capsys.readouterr().err
+    assert oracle.requests == []
+
+    code = cli.main([*base, "--live", "--out-dir", str(tmp_path), "--date", "2026-10-26"])
+
+    assert code == 0
+    (machine,) = tmp_path.glob("*.json")
+    assert machine.name == "2026-10-26-retrieval-agent-gpt-6-luna-trial.json"
+    report = json.loads(machine.read_text(encoding="utf-8"))
+    assert report["mode"] == "agent"
+    assert report["cost"]["calls"] == len(oracle.requests) == 2
+    assert Decimal(report["cost"]["spent_usd"]) > 0
+    assert report["details"][0]["id"] == QUERIES[0].id

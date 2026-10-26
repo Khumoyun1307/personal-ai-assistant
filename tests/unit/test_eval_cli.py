@@ -28,6 +28,7 @@ from evals.summary import SummaryTarget
 from evals.targets import Measure, MetricResult, RunContext, TargetResult
 from pydantic import SecretStr
 
+from assistant.agent import prompt_registry
 from assistant.config import Settings
 from assistant.llm.port import Usage
 
@@ -372,6 +373,73 @@ def test_no_client_is_built_for_a_summary_run_without_live(
     assert cli.main([*summary, "--live", "--estimate-only"]) == 0  # estimating builds nothing
     assert cli.main([*summary, "--live", "--no-write"]) == cli.EXIT_REFUSED
     assert cli.main([*summary, "--live", "--budget-usd", "0.01"]) == cli.EXIT_REFUSED
+
+
+def _agent_trial(tmp_path: Path, name: str = "trial.json", **overrides: Any) -> Path:
+    """A recorded `--limit 1` agent-mode trial, as `to_json` writes it."""
+    report: dict[str, Any] = {
+        "target": "retrieval",
+        "mode": "agent",
+        "model": LUNA,
+        "items": 1,
+        "stopped": False,
+        "prompts": [prompt_registry.active("owner_request").label],
+        "cost": {"spent_usd": "0.004", "calls": 3},
+    }
+    report.update(overrides)
+    path = tmp_path / name
+    path.write_text(json.dumps(report), encoding="utf-8")
+    return path
+
+
+def test_agent_mode_budget_rule(
+    forbid_client: None, no_settings: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """E-ab: a full agent run's worst case is over the cap, so it starts only on
+    the expected cost calibrated from a trial, under the in-flight cap."""
+    agent = ["run", "retrieval", "--mode", "agent", "--model", LUNA]
+
+    # Without --live nothing runs; a trial's worst case fits the cap.
+    assert cli.main(agent) == cli.EXIT_REFUSED
+    assert cli.main([*agent, "--estimate-only", "--limit", "1"]) == 0
+    capsys.readouterr()
+
+    # Uncalibrated, the full run is refused on its worst case, with the way out.
+    assert cli.main([*agent, "--live"]) == cli.EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert "over the $1 cap" in err
+    assert "--calibrate-from" in err
+
+    # Calibrated: 0.004 per query x 38 queries x the 1.5 margin = 0.228, under the cap.
+    trial = _agent_trial(tmp_path)
+    assert cli.main([*agent, "--estimate-only", "--calibrate-from", str(trial)]) == 0
+    out = capsys.readouterr().out
+    assert "expected $0.2280" in out
+    assert "worst case $" in out
+    # With --live every guard passes: it gets as far as building the client.
+    with pytest.raises(AssertionError, match="a model client was configured or built"):
+        cli.main([*agent, "--live", "--calibrate-from", str(trial)])
+
+    # An expected cost over the cap is refused too.
+    pricey = _agent_trial(tmp_path, "pricey.json", cost={"spent_usd": "0.05", "calls": 3})
+    assert cli.main([*agent, "--live", "--calibrate-from", str(pricey)]) == cli.EXIT_REFUSED
+    assert "expected" in capsys.readouterr().err
+
+    # A calibration only counts from a finished agent trial of the same model and prompt.
+    for name, wrong in {
+        "variants.json": {"mode": "variants"},
+        "model.json": {"model": "gpt-6-other"},
+        "prompt.json": {"prompts": ["owner_request.v1"]},
+        "stopped.json": {"stopped": True},
+        "empty.json": {"items": 0},
+    }.items():
+        path = _agent_trial(tmp_path, name, **wrong)
+        assert cli.main([*agent, "--live", "--calibrate-from", str(path)]) == cli.EXIT_REFUSED
+        assert "calibrat" in capsys.readouterr().err
+
+    # And only agent mode takes one.
+    variants = ["run", "retrieval", "--mode", "variants", "--model", LUNA, "--live"]
+    assert cli.main([*variants, "--calibrate-from", str(trial)]) == cli.EXIT_REFUSED
 
 
 def test_a_summary_run_with_the_flag_reaches_the_client_before_any_database(

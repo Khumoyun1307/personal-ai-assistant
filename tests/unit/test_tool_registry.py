@@ -11,19 +11,25 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from assistant.agent import prompt_registry
 from assistant.agent.models import RUN_TYPES
 from assistant.agent.tools.registry import (
+    CHAT_ACCESS_OFF,
+    CHAT_ACCESS_OFF_REASON,
     TOOL_RUN_TYPES,
     CapabilityClass,
     CapabilityTier,
     ToolContext,
     ToolDefinition,
     ToolOutcome,
+    ToolRefs,
     ToolRegistrationError,
     ToolRegistry,
+    ToolServices,
     default_registry,
     strict_schema,
 )
+from tests.fakes.clock import FakeClock
 
 CONTACT_TRIGGERED = ("triage", "draft_reply", "summarize", "extract_memory", "evaluate_monitor")
 
@@ -131,6 +137,108 @@ def test_tools_returning_managed_content_need_managed_consent() -> None:
 
     assert without == {}
     assert set(with_consent) == {"list_things"}
+
+
+class _NoDatabase:
+    """A session factory that fails the test if anything opens a session."""
+
+    def __call__(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the blocked stub opened a database session")
+
+
+def _stub_context() -> ToolContext:
+    return ToolContext(
+        account_id=1,
+        run_id=1,
+        run_type="owner_request",
+        tainted=False,
+        services=ToolServices(
+            session_factory=_NoDatabase(),  # type: ignore[arg-type]
+            clock=FakeClock(),
+            monthly_budget_usd=None,
+        ),
+    )
+
+
+async def test_the_blocked_stub_returns_no_message_data_and_makes_no_db_read_of_content() -> None:
+    """S03.7 B5 (invariant 9): without `ai_managed`, a chat-reading tool is
+    offered as a stub with the same name and schema; its handler opens no
+    session and returns only the fixed `chat_access_off` status."""
+    registry = default_registry()
+    flags = every_flag(registry)
+    stubs = registry.for_run(
+        "owner_request",
+        tier=CapabilityTier.CONTROL_ONLY,
+        enabled_flags=flags,
+        managed_consent=False,
+        stub_managed_tools=True,
+    )
+    real = {tool.name: tool for tool in registry.all()}
+    managed = {name for name, tool in real.items() if tool.returns_managed}
+    assert managed == {
+        "search_messages",
+        "resolve_contact",
+        "get_conversation",
+        "list_conversations",
+        "summarize_period",
+        "get_attention_list",
+    }
+    assert managed <= set(stubs)
+    for name in managed:
+        stub = stubs[name]
+        assert stub.spec() == real[name].spec()  # the model sees the same tool
+        assert stub.handler is not real[name].handler
+        assert stub.returns_managed is False
+        outcome = await stub.handler(_stub_context(), None)
+        assert outcome.status == CHAT_ACCESS_OFF
+        assert dict(outcome.data) == {"reason": CHAT_ACCESS_OFF_REASON}
+        assert outcome.contains_managed is False
+        assert outcome.taints is False
+        assert outcome.refs == ToolRefs()
+        assert not outcome.citable
+    # Tools that do not read the chats are offered as they are.
+    for name in set(stubs) - managed:
+        assert stubs[name] is real[name]
+
+
+def test_release_flags_still_hide_blocked_stubs() -> None:
+    registry = ToolRegistry([tool(returns_managed=True)])
+
+    flagged_off = registry.for_run(
+        "owner_request",
+        tier=CapabilityTier.CONTROL_ONLY,
+        enabled_flags=frozenset(),
+        managed_consent=False,
+        stub_managed_tools=True,
+    )
+    with_consent = registry.for_run(
+        "owner_request",
+        tier=CapabilityTier.CONTROL_ONLY,
+        enabled_flags=frozenset({"tool.list_things"}),
+        managed_consent=True,
+        stub_managed_tools=True,
+    )
+    contact_run = registry.for_run(
+        "summarize",
+        tier=CapabilityTier.CONTROL_ONLY,
+        enabled_flags=frozenset({"tool.list_things"}),
+        managed_consent=False,
+        stub_managed_tools=True,
+    )
+
+    assert flagged_off == {}
+    assert with_consent["list_things"].handler is noop  # consent: the real tool
+    assert contact_run == {}
+
+
+def test_owner_request_v6_is_active_and_v1_to_v5_remain() -> None:
+    assert prompt_registry.ACTIVE["owner_request"] == "v6"
+    for version in ("v1", "v2", "v3", "v4", "v5", "v6"):
+        assert prompt_registry.load("owner_request", version).text
+    v6 = prompt_registry.load("owner_request", "v6").text
+    assert "[msg:" in v6
+    assert "chat_access_off" in v6
+    assert "widened" in v6
 
 
 def test_duplicate_names_are_refused() -> None:
