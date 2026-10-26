@@ -58,7 +58,8 @@ R0-015 (sticker)                                — no caption
 R0-016 (location, any)                          — no caption
 ```
 
-**Checkpoint 1:** agent runs `verify_r0.py --expect 1-16`.
+**Checkpoint 1:** agent runs `verify_r0.py --expect 1-16 --no-text 12,14,15,16`
+(uncaptioned media carry no number; check the printed media kinds instead).
 
 ## Part 2 — owner replies from two clients, checkpoint 2
 
@@ -81,7 +82,7 @@ the text `R0-AWAY synthetic away message`, then from the second account
 send `R0-021 Trigger the away message`, wait for the automatic reply, and
 disable the away message again. Skip R0-021 without Premium.
 
-**Checkpoint 2:** `verify_r0.py --expect 1-21` — 17–20 must be
+**Checkpoint 2:** `verify_r0.py --expect 1-21 --no-text 12,14,15,16` — 17–20 must be
 `owner_manual`; the away reply, if any, `owner_automated`.
 
 ## Part 3 — edits and deletions, checkpoint 3
@@ -100,7 +101,10 @@ From the **main account**:
 
 Then from the second account send `R0-022 After edits and deletions`.
 
-**Checkpoint 3:** `verify_r0.py --expect 1-22 --deleted 9,10,19 --edited 2,17`.
+**Checkpoint 3:** `verify_r0.py --expect 1-22 --no-text 12,14,15,16 --deleted 9,19 --edited 2,17`.
+R0-010 deleted by the contact "for themselves only" stays in the owner's
+view, so no deletion reaches the bot and it stays stored (TF §12 LV-07
+add-on, 2026-10-26); if 3.4 was a delete-for-both, add 10 to `--deleted`.
 
 ## Part 4 — pause, rights, restart, disconnect, reboot, checkpoint 4
 
@@ -121,12 +125,18 @@ Then from the second account send `R0-022 After edits and deletions`.
       `R0-031 filler 31` … `R0-060 filler 60` (the agent pastes the list in
       the control chat so you can copy it).
 
-**Checkpoint 4:** `verify_r0.py --expect 1-60 --missing-expected 23,28
+**Checkpoint 4:** `verify_r0.py --expect 1-60 --no-text 12,14,15,16 --missing-expected 23,28
 --deleted 9,10,19 --edited 2,17`. The agent also computes NFR-02 (p95 of
 `processed_at − date` < 5 s over the session) and, at the very end, NFR-03
 (stop the app for 16 minutes; the heartbeat monitor must alert within 15).
 
 ## Part 5 — the deferred LV-08 half (dev bot on the second account, 5 min)
+
+> **Moved to M04 (owner, 2026-10-26).** Connecting the dev bot to the second
+> account needs Premium there, which the owner does not want to buy. In M04
+> the check runs on Alviro's own connection (main account, Premium) in a
+> planned server window with the server's poller briefly stopped and a
+> per-run owner go-ahead. The text below is kept for reference.
 
 This part uses the **dev bot only** — never Alviro's token, so the server's
 production poller is untouched. The laptop `.env` holds only the dev bot's
