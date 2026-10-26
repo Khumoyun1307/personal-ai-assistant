@@ -98,6 +98,20 @@ contact filter and the final answer (synthetic data, for review; E-s, E-t, E-u).
 | 2026-10-26 | `retrieval-gpt-6-luna` (baseline) | retrieval_variants.v1, retrieval_answer.v1 | 0.0094 |
 | 2026-10-26 | `retrieval-gpt-6-luna-s036-trial`, `retrieval-gpt-6-luna-s036` (S03.6) | retrieval_variants.v2, retrieval_answer.v1 | 0.0003 + 0.0102 |
 | 2026-10-26 | `summary-gpt-6-luna-s036-v3-trial`, `summary-gpt-6-luna-s036-v3` (S03.6) | summarize.v3, fabrication.v1, open_loops.v2 | 0.0011 + 0.0359 |
-| 2026-10-26 | `summary-gpt-6-luna-s036-v4-trial`, `…-s036-v4-aborted.json` (run lost its database, no results), `summary-gpt-6-luna-s036-v4` (S03.6) | summarize.v4, fabrication.v1, open_loops.v3 | 0.0011 + 0.0210 + 0.0392 |
+| 2026-10-26 | `summary-gpt-6-luna-s036-v4-trial`, `…-s036-v4-aborted.json` (run lost its database, no results), `summary-gpt-6-luna-s036-v4` (S03.6) | summarize.v4, fabrication.v1 (the report says so; its judge read **local** times, which later reports label `fabrication.v1+render.v2`), open_loops.v3 | 0.0011 + 0.0210 + 0.0392 |
 
 Total so far: USD 0.1523 of the owner's USD 1 (baseline 0.0435, S03.6 0.1088), tracked here and in M03.md S03.6.
+
+The fabrication judge reads the conversation as `evals/render.py` draws it. Reports name it
+`fabrication.v1` up to the summarize.v4 runs and `fabrication.v1+render.v2` from the S03.6
+review on; the baseline and summarize.v3 runs' judge read **UTC** times (render v1), the
+summarize.v4 runs' judge **local** times (render v2), though their reports say `fabrication.v1`.
+
+## Model-free runs (no cost)
+
+| Date | Run | What |
+|---|---|---|
+| 2026-10-25 | `retrieval-deterministic` (S03.4) | deterministic baseline, 31/38 |
+| 2026-10-26 | `retrieval-deterministic` (S03.6) | after the S03.6 search tuning, 32/38 |
+| 2026-10-26 | `retrieval-deterministic-2` (S03.6 review) | after the review's stopword and stem changes, 32/38 (same misses) |
+| 2026-10-26 | `retrieval-replay-deterministic` (S03.6 review) | replay of `retrieval-gpt-6-luna-s036` (run 2) with the current search code, 36/38 |
