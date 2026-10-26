@@ -240,6 +240,50 @@ async def test_a_distinct_variant_rescues_a_deterministic_miss(corpus: LoadedCor
     assert record["answer_correct"] is True
 
 
+async def test_a_named_chat_partner_narrows_the_search_like_resolve_contact(
+    corpus: LoadedCorpus,
+) -> None:
+    """E-t: the owner names the person ("…with Nilufar"), and the messages of that
+    chat rarely contain the name. The product agent resolves the name and filters by
+    contact; the harness does the same with the product's own matcher."""
+    r04 = next(q for q in QUERIES if q.id == "r04")
+    llm = OracleLLM(variants=lambda q: ["kelishdik"], contact=lambda q: "Nilufar")
+    result = await RetrievalTarget([r04], mode=RetrievalMode.VARIANTS, corpus=corpus).run(
+        context(llm, CallLedger())
+    )
+    record = result.details[0]
+    assert record["contact"] == "Nilufar"
+    assert record["contact_filter"] == "Nilufar opa (rahbar)"
+    assert record["top5"]
+    assert all(ref.startswith("c11.") for ref in record["top5"])
+    assert record["hit_top5"] is True
+    assert record["searched"] == [r04.text, "kelishdik"]
+
+
+async def test_an_ambiguous_or_unknown_name_is_not_used_as_a_filter(corpus: LoadedCorpus) -> None:
+    """Two contacts are called Rustam (Рустам амаки, Rustam (kuryer)): the agent would
+    ask the owner, so the harness searches unfiltered; an unknown name likewise."""
+    r21 = next(q for q in QUERIES if q.id == "r21")
+    for name in ("Rustam", "Zebiniso"):
+        llm = OracleLLM(contact=lambda q, name=name: name)  # type: ignore[misc]
+        result = await RetrievalTarget([r21], mode=RetrievalMode.VARIANTS, corpus=corpus).run(
+            context(llm, CallLedger())
+        )
+        assert result.details[0]["contact"] == name
+        assert result.details[0]["contact_filter"] is None
+
+
+async def test_a_filtered_search_that_finds_nothing_is_widened(corpus: LoadedCorpus) -> None:
+    r01 = next(q for q in QUERIES if q.id == "r01")  # "Qorasuv-3 17-uy", in Kamola's chat
+    llm = OracleLLM(contact=lambda q: "Daniel")  # a real contact, but the wrong chat
+    result = await RetrievalTarget([r01], mode=RetrievalMode.VARIANTS, corpus=corpus).run(
+        context(llm, CallLedger())
+    )
+    record = result.details[0]
+    assert record["contact_filter"] == "Daniel"
+    assert record["hit_top5"] is True  # found again without the filter
+
+
 # ---------------------------------------------------------------- variants mode
 def unwrap(value: str) -> str:
     return html.unescape(re.sub(r"^<untrusted[^>]*>|</untrusted>$", "", value))
@@ -253,11 +297,13 @@ class OracleLLM(FakeLLM):
     def __init__(
         self,
         variants: Callable[[RetrievalQuery], list[str]] | None = None,
+        contact: Callable[[RetrievalQuery], str | None] | None = None,
         usage: Usage = Usage(400, 100),  # noqa: B008  (immutable)
     ) -> None:
         super().__init__()
         self._by_text = {q.text: q for q in QUERIES}
         self._variants = variants or (lambda q: [q.text])
+        self._contact = contact or (lambda q: None)
         self._usage = usage
 
     async def parse[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> ParsedResponse[T]:
@@ -265,7 +311,7 @@ class OracleLLM(FakeLLM):
         query = self._by_text[request.items[0].text]  # type: ignore[union-attr]
         value: dict[str, Any]
         if schema is QueryVariants:
-            value = {"queries": self._variants(query)}
+            value = {"queries": self._variants(query), "contact": self._contact(query)}
         else:
             value = self._answer(query, request.items[1].text)  # type: ignore[union-attr]
         return ParsedResponse(
@@ -310,7 +356,7 @@ async def test_variants_mode_with_a_perfect_model_answers_every_retrieved_query_
     # are answered correctly, which exercises the whole reference check.
     assert answered.all_items.numerator == hit.all_items.numerator
     assert hit.all_items.numerator > 0
-    assert result.prompts == ("retrieval_variants.v1", "retrieval_answer.v1")
+    assert result.prompts == ("retrieval_variants.v2", "retrieval_answer.v1")
     # Metered: a variants call per query plus an answer call per query with hits.
     purposes = [e.purpose for e in ledger.entries]
     assert purposes.count("eval_retrieval_variants") == 38

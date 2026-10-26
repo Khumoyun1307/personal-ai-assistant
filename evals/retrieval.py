@@ -28,7 +28,7 @@ from __future__ import annotations
 import html
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from enum import StrEnum
 from typing import Any
@@ -37,6 +37,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict
 
 from assistant.agent.untrusted import Source, wrap
+from assistant.conversations import read
 from assistant.llm.port import (
     LLMError,
     LLMRequest,
@@ -44,7 +45,7 @@ from assistant.llm.port import (
     StopReason,
     TextItem,
 )
-from assistant.memory.retrieval import MAX_QUERIES, SearchHit, search_messages
+from assistant.memory.retrieval import MAX_QUERIES, SearchFilters, SearchHit, search_messages
 from evals.assets import load_asset
 from evals.budget import BudgetExceededError
 from evals.corpus import LoadedCorpus
@@ -63,7 +64,7 @@ from evals.targets import (
 TOP_N = 5
 HIT_THRESHOLD = 0.85
 ANSWER_THRESHOLD = 0.80
-VARIANTS_PROMPT_ID = "retrieval_variants.v1"
+VARIANTS_PROMPT_ID = "retrieval_variants.v2"
 ANSWER_PROMPT_ID = "retrieval_answer.v1"
 #: Output budgets include hidden reasoning tokens, so they are generous; the
 #: budget guard prices every call at this worst case before making it.
@@ -90,6 +91,9 @@ class QueryVariants(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     queries: list[str]
+    #: The chat partner the owner named, as typed, or None (E-t): resolved like the
+    #: product's `resolve_contact` and applied as the search's contact filter.
+    contact: str | None
 
 
 class Reference(BaseModel):
@@ -193,6 +197,12 @@ class _Record:
     answer_correct: bool | None
     problems: tuple[str, ...]
     error: str | None
+    #: What was searched (the owner's words, then the model's variants) and the
+    #: chat partner the model named and the contact it resolved to: model output
+    #: over synthetic queries, kept so a miss can be diagnosed (E-t).
+    searched: tuple[str, ...] = ()
+    contact: str | None = None
+    contact_filter: str | None = None
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -205,6 +215,9 @@ class _Record:
             "answer_correct": self.answer_correct,
             "answer_problems": list(self.problems),
             "error": self.error,
+            "searched": list(self.searched),
+            "contact": self.contact,
+            "contact_filter": self.contact_filter,
         }
 
 
@@ -284,16 +297,17 @@ class RetrievalTarget:
         return self._result(records, planned=len(queries), ledger=context.reviews, stopped=stopped)
 
     async def _evaluate(self, query: RetrievalQuery, context: RunContext) -> _Record:
-        variants: list[str] = []
+        proposed = QueryVariants(queries=[], contact=None)
         if self.uses_model:
             try:
-                variants = await self._variants(query, context)
+                proposed = await self._variants(query, context)
             except _ModelFailureError as failure:
                 return _Record(
                     query.id, tuple(query.intents), False, None, (), 0, False, (), failure.code
                 )
-        search_queries = _search_queries(query.text, variants)
-        hits = await self._search(search_queries)
+        search_queries = _search_queries(query.text, proposed.queries)
+        contact = await self._resolve_contact(proposed.contact)
+        hits = await self._search(search_queries, contact)
         top = tuple(self._corpus.refs[hit.message_id] for hit in hits)
         rank = next(
             (i for i, ref in enumerate(top, start=1) if ref in query.target_message_ids), None
@@ -308,6 +322,9 @@ class RetrievalTarget:
             None,
             (),
             None,
+            searched=tuple(search_queries) if self.uses_model else (),
+            contact=proposed.contact,
+            contact_filter=contact.name if contact is not None else None,
         )
         if not self.uses_model:
             return record
@@ -320,8 +337,39 @@ class RetrievalTarget:
         verdict = check_answer(answer, query, self._views(hits))
         return _with_answer(record, verdict.correct, verdict.problems, None)
 
-    async def _search(self, queries: Sequence[str]) -> Sequence[SearchHit]:
+    async def _resolve_contact(self, name: str | None) -> _ContactFilter | None:
+        """The chat partner the model named, resolved the way the product's
+        `resolve_contact` tool does (`conversations.read.match_contacts`). As the
+        agent is told to, an ambiguous name (two best candidates of the same kind)
+        is not used: the agent would ask the owner instead (E-t)."""
+        if not name or not name.strip():
+            return None
         async with self._corpus.session_factory() as session:
+            directory = await read.contact_directory(session, self._corpus.account_id)
+        matches = read.match_contacts(directory, name, limit=2)
+        if not matches or (len(matches) > 1 and matches[0].kind == matches[1].kind):
+            return None
+        best = matches[0].entry
+        return _ContactFilter(best.contact_id, best.display_name or "")
+
+    async def _search(
+        self, queries: Sequence[str], contact: _ContactFilter | None = None
+    ) -> Sequence[SearchHit]:
+        """The service's top results; narrowed to the named contact when there is
+        one, and searched again without the filter if that finds nothing (the agent
+        would widen a search that came back empty)."""
+        async with self._corpus.session_factory() as session:
+            if contact is not None:
+                narrowed = await search_messages(
+                    session,
+                    self._corpus.account_id,
+                    queries,
+                    now=self._corpus.now,
+                    filters=SearchFilters(contact_ids=(contact.contact_id,)),
+                    limit=TOP_N,
+                )
+                if narrowed.hits:
+                    return narrowed.hits
             result = await search_messages(
                 session,
                 self._corpus.account_id,
@@ -332,7 +380,7 @@ class RetrievalTarget:
         return result.hits
 
     # ------------------------------------------------------------ model calls
-    async def _variants(self, query: RetrievalQuery, context: RunContext) -> list[str]:
+    async def _variants(self, query: RetrievalQuery, context: RunContext) -> QueryVariants:
         assert context.llm is not None  # checked in run()
         assert context.model is not None
         request = LLMRequest(
@@ -351,7 +399,7 @@ class RetrievalTarget:
             raise _ModelFailureError(f"variants:{error.kind.value}") from None
         if response.stop_reason is not StopReason.COMPLETED or response.parsed is None:
             raise _ModelFailureError(f"variants:{response.stop_reason.value}")
-        return response.parsed.queries
+        return response.parsed
 
     async def _answer(
         self, query: RetrievalQuery, hits: Sequence[SearchHit], context: RunContext
@@ -488,6 +536,12 @@ class RetrievalTarget:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _ContactFilter:
+    contact_id: int
+    name: str
+
+
 class _ModelFailureError(Exception):
     """A model call failed in a way that counts the item as a miss."""
 
@@ -499,17 +553,7 @@ class _ModelFailureError(Exception):
 def _with_answer(
     record: _Record, correct: bool, problems: tuple[str, ...], error: str | None
 ) -> _Record:
-    return _Record(
-        record.query_id,
-        record.intents,
-        record.hit,
-        record.rank,
-        record.top,
-        record.variants,
-        correct,
-        problems,
-        error,
-    )
+    return replace(record, answer_correct=correct, problems=problems, error=error)
 
 
 def _search_queries(original: str, variants: Sequence[str]) -> list[str]:
