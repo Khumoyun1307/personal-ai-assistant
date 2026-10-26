@@ -12,6 +12,18 @@ from pydantic import BaseModel, ValidationError
 from assistant.agent.tools.memory import ForgetArgs, ListMemoriesArgs, RememberArgs
 from assistant.agent.tools.modes import SetConversationModeArgs, UpdatePreferencesArgs
 
+#: `update_preferences`' S03.5 fields: required (null = unchanged; D52).
+S035_UNCHANGED: dict[str, Any] = dict.fromkeys(
+    (
+        "reply_language",
+        "reply_tone",
+        "reply_style",
+        "message_retention_days",
+        "control_chat_retention_days",
+        "raw_update_retention_days",
+    )
+)
+
 REMEMBER: dict[str, Any] = {
     "content": "SYNTH note",
     "kind": "fact",
@@ -59,23 +71,43 @@ def _with(base: dict[str, Any], **changes: Any) -> dict[str, Any]:
         ),
         (
             UpdatePreferencesArgs,
-            {"preferred_language": None, "timezone": None, "default_mode": None},
+            {"preferred_language": None, "timezone": None, "default_mode": None, **S035_UNCHANGED},
         ),
         (
             UpdatePreferencesArgs,
-            {"preferred_language": "uz;DROP", "timezone": None, "default_mode": None},
+            {
+                "preferred_language": "uz;DROP",
+                "timezone": None,
+                "default_mode": None,
+                **S035_UNCHANGED,
+            },
         ),
         (
             UpdatePreferencesArgs,
-            {"preferred_language": "x" * 9, "timezone": None, "default_mode": None},
+            {
+                "preferred_language": "x" * 9,
+                "timezone": None,
+                "default_mode": None,
+                **S035_UNCHANGED,
+            },
         ),
         (
             UpdatePreferencesArgs,
-            {"preferred_language": None, "timezone": "x" * 65, "default_mode": None},
+            {
+                "preferred_language": None,
+                "timezone": "x" * 65,
+                "default_mode": None,
+                **S035_UNCHANGED,
+            },
         ),
         (
             UpdatePreferencesArgs,
-            {"preferred_language": None, "timezone": None, "default_mode": "assist"},
+            {
+                "preferred_language": None,
+                "timezone": None,
+                "default_mode": "assist",
+                **S035_UNCHANGED,
+            },
         ),
         (SetConversationModeArgs, {"conversation_id": None, "contact_id": None, "mode": "ignore"}),
         (SetConversationModeArgs, {"conversation_id": 1, "contact_id": 2, "mode": "ignore"}),
@@ -109,6 +141,11 @@ def test_valid_arguments_are_accepted_and_trimmed() -> None:
     )
     assert instruction.applies_to_replies is True
     prefs = UpdatePreferencesArgs.model_validate(
-        {"preferred_language": "uz-Latn", "timezone": "Asia/Tashkent", "default_mode": "ignore"}
+        {
+            "preferred_language": "uz-Latn",
+            "timezone": "Asia/Tashkent",
+            "default_mode": "ignore",
+            **S035_UNCHANGED,
+        }
     )
     assert prefs.preferred_language == "uz-Latn"
