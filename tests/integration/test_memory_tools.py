@@ -58,7 +58,15 @@ from assistant.llm.port import LLMRequest, ToolResultItem
 from assistant.memory.models import MemoryItem
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response, tool_response
-from tests.integration.agent_env import READ_FLAGS, applier, args, ask, one_id, runtime
+from tests.integration.agent_env import (
+    MEMORY_FLAGS,
+    READ_FLAGS,
+    applier,
+    args,
+    ask,
+    one_id,
+    runtime,
+)
 from tests.integration.business_env import (
     CONTACT,
     OTHER_CONTACT,
@@ -75,15 +83,6 @@ from tests.integration.business_env import (
 
 pytestmark = pytest.mark.integration
 
-MEMORY_FLAGS = frozenset(
-    {
-        "tool.remember",
-        "tool.forget",
-        "tool.list_memories",
-        "tool.update_preferences",
-        "tool.set_conversation_mode",
-    }
-)
 FLAGS = READ_FLAGS | MEMORY_FLAGS
 MEMORY_TOOLS = {
     "remember",
