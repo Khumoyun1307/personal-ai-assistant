@@ -24,6 +24,7 @@ Periodic tasks carry a queueing lock so a slow run never piles up copies.
 
 from __future__ import annotations
 
+import asyncio
 import html
 from dataclasses import dataclass
 from datetime import timedelta
@@ -31,9 +32,9 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
 
-from procrastinate import App, RetryStrategy
+from procrastinate import App, BaseRetryStrategy, RetryDecision, RetryStrategy
 from procrastinate.exceptions import UniqueViolation
-from procrastinate.jobs import Status
+from procrastinate.jobs import Job, Status
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -88,6 +89,29 @@ OWNER_REQUEST_RETRY = RetryStrategy(
 NOTIFY_RETRY = RetryStrategy(
     max_attempts=3, exponential_wait=2, retry_exceptions={OperationalError, DBAPIError}
 )
+
+
+class RequeueOnShutdown(BaseRetryStrategy):
+    """`privacy.delete_data` (M03 D87, D90): a failure is never retried — the
+    job has told the owner, and a retry would delete behind "nothing was
+    deleted". A run cut off by a worker shutdown (procrastinate cancels a job
+    still running when the grace ends) has told nothing new, so it goes back
+    to the queue at once — never scheduled later, since it keeps the owner's
+    control lock (AGENTS §13) — and runs after the restart, at most
+    `attempts` times: if its transaction rolled back, that run deletes and
+    sends the receipt; if its outcome was already on record, that run finds
+    it and stays silent (at most one announcement)."""
+
+    def __init__(self, attempts: int = 3) -> None:
+        self.attempts = attempts
+
+    def get_retry_decision(self, *, exception: BaseException, job: Job) -> RetryDecision | None:
+        if not isinstance(exception, asyncio.CancelledError) or job.attempts >= self.attempts:
+            return None
+        return RetryDecision()  # now, same queue, same lock
+
+
+DELETE_DATA_RETRY = RequeueOnShutdown()
 
 
 class OwnerRuntime(Protocol):
@@ -344,7 +368,7 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
         # a no-op once the row has left `confirmed`.
         await handlers.apply_confirmation(confirmation_id)
 
-    @app.task(name=DELETE_DATA_TASK, queue=QUEUE_LLM)
+    @app.task(name=DELETE_DATA_TASK, queue=QUEUE_LLM, retry=DELETE_DATA_RETRY)
     async def delete_data(
         account_id: int,
         scope: str,
@@ -353,11 +377,11 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
         turn_cutoff: int | None = None,
     ) -> None:
         # Lock `acct:{id}:control` is set at defer (the queue of owner runs
-        # and applied confirmations). No procrastinate retry (M03 D87): a
-        # failure is reported to the owner ("nothing was deleted"), and a
-        # retry would then delete after that message. A stalled-worker rerun
-        # finds its audit row and stops. `turn_cutoff` defaults for a job
-        # queued before it existed.
+        # and applied confirmations). A failure is never retried (M03 D87):
+        # it is reported to the owner ("nothing was deleted") and recorded,
+        # and any re-run — a stalled worker's, or one requeued after a
+        # shutdown cut it off (D90) — finds the outcome on record and stops.
+        # `turn_cutoff` defaults for a job queued before it existed.
         await handlers.delete_data(account_id, scope, subject_id, card_id, turn_cutoff)
 
     @app.task(name=REFRESH_SUMMARY_TASK, queue=QUEUE_LLM)

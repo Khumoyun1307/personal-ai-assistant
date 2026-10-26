@@ -34,7 +34,7 @@ from assistant.inbox.connection_alerts import MANAGED_CONSENT_BUTTONS, MANAGED_C
 from assistant.memory import undo
 from assistant.observability.status import StatusReport
 from assistant.privacy import deletion
-from assistant.privacy.requests import QUEUED_TEXT
+from assistant.privacy.requests import MANAGED_DELETE_CARD, QUEUED_TEXT
 from assistant.telegram.control.cards import card_keyboard
 from assistant.telegram.gateway import ControlChat, OutboundGateway, SendResult
 from assistant.telegram.render import escape
@@ -389,7 +389,9 @@ async def handle_revoke(
 
 
 # ------------------------------------------------------------ managed-data cards
-MANAGED_DELETE_KIND = "managed_delete"
+#: Card A. A failed managed-data deletion offers it again (with a `ref_id`:
+#: a retry, which asks nothing more; `privacy/requests.py`, fix round 3).
+MANAGED_DELETE_KIND = MANAGED_DELETE_CARD
 MANAGED_MODE_KIND = "managed_mode"
 
 DELETE_CARD_TEXT = (
@@ -568,6 +570,17 @@ async def _mode_choice_card(
     )
 
 
+async def _mode_choice_unless_retry(
+    session: AsyncSession, clock: Clock, account: Account, card: PendingInput
+) -> tuple[int, str, str, str, list[tuple[str, str]]] | None:
+    """Card B follows card A, except after a retry card (a failed deletion's
+    fresh card A, whose `ref_id` names the failed card): how to continue was
+    asked with the first one (fix round 3, B)."""
+    if card.ref_id is not None:
+        return None
+    return await _mode_choice_card(session, clock, account)
+
+
 async def handle_card_press(
     session: AsyncSession,
     gateway: OutboundGateway,
@@ -646,7 +659,7 @@ async def handle_card_press(
                     account.id,
                     card.id,
                 ),
-                await _mode_choice_card(session, clock, account),
+                await _mode_choice_unless_retry(session, clock, account, card),
             )
             note = "deleting"
         case (k, "everything") if k == MANAGED_DELETE_KIND:
@@ -660,14 +673,14 @@ async def handle_card_press(
                     account.id,
                     card.id,
                 ),
-                await _mode_choice_card(session, clock, account),
+                await _mode_choice_unless_retry(session, clock, account, card),
             )
             note = "deleting_everything"
         case (k, "keep") if k == MANAGED_DELETE_KIND:
             settlement = _Settlement(
                 "Kept",
                 "Kept. Nothing was deleted.",
-                await _mode_choice_card(session, clock, account),
+                await _mode_choice_unless_retry(session, clock, account, card),
             )
             note = "kept"
         case (k, "observe") if k == MANAGED_MODE_KIND:

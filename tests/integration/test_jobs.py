@@ -364,11 +364,82 @@ async def test_the_summary_task_is_never_retried_by_procrastinate(env: Env) -> N
     assert env.app.tasks["memory.refresh_summary"].retry_strategy is None
 
 
-async def test_the_deletion_task_is_never_retried_by_procrastinate(env: Env) -> None:
+DELETE_ARGS = {
+    "account_id": 1,
+    "scope": "everything",
+    "subject_id": 1,
+    "card_id": 2,
+    "turn_cutoff": 3,
+}
+
+
+@contextlib.asynccontextmanager
+async def llm_worker_with_short_grace(app: App) -> AsyncIterator[None]:
+    """The `llm` worker as `run_queue_worker` starts it, with a shutdown grace
+    short enough for a test: a job still running then is cancelled."""
+    task = asyncio.create_task(
+        app.run_worker_async(
+            queues=["llm"],
+            name="worker-llm-test",
+            concurrency=1,
+            wait=True,
+            install_signal_handlers=False,
+            shutdown_graceful_timeout=0.1,
+            listen_notify=True,
+        )
+    )
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_a_failed_deletion_is_never_retried_by_procrastinate(env: Env) -> None:
     """S03.5 fix round 2, item 1: a failed deletion tells the owner that
     nothing was deleted; an automatic retry would then delete after that
     message. The owner asks again instead (M03 D87)."""
-    assert env.app.tasks["privacy.delete_data"].retry_strategy is None
+    env.deleter.error = RuntimeError("synthetic failure")
+
+    async def settled() -> bool:
+        statuses = await job_statuses(env, "privacy.delete_data")
+        return bool(statuses) and statuses[0] not in ("todo", "doing")
+
+    await env.scheduler.defer("privacy.delete_data", args=DELETE_ARGS, lock=owner_control_lock(1))
+    async with llm_worker_with_short_grace(env.app):
+        await wait_until(settled)
+    assert await job_statuses(env, "privacy.delete_data") == ["failed"]
+    assert len(env.deleter.runs) == 1
+
+
+async def test_a_deletion_cut_off_by_a_worker_shutdown_goes_back_to_the_queue(env: Env) -> None:
+    """Fix round 3, D: procrastinate cancels a job still running when the
+    shutdown grace ends. A deletion cut off so has decided nothing (its
+    transaction rolled back) and told nobody, so it is requeued — at once,
+    keeping its lock and its place before later owner runs — and runs after
+    the restart; that run deletes once and sends the receipt."""
+    env.deleter.gate = asyncio.Event()  # never set: still running at shutdown
+
+    async def doing() -> bool:
+        return await job_statuses(env, "privacy.delete_data") == ["doing"]
+
+    await env.scheduler.defer("privacy.delete_data", args=DELETE_ARGS, lock=owner_control_lock(1))
+    async with llm_worker_with_short_grace(env.app):
+        await wait_until(doing)
+    assert await job_statuses(env, "privacy.delete_data") == ["todo"]
+    async with env.factory() as session:
+        lock, args, later = (
+            await session.execute(
+                text(
+                    "SELECT lock, args, scheduled_at > now() + interval '1 second' "
+                    "FROM procrastinate.procrastinate_jobs WHERE task_name = 'privacy.delete_data'"
+                )
+            )
+        ).one()
+    assert lock == owner_control_lock(1)
+    assert args == DELETE_ARGS
+    assert not later  # never a future-scheduled job holding the lock (AGENTS §13)
 
 
 async def test_the_deletion_task_passes_the_turn_cutoff_through(env: Env) -> None:
