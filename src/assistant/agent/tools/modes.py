@@ -105,7 +105,11 @@ async def set_conversation_mode_tool(
         "effect": MODE_EFFECT.get(change.current, ""),
     }
     if echo is None:
-        return ToolOutcome("unchanged", {**data, "note": "the chat was already in this mode"})
+        # Already so: the owner's wish holds; nothing changed (review item 3).
+        return ToolOutcome(
+            "ok", {**data, "changed": False, "note": "the chat was already in this mode"}
+        )
+    data["changed"] = True
     data["echo"] = echo.note
     return ToolOutcome("ok", data)
 
@@ -189,8 +193,10 @@ async def update_preferences_tool(ctx: ToolContext, args: UpdatePreferencesArgs)
             )
     changed = {f: new for f, (_, new) in change.changes.items()}
     if echo is None:
-        return ToolOutcome("unchanged", {"note": "those settings already had these values"})
-    return ToolOutcome("ok", {"changed": changed, "echo": echo.note})
+        return ToolOutcome(
+            "ok", {"changed": False, "note": "those settings already had these values"}
+        )
+    return ToolOutcome("ok", {"changed": True, "values": changed, "echo": echo.note})
 
 
 UPDATE_PREFERENCES = ToolDefinition(

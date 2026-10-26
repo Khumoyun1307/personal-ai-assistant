@@ -223,11 +223,13 @@ async def forget_tool(ctx: ToolContext, args: ForgetArgs) -> ToolOutcome:
             )
             echo = await queue_echo(ctx, session, outcome.audit_id, text)
     if not outcome.changed:
+        # Already so: the owner's wish holds; nothing changed (review item 3).
         return ToolOutcome(
-            "unchanged", {"memory_id": args.memory_id, "note": "it was already forgotten"}
+            "ok",
+            {"memory_id": args.memory_id, "changed": False, "note": "it was already forgotten"},
         )
     assert echo is not None
-    return ToolOutcome("ok", {"memory_id": args.memory_id, "echo": echo.note})
+    return ToolOutcome("ok", {"memory_id": args.memory_id, "changed": True, "echo": echo.note})
 
 
 FORGET = ToolDefinition(

@@ -411,6 +411,9 @@ class ApplyOutcome:
 
 
 TEXT_APPLIED = "✅ Done: <code>{tool}</code> ({status})."
+#: A confirmed change that was already so (S03.3 review item 3): the owner's
+#: wish holds, but nothing was changed — said so, not "Done", not "failed".
+TEXT_ALREADY = "✅ Nothing to change: <code>{tool}</code> — it was already so."
 TEXT_FAILED = "⚠️ I could not apply <code>{tool}</code>: {reason}. Nothing was changed."
 TEXT_UNCERTAIN = (
     "⚠️ <code>{tool}</code> did not finish cleanly, so it may or may not have been "
@@ -537,6 +540,8 @@ class ConfirmationApplier:
     def _report(tool_name: str, outcome: ToolOutcome, succeeded: bool) -> str:
         """Done only for an explicit success status; never blur the rest (inv. 11)."""
         tool = html.escape(tool_name)
+        if succeeded and outcome.data.get("changed") is False:
+            return TEXT_ALREADY.format(tool=tool)
         if succeeded:
             return TEXT_APPLIED.format(tool=tool, status=html.escape(outcome.status))
         if outcome.data.get("uncertain"):
