@@ -28,7 +28,7 @@ from assistant.db.models import KEY_POLLER_HEARTBEAT, SystemState
 from assistant.db.uow import transaction
 from assistant.inbox.models import InboundUpdate
 from assistant.inbox.notify import AlertKind, OwnerAlerts
-from assistant.privacy.retention import INBOUND_PAYLOAD_RETENTION
+from assistant.privacy import retention_policy
 
 #: The same threshold the supervisor uses for the poller's liveness (§4.3).
 STALL_AFTER = timedelta(minutes=3)
@@ -73,6 +73,7 @@ async def _recoverable_dead_letters(session: AsyncSession) -> list[_DeadLetters]
             InboundUpdate.account_id,
             InboundUpdate.received_at,
             Account.timezone,
+            Account.settings,
         )
         .outerjoin(Account, Account.id == InboundUpdate.account_id)
         .where(InboundUpdate.status == "failed")
@@ -80,8 +81,9 @@ async def _recoverable_dead_letters(session: AsyncSession) -> list[_DeadLetters]
         .order_by(InboundUpdate.id)
     )
     groups: dict[int | None, _DeadLetters] = {}
-    for row_id, account_id, received_at, timezone in result.all():
-        purge_at = received_at + INBOUND_PAYLOAD_RETENTION
+    for row_id, account_id, received_at, timezone, settings in result.all():
+        # The owner's shorter raw-update retention, if set (S03.5).
+        purge_at = received_at + retention_policy.period(settings, retention_policy.RAW_UPDATES)
         known = groups.get(account_id)
         groups[account_id] = _DeadLetters(
             account_id=account_id,

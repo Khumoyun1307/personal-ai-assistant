@@ -750,14 +750,19 @@ async def covered_through(session: AsyncSession, conversation_ids: set[int]) -> 
 
 
 async def rollup_candidates(
-    session: AsyncSession, expiring_before: datetime, *, limit: int = 500
+    session: AsyncSession,
+    expiring_before: datetime,
+    *,
+    limit: int = 500,
+    account_ids: Sequence[int] | None = None,
 ) -> list[tuple[int, datetime]]:
     """(conversation id, earliest change) of chats with retained content last
     changed before `expiring_before` that their rolling summary has not
     covered — the rollup before the retention ceiling (§10.4). Only chats
     that may be summarized: account with an active `ai_managed` consent, not
     Ignore, not a bot. The earliest change is that content's `updated_at`,
-    what the refresh flag counts its maximum wait from."""
+    what the refresh flag counts its maximum wait from. `account_ids` limits
+    it to those accounts (their retention, S03.5)."""
     rolling = (
         select(ConversationSummary.covers_through_message_id)
         .where(ConversationSummary.conversation_id == Message.conversation_id)
@@ -771,9 +776,11 @@ async def rollup_candidates(
         .where(Consent.revoked_at.is_(None))
         .exists()
     )
+    statement = select(Message.conversation_id, func.min(Message.updated_at))
+    if account_ids is not None:
+        statement = statement.where(Message.account_id.in_(list(account_ids)))
     rows = await session.execute(
-        select(Message.conversation_id, func.min(Message.updated_at))
-        .join(Conversation, Conversation.id == Message.conversation_id)
+        statement.join(Conversation, Conversation.id == Message.conversation_id)
         .join(Contact, Contact.id == Conversation.contact_id)
         .where(Conversation.mode != "ignore")
         .where(Contact.is_bot.is_(False))
