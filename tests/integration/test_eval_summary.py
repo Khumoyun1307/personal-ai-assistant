@@ -12,7 +12,7 @@ import json
 import re
 import unicodedata
 from collections import Counter
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
@@ -39,12 +39,13 @@ from evals.summary import (
 )
 from evals.targets import RunContext, Status
 from pydantic import BaseModel, SecretStr
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import Account
 from assistant.agent import prompt_registry
 from assistant.config import Settings
+from assistant.conversations.models import Message
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.llm.port import (
     LLMError,
@@ -114,6 +115,7 @@ class SummaryOracle(FakeLLM):
         truncate_first: bool = False,
         refuse: Collection[str] = (),
         flags: dict[str, list[dict[str, Any]]] | None = None,
+        during_summary: Callable[[LLMRequest], Awaitable[None]] | None = None,
         usage: Usage = Usage(400, 100),  # noqa: B008  (immutable)
         filler: str = UZ_FILLER,
     ) -> None:
@@ -125,6 +127,7 @@ class SummaryOracle(FakeLLM):
         self._truncate_first = truncate_first
         self._refuse = set(refuse)
         self._flags = flags or {}
+        self._during_summary = during_summary
         self._usage = usage
         self._filler = filler
 
@@ -135,6 +138,8 @@ class SummaryOracle(FakeLLM):
     async def parse[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> ParsedResponse[T]:
         self.requests.append(request)
         if request.purpose == SUMMARIZE_PURPOSE:
+            if self._during_summary is not None:
+                await self._during_summary(request)  # the chat changes while the model works
             return self._summarize(request, schema)
         if request.purpose == FABRICATION_PURPOSE:
             value: dict[str, Any] = {"flags": self._flags.get(self.current.id, [])}
@@ -625,6 +630,45 @@ async def test_a_refused_summary_is_a_miss_everywhere_and_the_run_goes_on(
     assert metric(result, "fabricated_facts").pending >= 1
     # The caveat is deterministic and is still reported for the chat.
     assert bad["caveat_gap_ids"] == ["c13.g1"]
+
+
+async def test_a_chat_that_changed_during_its_summary_is_a_failure_not_a_summary(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """S03.2 discards a summary written from messages that changed while the model ran
+    (a deletion, an edit, expiry, Ignore, a purge). The target counts that outcome like
+    any other that is not `summarized` (E-r): a miss, unscreened, listed with its reason."""
+    deleted: list[int] = []
+
+    async def delete_first_message(request: LLMRequest) -> None:
+        if deleted:  # only the first chat is disturbed
+            return
+        async with factory() as session, session.begin():
+            first = (
+                await session.execute(
+                    select(func.min(Message.id)).where(Message.account_id == request.account_id)
+                )
+            ).scalar_one()
+            await session.execute(
+                update(Message)
+                .where(Message.id == first)
+                .values(deleted_at=func.now(), text=None, search_key=None)
+            )
+            deleted.append(first)
+
+    llm = SummaryOracle(SLICE, during_summary=delete_first_message)
+    result = await target(factory).run(context(llm))
+
+    bad = record(result, SLICE[0].id)
+    assert bad["status"] == "discarded"
+    assert bad["error"] == "summary:discarded:changed"
+    assert bad["summary_calls"] == 1  # the call that was paid for
+    assert bad["screened"] is False
+    assert not any(bad["open_loops"].values())
+    assert bad["summary_text"] == ""  # nothing the model wrote is shown or judged
+    assert record(result, SLICE[1].id)["error"] is None  # the others ran
+    assert [r.purpose for r in llm.requests].count(FABRICATION_PURPOSE) == len(SLICE) - 1
+    assert any("failed at the model" in n and SLICE[0].id in n for n in result.notes)
 
 
 async def test_an_unavailable_model_is_a_miss_not_a_crash(

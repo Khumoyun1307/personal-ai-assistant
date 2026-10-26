@@ -59,7 +59,7 @@ from assistant.agent.schemas import (
     MAX_OVERVIEW,
     MAX_REASON,
 )
-from assistant.agent.summarize import SummarizeConfig, Summarizer, SummaryStatus
+from assistant.agent.summarize import PeriodOutcome, SummarizeConfig, Summarizer, SummaryStatus
 from assistant.conversations.models import Conversation as ConversationRow
 from assistant.conversations.models import CoverageGap
 from assistant.core.model_routes import processor_for_model
@@ -525,7 +525,7 @@ class SummaryTarget:
         text = plain = ""
         counts: dict[str, int] = {}
         if summary is None:
-            error = await self._failure_code(loaded, outcome.status)
+            error = await self._failure_code(loaded, outcome)
         else:
             text, plain, counts = labelled_text(summary), plain_text(summary), _item_counts(summary)
         output = SummaryOutput(
@@ -566,9 +566,15 @@ class SummaryTarget:
             screen=screen,
         )
 
-    async def _failure_code(self, loaded: _Loaded, status: SummaryStatus) -> str:
-        """`summary:<status>[:<error class>]`: the run row's own class, a short
-        code, never content."""
+    async def _failure_code(self, loaded: _Loaded, outcome: PeriodOutcome) -> str:
+        """`summary:<status>[:<reason or error class>]`: the discard reason, else the
+        run row's own class; a short code, never content. Every status but
+        `summarized` is a failure (E-r): refused, failed, discarded (the chat changed,
+        expired, went Ignore or was purged during the call), skipped (Ignore or bot
+        chat), cached, empty, over budget, backed off."""
+        status = outcome.status
+        if outcome.discard_reason is not None:
+            return f"summary:{status.value}:{outcome.discard_reason.value}"
         async with self._database() as session:
             error_class = (
                 await session.execute(
