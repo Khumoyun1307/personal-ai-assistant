@@ -49,7 +49,7 @@ from assistant.memory.retrieval import MAX_QUERIES, SearchFilters, SearchHit, se
 from evals.assets import load_asset
 from evals.budget import BudgetExceededError
 from evals.corpus import LoadedCorpus
-from evals.metrics import contains_words, ratio_metric, word_key
+from evals.metrics import contains_value, contains_words, ratio_metric, word_key
 from evals.review import ReviewLedger
 from evals.schema import RetrievalQuery
 from evals.targets import (
@@ -180,7 +180,9 @@ def check_answer(answer: Answer, query: RetrievalQuery, hits: Sequence[HitView])
         problems.append("no_target_cited")
     carried = _compact(f"{answer.answer} {' '.join(quotes)}")
     for value in query.answer_values:
-        if not contains_words(carried, _compact(value)):
+        # As the message wrote it: a value inflected in the message itself
+        # ("500 mingni" for "500 ming") is carried by an exact quote (E-u).
+        if not contains_value(carried, _compact(value)):
             problems.append("missing_value")
     return AnswerVerdict(not problems, tuple(dict.fromkeys(problems)))
 
@@ -203,6 +205,8 @@ class _Record:
     searched: tuple[str, ...] = ()
     contact: str | None = None
     contact_filter: str | None = None
+    #: The final answer the model wrote (synthetic data), for review.
+    answer: Answer | None = None
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -218,6 +222,7 @@ class _Record:
             "searched": list(self.searched),
             "contact": self.contact,
             "contact_filter": self.contact_filter,
+            "answer": self.answer.model_dump() if self.answer is not None else None,
         }
 
 
@@ -335,7 +340,7 @@ class RetrievalTarget:
         except _ModelFailureError as failure:
             return _with_answer(record, False, (), failure.code)
         verdict = check_answer(answer, query, self._views(hits))
-        return _with_answer(record, verdict.correct, verdict.problems, None)
+        return replace(_with_answer(record, verdict.correct, verdict.problems, None), answer=answer)
 
     async def _resolve_contact(self, name: str | None) -> _ContactFilter | None:
         """The chat partner the model named, resolved the way the product's

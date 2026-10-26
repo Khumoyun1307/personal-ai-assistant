@@ -142,6 +142,33 @@ def test_every_value_must_be_carried_and_translations_do_not_count() -> None:
     assert verdict(answer) == (False, ("missing_value",))
 
 
+def test_a_value_the_message_itself_inflects_is_carried_by_an_exact_quote() -> None:
+    """E-u, the defect: the message says "500 mingni", the value is "500 ming". An
+    answer that quotes the message word for word failed `missing_value`."""
+    text = "Otgan oy olgan 500 mingni qachon qaytarasan?"
+    query = QUERY.model_copy(
+        update={"target_message_ids": ["c10.m04"], "answer_values": ["500 ming"]}
+    )
+    hits = [HitView("h1", "c10.m04", "c10", "Sherzod", "2026-10-15", text)]
+    answer = Answer(
+        found=True,
+        answer="Sherzod asked when you will return it.",
+        references=[Reference(ref="h1", contact="Sherzod", day="2026-10-15", quote=text)],
+    )
+    assert check_answer(answer, query, hits).correct
+    # Digits never extend a number, and a translation still does not count.
+    for wrong in ("5000 mingni", "half a million"):
+        changed = answer.model_copy(
+            update={
+                "answer": wrong,
+                "references": [
+                    Reference(ref="h1", contact="Sherzod", day="2026-10-15", quote="qachon")
+                ],
+            }
+        )
+        assert "missing_value" in check_answer(changed, query, hits).problems
+
+
 def test_one_wrong_extra_reference_makes_the_answer_wrong() -> None:
     extra = Reference(
         ref="h2", contact="Kamola", day="2026-10-20", quote="Manzilni ertaga yuboraman"
