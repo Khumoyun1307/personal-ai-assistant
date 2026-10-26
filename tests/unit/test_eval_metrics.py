@@ -209,10 +209,48 @@ def test_an_inflected_value_is_found(value: str, summary: str) -> None:
         ("12-й", "12 yanvarda kalitni qoldiradi"),  # a one-letter last word matches whole
         ("narxlar ro'yxati", "narxlari ro‘yxatini"),  # only the last word inflects
         ("ming", "Toshkent"),
+        # S03.6 review: only case/possessive endings, never a longer stem or a negation
+        ("Ali", "Alisher ertaga keladi."),
+        ("Olim", "Olimpiada natijalari chiqdi."),
+        ("Jasur", "Jasurbek aka pulni oldi."),
+        ("Aziz", "Aziza opa qo‘ng‘iroq qiladi."),
+        ("bor", "U ertaga bormaydi."),
+        ("kelish", "Narx bo‘yicha kelishmadi."),
+        ("Karim", "Karimov hisobotni yubordi."),
     ],
 )
 def test_a_suffix_never_turns_another_value_into_a_match(value: str, summary: str) -> None:
     assert values_matcher(loop_with([value]), summary) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "summary"),
+    [
+        ("3 nusxa", "3 nusxasini olib keladi."),  # possessive + accusative
+        ("Ali", "Aliga aytib qo‘ying."),
+        ("100 ming", "100 minglik chek."),
+        ("Jasur", "Jasurning raqami."),
+    ],
+)
+def test_case_and_possessive_endings_chain(value: str, summary: str) -> None:
+    assert values_matcher(loop_with([value]), summary) is True
+
+
+def test_the_owners_verdict_overrides_a_string_pass() -> None:
+    """S03.6 review: a string pass (an inflected value, or a value surfaced in a
+    sentence that says something else) never outranks the owner's word."""
+    passed = values_matcher(loop_with(["900 ming"]), "900 mingga ijaraga oladi.")
+    assert passed is True
+    ledger = ReviewLedger(frozenset({"c90"}), {}, {"c90.c1": "missed"})
+    metric = recall_metric({"c90.c1": passed}, ledger)
+    assert metric.all_items == Measure(1, 1)  # the pre-screen keeps the string pass
+    assert metric.confirmed == Measure(0, 1)  # the gate takes the owner's verdict
+    assert metric.gate_status() is Status.FAIL
+
+
+def test_no_verdict_turns_a_conversation_that_failed_into_a_pass() -> None:
+    ledger = ReviewLedger(frozenset({"c90"}), {}, {"c90.c1": "covered"})
+    assert recall_metric({"c90.c1": False}, ledger).confirmed == Measure(0, 1)
 
 
 def test_a_translated_value_goes_to_the_judge_not_to_a_miss() -> None:
