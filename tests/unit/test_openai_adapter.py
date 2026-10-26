@@ -298,5 +298,8 @@ async def test_sdk_errors_are_classified_without_their_message(
         await client.complete(request())
 
     assert caught.value.kind is kind
+    # The SDK class name (content-free), so an evaluation can tell a timeout
+    # from a connection error or a 5xx (S03.7 fix round, H1).
+    assert caught.value.exc_type == type(error).__name__
     assert "synthetic secret detail" not in str(caught.value)
     assert caught.value.__cause__ is None
