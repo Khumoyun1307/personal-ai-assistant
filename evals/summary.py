@@ -27,8 +27,12 @@ first message, the coverage start and the first gap, until the evaluation instan
 (the last message plus a day, as in the retrieval target).
 
 Model failures (provider error, refusal, truncation twice, invalid output) make
-the conversation a **miss** on every metric and are listed; a budget stop ends the
-run early and the result is marked incomplete (its gate is never a pass).
+the conversation a **miss** on open-loop recall (every loop, whatever the ledger
+says) and on the language check, and leave it **unscreened** for fabrication (that
+gate stays open); the conversation is listed. Its caveats are still reported, being
+deterministic. The two caveat metrics are an **ungated** wiring check (E-p): they do
+not depend on the model. A budget stop ends the run early and the result is marked
+incomplete (its gate is never a pass).
 """
 
 from __future__ import annotations

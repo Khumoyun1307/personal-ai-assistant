@@ -64,7 +64,7 @@ text) or `purged_text` (deleted text). Those two fields exist only for reviewers
   edits that change a time or a phone number, deletions, voice and photo
   messages, injections and gaps.
 
-### How S03.4 scores it (implemented in `evals/metrics.py`; the choices are E-a…E-p in `docs/milestones/M03.md`, pending the owner's confirmation)
+### How S03.4 scores it (implemented in `evals/metrics.py`; the choices are E-a…E-r in `docs/milestones/M03.md`, pending the owner's confirmation)
 
 - Recall (threshold ≥ 95 %) is measured over `open` questions and `open`
   commitments, the open loops a catch-up must surface. Answered and done items
@@ -120,6 +120,7 @@ python -m evals run summary --estimate-only             # worst-case cost of the
 python -m evals run summary --live                      # REAL model; owner's go-ahead + cost approval
 python -m evals run summary --live --owner-language ru  # summaries in another owner language (default uz-Latn)
 python -m evals compare docs/evals/<run>.json …         # quality and cost per 100 items per run
+python -m evals cleanup [--yes]                         # list/drop throwaway databases a killed run left
 ```
 
 What a run does: it refuses unless the datasets match the frozen manifest, builds a
@@ -135,7 +136,11 @@ table lacks; refused for a model it already prices), `--budget-usd` (default 1),
 `--owner-language uz-Latn|uz-Cyrl|ru|en` (summary only, default `uz-Latn`).
 Exit codes: 0 done (a deliberate trial included), 2 refused or misconfigured, 4 the
 run **stopped before its planned items** (budget cap; its report is still written). A run that fails midway writes a content-free
-`…-aborted.json` with what it spent.
+`…-aborted.json` with what it spent. A run drops its throwaway database when it ends, fails
+or is interrupted, but **a killed process cannot**: it leaves an `assistant_eval_<8 hex>`
+database on the server. `python -m evals cleanup` lists such leftovers and
+`python -m evals cleanup --yes` drops them (only names of exactly that form; never run it
+while another evaluation is running).
 
 **Targets.** `retrieval` has two modes over the 38 queries: `deterministic` (the
 query as typed goes to `memory.retrieval.search_messages`; target in the top 5,
@@ -167,8 +172,17 @@ Per conversation the summarize call, its retry, the fabrication judge and (only 
 loop has no `values`) the open-loop judge are planned, metered and capped like every call;
 the pre-run estimate prices the judges for the largest summary `sanitize` can store, so
 it is a true upper bound and far above a typical run. A conversation whose summary fails
-(refusal, error, truncated twice, invalid output) is a **miss on every metric** and is
-listed; its caveats are still reported (they are deterministic). The JSON report keeps each
+(refusal, error, truncated twice, invalid output) is a **miss on open-loop recall** (every
+loop, whatever the ledger says) **and on the language check**, and is **unscreened** for
+fabrication (that gate stays open); it is listed, and its caveats are still reported (they
+are deterministic). The two **caveat metrics are ungated** (INFO, with a note): they come
+from the harness's own gap rows and the product's renderer, not from the model, so they are
+true by construction and only catch a wiring regression; the plan's caveat threshold (the
+final reply keeps every caveat, D64) is **not measured** by this target (E-p). Recall and
+language are measured on the per-chat summary, not on the owner-facing reply. An owner
+verdict on an open loop without `values` is keyed by the loop **and a digest of the summary
+it judged** (`c05.q2#1a2b3c4d`; the JSON report's `open_loop_keys` lists them), so it never
+carries over to another run's summary. The JSON report keeps each
 conversation's summary text and flagged statements (synthetic data) for the owner's review
 (E-o); the Markdown report holds numbers only. The owner language is a run parameter,
 not the conversation's language. What a model may see of an E1 conversation is built in
@@ -193,7 +207,8 @@ a pre-screen: that threshold is defined with model-generated variants, so its ga
 reads `INFO`. The owner's decisions live in a JSON ledger (default
 `evals/reviews/<dataset>.json`, or `--reviews PATH`; format in `evals/review.py`):
 `confirmed_items` (conversation and query ids), `findings` (verdicts on judge
-flags), `coverage` (covered/missed for open loops with no `values`) and
+flags), `coverage` (covered/missed for open loops with no `values`; for the summary
+target keyed `loop#<digest of the summary judged>`, see above) and
 `fabrications` (conversations where the owner found a fabrication the judge did not
 flag; a judge negative otherwise stands, E-c). A malformed ledger is a clean error.
 
