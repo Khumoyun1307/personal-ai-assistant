@@ -324,7 +324,7 @@ class ControlDispatcher:
                     self._gateway, account, message, report, visibility=VISIBILITY
                 )
             case "settings":
-                if argument:
+                if argument.strip().partition(" ")[2].strip():
                     return await handlers.apply_setting(
                         session, self._gateway, account, message, argument, self._clock
                     )

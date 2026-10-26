@@ -690,6 +690,10 @@ async def handle_tool_confirmation_press(
 
 
 UNDONE_TEXT = "↩️ Undone."
+UNDO_PARTIAL_TEXT = (
+    "↩️ Partly undone: {restored} restored. {kept} was changed again since, so it stays "
+    "as it is now."
+)
 UNDO_GONE_TEXT = "That note no longer exists (it was deleted), so there is nothing to undo."
 UNDO_SUPERSEDED_TEXT = (
     "It was changed again since, so nothing was undone. Check /settings or ask me what is "
@@ -729,6 +733,16 @@ async def handle_undo_press(
         settlement = _Settlement("Not undone", UNDO_SUPERSEDED_TEXT, keep_body=True)
     elif outcome.status is undo.UndoStatus.GONE:
         settlement = _Settlement("Not undone", UNDO_GONE_TEXT, keep_body=True)
+    elif outcome.status is undo.UndoStatus.PARTIAL:
+
+        def names(fields: tuple[str, ...]) -> str:
+            return ", ".join(preferences.FIELD_LABELS.get(f, f) for f in fields)
+
+        settlement = _Settlement(
+            "Partly undone",
+            UNDO_PARTIAL_TEXT.format(restored=names(outcome.restored), kept=names(outcome.kept)),
+            keep_body=True,
+        )
     else:
         settlement = _Settlement(CALLBACK_EXPIRED_TEXT)
     _queue_settlement(session, gateway, press, target, message_id, settlement)

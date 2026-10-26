@@ -16,8 +16,9 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cache
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +36,12 @@ EVENT_PREFERENCES_CHANGED = "preferences_changed"
 FIELD_LANGUAGE = "preferred_language"
 FIELD_TIMEZONE = "timezone"
 FIELD_DEFAULT_MODE = "default_mode"
+#: Owner-facing names of the fields.
+FIELD_LABELS = {
+    FIELD_LANGUAGE: "language",
+    FIELD_TIMEZONE: "timezone",
+    FIELD_DEFAULT_MODE: "mode for new chats",
+}
 
 _LANGUAGE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,4})?$")
 MAX_TIMEZONE_LENGTH = 64
@@ -45,16 +52,34 @@ class PreferenceError(ValueError):
 
 
 def check_language(value: str) -> str:
-    """A language code such as `uz`, `ru`, `en`, `uz-Latn` (at most 8 chars)."""
+    """A language code such as `uz`, `ru`, `en`, `uz-Latn` (at most 8 chars),
+    in its usual case: `EN` → `en`, `uz-latn` → `uz-Latn`, `ru-ru` → `ru-RU`."""
     stripped = value.strip()
     if len(stripped) > 8 or not _LANGUAGE.fullmatch(stripped):
         raise PreferenceError("that does not look like a language code (e.g. uz, ru, en)")
-    return stripped
+    primary, _, subtag = stripped.partition("-")
+    if not subtag:
+        return primary.lower()
+    if len(subtag) == 4 and subtag.isalpha():
+        return f"{primary.lower()}-{subtag.title()}"  # a script
+    return f"{primary.lower()}-{subtag.upper()}"  # a region
+
+
+@cache
+def _iana_timezones() -> frozenset[str]:
+    """IANA zone names, without the aliases the zoneinfo directory also holds
+    (`localtime`, `Factory`, `posixrules`, the `posix/` and `right/` trees)."""
+    return frozenset(
+        name
+        for name in available_timezones()
+        if name not in {"localtime", "Factory", "posixrules"}
+        and not name.startswith(("posix/", "right/"))
+    )
 
 
 def check_timezone(value: str) -> str:
     stripped = value.strip()
-    if not stripped or len(stripped) > MAX_TIMEZONE_LENGTH:
+    if not stripped or len(stripped) > MAX_TIMEZONE_LENGTH or stripped not in _iana_timezones():
         raise PreferenceError("unknown timezone")
     try:
         ZoneInfo(stripped)
@@ -112,7 +137,8 @@ async def update(
     actor: str,
     clock: Clock,
 ) -> PreferenceChange:
-    """Validate and apply. Raises `PreferenceError` before changing anything."""
+    """Validate, lock the account and apply. Raises `PreferenceError` before
+    changing anything."""
     wanted: dict[str, Any] = {}
     if language is not None:
         wanted[FIELD_LANGUAGE] = check_language(language)
@@ -120,6 +146,7 @@ async def update(
         wanted[FIELD_TIMEZONE] = check_timezone(timezone)
     if new_default_mode is not None:
         wanted[FIELD_DEFAULT_MODE] = check_default_mode(new_default_mode)
+    await lock(session, account)
     before = current(account)
     changes = {f: (before[f], v) for f, v in wanted.items() if before[f] != v}
     if not changes:
@@ -140,20 +167,40 @@ async def update(
     return PreferenceChange(changes, entry.id)
 
 
-def revert(account: Account, details: Mapping[str, Any]) -> list[str]:
-    """Undo one recorded change: each field still holding the value the
-    change set goes back to what it was. Returns the fields restored (none if
-    every field was changed again since)."""
+async def lock(session: AsyncSession, account: Account) -> None:
+    """Re-read the account under FOR NO KEY UPDATE before a read-modify-write
+    of its settings, so a concurrent change is seen, never overwritten. Not
+    FOR UPDATE: ingestion's foreign-key KEY SHARE on the account must not
+    wait for a settings change (review item 6)."""
+    await session.refresh(account, with_for_update={"key_share": True})
+
+
+@dataclass(frozen=True, slots=True)
+class Reverted:
+    #: Fields set back to their earlier value.
+    restored: tuple[str, ...]
+    #: Fields changed again since: left as they are.
+    kept: tuple[str, ...]
+
+
+async def revert(session: AsyncSession, account: Account, details: Mapping[str, Any]) -> Reverted:
+    """Undo one recorded change, under the account lock: each field still
+    holding the value the change set goes back to what it was; a field
+    changed again since stays."""
+    await lock(session, account)
     restored: list[str] = []
+    kept: list[str] = []
     changes = details.get("changes")
     if not isinstance(changes, dict):
-        return restored
+        return Reverted((), ())
     now = current(account)
-    for field, pair in changes.items():
-        if field not in now or not isinstance(pair, list) or len(pair) != 2:
+    for name, pair in changes.items():
+        if name not in now or not isinstance(pair, list) or len(pair) != 2:
             continue
         old, new = pair
-        if now[field] == new:
-            _apply(account, field, old)
-            restored.append(field)
-    return restored
+        if now[name] == new:
+            _apply(account, name, old)
+            restored.append(name)
+        else:
+            kept.append(name)
+    return Reverted(tuple(restored), tuple(kept))

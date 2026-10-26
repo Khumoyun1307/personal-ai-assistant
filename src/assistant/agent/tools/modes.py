@@ -155,18 +155,15 @@ class UpdatePreferencesArgs(BaseModel):
         return self
 
 
-FIELD_LABELS = {
-    preferences.FIELD_LANGUAGE: "language",
-    preferences.FIELD_TIMEZONE: "timezone",
-    preferences.FIELD_DEFAULT_MODE: "mode for new chats",
-}
+FIELD_LABELS = preferences.FIELD_LABELS
 
 
 async def update_preferences_tool(ctx: ToolContext, args: UpdatePreferencesArgs) -> ToolOutcome:
     services = ctx.services
     async with transaction(services.session_factory) as uow:
         session = uow.session
-        account = await session.get(Account, ctx.account_id, with_for_update=True)
+        # `preferences.update` takes the account lock (FOR NO KEY UPDATE).
+        account = await session.get(Account, ctx.account_id)
         if account is None:
             raise LookupError("account")
         try:

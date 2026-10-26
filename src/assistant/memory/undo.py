@@ -46,6 +46,8 @@ class UndoStatus(StrEnum):
     #: What the change was about no longer exists (a note already deleted —
     #: by the sweep, a deletion or a purge): nothing to reverse.
     GONE = "gone"
+    #: Some settings went back; others were changed again since and stay.
+    PARTIAL = "partial"
     #: Unknown, another account's, or not a change Undo can reverse.
     NOT_FOUND = "not_found"
 
@@ -54,6 +56,9 @@ class UndoStatus(StrEnum):
 class UndoOutcome:
     status: UndoStatus
     event: str | None = None
+    #: Preference fields set back, and those left as they are (PARTIAL).
+    restored: tuple[str, ...] = ()
+    kept: tuple[str, ...] = ()
 
 
 async def undo(
@@ -77,6 +82,8 @@ async def undo(
     ):
         return UndoOutcome(UndoStatus.GONE, entry.event)
     done = False
+    restored: tuple[str, ...] = ()
+    kept: tuple[str, ...] = ()
     if entry.event == items.EVENT_MEMORY_SAVED:
         memory_id = details.get("memory_id")
         if isinstance(memory_id, int):
@@ -97,8 +104,11 @@ async def undo(
     elif entry.event == modes.EVENT_MODE_CHANGED:
         done = await _undo_mode(session, account_id, entry, clock)
     elif entry.event == preferences.EVENT_PREFERENCES_CHANGED:
-        account = await session.get(Account, account_id, with_for_update=True)
-        done = account is not None and bool(preferences.revert(account, details))
+        account = await session.get(Account, account_id)
+        if account is not None:
+            # Check-then-revert under the account lock (review item 6).
+            reverted = await preferences.revert(session, account, details)
+            done, restored, kept = bool(reverted.restored), reverted.restored, reverted.kept
     if not done:
         return UndoOutcome(UndoStatus.SUPERSEDED, entry.event)
     session.add(
@@ -113,7 +123,9 @@ async def undo(
         )
     )
     await session.flush()
-    return UndoOutcome(UndoStatus.UNDONE, entry.event)
+    if kept:
+        return UndoOutcome(UndoStatus.PARTIAL, entry.event, restored, kept)
+    return UndoOutcome(UndoStatus.UNDONE, entry.event, restored)
 
 
 async def _undo_mode(
