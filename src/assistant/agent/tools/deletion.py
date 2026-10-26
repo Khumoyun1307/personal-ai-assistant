@@ -149,7 +149,11 @@ async def _run(ctx: ToolContext, scope: str, delete: Deleter, **ids: int) -> Too
     """One deletion, once per (run, call) — only after the owner's tap."""
     if not ctx.held:
         return NOT_CONFIRMED
-    request = DeletionRequest(ctx.run_id, ctx.call_id) if ctx.run_id > 0 and ctx.call_id else None
+    request = (
+        DeletionRequest.tool_call(ctx.run_id, ctx.call_id)
+        if ctx.run_id > 0 and ctx.call_id
+        else None
+    )
     async with transaction(ctx.services.session_factory) as uow:
         if request is not None:
             done = await deletion.find_deletion(uow.session, ctx.account_id, request)

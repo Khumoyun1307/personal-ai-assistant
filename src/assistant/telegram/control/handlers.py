@@ -23,12 +23,18 @@ from assistant.agent.confirmations import OP_CONFIRM, OP_REJECT, TOOL_CONFIRM_CA
 from assistant.conversations.coverage import STATUS_GAP_WINDOW
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
-from assistant.core.jobs import APPLY_CONFIRMATION_TASK, JobScheduler, owner_control_lock
+from assistant.core.jobs import (
+    APPLY_CONFIRMATION_TASK,
+    DELETE_DATA_TASK,
+    JobScheduler,
+    owner_control_lock,
+)
 from assistant.db.uow import after_commit, transaction
 from assistant.inbox.connection_alerts import MANAGED_CONSENT_BUTTONS, MANAGED_CONSENT_QUESTION
 from assistant.memory import undo
 from assistant.observability.status import StatusReport
 from assistant.privacy import deletion
+from assistant.privacy.requests import QUEUED_TEXT
 from assistant.telegram.control.cards import card_keyboard
 from assistant.telegram.gateway import ControlChat, OutboundGateway, SendResult
 from assistant.telegram.render import escape
@@ -398,14 +404,35 @@ DELETE_CARD_TEXT = (
 DELETE_CARD_BUTTONS = [("Delete", "delete"), ("Delete everything", "everything"), ("Keep", "keep")]
 
 
-def deletion_receipt(report: deletion.DeletionReport) -> str:
-    """What a deletion removed: counts only (control chat)."""
-    return (
-        f"🗑 Deleted: {report.messages} message(s), {report.contacts_cleared} contact "
-        f"name(s), {report.payloads_cleared} raw update(s), {report.summaries} "
-        f"summary(ies), {report.memory_items} note(s), {report.control_turns_cleared} "
-        "earlier answer(s) in this chat."
+async def queue_deletion(
+    session: AsyncSession,
+    scheduler: JobScheduler | None,
+    account_id: int,
+    scope: str,
+    subject_id: int,
+    card_id: int | None,
+) -> str:
+    """Queue an owner's button deletion (M03 D83): in the press's
+    transaction, under the owner's control lock, so it runs after any owner
+    run already in flight (whose answer may quote the chat) and deletes that
+    too (safety review item 1). The job sends the receipt; this returns the
+    "deleting now" note."""
+    if scheduler is None or card_id is None:
+        raise RuntimeError("a job scheduler and the card are required to delete data")
+    connection = await session.connection()
+    raw = await connection.get_raw_connection()
+    await scheduler.defer(
+        DELETE_DATA_TASK,
+        args={
+            "account_id": account_id,
+            "scope": scope,
+            "subject_id": subject_id,
+            "card_id": card_id,
+        },
+        lock=owner_control_lock(account_id),
+        connection=raw.driver_connection,
     )
+    return QUEUED_TEXT
 
 
 MODE_CARD_TEXT = (
@@ -543,6 +570,7 @@ async def handle_card_press(
     clock: Clock,
     account: Account,
     press: CardPress,
+    scheduler: JobScheduler | None = None,
 ) -> HandlerResult:
     """Resolve a card exactly once; edit it in place; always answer the press.
 
@@ -611,15 +639,19 @@ async def handle_card_press(
             )
             note = "deleted"
         case (k, "everything") if k == MANAGED_DELETE_KIND:
-            report = await deletion.delete_everything(
-                session, account_id=account.id, actor="owner", clock=clock
-            )
             settlement = _Settlement(
-                "Deleted",
-                deletion_receipt(report),
+                "Deleting",
+                await queue_deletion(
+                    session,
+                    scheduler,
+                    account.id,
+                    deletion.SCOPE_EVERYTHING,
+                    account.id,
+                    card.id,
+                ),
                 await _mode_choice_card(session, clock, account),
             )
-            note = "deleted_everything"
+            note = "deleting_everything"
         case (k, "keep") if k == MANAGED_DELETE_KIND:
             settlement = _Settlement(
                 "Kept",

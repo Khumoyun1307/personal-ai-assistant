@@ -47,8 +47,10 @@ from tests.integration.business_env import (
     CONTACT,
     OTHER_CONTACT,
     OWNER,
+    T_BASE,
     Env,
     business_message,
+    callback,
     connect,
     connection_update,
     deleted_messages,
@@ -106,6 +108,15 @@ async def all_hits(env: Env) -> dict[str, set[str]]:
     return {marker: await hits(env, marker) for marker in MARKERS}
 
 
+def kept(before: dict[str, set[str]], marker: str) -> set[str]:
+    """What must survive a per-chat or per-contact deletion: everything, except
+    that the owner's raw control-chat updates are always cleared (they exist
+    only for recovery and may quote any chat; safety review item 2)."""
+    if marker == "OWNSYN":
+        return before[marker] - {"inbound_updates.payload"}
+    return before[marker]
+
+
 async def seed(env: Env) -> Seeded:
     """Two chats of the owner, the owner's own words, and another account —
     each marker in every content column it can reach."""
@@ -131,6 +142,16 @@ async def seed(env: Env) -> Seeded:
         ),
     )
     await deliver(env, private_message(OWNER, "OWNSYN question"))
+    # The owner's raw control-chat updates that carry the chat's text (safety
+    # review item 2): a processed button press whose message is the rendered
+    # panel, and a message the owner forwarded from the chat.
+    press = callback("settings:zzzzzzzzzz:noop")
+    press["callback_query"]["message"]["text"] = "CHATK Kamola panel: summary"
+    await deliver(env, press)
+    forward = private_message(OWNER, "CHATK forwarded by the owner")
+    forward["message"]["forward_from"] = {"id": CONTACT, "is_bot": False, "first_name": "K"}
+    forward["message"]["forward_date"] = T_BASE
+    await deliver(env, forward)
     # Another account with its own content.
     await deliver(env, private_message(OTHER_OWNER, "/start"))
     await deliver(env, private_message(OTHER_OWNER, "yes"))
@@ -287,11 +308,11 @@ async def test_deleting_a_conversation_leaves_no_text_from_it_in_any_content_col
     assert after["CHATK"] == set()
     # The owner's notes about Kamola (contact scope) stay; so does everything else.
     for marker in ("NOTEK", "CHATB", "NOTEB", "OWNSYN", "ACCTB"):
-        assert after[marker] == before[marker], marker
+        assert after[marker] == kept(before, marker), marker
     assert report.messages == 3
     assert report.summaries == 2
     assert report.memory_items == 3  # the chat note and two owner items saved from it
-    assert report.control_turns_cleared == 3
+    assert report.control_turns_cleared == 4  # three refs, and the forward from the chat
     # The chat and contact rows stay (mode, ids), content-free.
     assert await scalar(
         env, "SELECT mode FROM app.conversations WHERE id = :c", c=seeded.kamola_chat
@@ -325,7 +346,7 @@ async def test_deleting_a_contact_leaves_no_text_about_them_in_any_content_colum
     assert after["CHATK"] == set()
     assert after["NOTEK"] == set()
     for marker in ("CHATB", "NOTEB", "OWNSYN", "ACCTB"):
-        assert after[marker] == before[marker], marker
+        assert after[marker] == kept(before, marker), marker
     assert report.memory_items == 4  # notes about her and her chat, items saved from them
     assert (
         await scalar(env, "SELECT count(*) FROM app.contacts WHERE id = :c", c=seeded.kamola) == 1

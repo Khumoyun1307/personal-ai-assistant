@@ -40,6 +40,7 @@ from assistant.accounts.models import Account, PendingInput
 from assistant.conversations import modes, visibility
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
+from assistant.core.jobs import JobScheduler
 from assistant.db.uow import after_commit, transaction
 from assistant.privacy import deletion, retention_policy
 from assistant.telegram.control.handlers import (
@@ -48,7 +49,7 @@ from assistant.telegram.control.handlers import (
     CardPress,
     HandlerResult,
     IncomingMessage,
-    deletion_receipt,
+    queue_deletion,
     render_panel,
 )
 from assistant.telegram.gateway import ControlChat, OutboundGateway, SendResult
@@ -362,6 +363,18 @@ def _ignore_confirm() -> Rows:
     return [row]
 
 
+async def _queue_deletion(
+    session: AsyncSession,
+    scheduler: JobScheduler | None,
+    account_id: int,
+    scope: str,
+    subject_id: int,
+    card_id: int | None,
+) -> Screen:
+    """`handlers.queue_deletion` (M03 D83), as a screen to send."""
+    return Screen(await queue_deletion(session, scheduler, account_id, scope, subject_id, card_id))
+
+
 async def _press_ignore(
     session: AsyncSession,
     gateway: OutboundGateway,
@@ -369,6 +382,8 @@ async def _press_ignore(
     account: Account,
     press: CardPress,
     conversation_id: int,
+    scheduler: JobScheduler | None = None,
+    card_id: int | None = None,
 ) -> HandlerResult:
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     delete_op = IGNORE_DELETE_OPTION[1] if IGNORE_DELETE_OPTION is not None else None
@@ -379,6 +394,7 @@ async def _press_ignore(
     receipt = None
     if press.op in ("confirm", delete_op):
         try:
+            # Ignore applies at once: nothing new is stored from now on.
             await modes.set_mode(
                 session,
                 account_id=account.id,
@@ -387,20 +403,20 @@ async def _press_ignore(
                 actor="owner",
                 clock=clock,
             )
-            if press.op == delete_op:
-                # The same transaction: ignored and emptied together, or neither.
-                report = await deletion.delete_conversation_data(
-                    session,
-                    account_id=account.id,
-                    conversation_id=conversation_id,
-                    actor="owner",
-                    clock=clock,
-                )
-                receipt = Screen(deletion_receipt(report))
         except LookupError:
             _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
             return HandlerResult(False, "card", None, note="no_longer_active")
-        note = "ignored" if receipt is None else "ignored_and_deleted"
+        if press.op == delete_op:
+            # Queued in this transaction: committed with the Ignore, or neither.
+            receipt = await _queue_deletion(
+                session,
+                scheduler,
+                account.id,
+                deletion.SCOPE_CONVERSATION,
+                conversation_id,
+                card_id,
+            )
+        note = "ignored" if receipt is None else "ignored_and_deleting"
     panel = await _load_panel(session, clock, account, conversation_id)
     if panel is None:
         _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
@@ -408,7 +424,7 @@ async def _press_ignore(
     screen = await panel_screen(session, clock, account, panel)
     answer = {
         "ignored": "Ignored: new messages are not stored",
-        "ignored_and_deleted": "Ignored, and its data deleted",
+        "ignored_and_deleting": "Ignored; deleting its data",
     }.get(note, "Nothing changed")
     _after_press(session, gateway, press, target, answer=answer, edit=screen, send=receipt)
     return HandlerResult(True, "card", None, note=note)
@@ -421,6 +437,8 @@ async def _press_delete(
     account: Account,
     press: CardPress,
     conversation_id: int,
+    scheduler: JobScheduler | None = None,
+    card_id: int | None = None,
 ) -> HandlerResult:
     """The panel's delete screen: this chat's data, the chat and the notes
     about the person, or Cancel (FR-PRV-04). The owner's own second tap."""
@@ -431,20 +449,19 @@ async def _press_delete(
     receipt = None
     try:
         if press.op == "chat":
-            report = await deletion.delete_conversation_data(
+            receipt = await _queue_deletion(
                 session,
-                account_id=account.id,
-                conversation_id=conversation_id,
-                actor="owner",
-                clock=clock,
+                scheduler,
+                account.id,
+                deletion.SCOPE_CONVERSATION,
+                conversation_id,
+                card_id,
             )
-            receipt = Screen(deletion_receipt(report))
         elif press.op == "contact":
             contact_id = await modes.contact_of(session, account.id, conversation_id)
-            report = await deletion.delete_contact_data(
-                session, account_id=account.id, contact_id=contact_id, actor="owner", clock=clock
+            receipt = await _queue_deletion(
+                session, scheduler, account.id, deletion.SCOPE_CONTACT, contact_id, card_id
             )
-            receipt = Screen(deletion_receipt(report))
     except LookupError:
         _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
         return HandlerResult(False, "card", None, note="no_longer_active")
@@ -453,7 +470,7 @@ async def _press_delete(
         _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
         return HandlerResult(False, "card", None, note="no_longer_active")
     screen = await panel_screen(session, clock, account, panel)
-    answer = "Deleted" if receipt is not None else "Nothing was deleted"
+    answer = "Deleting" if receipt is not None else "Nothing was deleted"
     _after_press(session, gateway, press, target, answer=answer, edit=screen, send=receipt)
     return HandlerResult(True, "card", None, note=press.op if receipt else "cancelled")
 
@@ -729,6 +746,8 @@ async def _press_delete_all(
     clock: Clock,
     account: Account,
     press: CardPress,
+    scheduler: JobScheduler | None = None,
+    card_id: int | None = None,
 ) -> HandlerResult:
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     if press.op not in ("everything", "cancel"):
@@ -736,12 +755,11 @@ async def _press_delete_all(
         return HandlerResult(False, "card", None, note="unknown_op")
     receipt = None
     if press.op == "everything":
-        report = await deletion.delete_everything(
-            session, account_id=account.id, actor="owner", clock=clock
+        receipt = await _queue_deletion(
+            session, scheduler, account.id, deletion.SCOPE_EVERYTHING, account.id, card_id
         )
-        receipt = Screen(deletion_receipt(report))
     screen = await settings_screen(session, clock, account)
-    answer = "Deleted" if receipt is not None else "Nothing was deleted"
+    answer = "Deleting" if receipt is not None else "Nothing was deleted"
     _after_press(session, gateway, press, target, answer=answer, edit=screen, send=receipt)
     return HandlerResult(True, "card", None, note="deleted" if receipt else "cancelled")
 
@@ -865,8 +883,10 @@ async def handle_press(
     clock: Clock,
     account: Account,
     press: CardPress,
+    scheduler: JobScheduler | None = None,
 ) -> HandlerResult:
-    """A press on one of this module's cards: claimed once, owner-scoped."""
+    """A press on one of this module's cards: claimed once, owner-scoped.
+    `scheduler` queues the button deletions (M03 D83)."""
     card = await service.claim_card(session, account_id=account.id, token=press.token, clock=clock)
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     if card is None or card.kind != press.kind:
@@ -875,13 +895,17 @@ async def handle_press(
     if card.kind == PANEL_CARD and card.ref_id is not None:
         return await _press_panel(session, gateway, clock, account, press, card.ref_id)
     if card.kind == IGNORE_CARD and card.ref_id is not None:
-        return await _press_ignore(session, gateway, clock, account, press, card.ref_id)
+        return await _press_ignore(
+            session, gateway, clock, account, press, card.ref_id, scheduler, card.id
+        )
     if card.kind == SETTINGS_CARD:
         return await _press_settings(session, gateway, clock, account, press)
     if card.kind == LIST_CARD:
         return await _press_list(session, gateway, clock, account, press)
     if card.kind == DELETE_CARD and card.ref_id is not None:
-        return await _press_delete(session, gateway, clock, account, press, card.ref_id)
+        return await _press_delete(
+            session, gateway, clock, account, press, card.ref_id, scheduler, card.id
+        )
     if card.kind == REPLY_CARD:
         return await _press_reply(session, gateway, clock, account, press)
     if card.kind == RETENTION_CARD:
@@ -889,6 +913,6 @@ async def handle_press(
     if card.kind == RETENTION_CONFIRM_CARD:
         return await _press_retention_confirm(session, gateway, clock, account, press)
     if card.kind == DELETE_ALL_CARD:
-        return await _press_delete_all(session, gateway, clock, account, press)
+        return await _press_delete_all(session, gateway, clock, account, press, scheduler, card.id)
     _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
     return HandlerResult(False, "card", None, note="no_longer_active")

@@ -40,6 +40,7 @@ from assistant.llm.openai_adapter import OpenAIClient
 from assistant.llm.port import LLMClient
 from assistant.memory.summaries import SummaryRefreshTrigger
 from assistant.privacy.post_restore import assert_not_restore_pending
+from assistant.privacy.requests import RequestedDeletions
 from assistant.process import InboxRole, PollerRole, WorkerRole, worker_heartbeat_probe
 from assistant.telegram.business import BusinessPipeline
 from assistant.telegram.connections import AiogramConnectionLookup, ConnectionRegistry
@@ -226,6 +227,7 @@ async def running_process(
                     confirmation_applier=build_confirmation_applier(
                         settings, session_factory, channel, clock
                     ),
+                    data_deleter=RequestedDeletions(session_factory, clock, channel),
                 ),
             )
         async with jobs_app.open_async():

@@ -9,6 +9,7 @@ queue, lock and schedule. Job arguments are ids only (AGENTS §13).
 | `agent.owner_request(turn_id)` | llm | lock `acct:{id}:control` (set at defer) |
 | `connections.notify_owner(event_id)` | system | deferred with the registry change (S02.1) |
 | `agent.apply_confirmation(confirmation_id)` | llm | lock `acct:{id}:control` (at defer) |
+| `privacy.delete_data(account, scope, subject, card)` | llm | lock `acct:{id}:control` (S03.5) |
 | `memory.refresh_summary(conversation_id)` | llm | qlock `sum:{conv}`, `schedule_at`; no lock |
 | `system.ingestion_watchdog` | system | every minute |
 | `system.reconcile_pending` | system | every minute |
@@ -44,6 +45,7 @@ from assistant.core.clock import Clock
 from assistant.core.jobs import (
     APPLY_CONFIRMATION_TASK,
     CONNECTION_NOTIFY_TASK,
+    DELETE_DATA_TASK,
     OWNER_REQUEST_TASK,
     REFRESH_SUMMARY_TASK,
     JobScheduler,
@@ -100,6 +102,10 @@ class SummaryRefresher(Protocol):
     async def refresh(self, conversation_id: int) -> RefreshOutcome: ...
 
 
+class DataDeleter(Protocol):
+    async def run(self, account_id: int, scope: str, subject_id: int, card_id: int) -> str: ...
+
+
 @dataclass(frozen=True, slots=True)
 class JobHandlers:
     session_factory: async_sessionmaker[AsyncSession]
@@ -124,6 +130,14 @@ class JobHandlers:
     backup_upload_required: bool = False
     #: Linked from the policy-update notice (AGENTS §16).
     privacy_policy_url: str | None = None
+    #: Runs the owner's button deletions (S03.5, M03 D83). Bootstrap always
+    #: sets it; a worker without it fails such a job rather than skip it.
+    data_deleter: DataDeleter | None = None
+
+    async def delete_data(self, account_id: int, scope: str, subject_id: int, card_id: int) -> str:
+        if self.data_deleter is None:
+            raise RuntimeError("no data deleter configured")
+        return await self.data_deleter.run(account_id, scope, subject_id, card_id)
 
     async def apply_confirmation(self, confirmation_id: int) -> ApplyOutcome:
         return await self.confirmation_applier.apply(confirmation_id)
@@ -316,6 +330,12 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
         # Lock `acct:{id}:control` is set at defer; a retry or redelivery is
         # a no-op once the row has left `confirmed`.
         await handlers.apply_confirmation(confirmation_id)
+
+    @app.task(name=DELETE_DATA_TASK, queue=QUEUE_LLM, retry=OWNER_REQUEST_RETRY)
+    async def delete_data(account_id: int, scope: str, subject_id: int, card_id: int) -> None:
+        # Lock `acct:{id}:control` is set at defer (the queue of owner runs
+        # and applied confirmations); a retry finds its audit row and stops.
+        await handlers.delete_data(account_id, scope, subject_id, card_id)
 
     @app.task(name=REFRESH_SUMMARY_TASK, queue=QUEUE_LLM)
     async def refresh_summary(conversation_id: int) -> None:

@@ -16,7 +16,7 @@ the counts.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,6 +37,13 @@ MANAGED_PAYLOAD_KINDS = (
     "edited_business_message",
     "deleted_business_messages",
     "business_connection",
+)
+
+
+#: Said with every deletion (privacy policy v4: encrypted daily backups, kept
+#: up to 35 days; safety review item 6).
+BACKUP_NOTE = (
+    "Encrypted backups made before now still contain it until they are rotated out (up to 35 days)."
 )
 
 
@@ -63,6 +70,17 @@ class DeletionReport:
             + self.control_turns_cleared
             + self.summaries
             + self.held_calls_cleared
+        )
+
+    def receipt(self) -> str:
+        """What the owner is told after a deletion: counts only, and the
+        backups that still hold the data for a while (safety review 5, 6)."""
+        return (
+            f"🗑 Deleted: {self.messages} message(s), {self.contacts_cleared} contact "
+            f"name(s), {self.payloads_cleared} raw update(s), {self.summaries} "
+            f"summary(ies), {self.memory_items} note(s), {self.control_turns_cleared} "
+            f"turn(s) of our conversation here, {self.held_calls_cleared} held change(s).\n"
+            + BACKUP_NOTE
         )
 
     def counts(self) -> dict[str, int]:
@@ -505,6 +523,12 @@ async def _purge_chats(
     payloads = 0
     for chat in chats:
         payloads += await _clear_chat_payloads(session, account_id, chat)
+    # The owner's own raw control-chat updates may quote the chat (a forward,
+    # a press whose message is the rendered panel, a confirmed card); they
+    # exist only for recovery, so all of them go (safety review item 2).
+    account = await session.get(Account, account_id)
+    if account is not None:
+        payloads += await _clear_control_payloads(session, account)
     messages = summaries = 0
     if conversation_ids:
         messages = _rows(
@@ -544,27 +568,32 @@ async def _purge_chats(
 
 @dataclass(frozen=True, slots=True)
 class DeletionRequest:
-    """The tool call that asked (S03.5), so a repeated call deletes once."""
+    """What asked for a deletion (S03.5), so a repeated request deletes once:
+    a tool call (`run_id`, `tool_call_id`) or an owner's card (`card_id`).
+    The key goes into the deletion's audit row (ids only)."""
 
-    run_id: int
-    tool_call_id: str
+    key: Mapping[str, int | str]
+
+    @classmethod
+    def tool_call(cls, run_id: int, tool_call_id: str) -> DeletionRequest:
+        return cls({"run_id": run_id, "tool_call_id": tool_call_id})
+
+    @classmethod
+    def card(cls, card_id: int) -> DeletionRequest:
+        return cls({"card_id": card_id})
 
 
 async def find_deletion(
     session: AsyncSession, account_id: int, request: DeletionRequest
 ) -> AuditLogEntry | None:
-    """The audit row of a deletion this tool call already made, if any."""
+    """The audit row of a deletion this request already made, if any."""
     return (
         (
             await session.execute(
                 select(AuditLogEntry)
                 .where(AuditLogEntry.account_id == account_id)
                 .where(AuditLogEntry.event == EVENT_DATA_DELETED)
-                .where(
-                    AuditLogEntry.details.contains(
-                        {"run_id": request.run_id, "tool_call_id": request.tool_call_id}
-                    )
-                )
+                .where(AuditLogEntry.details.contains(dict(request.key)))
                 .limit(1)
             )
         )
@@ -588,7 +617,7 @@ def _audit(
     """The one content-free row of a deletion: scope, ids and counts."""
     details: dict[str, Any] = {"scope": scope, **report.counts()}
     if request is not None:
-        details.update(run_id=request.run_id, tool_call_id=request.tool_call_id)
+        details.update(request.key)
     session.add(
         AuditLogEntry(
             account_id=account_id,

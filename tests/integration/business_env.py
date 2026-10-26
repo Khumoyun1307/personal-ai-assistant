@@ -222,6 +222,12 @@ async def environment(
     async def refresh_summary(conversation_id: int) -> None:  # deferred only
         return None
 
+    @app.task(name="privacy.delete_data", queue="llm")
+    async def delete_data(
+        account_id: int, scope: str, subject_id: int, card_id: int
+    ) -> None:  # deferred only; tests run it with `run_deletion_jobs`
+        return None
+
     scheduler = ProcrastinateScheduler(app)
     owners = owner_ids
     lookup = FakeLookup()
@@ -301,6 +307,38 @@ async def press(env: Env, kind: str, op: str, **kwargs: Any) -> dict[str, Any]:
     update = callback(f"{kind}:{card.token}:{op}", message_id=card.prompt_message_id, **kwargs)
     await deliver(env, update)
     return update
+
+
+DELETE_DATA_TASK = "privacy.delete_data"
+
+
+async def run_deletion_jobs(env: Env, channel: Any = None) -> int:
+    """Run the queued button deletions (S03.5) as the worker would: in order,
+    under the owner's control lock (one at a time). Returns how many ran."""
+    async with env.factory() as session:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT id, args FROM procrastinate.procrastinate_jobs "
+                    "WHERE task_name = :t AND status = 'todo' ORDER BY id"
+                ),
+                {"t": DELETE_DATA_TASK},
+            )
+        ).all()
+    if not rows:
+        return 0
+    from assistant.privacy.requests import RequestedDeletions
+    from tests.fakes.channel import FakeChannel
+
+    runner = RequestedDeletions(env.factory, env.clock, channel or FakeChannel())
+    for job_id, job_args in rows:
+        await runner.run(**job_args)
+        async with env.factory() as session, session.begin():
+            await session.execute(
+                text("DELETE FROM procrastinate.procrastinate_jobs WHERE id = :id"),
+                {"id": job_id},
+            )
+    return len(rows)
 
 
 async def grant_managed(env: Env) -> None:

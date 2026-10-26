@@ -28,6 +28,10 @@ APPLY_CONFIRMATION_TASK = "agent.apply_confirmation"
 #: Refreshes one conversation's rolling summary (S03.2). Debounced: deferred
 #: with `schedule_at` and a queueing lock, never a `lock` (AGENTS §13).
 REFRESH_SUMMARY_TASK = "memory.refresh_summary"
+#: An owner's button deletion (S03.5): deferred with the owner's control
+#: lock, so it never interleaves with an owner run or an applied
+#: confirmation (M03 D83). Args: account_id, scope, subject_id, card_id.
+DELETE_DATA_TASK = "privacy.delete_data"
 
 
 class JobScheduler(Protocol):
