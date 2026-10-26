@@ -12,6 +12,7 @@ Synthetic text only; FakeLLM stands in for the provider.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -199,6 +200,36 @@ async def test_an_answer_written_after_the_revocation_cards_delete_does_not_keep
     await runtime(env, fake, FakeChannel(), flags=FLAGS).run(turn)
     await run_deletion_jobs(env)
     assert await hits(env, "CHATK") == set()
+
+
+async def test_a_call_held_by_a_run_cut_off_before_its_answer_goes_with_the_chats_deletion(
+    env: Env,
+) -> None:
+    """Fix round 3, own inspection: a run read the chat, held `remember` with
+    its text, and was cut off (a shutdown) before writing its answer — the
+    turn whose refs name the chat. The held call, still confirmable, names no
+    chat either; its refs are unknown, so a deletion of any chat clears it
+    (fail safe) instead of leaving the text for a later Confirm."""
+    await seed(env)
+    turn = await ask(env, "Remember what Kamola said")
+
+    async def cut_off(request: LLMRequest) -> Any:
+        raise asyncio.CancelledError  # the worker shuts down mid-run
+
+    fake = FakeLLM(
+        tool_response(search()),
+        tool_response(remember_call(f"Kamola: {SAID}")),
+        cut_off,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await runtime(env, fake, FakeChannel(), flags=FLAGS).run(turn)
+    assert "tool_confirmations.args" in await hits(env, "CHATK")
+    await tap(env, panels.PANEL_CARD, "delete")
+    await tap(env, panels.DELETE_CARD, "chat")
+    await run_deletion_jobs(env)
+    assert await hits(env, "CHATK") == set()
+    async with env.factory() as session:
+        assert (await session.execute(select(ToolConfirmation.status))).scalar_one() == "expired"
 
 
 async def test_a_question_whose_text_was_deleted_before_its_run_is_not_answered_blind(

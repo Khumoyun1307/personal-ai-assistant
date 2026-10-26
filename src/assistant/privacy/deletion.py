@@ -499,6 +499,18 @@ def _names_one_of(key: str, parameter: str) -> str:
     )
 
 
+#: SQL: the held call's run never recorded its answer — it was cut off (a
+#: crash, a shutdown) — so the chats it drew on are unknown (an answer's
+#: `refs` are the only record of them). A held call is confirmable for a day,
+#: so a deletion clears such calls too (fail safe; fix round 3). Deletions
+#: run under the owner's control lock, like owner runs, so no run is in
+#: flight then: a run without an answer is one that was cut off.
+_RUN_WITHOUT_ANSWER = (
+    "(run_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM app.control_turns AS t "
+    "WHERE t.run_id = app.tool_confirmations.run_id AND t.role = 'assistant'))"
+)
+
+
 async def _clear_held_args(
     session: AsyncSession,
     account_id: int,
@@ -509,19 +521,18 @@ async def _clear_held_args(
     clock: Clock,
 ) -> int:
     """Held tool calls (S03.1) that may carry the scope's text: those of the
-    runs whose answers were redacted, and those whose arguments name a
-    deleted conversation or contact. Their arguments go; a pending one
-    expires, so no tap can apply it. Named by table: the model belongs to the
-    agent layer (import-linter)."""
-    matches = []
+    runs whose answers were redacted, those whose arguments name a deleted
+    conversation or contact, and those of runs cut off before their answer
+    (`_RUN_WITHOUT_ANSWER`). Their arguments go; a pending one expires, so no
+    tap can apply it. Named by table: the model belongs to the agent layer
+    (import-linter)."""
+    matches = [_RUN_WITHOUT_ANSWER]
     if run_ids:
         matches.append("run_id = ANY(CAST(:run_ids AS bigint[]))")
     if conversation_ids:
         matches.append(_names_one_of("conversation_id", "conversation_ids"))
     if contact_ids:
         matches.append(_names_one_of("contact_id", "contact_ids"))
-    if not matches:
-        return 0
     return _rows(
         await session.execute(
             # Only fixed fragments of this module are joined; every value is bound.
