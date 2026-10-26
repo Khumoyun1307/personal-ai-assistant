@@ -19,7 +19,7 @@ You make sure P2 ships nothing that breaks a safety invariant, and you produce t
 | # | Unit | Starts when | Branch → base | Notes |
 |---|---|---|---|---|
 | 1 | **QA-P** plan review and adjustments (docs) | Pre-start, when the TL says the owner allowed it | `qa/p2-plan` from `main` → `main` | The package exists; tailor it, add what is missing |
-| 2 | **OPS-LV08** scheduling and runbook | Pre-start (scheduling only); the probe change after "M03 OK" | `ops/lv08-probe` from `main` → `main` | Needs the owner's per-run go-ahead and a 24 h-closed chat |
+| 2 | **OPS-LV08** (deferred, decisions B3 E1) | Only if the TL and the owner decide during/after the M04 trial that it is needed | `ops/lv08-probe` from `main` → `main` | Needs the owner's per-run go-ahead and a 24 h-closed chat |
 | 3 | **QA review of F0** | When F0's PR is ready | — | Focus: deletion cascade canaries, migrations, no behaviour change |
 | 4 | **QA-S4** M04 acceptance scenarios (red until M04 lands) | CP1 | `qa/m04-scenarios` → `int/m04` | Written from specs; feature owners make them green |
 | 5 | **QA-S5** M05 acceptance scenarios | CP1 | `qa/m05-scenarios` → `int/m05` | Same |

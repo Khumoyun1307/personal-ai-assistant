@@ -5,6 +5,7 @@
 | **Owner** | Antony (probe change, runbook, evidence) + **the owner** (client steps, per-run go-ahead) · **Peer review** TL |
 | **Size** | S (small probe change + two short live steps ≥ 24 h apart) |
 | **Branch** | `ops/lv08-probe` from `main` → PR to `main` (probe change; data/docs-free of product code) |
+| **Status** | **Deferred (decisions B3 E1, owner 2026-10-26):** the narrow probe mode is approved, but the run happens only if the M04 trial shows it is needed and worth the cost; until then the conservative rule stands (only a contact message reopens the window) |
 | **Depends on** | The owner's go-ahead; an AGENTS §9 wording update agreed by the owner (see §3.2); not on any M04 unit |
 | **Normative inputs** | TF §11 LV-08 and LV-15 protocol, TF §12 LV-08 (closed-window half, 2026-10-21), [M03-handoff.md §4](../../../milestones/M03-handoff.md) (moved to M04 by the owner, 2026-10-26), AGENTS §2 (only owner-executed tests mark TF items *Verified*), AGENTS §9 (Alviro token rules), `tools/probe/probe.py` |
 

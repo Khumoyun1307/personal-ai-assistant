@@ -57,7 +57,7 @@ Every piece of work is a **work unit (WU)** with one owner, one spec, one branch
 | QA-P | QA plan, regression matrix, live checklists (docs) | Antony | TL | S | — (*pre-start allowed*) | `qa/p2-plan` → `main` | [qa/](qa/) |
 | QA-S4 | M04 acceptance scenario tests | Antony | Neryn + Viro | M | F0 | `qa/m04-scenarios` → `int/m04` | [qa/test-plan.md](qa/test-plan.md) §4 |
 | QA-S5 | M05 acceptance scenario tests | Antony | Eng4 | M | F0 | `qa/m05-scenarios` → `int/m05` | [qa/test-plan.md](qa/test-plan.md) §5 |
-| OPS-LV08 | LV-08 reopen half (live, Alviro window) | Antony + owner | TL | S | owner window | `ops/lv08-probe` → `main` | [specs/OPS-LV08-reopen.md](specs/OPS-LV08-reopen.md) |
+| OPS-LV08 | LV-08 reopen half (live, Alviro window) — **deferred, runs only if needed** (decisions B3 E1) | Antony + owner | TL | S | M04 trial shows a need; owner go-ahead | `ops/lv08-probe` → `main` | [specs/OPS-LV08-reopen.md](specs/OPS-LV08-reopen.md) |
 | OPS-TV | Trial verifier (content-free send audit) | Antony | Neryn | S | S04.4 | `ops/trial-verifier` → `int/m04` | [specs/OPS-trial-verifier.md](specs/OPS-trial-verifier.md) |
 | OPS-RT | Restore test before R1 exit | Antony + TL | Neryn | S | S04.4; run at CP3 | `ops/restore-test-p2` → `int/m04` | [specs/OPS-restore-test.md](specs/OPS-restore-test.md) |
 
@@ -65,7 +65,7 @@ Every piece of work is a **work unit (WU)** with one owner, one spec, one branch
 
 ```
 pre-start (only with the owner's OK; data/docs only, no product code or tests):
-    E2D, E3D (Junior) · QA-P (Antony) · OPS-LV08 scheduling (owner + Antony)
+    E2D, E3D (Junior) · QA-P (Antony)            — not authorised yet (owner, 2026-10-26)
 ──── "M03 OK" (S03.7 merged and deployed) ────────────────────────────────────────────
 Wave 1  F0 (Neryn)                 ← critical path
         S04.2 part a: draft run (Viro)       S05.1 run part + S05.2 policy fn (Eng4)
@@ -107,8 +107,8 @@ Wave 2  M04: S04.1 (Neryn) → S04.4 (Neryn)          ← critical path
 |---|---|---|
 | CP0 | Merge this docs PR; confirm `gh` works in the Codex/Gemini sessions and which Gemini tool Junior runs in | Owner merges `main`; session setup is the owner's |
 | Before D0 | Say "M03 OK" | Gate (AGENTS §3) |
-| Pre-start (optional) | Go-ahead for E2D/E3D authoring and for the LV-08 window | Owner's call |
-| OPS-LV08 | Client taps in the LV-08 window (owner message / contact edit in a 24 h-closed chat); per-run go-ahead for Alviro | Needs the owner's Telegram accounts and the production token |
+| Pre-start (optional) | Go-ahead for E2D/E3D authoring and QA-P (not given yet; the owner authorises the plan's start after marking M03 done) | Owner's call |
+| OPS-LV08 (only if needed) | Deferred (decisions B3 E1): if the M04 trial shows a need, client taps 24 h apart in a closed chat and a per-run go-ahead for Alviro | Needs the owner's Telegram accounts and the production token |
 | CP1, CP3, CP5 | Merge F0, `int/m04`, `int/m05` into `main` | Only the owner merges `main` |
 | CP3, CP5 | Be present in the live windows (Alviro); enable flags or approve the TL doing it | Production bot; real accounts |
 | CP3–CP6 | 7-day daily use; daily look at `/activity` | Owner's own use |
