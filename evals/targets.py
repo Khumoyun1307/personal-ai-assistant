@@ -2,8 +2,8 @@
 
 A *target* is one thing the runner can evaluate: it takes a dataset, runs the
 system under test over it and returns metrics. The runner knows nothing else
-about it, so the summary/catch-up target (S03.2) plugs in without touching the
-runner, the report writer or the cost guards.
+about it, so the retrieval target (`evals/retrieval.py`) and the summary target
+(`evals/summary.py`) share the runner, the report writer and the cost guards.
 
 Gate semantics (IMPLEMENTATION_PLAN §10.1): an LLM judge and the deterministic
 checks only **pre-screen**. Every metric therefore carries two measurements:
@@ -23,7 +23,6 @@ from enum import StrEnum
 from typing import Any, Literal, Protocol
 
 from assistant.llm.port import LLMClient
-from evals.errors import EvalsError
 from evals.review import ReviewLedger
 
 DatasetName = Literal["e1", "retrieval"]
@@ -202,34 +201,3 @@ class EvalTarget(Protocol):
         ...
 
     async def run(self, context: RunContext) -> TargetResult: ...
-
-
-class TargetNotAvailableError(EvalsError):
-    """A target exists in the interface but cannot run yet."""
-
-
-class SummaryTarget:
-    """PLACEHOLDER for the summary/catch-up evaluation (E1).
-
-    Wired after S03.2 (conversation summaries and the catch-up renderer)
-    merges. The metrics it will report already exist in `evals/metrics.py`
-    (open-loop recall, caveat presence, owner-facing language) and
-    `evals/judge.py` (fabrication pre-screen); what is missing is the thing to
-    evaluate: a function that turns one `Conversation`'s messages (never its
-    labels) into a `SummaryOutput`. Do not add behaviour here before S03.2.
-    """
-
-    name = "summary"
-    dataset: DatasetName = "e1"
-    route = "summarize"
-    uses_model = True
-
-    def plan(self, context: RunContext) -> Sequence[PlannedCall]:
-        raise TargetNotAvailableError(self._reason())
-
-    async def run(self, context: RunContext) -> TargetResult:
-        raise TargetNotAvailableError(self._reason())
-
-    @staticmethod
-    def _reason() -> str:
-        return "the summary target is wired after S03.2 (summaries and catch-up) merges"

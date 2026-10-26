@@ -17,7 +17,12 @@ and carry no review state, so the owner's decisions live in a small JSON file
   verdict is *pending owner confirmation* and keeps the gate open.
 - `coverage`: the owner's verdict on whether a summary surfaced an open loop
   that has no `values` to check by string matching (42 of the 103 open loops
-  in E1 v1). Without a verdict such an item leaves the recall gate open.
+  in E1 v1). Without a verdict such an item leaves the recall gate open. The
+  summary target keys a verdict by the loop **and the summary it judged**
+  (`c05.q2#1a2b3c4d`, `coverage_key`; the run's JSON report lists the key of every
+  loop awaiting a verdict), so a verdict never carries over to another run's
+  summary; a bare loop id (`c05.q2`) is the key of hand-built fixtures only. A
+  conversation whose summary failed has every loop missed: no verdict applies.
 - `fabrications`: conversations where the owner found a fabrication the judge
   did not flag. The judge can only pre-screen, and a conversation it did not
   flag counts as clean unless the owner lists it here.
@@ -57,6 +62,14 @@ def finding_id(item_id: str, statement: str) -> str:
     same statement again."""
     digest = hashlib.sha256(statement.strip().casefold().encode("utf-8")).hexdigest()
     return f"{item_id}#{digest[:8]}"
+
+
+def coverage_key(loop_id: str, summary_text: str) -> str:
+    """The ledger key of a verdict on an open loop *in one particular summary*:
+    the loop id plus a digest of the summary text it was judged against. A re-run
+    that writes a different summary (another model, a refusal) does not inherit the
+    verdict: its key differs, so the loop is unresolved until the owner rules again."""
+    return finding_id(loop_id, summary_text)
 
 
 @dataclass(frozen=True, slots=True)

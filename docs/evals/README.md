@@ -32,9 +32,11 @@ comparing runs.
 ## Naming
 
 Each run gets one file: `<YYYY-MM-DD>-<set>-<model>.md`. For example:
-`2026-10-30-e1-gpt-6-luna.md`, `2026-10-30-retrieval-gpt-6-luna.md`,
+`2026-10-30-summary-gpt-6-luna.md`, `2026-10-30-retrieval-gpt-6-luna.md`,
 `2026-10-25-retrieval-deterministic.md`. A rerun on the same day adds a suffix
-(`…-luna-2.md`).
+(`…-luna-2.md`). The summary run is always a model run; its report names the owner
+language the summaries were written in (`mode`, e.g. `period-uz-Latn`) and the
+prompt and rubric versions used (`summarize.v1`, `fabrication.v1`, `open_loops.v1`).
 
 Each report states:
 
@@ -52,7 +54,11 @@ Each report states:
   moves up from `gpt-6-luna` only when it misses a threshold).
 
 Reports contain synthetic data only. Quote dataset item ids (`c05.c3`,
-`r17`), not chat content beyond what the synthetic set holds.
+`r17`), not chat content beyond what the synthetic set holds. The Markdown report
+holds ids, numbers and statuses. The **summary** run's JSON also keeps, per
+conversation, the model-written summary text and the statements the fabrication judge
+flagged (model output over synthetic chats), because the owner cannot rule on a flag,
+on a loop without `values` or on a judge negative without reading them (M03 E-o).
 
 ## Budget
 
@@ -68,6 +74,11 @@ Cyrillic) and all labels before the gate run. Expect about 4 hours per set
 (§13). Corrections become **v1.1** of the dataset, with a new
 `evals/datasets/MANIFEST.sha256`, before the M03 gate run. The gate run uses
 the reviewed version only.
+
+The summary target (`python -m evals run summary`) is wired and tested on `FakeLLM`;
+**no real-model summary run exists yet.** Its first run, on `gpt-6-luna`, waits for
+this review (so that the gate counts confirmed items) and for the owner's go-ahead
+and cost approval; the run's worst case is printed by `--estimate-only` first.
 
 ## Dataset log
 
