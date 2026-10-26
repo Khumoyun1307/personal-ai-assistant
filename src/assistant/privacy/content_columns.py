@@ -105,7 +105,8 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("memory_items", "kind"),
         ("memory_items", "source"),
         ("memory_items", "status"),
-        # Flags only (`{"tainted": bool}`).
+        # Flags and ids only: `{"tainted", "managed", "refs": {conversation
+        # and contact ids}}` — no content.
         ("memory_items", "provenance"),
         ("memory_items", "tool_call_id"),
         # Alembic's own bookkeeping table.
