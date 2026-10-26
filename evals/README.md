@@ -207,6 +207,19 @@ one place for the judges (`evals/render.py`); the summarizer sees only what the 
 context builder gives it (messages, never labels, `original_text` or `purged_text`); a test
 asserts that for every call.
 
+**Attribution (S03.7).** The summarizer's context also names the conversation's contact
+once (the dataset's `contact.display_name`, wrapped as untrusted, as the product does), and
+the stored summary has already passed the product's attribution check (a "promise" citing
+only the other side's messages is stored as that side's request; an item no cited message
+supports from the side it names is dropped). The judges read the summary with who asked,
+promised or agreed written **in the product's own English wording** (`agent/attribution.py`
+`render_who`, with the contact's name — e.g. `- Aziza asks you to (not agreed yet): …`),
+not a harness-only phrasing; that text is `labelled_text`, version `labels.v2`, and the
+fabrication judge's label names it (`fabrication.v1+render.v2+labels.v2`), so flags counted
+over the older "promised by the owner" text are not compared as one series. The language
+and value checks still read the model's own words only (`plain_text`, E-q). Each
+conversation's JSON record carries `attribution_demoted` and `attribution_dropped` (counts).
+
 `python -m evals run summary --estimate-only` prints the worst-case cost, and
 `--limit N` (a trial) runs the first N conversations; both leave the set sizes of the
 gate at the whole set, so a trial never passes.
