@@ -169,6 +169,24 @@ def test_a_value_the_message_itself_inflects_is_carried_by_an_exact_quote() -> N
         assert "missing_value" in check_answer(changed, query, hits).problems
 
 
+def test_the_free_text_answer_must_carry_a_value_as_whole_words() -> None:
+    """S03.6 review: the inflection allowance is for exact quotes of the message
+    only. The model's own words must carry the value whole: "Alisher" is not
+    "Ali", and an inflected value in the answer text alone does not count."""
+    text = "Ali ertaga 500 ming olib keladi"
+    query = QUERY.model_copy(
+        update={"target_message_ids": ["c10.m04"], "answer_values": ["Ali", "500 ming"]}
+    )
+    hits = [HitView("h1", "c10.m04", "c10", "Sherzod", "2026-10-15", text)]
+    quote = Reference(ref="h1", contact="Sherzod", day="2026-10-15", quote="ertaga 500 ming olib")
+    answer = Answer(found=True, answer="Alisher brings it tomorrow.", references=[quote])
+    assert check_answer(answer, query, hits).problems == ("missing_value",)
+    inflected = answer.model_copy(update={"answer": "Aliga 500 mingni beradi."})
+    assert check_answer(inflected, query, hits).problems == ("missing_value",)
+    whole = answer.model_copy(update={"answer": "Ali brings 500 ming tomorrow."})
+    assert check_answer(whole, query, hits).correct
+
+
 def test_one_wrong_extra_reference_makes_the_answer_wrong() -> None:
     extra = Reference(
         ref="h2", contact="Kamola", day="2026-10-20", quote="Manzilni ertaga yuboraman"

@@ -160,6 +160,8 @@ def check_answer(answer: Answer, query: RetrievalQuery, hits: Sequence[HitView])
     problems: list[str] = []
     cited_targets = 0
     quotes: list[str] = []
+    #: Word keys of the quotes found word for word in the message they cite.
+    exact_quotes: list[str] = []
     for reference in answer.references:
         hit = by_ref.get(reference.ref)
         if hit is None:
@@ -173,16 +175,22 @@ def check_answer(answer: Answer, query: RetrievalQuery, hits: Sequence[HitView])
         message, quote = _compact(hit.text), _compact(reference.quote)
         if not contains_words(message, quote):
             problems.append("quote_not_in_message")
-        elif len(quote) < MIN_QUOTE_CHARS and quote != message:
-            problems.append("quote_too_short")
+        else:
+            exact_quotes.append(quote)
+            if len(quote) < MIN_QUOTE_CHARS and quote != message:
+                problems.append("quote_too_short")
         quotes.append(reference.quote)
     if not cited_targets:
         problems.append("no_target_cited")
     carried = _compact(f"{answer.answer} {' '.join(quotes)}")
     for value in query.answer_values:
-        # As the message wrote it: a value inflected in the message itself
-        # ("500 mingni" for "500 ming") is carried by an exact quote (E-u).
-        if not contains_value(carried, _compact(value)):
+        needle = _compact(value)
+        # Whole words in the model's text; only an exact quote of the message may
+        # carry the value as the message inflected it ("500 mingni" for "500
+        # ming", E-u; S03.6 review).
+        if not contains_words(carried, needle) and not any(
+            contains_value(exact, needle) for exact in exact_quotes
+        ):
             problems.append("missing_value")
     return AnswerVerdict(not problems, tuple(dict.fromkeys(problems)))
 
