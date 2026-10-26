@@ -143,11 +143,15 @@ class PeriodOutcome:
 
 
 class _CallFailedError(Exception):
-    def __init__(self, status: SummaryStatus, run_status: str, error_class: str) -> None:
+    def __init__(
+        self, status: SummaryStatus, run_status: str, error_class: str, *, calls: int = 0
+    ) -> None:
         super().__init__(error_class)
         self.status = status
         self.run_status = run_status
         self.error_class = error_class
+        #: Model calls that returned before the failure (for budget alerts).
+        self.calls = calls
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,7 +273,7 @@ class Summarizer:
                 await self._close_run(uow.session, prepared, *_run_close(result))
         except _CallFailedError as failure:
             await self._finish_run(prepared, failure.run_status, failure.error_class)
-            return RefreshOutcome(failure.status, account_id, calls=1)
+            return RefreshOutcome(failure.status, account_id, calls=failure.calls)
         except BaseException as error:
             await self._fail_run(prepared, error)
             raise
@@ -382,7 +386,7 @@ class Summarizer:
                 await self._close_run(uow.session, prepared, *_run_close(result))
         except _CallFailedError as failure:
             await self._finish_run(prepared, failure.run_status, failure.error_class)
-            return PeriodOutcome(failure.status, message_count=source.total, calls=1)
+            return PeriodOutcome(failure.status, message_count=source.total, calls=failure.calls)
         except BaseException as error:
             await self._fail_run(prepared, error)
             raise
@@ -428,7 +432,13 @@ class Summarizer:
             timeout_seconds=config.call_timeout_seconds,
             prompt_cache_key=f"{RUN_TYPE}:{prompt_label}",
         )
+        #: Calls that returned (the ones metered and paid for), carried on a
+        #: failure too — a call truncated twice is two calls, not one.
         calls = 0
+
+        def failed(status: SummaryStatus, run_status: str, error_class: str) -> _CallFailedError:
+            return _CallFailedError(status, run_status, error_class, calls=calls)
+
         try:
             response = await self._llm.parse(request, ConversationSummaryOutput)
             calls += 1
@@ -440,32 +450,30 @@ class Summarizer:
                     )
                     calls += 1
         except ConsentMissingError:
-            raise _CallFailedError(SummaryStatus.NO_CONSENT, "failed", "consent_missing") from None
+            raise failed(SummaryStatus.NO_CONSENT, "failed", "consent_missing") from None
         except LLMError as error:
             kind = "invalid_output" if error.kind is LLMErrorKind.INVALID_OUTPUT else None
-            raise _CallFailedError(
+            raise failed(
                 SummaryStatus.FAILED, "failed", kind or f"llm_{error.kind.value}"
             ) from None
         match response.stop_reason:
             case StopReason.COMPLETED:
                 if response.parsed is None:
-                    raise _CallFailedError(SummaryStatus.FAILED, "failed", "invalid_output")
+                    raise failed(SummaryStatus.FAILED, "failed", "invalid_output")
                 try:
                     # Our own model again: the adapter's validation is not the contract.
                     validated = ConversationSummaryOutput.model_validate(
                         response.parsed.model_dump()
                     )
                 except pydantic.ValidationError:
-                    raise _CallFailedError(
-                        SummaryStatus.FAILED, "failed", "invalid_output"
-                    ) from None
+                    raise failed(SummaryStatus.FAILED, "failed", "invalid_output") from None
                 return validated, calls
             case StopReason.REFUSAL | StopReason.CONTENT_FILTER:
-                raise _CallFailedError(SummaryStatus.REFUSED, "refused", response.stop_reason.value)
+                raise failed(SummaryStatus.REFUSED, "refused", response.stop_reason.value)
             case StopReason.MAX_TOKENS:
-                raise _CallFailedError(SummaryStatus.FAILED, "failed", "max_tokens")
+                raise failed(SummaryStatus.FAILED, "failed", "max_tokens")
             case _:
-                raise _CallFailedError(SummaryStatus.FAILED, "failed", "stop_other")
+                raise failed(SummaryStatus.FAILED, "failed", "stop_other")
 
     # ------------------------------------------------------------ checks
     async def _managed_ok(self, session: AsyncSession, account_id: int) -> bool:

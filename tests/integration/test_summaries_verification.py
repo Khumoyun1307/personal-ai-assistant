@@ -30,6 +30,7 @@ from assistant.agent.summarize import SummaryStatus
 from assistant.agent.tools.common import summary_view
 from assistant.conversations import service
 from assistant.conversations.models import Message
+from assistant.llm.port import StopReason
 from assistant.memory import summaries as summaries_module
 from assistant.memory.summaries import StoreResult, store_rolling
 from assistant.privacy.deletion import delete_managed_data
@@ -485,3 +486,37 @@ async def test_managed_data_deletion_does_not_deadlock_with_ingestion(senv: Env)
             )
         ).scalar_one()
     assert left == 0
+
+
+# ============================================================ call count
+async def test_a_refresh_truncated_twice_counts_both_calls(senv: Env) -> None:
+    """MAX_TOKENS, a retry with a larger budget, MAX_TOKENS again: two paid
+    calls, and the outcome must say two (budget alerts read it)."""
+    a, _ = await seed(senv)
+    fake = FakeLLM()
+    fake.parsed = [StopReason.MAX_TOKENS, StopReason.MAX_TOKENS]
+
+    outcome = await summarizer(senv, fake).refresh(a)
+
+    assert outcome.status is SummaryStatus.FAILED
+    assert len(summary_requests(fake)) == 2
+    assert outcome.calls == 2
+
+
+async def test_a_period_summary_truncated_twice_counts_both_calls(senv: Env) -> None:
+    a, _ = await seed(senv)
+    fake = FakeLLM()
+    fake.parsed = [StopReason.MAX_TOKENS, StopReason.MAX_TOKENS]
+
+    outcome = await summarizer(senv, fake).summarize_period(
+        account_id=await account_id(senv),
+        conversation_id=a,
+        start=NOW - timedelta(hours=4),
+        end=NOW,
+        open_ended=True,
+        parent_run_id=None,
+    )
+
+    assert outcome.status is SummaryStatus.FAILED
+    assert len(summary_requests(fake)) == 2
+    assert outcome.calls == 2
