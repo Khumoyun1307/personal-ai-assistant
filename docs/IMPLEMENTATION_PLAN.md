@@ -90,7 +90,7 @@ M04 and M05 can be developed in either order after M03 (both build on the S01.3 
 ### 1.5 Global Definition of Done (applies to every slice)
 
 - Code follows [AGENTS.md](../AGENTS.md) (layering, safety invariants, typing, logging hygiene).
-- Automated tests added at the right layers (§10); full suite green; ruff, mypy, import-linter clean.
+- Automated tests added at the right layers (§10); full suite green **in CI** (from 2026-10-26 the full suite runs only in GitHub CI; locally only the relevant tests — AGENTS §11); ruff, mypy, import-linter clean.
 - Alembic migration included for schema changes, tested up/down on a real Postgres.
 - No secrets or message content in logs (redaction test passes); feature flags default to the safe state.
 - New external processors or data uses: consent text and privacy policy updated before activation.
