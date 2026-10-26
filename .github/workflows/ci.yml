@@ -4,10 +4,25 @@
 # jobs mirror `just smoke-backup` and the arm64 builds for the Oracle A1 host.
 name: CI
 
+# Documentation-only changes skip CI (owner decision 2026-10-26, AGENTS §11).
+# No test reads these files; prompt and rubric .md files under src/ and evals/
+# are code and still trigger it.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "deploy/runbooks/**"
+      - "tools/**/*.md"
+      - "evals/README.md"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "deploy/runbooks/**"
+      - "tools/**/*.md"
+      - "evals/README.md"
 
 concurrency:
   group: ci-${{ github.ref }}
