@@ -679,6 +679,24 @@ async def test_a_limited_run_is_never_a_gate_even_fully_confirmed(
     assert metric(result, "owner_language").confirmation() == (3, 40)
 
 
+async def test_a_run_of_named_conversations_runs_only_those_and_is_a_trial(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """S03.7 round 3: `--only` picks chats by id (in set order); like `--limit`, it is
+    a trial whose gates keep the whole set's sizes."""
+    everything = ReviewLedger(frozenset(c.id for c in E1), {}, {})
+    chosen = [c for c in E1 if c.id in ("c28", "c36")]
+    result = await SummaryTarget(E1, owner_language="uz-Latn", session_factory=factory).run(
+        context(SummaryOracle(chosen), only=("c36", "c28"), reviews=everything)
+    )
+
+    assert [d["id"] for d in result.details] == ["c28", "c36"]
+    assert (result.items, result.items_planned, result.items_total) == (2, 2, 40)
+    assert result.trial
+    for m in result.metrics:
+        assert m.gate_status() is not Status.PASS, m.key
+
+
 # ----------------------------------------------------------------- failures, cost
 async def test_a_truncated_summary_is_retried_once_and_the_estimate_covers_it(
     factory: async_sessionmaker[AsyncSession],

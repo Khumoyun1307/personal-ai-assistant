@@ -463,11 +463,28 @@ class SummaryTarget:
         return self._factory
 
     def _selected(self, context: RunContext) -> list[Conversation]:
+        if context.only is not None:
+            return self.named(context.only, limit=context.limit)
         if context.limit is None:
             return self._conversations
         if context.limit < 1:
             raise ValueError("limit must be at least 1")
         return self._conversations[: context.limit]
+
+    def named(self, ids: Sequence[str], *, limit: int | None = None) -> list[Conversation]:
+        """The conversations `--only` names, in set order: a cheap trial of chosen
+        chats (S03.7 round 3). A selection is always a trial, so it must name at
+        least one chat and fewer than all of them, and cannot be combined with a
+        limit."""
+        if limit is not None:
+            raise ValueError("only and limit cannot be combined")
+        wanted = set(ids)
+        unknown = sorted(wanted - {c.id for c in self._conversations})
+        if unknown:
+            raise ValueError(f"only names unknown conversations: {', '.join(unknown)}")
+        if not wanted or len(wanted) >= len(self._conversations):
+            raise ValueError("only must name at least one conversation and not the whole set")
+        return [c for c in self._conversations if c.id in wanted]
 
     # ------------------------------------------------------------- estimate
     def plan(self, context: RunContext) -> Sequence[PlannedCall]:

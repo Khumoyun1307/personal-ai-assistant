@@ -13,6 +13,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
 from evals.metrics import (
     CaveatCheck,
     LanguageVerdict,
@@ -287,6 +288,30 @@ def test_limit_plans_only_the_first_conversations() -> None:
     target = SummaryTarget(E1, owner_language="uz-Latn")
     assert len(target.plan(RunContext(limit=2))) < len(target.plan(RunContext(limit=4)))
     assert len(list(target.plan(RunContext(limit=1)))) in (3, 4)
+
+
+def test_only_plans_the_named_conversations_in_set_order() -> None:
+    """S03.7 round 3: a cheap trial of chosen chats (`--only c36,c28,c15`)."""
+    target = SummaryTarget(E1, owner_language="uz-Latn")
+    chosen = [BY_ID["c15"], BY_ID["c28"], BY_ID["c36"]]
+    assert target.plan(RunContext(only=("c36", "c28", "c15"))) == SummaryTarget(
+        chosen, owner_language="uz-Latn"
+    ).plan(RunContext())
+
+
+@pytest.mark.parametrize("only", [("c36", "c99"), ()])
+def test_only_with_an_unknown_or_no_conversation_is_refused(only: tuple[str, ...]) -> None:
+    target = SummaryTarget(E1, owner_language="uz-Latn")
+    with pytest.raises(ValueError, match="only"):
+        target.plan(RunContext(only=only))
+
+
+def test_only_cannot_name_the_whole_set() -> None:
+    """A selection is a trial, never a gate: naming every chat is a full run without
+    `--only`, so it is refused rather than reported as a trial."""
+    target = SummaryTarget(E1, owner_language="uz-Latn")
+    with pytest.raises(ValueError, match="only"):
+        target.plan(RunContext(only=tuple(c.id for c in E1)))
 
 
 def test_the_owner_language_is_part_of_the_estimate_only_through_the_profile() -> None:

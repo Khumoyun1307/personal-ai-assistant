@@ -342,6 +342,41 @@ def test_the_summary_estimate_follows_the_owner_language_and_limit(
     assert "summary (period-ru)" in second
 
 
+def test_only_runs_the_named_summary_conversations(
+    no_settings: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S03.7 round 3: `--only c36,c28,c15` estimates (and runs) those chats only."""
+    assert cli.main(["run", "summary", "--model", LUNA, "--estimate-only", "--limit", "3"]) == 0
+    assert (
+        cli.main(["run", "summary", "--model", LUNA, "--estimate-only", "--only", "c36,c28,c15"])
+        == 0
+    )
+    limited, only = capsys.readouterr().out.splitlines()
+    assert re.search(r"\b(9|1[0-2]) calls", only)
+    assert limited != only  # other chats, other sizes
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["run", "summary", "--only", "c36,c99"], "c99"),
+        (["run", "summary", "--only", "c36", "--limit", "1"], "--only"),
+        (["run", "summary", "--only", ",".join(c.id for c in load_e1())], "--only"),
+        (["run", "retrieval", "--only", "r01"], "--only"),
+    ],
+)
+def test_a_bad_only_selection_is_refused_before_anything_runs(
+    no_settings: None, args: list[str], message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main([*args, "--model", LUNA, "--estimate-only"]) == cli.EXIT_REFUSED
+    assert message in capsys.readouterr().err
+
+
+def test_an_only_run_is_reported_as_a_trial(tmp_path: Path) -> None:
+    trial = result(items=3, planned=3, total=38, confirmed=Measure(3, 3))
+    assert "selected (`--limit` or `--only`)" in render_markdown(meta(LUNA), trial, spent())
+
+
 def test_a_summary_run_over_the_cap_does_not_start(
     no_settings: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
