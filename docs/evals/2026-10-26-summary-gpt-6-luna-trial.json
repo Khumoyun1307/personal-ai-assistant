@@ -1,0 +1,238 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-26",
+  "set": "summary",
+  "target": "summary",
+  "dataset": "e1",
+  "mode": "period-uz-Latn",
+  "model": "gpt-6-luna",
+  "live": true,
+  "effort": "low",
+  "complete": false,
+  "trial": true,
+  "stopped": false,
+  "items": 1,
+  "items_planned": 1,
+  "items_total": 40,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "summarize.v2",
+    "fabrication.v1",
+    "open_loops.v1"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "open_loop_recall",
+      "label": "Open question/commitment recall",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.95,
+      "all_items": {
+        "numerator": 2,
+        "denominator": 5,
+        "ratio": 0.4
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "fail",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 103,
+      "failed_items": [
+        "c01.q3",
+        "c01.c1",
+        "c01.c3"
+      ],
+      "pending": 0,
+      "note": "2 open loop(s) have no `values` to match: judge pre-screen only, the gate needs the owner's verdict (0 unresolved among the owner-confirmed items)"
+    },
+    {
+      "key": "caveat_presence",
+      "label": "Coverage caveat present whenever gaps exist",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "not evaluable",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 6,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "spurious_caveats",
+      "label": "Caveats for gaps that lost nothing",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 1,
+        "ratio": 0.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "owner_language",
+      "label": "Owner-facing language and script correct",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "fabricated_facts",
+      "label": "Fabricated facts (zero allowed)",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 1,
+        "ratio": 0.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    }
+  ],
+  "breakdowns": {
+    "open-loop recall (pre-screen) by variant": {
+      "uz-Latn": {
+        "numerator": 2,
+        "denominator": 5,
+        "ratio": 0.4
+      }
+    },
+    "owner-language check by variant": {
+      "uz-Latn": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.0010910",
+    "calls": 3,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 3,
+        "input_tokens": 4270,
+        "output_tokens": 1328,
+        "cost_usd": "0.0010910",
+        "cost_per_100_items_usd": "0.1091000"
+      }
+    }
+  },
+  "notes": [
+    "Caveats come from the product's deterministic renderer over the harness's own synthetic gap rows, not from the model (E-d, E-p): the two caveat metrics are an ungated wiring regression check. Recall and language are measured on the per-chat summary (the summarize output), not on the owner-facing reply."
+  ],
+  "details": [
+    {
+      "id": "c01",
+      "variant": "uz-Latn",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 3,
+        "commitments": 2,
+        "decisions_requested": 3,
+        "key_facts": 4
+      },
+      "open_loops": {
+        "c01.q2": true,
+        "c01.q3": null,
+        "c01.c1": false,
+        "c01.c2": true,
+        "c01.c3": null
+      },
+      "open_loop_keys": {
+        "c01.q3": "c01.q3#6c059e02",
+        "c01.c3": "c01.c3#6c059e02"
+      },
+      "open_loops_judged": {
+        "c01.q3": false,
+        "c01.c3": false
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Oyimning tug‘ilgan kuni uchun 17-oktabrdagi kafedagi uchrashuv, tort, buvini olib kelish, sovg‘a va menyu muhokama qilingan.\nSovg‘a uchun 300 ming so‘mdan qo‘shilishga rozimisiz?\nNodira opalarga siz aytasizmi yoki kontakt qo‘ng‘iroq qilaymi?\nMenyu osh bo‘lsinmi yoki shashlikmi?\nShokoladli tortni buyurtma qilib olib kelish. 17-oktabr\nBuvini uylaridan olib kelish. 17-oktabr soat 18:00\nKafe uchun osh yoki shashlik menyusidan birini tanlash.\nNodira opalarga kim xabar berishini hal qilish.\nSovg‘aga 300 ming so‘mdan qo‘shishga rozilik bildirish.\nTug‘ilgan kun uchun «Gulzor» kafesida 17-oktabr soat 19:00 ga 12 kishilik joy band qilingan.\nKontakt kafe so‘ragan 600 ming so‘m oldindan to‘lovni amalga oshirgan.\nKontakt sovg‘aga katta ro‘mol va chiroyli choynak to‘plami olishni taklif qilgan; pulni shanba kuni naqd berishni aytgan.\nKafe menyuni 15-oktabr soat 12:00 gacha tasdiqlashni so‘ragan.\nKontakt menyu, Nodira opalarga kim xabar berishi va sovg‘a uchun pul qo‘shishga rozilik haqida javob kutmoqda."
+    }
+  ]
+}
