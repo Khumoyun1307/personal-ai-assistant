@@ -146,7 +146,9 @@ class SummaryOracle(FakeLLM):
         else:
             assert request.purpose == LOOPS_PURPOSE
             asked = re.findall(r"^- (c\d\d\.[qc]\d+):", request.items[0].text, re.M)  # type: ignore[union-attr]
-            value = {"items": [{"id": i, "surfaced": i not in self._omit} for i in asked]}
+            value = {
+                "items": [{"id": i, "evidence": "", "surfaced": i not in self._omit} for i in asked]
+            }
         return ParsedResponse(StopReason.COMPLETED, LUNA, self._usage, schema.model_validate(value))
 
     def _summarize[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> ParsedResponse[T]:
@@ -247,7 +249,7 @@ async def test_the_target_runs_the_real_summarize_path_and_produces_every_metric
     assert result.prompts == (
         prompt_registry.active("summarize").label,
         "fabrication.v1",
-        "open_loops.v2",
+        "open_loops.v3",
     )
     assert all(d["status"] == "summarized" and d["error"] is None for d in result.details)
     # The report keeps the structured summary too: who promised what (attribution

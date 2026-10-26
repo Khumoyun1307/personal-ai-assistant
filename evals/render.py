@@ -5,11 +5,22 @@ edited/deleted flags) plus the coverage facts the product itself would know.
 It never passes `labels`, `original_text` (pre-edit text) or `purged_text`
 (deleted text): those fields exist for reviewers only. This module is the one
 place that turns a conversation into prompt text, so that rule has one test.
+
+Times are shown in the owner's timezone, as the summarizer is shown them (E-w):
+a judge reading UTC flagged a correct local time ("08:30" for 03:30 UTC) as
+contradicting the chat.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from evals.schema import Conversation, Message
+
+#: The dataset's owner timezone (README: relative dates resolve here); the same
+#: value as `evals.corpus.OWNER_TIMEZONE`, which the product context uses.
+OWNER_TIMEZONE = "Asia/Tashkent"
 
 _MEDIA = {
     "photo": "[photo]",
@@ -18,10 +29,13 @@ _MEDIA = {
 }
 
 
-def _line(conversation: Conversation, message: Message) -> str:
+def _local(moment: datetime, zone: ZoneInfo) -> str:
+    return moment.astimezone(zone).strftime("%Y-%m-%d %H:%M")
+
+
+def _line(conversation: Conversation, message: Message, zone: ZoneInfo) -> str:
     who = conversation.owner.display_name if message.direction == "owner" else None
     who = who or conversation.contact.display_name
-    stamp = message.sent_at.strftime("%Y-%m-%d %H:%M UTC")
     flags = " (edited)" if message.edited else ""
     if message.deleted:
         body = "[deleted]"
@@ -30,23 +44,27 @@ def _line(conversation: Conversation, message: Message) -> str:
         if message.text:
             parts.append(message.text)
         body = " ".join(parts)
-    return f"[{message.id}] {stamp} {who} ({message.direction}){flags}: {body}"
+    return (
+        f"[{message.id}] {_local(message.sent_at, zone)} {who} ({message.direction}){flags}: {body}"
+    )
 
 
-def render_conversation(conversation: Conversation) -> str:
+def render_conversation(conversation: Conversation, timezone: str = OWNER_TIMEZONE) -> str:
     """The conversation as the product would present it to a model: messages
-    in order, then the coverage facts. Never labels, pre-edit or purged text."""
-    lines = [f"Conversation with {conversation.contact.display_name}"]
-    lines += [_line(conversation, message) for message in conversation.messages]
+    in order (times in the owner's timezone), then the coverage facts. Never
+    labels, pre-edit or purged text."""
+    zone = ZoneInfo(timezone)
+    lines = [
+        f"Conversation with {conversation.contact.display_name} "
+        f"(times in the owner's timezone, {timezone})"
+    ]
+    lines += [_line(conversation, message, zone) for message in conversation.messages]
     facts: list[str] = []
     if conversation.coverage_started_at is not None:
-        started = conversation.coverage_started_at.strftime("%Y-%m-%d %H:%M UTC")
+        started = _local(conversation.coverage_started_at, zone)
         facts.append(f"Coverage started at {started}; earlier history is not available.")
     for gap in conversation.coverage_gaps:
-        window = (
-            f"{gap.at_risk_from.strftime('%Y-%m-%d %H:%M')} to "
-            f"{gap.at_risk_to.strftime('%Y-%m-%d %H:%M')} UTC"
-        )
+        window = f"{_local(gap.at_risk_from, zone)} to {_local(gap.at_risk_to, zone)}"
         facts.append(f"Coverage gap {gap.id} ({gap.certainty}, {gap.kind}): {window}.")
     if facts:
         lines += ["", "Coverage facts:", *facts]

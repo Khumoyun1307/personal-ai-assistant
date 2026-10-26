@@ -40,7 +40,7 @@ from evals.schema import Commitment, Conversation, QuestionToOwner
 from evals.targets import Measure, MetricResult
 
 RUBRIC_ID = "fabrication.v1"
-LOOPS_RUBRIC_ID = "open_loops.v2"
+LOOPS_RUBRIC_ID = "open_loops.v3"
 MAX_OUTPUT_TOKENS = 3000
 TIMEOUT_SECONDS = 120.0
 #: Fabrication threshold (S03.4): none.
@@ -168,6 +168,9 @@ class LoopVerdict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    #: The summary line(s) that tell the owner about the item, copied, or "" (v3):
+    #: written before the verdict, and kept in the report for the owner's review.
+    evidence: str
     surfaced: bool
 
 
@@ -182,9 +185,10 @@ class LLMOpenLoopJudge:
     `values`, and (E-s) those whose `values` were not found literally, e.g.
     because the summary translated them.
 
-    It sees only the summary and a one-line description of each loop (never the
-    conversation), with the loop's key values, and answers whether the summary
-    tells the owner about it. Its verdicts feed `recall_metric(..., judged=...)`,
+    It sees the summary and, for each loop, a one-line description with the
+    loop's key values and the chat messages the loop cites (never the rest of the
+    conversation); it quotes the summary line that surfaces the loop (or nothing)
+    before it answers (v3). Its verdicts feed `recall_metric(..., judged=...)`,
     which counts them in the pre-screen only: the gate needs the owner's verdict
     (`ReviewLedger.coverage`). A judge failure returns no verdicts, so those loops
     stay *missed*.
@@ -207,6 +211,16 @@ class LLMOpenLoopJudge:
     ) -> dict[str, bool]:
         """Verdicts on the open loops named by `loop_ids` (default: the loops with
         no `values`); no call when there are none."""
+        verdicts = await self.verdicts(conversation, output, loop_ids)
+        return {loop: verdict.surfaced for loop, verdict in verdicts.items()}
+
+    async def verdicts(
+        self,
+        conversation: Conversation,
+        output: SummaryOutput,
+        loop_ids: Collection[str] | None = None,
+    ) -> dict[str, LoopVerdict]:
+        """`judge` with the evidence the judge quoted."""
         pending = [
             loop
             for loop in open_loops(conversation)
@@ -214,7 +228,7 @@ class LLMOpenLoopJudge:
         ]
         if not pending:
             return {}
-        lines = [f"- {loop.id}: {_describe(loop)}" for loop in pending]
+        lines = [_item_block(conversation, loop) for loop in pending]
         request = LLMRequest(
             account_id=self._account_id,
             purpose="eval_open_loop_screen",
@@ -238,7 +252,17 @@ class LLMOpenLoopJudge:
         if response.stop_reason is not StopReason.COMPLETED or response.parsed is None:
             return {}
         asked = {loop.id for loop in pending}
-        return {v.id: v.surfaced for v in response.parsed.items if v.id in asked}
+        return {v.id: v for v in response.parsed.items if v.id in asked}
+
+
+def _item_block(conversation: Conversation, loop: QuestionToOwner | Commitment) -> str:
+    """One open item for the loop judge: its description and key values, then the
+    chat messages the item cites (v3: the judge can recognise a translation of
+    them in the summary). Only those messages, never the rest of the chat."""
+    by_id = {message.id: message for message in conversation.messages}
+    cited = [by_id[i] for i in loop.source_message_ids if i in by_id]
+    quoted = [f"    [{m.direction}] {m.text}" for m in cited if m.text and not m.deleted]
+    return "\n".join([f"- {loop.id}: {_describe(loop)}", *quoted])
 
 
 def _describe(loop: QuestionToOwner | Commitment) -> str:
@@ -278,7 +302,7 @@ def loops_input_chars(conversation: Conversation, summary_chars: int) -> int | N
     pending = open_loops(conversation)
     if not pending:
         return None
-    lines = "\n".join(f"- {loop.id}: {_describe(loop)}" for loop in pending)
+    lines = "\n".join(_item_block(conversation, loop) for loop in pending)
     return (
         len(load_asset("rubrics", LOOPS_RUBRIC_ID).text)
         + len("Open items:\n" + lines + "\n\nSummary:\n")

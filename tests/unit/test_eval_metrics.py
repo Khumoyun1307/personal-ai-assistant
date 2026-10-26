@@ -588,3 +588,15 @@ def test_the_owner_can_record_a_fabrication_the_judge_missed(tmp_path: Path) -> 
 def test_finding_ids_are_stable_and_ignore_case_and_padding() -> None:
     assert finding_id("c01", "  Meeting at 14:00 ") == finding_id("c01", "meeting at 14:00")
     assert finding_id("c01", "a") != finding_id("c02", "a")
+
+
+def test_an_apostrophe_does_not_split_an_uzbek_word_into_english() -> None:
+    """E-v, the defect: "to‘lov" was read as the English word "to", so a clean
+    Uzbek Latin summary (2026-10-26, c16) was detected as English and failed."""
+    text = (
+        "Ombor ijarasi va elektr uchun to‘lov amalga oshgan.\n"
+        "To‘lov 7-oktyabrgacha so‘ralgan, kontakt to‘lovi kelganini aytgan.\n"
+        "O‘t o‘chirgichni tekshirib ko‘rish."
+    )
+    assert detect_language(text) == "uz"
+    assert check_language(text, "uz-Latn").ok

@@ -527,8 +527,13 @@ def _script_share(text: str, script: Literal["latin", "cyrillic"]) -> float:
     return counts[script] / total if total else 0.0
 
 
+#: Apostrophe-like characters: inside a word they join it ("to‘lov", "don't"), so
+#: the raw-word tokenizer must not split there (E-v: "to‘lov" read as English "to").
+_APOSTROPHES = str.maketrans(dict.fromkeys("ʻʼ‘’'`´ʹʽ′‛ꞌˈˊˋ", None))
+
+
 def detect_language(text: str) -> str | None:
-    raw = _LETTERS.findall(text.casefold())
+    raw = _LETTERS.findall(text.translate(_APOSTROPHES).casefold())
     latin = [w for w in raw if _script_share(w, "latin") == 1.0]
     cyrillic = [w for w in raw if _script_share(w, "cyrillic") == 1.0]
     uzbek_words = _LETTERS.findall(normalize(text))

@@ -34,7 +34,8 @@ comparing runs.
 Each run gets one file: `<YYYY-MM-DD>-<set>-<model>.md`. For example:
 `2026-10-30-summary-gpt-6-luna.md`, `2026-10-30-retrieval-gpt-6-luna.md`,
 `2026-10-25-retrieval-deterministic.md`. A rerun on the same day adds a suffix
-(`…-luna-2.md`). The summary run is always a model run; its report names the owner
+(`…-luna-2.md`; the S03.6 tuning runs use the slice and prompt instead,
+`…-luna-s036.md`, `…-luna-s036-v3.md`). The summary run is always a model run; its report names the owner
 language the summaries were written in (`mode`, e.g. `period-uz-Latn`) and the
 prompt and rubric versions used (`summarize.v1`, `fabrication.v1`, `open_loops.v1`).
 
@@ -75,13 +76,27 @@ Cyrillic) and all labels before the gate run. Expect about 4 hours per set
 `evals/datasets/MANIFEST.sha256`, before the M03 gate run. The gate run uses
 the reviewed version only.
 
-The summary target (`python -m evals run summary`) is wired and tested on `FakeLLM`;
-**no real-model summary run exists yet.** Its first run, on `gpt-6-luna`, waits for
-this review (so that the gate counts confirmed items) and for the owner's go-ahead
-and cost approval; the run's worst case is printed by `--estimate-only` first.
+The summary target (`python -m evals run summary`) is wired and tested on `FakeLLM`.
+The first real-model runs (2026-10-26, `gpt-6-luna`, owner-approved) were made
+**before** this review, as a pre-screen to find weaknesses (M03 S03.6): every gate in
+them reads `NOT EVALUABLE`. The gate run uses the reviewed v1.1 and a review ledger.
+The summary JSON also keeps the labelled summary (who promised what) and the open-loop
+judge's quoted evidence per loop; the retrieval JSON keeps what was searched, the
+contact filter and the final answer (synthetic data, for review; E-s, E-t, E-u).
 
 ## Dataset log
 
 | Date | Set | Version | Change | Manifest |
 |---|---|---|---|---|
 | 2026-10-23 | E1 + retrieval | v1 | Initial synthetic set: 40 conversations (8 per variant; c01–c08 = S00.3 smoke set), 262 labelled items, 38 retrieval queries. Hand-written by an AI coding agent; pending the owner's Uzbek and label review. | `evals/datasets/MANIFEST.sha256` at this commit |
+
+## Real-model runs so far (pre-screen only)
+
+| Date | Run | Prompts / rubrics | Cost (USD) |
+|---|---|---|---|
+| 2026-10-26 | `summary-gpt-6-luna-trial`, `summary-gpt-6-luna` (baseline) | summarize.v2, fabrication.v1, open_loops.v1 | 0.0011 + 0.0330 |
+| 2026-10-26 | `retrieval-gpt-6-luna` (baseline) | retrieval_variants.v1, retrieval_answer.v1 | 0.0094 |
+| 2026-10-26 | `retrieval-gpt-6-luna-s036-trial`, `retrieval-gpt-6-luna-s036` (S03.6) | retrieval_variants.v2, retrieval_answer.v1 | 0.0003 + 0.0102 |
+| 2026-10-26 | `summary-gpt-6-luna-s036-v3-trial`, `summary-gpt-6-luna-s036-v3` (S03.6) | summarize.v3, fabrication.v1, open_loops.v2 | 0.0011 + 0.0359 |
+
+The S03.4/S03.6 total is tracked against the owner's USD 1 here and in M03.md S03.6.

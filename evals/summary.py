@@ -318,6 +318,8 @@ class _Record:
     language: LanguageVerdict
     coverage: Mapping[str, bool | None]
     judged: Mapping[str, bool]
+    #: The summary line(s) the loop judge quoted for each loop it was asked about.
+    evidence: Mapping[str, str]
     check: CaveatCheck
     caveat_lines: int
     screen: ScreenResult
@@ -354,6 +356,7 @@ class _Record:
                 if checked is None
             },
             "open_loops_judged": dict(self.judged),
+            "open_loops_evidence": dict(self.evidence),
             "caveats_expected": self.check.expected,
             "caveats_missing": list(self.check.missing),
             "caveats_spurious": list(self.check.spurious),
@@ -539,6 +542,7 @@ class SummaryTarget:
         if summary is None:
             screen = ScreenResult(conversation.id, (), screened=False, error="summary_failed")
             judged: dict[str, bool] = {}
+            evidence: dict[str, str] = {}
             language = LanguageVerdict(False, None, 0.0)
         else:
             screen = await LLMFabricationJudge(
@@ -548,16 +552,18 @@ class SummaryTarget:
                 effort=context.effort,
                 account_id=loaded.account_id,
             ).screen(conversation, output)
-            judged = await LLMOpenLoopJudge(
+            verdicts = await LLMOpenLoopJudge(
                 context.llm,
                 model=context.model,
                 effort=context.effort,
                 account_id=loaded.account_id,
-            ).judge(
+            ).verdicts(
                 conversation,
                 output,
                 [loop for loop, checked in loops.items() if checked is None],
             )
+            judged = {loop: verdict.surfaced for loop, verdict in verdicts.items()}
+            evidence = {loop: verdict.evidence for loop, verdict in verdicts.items()}
             language = check_language(plain, self.owner_language)
         return _Record(
             conversation=conversation,
@@ -570,6 +576,7 @@ class SummaryTarget:
             language=language,
             coverage=loops,
             judged=judged,
+            evidence=evidence,
             check=check_caveats(conversation, output),
             caveat_lines=facts.lines,
             screen=screen,
