@@ -98,18 +98,29 @@ IGNORE_CONFIRM_TEXT = (
     "<b>Ignore the chat with {name}?</b>\n\n"
     "From now on I will not store or use new messages from this chat. What is "
     "already stored stays: messages until they expire, the summary and your notes.\n\n"
-    "<b>Ignore + delete data</b> also deletes what is stored from this chat now "
-    "(messages, summary, raw updates, notes about this chat); your notes about the "
-    "person stay. That cannot be undone."
+    "<b>Ignore + delete data</b> also deletes what is stored from this chat now: its "
+    "messages, summary and raw updates, notes about this chat, and every note or turn "
+    "here that drew on this chat or on {name}. Other notes about {name} stay. That "
+    "cannot be undone. " + deletion.ARRIVING_NOTE + " " + deletion.BACKUP_NOTE
 )
 
 CANNOT_UNDO = "This cannot be undone."
+#: What stays follows M03 D79: per chat, a note goes when it is about the chat
+#: or was saved by a run that drew on the chat or its contact; per contact,
+#: also every note about the person (review items 8 and 10).
 DELETE_CHAT_TEXT = (
     "<b>Delete what is stored from the chat with {name}?</b>\n\n"
-    "<b>Chat data</b>: its messages, summary, raw updates, notes about this chat and "
-    "my answers that drew on it.\n"
-    "<b>Chat + notes</b>: also your notes about {name}.\n\n"
-    "The chat stays in its mode: new messages are stored as before. " + CANNOT_UNDO
+    "<b>Chat data</b>: its messages, summary and raw updates, notes about this chat, "
+    "and every note or turn here that drew on this chat or on {name}. Other notes "
+    "about {name} stay.\n"
+    "<b>Chat + notes</b>: also all notes saved about {name}. Your general notes "
+    "that only mention {name} stay.\n\n"
+    "The chat stays in its mode: new messages are stored as before. "
+    + CANNOT_UNDO
+    + " "
+    + deletion.ARRIVING_NOTE
+    + " "
+    + deletion.BACKUP_NOTE
 )
 DELETE_ALL_TEXT = (
     "<b>Delete everything?</b>\n\n"
@@ -117,7 +128,12 @@ DELETE_ALL_TEXT = (
     "too), the history of this chat and the raw updates.\n\n"
     "Kept: your account, settings, AI consents and the connection, so I keep observing "
     "your chats from now on (to stop that: /privacy revoke, or remove me under "
-    "Chat Automation). To delete one chat only, open its panel from /settings. " + CANNOT_UNDO
+    "Chat Automation). To delete one chat only, open its panel from /settings. "
+    + CANNOT_UNDO
+    + " "
+    + deletion.ARRIVING_NOTE
+    + " "
+    + deletion.BACKUP_NOTE
 )
 
 

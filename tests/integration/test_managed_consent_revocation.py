@@ -151,6 +151,7 @@ async def test_delete_removes_managed_data_and_writes_one_audit_row(env: Env) ->
     assert (await inbound(env, original)).payload is None
     # The card was edited in place and answered; card B follows.
     assert env.sender.edits[-1]["text"].startswith("🗑 Deleted: 2 message(s)")
+    assert "backups" in env.sender.edits[-1]["text"]  # S03.5 review item 6
     assert env.sender.answered_callbacks[-1]["text"] == "Deleted"
     assert "How should I continue?" in env.sender.texts[-1]
     await live_card(env, "managed_mode")

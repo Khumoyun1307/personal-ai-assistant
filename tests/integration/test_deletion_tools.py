@@ -23,7 +23,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from assistant.accounts.models import Account, AuditLogEntry, PendingInput
 from assistant.agent.models import AgentRunStep, ToolConfirmation
@@ -161,6 +161,46 @@ async def test_a_deletion_call_in_an_untainted_run_only_shows_a_card(
         assert "Kamola" in card  # the card names whose data goes
 
 
+async def test_deletion_cards_say_what_stays_and_what_still_holds_the_data(env: Env) -> None:
+    """Review items 4, 5, 6, 8 and 10: the count is of stored messages
+    (expired ones are not counted), arrivals during the deletion and the
+    backups are named, and what stays is said as D79 has it."""
+    conversation, contact = await seed(env)
+    await deliver(
+        env, business_message(message_id=2, message_text=f"{CANARY} two", first_name="Kamola")
+    )
+    async with env.factory() as session, session.begin():
+        # The first message expired under retention: its row stays, content-free.
+        await session.execute(
+            text(
+                "UPDATE app.messages SET text = NULL, purged_at = now() "
+                "WHERE telegram_message_id = 1"
+            )
+        )
+    turn = await ask(env, "Delete it")
+    fake = FakeLLM(
+        tool_response(
+            ("c1", "delete_conversation_data", args(conversation_id=conversation, contact_id=None)),
+            ("c2", "delete_contact_data", args(contact_id=contact)),
+            ("c3", "delete_everything", args(scope="everything")),
+        ),
+        text_response("Please confirm on the cards."),
+    )
+    channel = FakeChannel()
+    await runtime(env, fake, channel, flags=FLAGS).run(turn)
+    chat, person, everything = channel.sends[:3]
+    for card in (chat, person, everything):
+        assert "backups" in card
+        assert "arriving" in card
+        assert "cannot be undone" in card
+    assert "about 1 stored message" in chat
+    assert "about 1 stored message" in person
+    assert "Your notes about Kamola stay" not in chat
+    assert "Other notes about Kamola stay" in chat
+    assert "notes saved about Kamola" in person
+    assert "only mention Kamola stay" in person
+
+
 async def test_the_deletion_applies_only_after_the_owner_confirms(env: Env) -> None:
     conversation, _ = await seed(env)
     turn = await ask(env, "Delete Kamola's chat data")
@@ -181,7 +221,12 @@ async def test_the_deletion_applies_only_after_the_owner_confirms(env: Env) -> N
     outcome = await applier(env, applied_channel, flags=FLAGS).apply(row.id)
     assert outcome.status == "applied"
     assert await message_count(env) == 0
-    assert "Done" in applied_channel.sends[-1]
+    # The receipt, with the counts (review nit), not "Done: delete_... (ok)".
+    receipt = applied_channel.sends[-1]
+    assert "Deleted: 1 message(s)" in receipt
+    assert "held change(s)" in receipt
+    assert "backups" in receipt
+    assert "Done" not in receipt
     async with env.factory() as session:
         events = (
             (
@@ -226,6 +271,16 @@ async def test_a_deletion_handler_refuses_to_run_without_a_confirmation(env: Env
         outcome = await call
         assert outcome.status == "not_executed"
     assert await message_count(env) == 1
+
+
+async def test_a_deletion_result_tells_the_model_about_backups(env: Env) -> None:
+    await seed(env)
+    outcome = await delete_everything_tool(
+        await ctx(env, confirmed=True), DeleteEverythingArgs(scope="everything")
+    )
+    assert outcome.status == "ok"
+    assert "backups" in outcome.data["note"]
+    assert "for good" not in outcome.data["note"]
 
 
 # ------------------------------------------------------------ AGENTS §8

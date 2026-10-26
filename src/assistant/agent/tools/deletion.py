@@ -44,6 +44,8 @@ NOT_CONFIRMED = ToolOutcome(
     "not_executed", {"reason": "deleting data needs the owner's tap on a confirmation card"}
 )
 CANNOT_UNDO = "This cannot be undone."
+#: What still holds the data after the deletion (review items 4 and 6).
+_AFTER = f"{deletion.ARRIVING_NOTE} {deletion.BACKUP_NOTE}"
 
 
 def _required_id(value: int) -> int:
@@ -118,12 +120,17 @@ async def _name(session: AsyncSession, account_id: int, contact_id: int) -> str:
 
 
 async def _message_count(session: AsyncSession, account_id: int, condition: Any) -> int:
+    """Messages that still hold content now (not expired, not deleted): the
+    card says "about", since more may arrive or expire before the tap
+    (safety review item 5)."""
     return int(
         (
             await session.execute(
                 select(func.count())
                 .select_from(Message)
                 .where(Message.account_id == account_id)
+                .where(Message.purged_at.is_(None))
+                .where(Message.deleted_at.is_(None))
                 .where(condition)
             )
         ).scalar_one()
@@ -137,7 +144,11 @@ def _result(scope: str, report: DeletionReport, **ids: int) -> ToolOutcome:
             "scope": scope,
             **ids,
             "deleted": report.counts(),
-            "note": "deleted for good; new messages are stored as before (chat modes unchanged)",
+            "note": (
+                "deleted from the database; encrypted backups made before now still hold it "
+                "until they are rotated out (up to 35 days); new messages are stored as "
+                "before (chat modes unchanged)"
+            ),
         },
     )
 
@@ -200,10 +211,12 @@ async def describe_conversation_deletion(
     ).scalar_one()
     name = await _name(session, account_id, int(contact_id))
     count = await _message_count(session, account_id, Message.conversation_id == conversation_id)
+    # What stays follows M03 D79 (general review item 10).
     return (
-        f"Delete everything stored from the chat with {name}: {count} message(s), its "
-        "summary, raw updates, notes about this chat and my answers that drew on it. "
-        f"Your notes about {name} stay. The chat keeps its mode. {CANNOT_UNDO}"
+        f"Delete everything stored from the chat with {name}: about {count} stored "
+        "message(s), its summary and raw updates, notes about this chat, and every note "
+        f"or turn of our conversation that drew on this chat or on {name}. Other notes "
+        f"about {name} stay. The chat keeps its mode. {CANNOT_UNDO} {_AFTER}"
     )
 
 
@@ -232,10 +245,13 @@ async def describe_contact_deletion(
         Conversation.account_id == account_id, Conversation.contact_id == contact_id
     )
     count = await _message_count(session, account_id, Message.conversation_id.in_(chats))
+    # Owner-scope notes that merely mention the person stay (D79, review item 8).
     return (
-        f"Delete everything stored about {name}: {count} message(s) from their chat, its "
-        f"summary, raw updates, your notes about {name} and their chat, and my answers "
-        f"that drew on them. Their chat keeps its mode. {CANNOT_UNDO}"
+        f"Delete everything stored about {name}: about {count} stored message(s) from "
+        "their chat, its summary and raw updates, all notes saved about "
+        f"{name} or their chat, and every note or turn of our conversation that drew on "
+        f"them. Your general notes that only mention {name} stay. Their chat keeps its "
+        f"mode. {CANNOT_UNDO} {_AFTER}"
     )
 
 
@@ -256,7 +272,7 @@ EVERYTHING_TEXT = (
     "Delete ALL stored content: every message, name, summary and note (yours too), "
     "the history of this chat and the raw updates. Kept: your account, settings, "
     "consents and the connection, so I keep observing your chats from now on. "
-    f"{CANNOT_UNDO}"
+    f"{CANNOT_UNDO} {_AFTER}"
 )
 
 

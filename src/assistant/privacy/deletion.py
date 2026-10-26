@@ -45,6 +45,27 @@ MANAGED_PAYLOAD_KINDS = (
 BACKUP_NOTE = (
     "Encrypted backups made before now still contain it until they are rotated out (up to 35 days)."
 )
+#: Said on every deletion card: a pending inbound row is left to the inbox
+#: (M03 D79), so a message arriving at that moment may be stored after the
+#: deletion (safety review item 4).
+ARRIVING_NOTE = "A message arriving at the moment of deletion may still be stored."
+
+
+def receipt_text(counts: Mapping[str, Any]) -> str:
+    """What the owner is told after a deletion (from `DeletionReport.counts`,
+    or a deletion tool's result): counts only, and the backups that still
+    hold the data for a while (safety review items 5 and 6)."""
+
+    def n(key: str) -> int:
+        value = counts.get(key, 0)
+        return value if isinstance(value, int) else 0
+
+    return (
+        f"🗑 Deleted: {n('messages')} message(s), {n('contacts_cleared')} contact name(s), "
+        f"{n('payloads_cleared')} raw update(s), {n('summaries_deleted')} summary(ies), "
+        f"{n('memory_items_deleted')} note(s), {n('control_turns_cleared')} turn(s) of our "
+        f"conversation here, {n('held_calls_cleared')} held change(s).\n" + BACKUP_NOTE
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,15 +94,8 @@ class DeletionReport:
         )
 
     def receipt(self) -> str:
-        """What the owner is told after a deletion: counts only, and the
-        backups that still hold the data for a while (safety review 5, 6)."""
-        return (
-            f"🗑 Deleted: {self.messages} message(s), {self.contacts_cleared} contact "
-            f"name(s), {self.payloads_cleared} raw update(s), {self.summaries} "
-            f"summary(ies), {self.memory_items} note(s), {self.control_turns_cleared} "
-            f"turn(s) of our conversation here, {self.held_calls_cleared} held change(s).\n"
-            + BACKUP_NOTE
-        )
+        """What the owner is told after a deletion (`receipt_text`)."""
+        return receipt_text(self.counts())
 
     def counts(self) -> dict[str, int]:
         """For the content-free audit row and the owner's receipt."""
@@ -376,37 +390,35 @@ async def _lock_chats(session: AsyncSession, account_id: int, condition: Any) ->
     return [_Chat(int(c), int(b), int(k)) for c, b, k in rows.all()]
 
 
-async def _clear_chat_payloads(session: AsyncSession, account_id: int, chat: _Chat) -> int:
-    """Raw updates of one chat: those linked to its messages and every
-    business update naming the chat (jsonb containment, never a cast). A
-    pending row is left to the inbox: it is still to be processed, and is
-    then stored or cleared like any later update."""
-    message_ids = select(Message.id).where(Message.conversation_id == chat.conversation_id)
-    cleared = _rows(
+async def _clear_chat_payloads(
+    session: AsyncSession, account_id: int, chats: Sequence[_Chat]
+) -> int:
+    """Raw updates of these chats, in one statement: those linked to their
+    messages and every business update naming one of them (jsonb
+    containment, never a cast). A pending row is left to the inbox: it is
+    still to be processed, and is then stored or cleared like any later
+    update (the cards say so)."""
+    if not chats:
+        return 0
+    message_ids = select(Message.id).where(
+        Message.conversation_id.in_([chat.conversation_id for chat in chats])
+    )
+    named = [
+        (InboundUpdate.kind == kind)
+        & InboundUpdate.payload.contains({kind: {"chat": {"id": chat.business_chat_id}}})
+        for chat in chats
+        for kind in _CHAT_PAYLOAD_KINDS
+    ]
+    return _rows(
         await session.execute(
             update(InboundUpdate)
             .where(InboundUpdate.account_id == account_id)
-            .where(InboundUpdate.message_id.in_(message_ids))
             .where(InboundUpdate.payload.is_not(None))
             .where(InboundUpdate.status != "pending")
+            .where(or_(InboundUpdate.message_id.in_(message_ids), *named))
             .values(payload=None)
         )
     )
-    for kind in _CHAT_PAYLOAD_KINDS:
-        cleared += _rows(
-            await session.execute(
-                update(InboundUpdate)
-                .where(InboundUpdate.account_id == account_id)
-                .where(InboundUpdate.kind == kind)
-                .where(InboundUpdate.payload.is_not(None))
-                .where(InboundUpdate.status != "pending")
-                .where(
-                    InboundUpdate.payload.contains({kind: {"chat": {"id": chat.business_chat_id}}})
-                )
-                .values(payload=None)
-            )
-        )
-    return cleared
 
 
 async def _redact_turns(
@@ -520,9 +532,7 @@ async def _purge_chats(
     conversation rows stay, content-free."""
     conversation_ids = [chat.conversation_id for chat in chats]
     contact_ids = sorted({chat.contact_id for chat in chats} | set(person_ids))
-    payloads = 0
-    for chat in chats:
-        payloads += await _clear_chat_payloads(session, account_id, chat)
+    payloads = await _clear_chat_payloads(session, account_id, chats)
     # The owner's own raw control-chat updates may quote the chat (a forward,
     # a press whose message is the rendered panel, a confirmed card); they
     # exist only for recovery, so all of them go (safety review item 2).
@@ -722,21 +732,22 @@ async def _clear_control_payloads(session: AsyncSession, account: Account) -> in
     ids = {account.telegram_user_id}
     if account.control_chat_id is not None:
         ids.add(account.control_chat_id)
-    cleared = 0
-    for kind, key in _CONTROL_PAYLOADS:
-        for owner_id in sorted(ids):
-            cleared += _rows(
-                await session.execute(
-                    update(InboundUpdate)
-                    .where(InboundUpdate.account_id.is_(None))
-                    .where(InboundUpdate.kind == kind)
-                    .where(InboundUpdate.payload.is_not(None))
-                    .where(InboundUpdate.status != "pending")
-                    .where(InboundUpdate.payload.contains({kind: {key: {"id": owner_id}}}))
-                    .values(payload=None)
-                )
-            )
-    return cleared
+    owners = [
+        (InboundUpdate.kind == kind) & InboundUpdate.payload.contains({kind: {key: {"id": owner}}})
+        for kind, key in _CONTROL_PAYLOADS
+        for owner in sorted(ids)
+    ]
+    # One statement (general review nit), as for the chats' payloads.
+    return _rows(
+        await session.execute(
+            update(InboundUpdate)
+            .where(InboundUpdate.account_id.is_(None))
+            .where(InboundUpdate.payload.is_not(None))
+            .where(InboundUpdate.status != "pending")
+            .where(or_(*owners))
+            .values(payload=None)
+        )
+    )
 
 
 async def delete_everything(

@@ -50,6 +50,7 @@ from assistant.core.channel import Button, ControlChannel
 from assistant.core.clock import Clock
 from assistant.db.uow import after_commit, transaction
 from assistant.observability.logging import get_logger
+from assistant.privacy.deletion import receipt_text
 
 logger = get_logger(__name__)
 
@@ -578,6 +579,11 @@ class ConfirmationApplier:
         tool = html.escape(tool_name)
         if succeeded and outcome.data.get("changed") is False:
             return TEXT_ALREADY.format(tool=tool)
+        deleted = outcome.data.get("deleted")
+        if succeeded and isinstance(deleted, Mapping):
+            # A deletion tool: the same counts-only receipt as the owner's
+            # buttons, with the backups note (S03.5 review nit).
+            return html.escape(receipt_text(deleted))
         if succeeded:
             return TEXT_APPLIED.format(tool=tool, status=html.escape(outcome.status))
         if outcome.data.get("uncertain"):

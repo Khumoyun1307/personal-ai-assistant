@@ -186,6 +186,11 @@ async def test_choosing_also_delete_existing_data_on_the_ignore_confirmation_del
     ]
     assert "What is already stored stays" in question["text"]
     assert "cannot be undone" in question["text"]
+    # Review items 4, 6, 10: what stays as D79 has it, arrivals, backups.
+    assert "your notes about the person stay" not in question["text"]
+    assert "Other notes about" in question["text"]
+    assert "backups" in question["text"]
+    assert "arriving" in question["text"]
 
     await tap(env, panels.IGNORE_CARD, panels.IGNORE_DELETE_OPTION[1])
     assert await mode(env, conversation) == "ignore"  # at once: nothing new is stored
@@ -198,7 +203,11 @@ async def test_choosing_also_delete_existing_data_on_the_ignore_confirmation_del
     assert await stored(env, "NOTEK") == 1  # the owner's note about the person stays
     assert await stored(env, "CHATB") > 0  # another chat is untouched
     assert await deletions(env) == 1
-    assert any("Deleted" in t for t in receipts.sends)
+    [receipt] = receipts.sends
+    assert "Deleted" in receipt
+    assert "held change(s)" in receipt  # review item 5
+    assert "answer" not in receipt
+    assert "backups" in receipt  # review item 6
     # The panel comes back, in Ignore mode.
     assert "Ignore ✓" in keyboard_labels(env.sender.edits[-1]["reply_markup"])
 
@@ -222,6 +231,11 @@ async def test_the_panel_deletes_a_chats_data_only_after_a_second_tap(env: Env) 
     asked = env.sender.edits[-1]
     assert "cannot be undone" in asked["text"]
     assert keyboard_ops(asked["reply_markup"]) == ["chat", "contact", "cancel"]
+    assert "Other notes about" in asked["text"]  # D79 (review item 10)
+    assert "notes saved about" in asked["text"]  # review item 8
+    assert "only mention" in asked["text"]
+    assert "backups" in asked["text"]
+    assert "arriving" in asked["text"]
     assert await stored(env, "CHATK") > 0  # asked, not done
 
     await tap(env, panels.DELETE_CARD, "cancel")
@@ -260,6 +274,8 @@ async def test_settings_delete_everything_asks_first_then_deletes_all_content(en
     asked = env.sender.edits[-1]
     assert "cannot be undone" in asked["text"]
     assert "keep observing" in asked["text"]  # what stays is said plainly
+    assert "backups" in asked["text"]
+    assert "arriving" in asked["text"]
     assert keyboard_ops(asked["reply_markup"]) == ["everything", "cancel"]
     await tap(env, panels.DELETE_ALL_CARD, "cancel")
     assert await stored(env, "CHATB") > 0
@@ -403,6 +419,7 @@ async def test_revoking_consent_offers_deleting_everything_too(env: Env) -> None
     shown = env.sender.sends[-1]
     assert keyboard_labels(shown["reply_markup"]) == ["Delete", "Delete everything", "Keep"]
     assert "panel" in shown["text"]  # one chat's data: from its panel
+    assert "backups" in shown["text"]  # review item 6
     await live_card(env, "managed_delete")
     await press(env, "managed_delete", "everything")
     await run_deletion_jobs(env)

@@ -398,7 +398,8 @@ DELETE_CARD_TEXT = (
     "you included under Chat Automation, and your notes about the people in them. It "
     "cannot be undone. Your own notes and settings stay.\n\n"
     "<b>Delete everything</b> also deletes the history of this chat and all your "
-    "notes. To delete one chat only, open its panel from /settings instead."
+    "notes. To delete one chat only, open its panel from /settings instead.\n\n"
+    f"{deletion.ARRIVING_NOTE} {deletion.BACKUP_NOTE}"
 )
 #: The deletion scopes revocation offers (S02.4; S03.5 adds "everything").
 DELETE_CARD_BUTTONS = [("Delete", "delete"), ("Delete everything", "everything"), ("Keep", "keep")]
@@ -632,9 +633,7 @@ async def handle_card_press(
             report = await deletion.delete_managed_data(session, account_id=account.id, clock=clock)
             settlement = _Settlement(
                 "Deleted",
-                f"🗑 Deleted: {report.messages} message(s), {report.contacts_cleared} "
-                f"contact name(s), {report.payloads_cleared} raw update(s), "
-                f"{report.summaries} summary(ies), {report.memory_items} note(s).",
+                escape(report.receipt()),
                 await _mode_choice_card(session, clock, account),
             )
             note = "deleted"
