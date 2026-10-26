@@ -26,7 +26,7 @@ from evals import cli, live
 from evals.budget import BudgetedLLMClient, CallLedger, _request_chars, estimate, worst_case
 from evals.live import LiveConfig, LiveSetupError, ModelChoice
 from evals.metrics import values_matcher
-from evals.review import ReviewLedger
+from evals.review import ReviewLedger, coverage_key
 from evals.schema import Conversation, QuestionToOwner, load_e1
 from evals.summary import (
     FABRICATION_PURPOSE,
@@ -113,6 +113,7 @@ class SummaryOracle(FakeLLM):
         refuse: Collection[str] = (),
         flags: dict[str, list[dict[str, Any]]] | None = None,
         usage: Usage = Usage(400, 100),  # noqa: B008  (immutable)
+        filler: str = UZ_FILLER,
     ) -> None:
         super().__init__()
         self._order = conversations
@@ -123,6 +124,7 @@ class SummaryOracle(FakeLLM):
         self._refuse = set(refuse)
         self._flags = flags or {}
         self._usage = usage
+        self._filler = filler
 
     @property
     def current(self) -> Conversation:
@@ -177,7 +179,7 @@ class SummaryOracle(FakeLLM):
             if c.status == "open" and c.id not in self._omit
         ]
         return {
-            "overview": UZ_FILLER,
+            "overview": self._filler,
             "open_questions_to_owner": questions,
             "commitments": commitments,
             "decisions_requested": [],
@@ -391,6 +393,71 @@ async def test_a_caveat_for_a_gap_that_lost_nothing_is_spurious(
     result = await target(factory, [c26], coverage_reader=eager).run(context(SummaryOracle([c26])))
     assert metric(result, "spurious_caveats").all_items.numerator == 1
     assert record(result, "c26")["caveats_spurious"] == ["gap:unknown-gap-1"]
+
+
+def chat_with_unchecked_loops() -> Conversation:
+    """A conversation with open loops that have no `values`: only an owner verdict
+    (or the judge, as a pre-screen) can say whether a summary surfaced them."""
+    return next(c for c in E1 if any(not loop.values for loop in open_loops_of(c)))
+
+
+def verdicts_for(result: Any, chat: Conversation, verdict: str = "covered") -> dict[str, str]:
+    """The owner's ledger entries for the loops of `chat` that string matching cannot
+    decide, keyed the way the report names them (loop id and a digest of the summary)."""
+    keys = record(result, chat.id)["open_loop_keys"]
+    assert keys, "the report must name the key of every loop awaiting a verdict"
+    return dict.fromkeys(keys.values(), verdict)
+
+
+async def test_a_failed_summary_cannot_be_ruled_covered_by_the_ledger(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A refused summary surfaces nothing. A verdict in the ledger (here under both
+    the old loop-id key and the key of the empty text) must not turn that into a pass."""
+    chat = chat_with_unchecked_loops()
+    unchecked = [loop.id for loop in open_loops_of(chat) if not loop.values]
+    empty_text_keys = {coverage_key(loop, ""): "covered" for loop in unchecked}
+    ledger = ReviewLedger(
+        frozenset({chat.id}), {}, {**dict.fromkeys(unchecked, "covered"), **empty_text_keys}
+    )
+    result = await target(factory, [chat]).run(
+        context(SummaryOracle([chat], refuse={chat.id}), reviews=ledger)
+    )
+
+    assert record(result, chat.id)["error"] is not None
+    assert not any(record(result, chat.id)["open_loops"].values())  # every loop False
+    recall = metric(result, "open_loop_recall")
+    assert recall.confirmed.numerator == 0
+    assert recall.pending == 0  # a miss, not "unresolved"
+    assert recall.gate_status() is Status.FAIL
+
+
+async def test_an_owner_verdict_belongs_to_the_summary_it_judged(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    chat = chat_with_unchecked_loops()
+    unchecked = [loop.id for loop in open_loops_of(chat) if not loop.values]
+    first = await target(factory, [chat]).run(context(SummaryOracle([chat])))
+    ledger = ReviewLedger(frozenset({chat.id}), {}, verdicts_for(first, chat))  # type: ignore[arg-type]
+
+    same = await target(factory, [chat]).run(context(SummaryOracle([chat]), reviews=ledger))
+    recall = metric(same, "open_loop_recall")
+    assert recall.pending == 0
+    assert recall.gate_status() is Status.PASS
+
+    # Another run, another summary: the old verdicts do not carry over.
+    other = await target(factory, [chat]).run(
+        context(
+            SummaryOracle([chat], filler=UZ_FILLER + "Yana bir gap va men uchun. "), reviews=ledger
+        )
+    )
+    recall = metric(other, "open_loop_recall")
+    assert recall.pending == len(unchecked)
+    assert recall.gate_status() is Status.NOT_EVALUABLE
+    # and a verdict under the bare loop id never counts for the summary target
+    bare = ReviewLedger(frozenset({chat.id}), {}, dict.fromkeys(unchecked, "covered"))
+    unresolved = await target(factory, [chat]).run(context(SummaryOracle([chat]), reviews=bare))
+    assert metric(unresolved, "open_loop_recall").pending == len(unchecked)
 
 
 async def test_a_judge_flag_is_pending_and_keeps_the_gate_open(

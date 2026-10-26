@@ -94,7 +94,7 @@ from evals.metrics import (
     open_loops,
     recall_metric,
 )
-from evals.review import ReviewLedger
+from evals.review import ReviewLedger, coverage_key
 from evals.schema import Conversation
 from evals.targets import (
     DatasetName,
@@ -335,6 +335,13 @@ class _Record:
             "summary_calls": self.calls,
             "items": dict(self.counts),
             "open_loops": dict(self.coverage),
+            # The ledger key of each loop awaiting the owner's verdict: it names the
+            # summary the verdict is about (a re-run's summary has other keys).
+            "open_loop_keys": {
+                loop: coverage_key(loop, self.plain)
+                for loop, checked in self.coverage.items()
+                if checked is None
+            },
             "open_loops_judged": dict(self.judged),
             "caveats_expected": self.check.expected,
             "caveats_missing": list(self.check.missing),
@@ -536,7 +543,7 @@ class SummaryTarget:
             plain=plain,
             counts=counts,
             language=language,
-            coverage=open_loop_coverage(conversation, plain),
+            coverage=_loop_coverage(conversation, plain, summarized=summary is not None),
             judged=judged,
             check=check_caveats(conversation, output),
             caveat_lines=facts.lines,
@@ -625,14 +632,16 @@ class SummaryTarget:
     ) -> TargetResult:
         everything = self._conversations
         coverage: dict[str, bool | None] = {}
+        texts: dict[str, str] = {}
         judged: dict[str, bool] = {}
         for record in records:
             coverage.update(record.coverage)
+            texts.update(dict.fromkeys(record.coverage, record.plain))
             judged.update(record.judged)
         loops_total = sum(len(open_loops(c)) for c in everything)
         with_caveats = sum(bool(c.labels.expected_caveats) for c in everything)
         metrics = [
-            recall_metric(coverage, ledger, judged, set_size=loops_total),
+            recall_metric(coverage, ledger, judged, set_size=loops_total, summary_texts=texts),
             *caveat_metrics(
                 [r.check for r in records],
                 ledger,
@@ -681,6 +690,17 @@ class SummaryTarget:
                 LOOPS_RUBRIC,
             ),
         )
+
+
+def _loop_coverage(
+    conversation: Conversation, plain: str, *, summarized: bool
+) -> dict[str, bool | None]:
+    """Open loop id -> surfaced, missed, or None (needs a verdict). A conversation
+    that was not summarized surfaced nothing: every loop is a definite miss, so no
+    verdict can ever turn it into a pass."""
+    if not summarized:
+        return {loop.id: False for loop in open_loops(conversation)}
+    return open_loop_coverage(conversation, plain)
 
 
 def _by_variant(

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from assistant.memory.search import normalize
-from evals.review import ReviewLedger
+from evals.review import ReviewLedger, coverage_key
 from evals.schema import Commitment, Conversation, QuestionToOwner
 from evals.targets import Measure, MetricResult
 
@@ -172,6 +172,7 @@ def recall_metric(
     ledger: ReviewLedger,
     judged: Mapping[str, bool] | None = None,
     set_size: int | None = None,
+    summary_texts: Mapping[str, str] | None = None,
 ) -> MetricResult:
     """Open-loop recall, with three sources of truth for "was it surfaced":
 
@@ -184,6 +185,11 @@ def recall_metric(
     An item with no verdict from any source counts as **missed** in the
     pre-screen. In the gate it is *unresolved*: it leaves the metric pending
     (never a pass) until the owner rules on it.
+
+    With `summary_texts` (loop id -> the text of the summary it was judged in), the
+    owner's verdict is looked up under `coverage_key(loop, text)`: it belongs to that
+    summary and does not carry over to another run's. Without it the plain loop id
+    is the key (hand-built fixtures).
     """
     judged = judged or {}
     pre_screen: dict[str, bool] = {}
@@ -193,7 +199,8 @@ def recall_metric(
         pre_screen[item] = checked if checked is not None else judged.get(item, False)
         if not ledger.is_confirmed(item):
             continue
-        owner = ledger.coverage_verdict(item)
+        key = item if summary_texts is None else coverage_key(item, summary_texts.get(item, ""))
+        owner = ledger.coverage_verdict(key)
         if checked is not None:
             gate[item] = checked
         elif owner is not None:

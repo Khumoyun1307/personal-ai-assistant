@@ -13,8 +13,14 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from evals.metrics import CaveatCheck, LanguageVerdict, caveat_metrics, language_metric
-from evals.review import ReviewLedger
+from evals.metrics import (
+    CaveatCheck,
+    LanguageVerdict,
+    caveat_metrics,
+    language_metric,
+    recall_metric,
+)
+from evals.review import ReviewLedger, coverage_key
 from evals.schema import Conversation, load_e1
 from evals.summary import (
     FABRICATION_PURPOSE,
@@ -257,3 +263,17 @@ def test_a_limited_or_stopped_run_can_never_pass_even_with_everything_confirmed(
         assert metric.gate_status() is Status.NOT_EVALUABLE
     # Without the set size a metric would read the part for the whole.
     assert caveat_metrics(checks, everything)[0].gate_status() is Status.PASS
+
+
+def test_an_owner_verdict_on_an_open_loop_is_bound_to_the_summary_text() -> None:
+    ledger = ReviewLedger(
+        frozenset({"c90"}),
+        {},
+        {coverage_key("c90.q1", "summary A"): "covered", "c90.q2": "covered"},
+    )
+    loops: dict[str, bool | None] = {"c90.q1": None, "c90.q2": None}
+    same = recall_metric(loops, ledger, summary_texts=dict.fromkeys(loops, "summary A"))
+    other = recall_metric(loops, ledger, summary_texts=dict.fromkeys(loops, "summary B"))
+    assert (same.confirmed.numerator, same.pending) == (1, 1)  # q2's bare-id verdict is ignored
+    assert (other.confirmed.numerator, other.pending) == (0, 2)
+    assert other.gate_status() is Status.NOT_EVALUABLE
