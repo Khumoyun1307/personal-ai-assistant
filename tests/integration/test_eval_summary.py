@@ -23,7 +23,7 @@ import evals.summary as summary_module
 import psycopg
 import pytest
 import sqlalchemy as sa
-from evals import cli, live
+from evals import cli, corpus, live
 from evals.budget import BudgetedLLMClient, CallLedger, _request_chars, estimate, worst_case
 from evals.live import LiveConfig, LiveSetupError, ModelChoice
 from evals.metrics import values_matcher
@@ -775,6 +775,35 @@ def test_cleanup_lists_and_drops_only_the_leftover_evaluation_databases(
     finally:
         drop_scratch_database(test_database_url, leftover)
         drop_scratch_database(test_database_url, lookalike)
+
+
+def test_cleanup_never_touches_a_database_a_run_is_using(
+    test_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """S03.6, the hazard: `cleanup --yes` (here, in the test above) dropped a live
+    run's throwaway database mid-run. A database with an open connection belongs to a
+    run in progress: it is neither listed nor dropped, and the drop is never forced."""
+    monkeypatch.setenv("EVAL_DATABASE_URL", test_database_url)
+    busy, leftover = "assistant_eval_0badc0de", "assistant_eval_deadbeef"
+    create_scratch_database(test_database_url, busy)
+    create_scratch_database(test_database_url, leftover)
+    run_url = sa.engine.make_url(test_database_url).set(drivername="postgresql", database=busy)
+    try:
+        with psycopg.connect(run_url.render_as_string(hide_password=False)):  # the "run"
+            assert cli.main(["cleanup", "--yes"]) == 0
+            out = capsys.readouterr().out
+            assert busy not in out
+            assert leftover in out
+            assert busy in _databases(test_database_url)
+            assert leftover not in _databases(test_database_url)
+            # Even named explicitly, a database in use is not dropped.
+            assert corpus.drop_leftover_databases(test_database_url, [busy]) == []
+            assert busy in _databases(test_database_url)
+    finally:
+        drop_scratch_database(test_database_url, busy)
+        drop_scratch_database(test_database_url, leftover)
 
 
 # ------------------------------------------------------------------ the CLI, live

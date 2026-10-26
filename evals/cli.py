@@ -203,7 +203,8 @@ def _cleanup(*, drop: bool) -> int:
     """A run drops its throwaway database when it ends, fails or is interrupted; a
     process that is killed cannot. This lists such leftovers on the evaluation
     server (`assistant_eval_` and 8 hex digits, nothing else) and drops them with
-    `--yes`. Do not run it while another evaluation is running."""
+    `--yes`. A database a run is using (an open connection) is never listed or
+    dropped."""
     base = eval_database_url()
     names = leftover_databases(base)
     if not names:
