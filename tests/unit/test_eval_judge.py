@@ -7,13 +7,18 @@ confirmation, and the gate counts only flags the owner confirmed
 
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 from evals import corpus, render
+from evals import judge as judge_module
+from evals.assets import load_asset
 from evals.judge import (
     FabricationFinding,
     LLMFabricationJudge,
     LLMOpenLoopJudge,
     LoopVerdict,
     ScreenResult,
+    evidence_in_summary,
     fabrication_metric,
 )
 from evals.metrics import SummaryOutput
@@ -27,6 +32,17 @@ from tests.fakes.llm import FakeLLM
 from tests.unit.test_eval_metrics import CAVEAT_GAP, GAP_DELAYED, GAP_POSSIBLE, conversation
 
 OUTPUT = SummaryOutput("c90", "Meeting at 14:00 tomorrow.", "en")
+#: A summary holding the lines the loop judge quotes in these tests (its quotes are
+#: checked against the summary, S03.7 A2).
+LOOP_OUTPUT = SummaryOutput(
+    "c90",
+    "Overview: Meeting at 14:00 tomorrow.\n"
+    "Commitments not yet done:\n"
+    "- Dilnoza promised you: Dilnoza manzilni aytadi.\n"
+    "Key facts:\n"
+    "- To‘lov 250 ming so'm?",
+    "en",
+)
 
 
 # ------------------------------------------------------ what a model may see
@@ -65,10 +81,47 @@ def test_the_rendering_shows_times_in_the_owners_timezone() -> None:
     assert "UTC" not in rendered
     assert "Asia/Tashkent" in rendered
     assert render.OWNER_TIMEZONE == corpus.OWNER_TIMEZONE
-    assert render.RENDER_VERSION == "render.v2"  # v1 showed UTC
+    # v1 showed UTC; v2 local times; v3 (S03.7 A2) when an edited message was edited.
+    assert render.RENDER_VERSION == "render.v3"
+
+
+def test_the_rendering_says_when_an_edited_message_was_edited() -> None:
+    """c36 (S03.7 A2): the judge reads what the summarizer reads: an edited
+    message's edit time and that its text is the current one."""
+    checked = 0
+    for conv in load_e1():
+        rendered = render_conversation(conv)
+        for message in conv.messages:
+            if message.edited_at is None or message.deleted:
+                continue
+            checked += 1
+            local = message.edited_at.astimezone(ZoneInfo(render.OWNER_TIMEZONE))
+            edited = local.strftime("%Y-%m-%d %H:%M")
+            assert f"(edited at {edited}; this is its current text): {message.text}" in rendered
+    assert checked >= 1
 
 
 # -------------------------------------------------------- fabrication judge
+async def test_the_judges_are_told_that_you_in_the_summary_is_the_owner() -> None:
+    """S03.7 A2: 3 of 11 over-flags in the v5 run were correct "You promised ..."
+    lines; the summary addresses the owner, whom the chat marks "(owner)"."""
+    assert (judge_module.RUBRIC_ID, judge_module.LOOPS_RUBRIC_ID) == (
+        "fabrication.v2",
+        "open_loops.v4",
+    )
+    for older in ("fabrication.v1", "open_loops.v3"):  # reports name them: kept
+        assert load_asset("rubrics", older).text
+    llm = FakeLLM()
+    llm.parsed = [{"flags": []}, {"items": []}]
+    await judge(llm).screen(conversation(), OUTPUT)
+    await LLMOpenLoopJudge(llm, model="gpt-6-luna").verdicts(conversation(), LOOP_OUTPUT)
+    fabrication, loops = llm.requests
+    for request in (fabrication, loops):
+        assert '"you"' in request.instructions
+        assert "is the owner" in request.instructions
+    assert "(owner)" in fabrication.instructions
+
+
 def judge(llm: FakeLLM, ledger: ReviewLedger | None = None) -> LLMFabricationJudge:
     return LLMFabricationJudge(llm, model="gpt-6-luna", ledger=ledger or ReviewLedger.empty())
 
@@ -226,7 +279,7 @@ async def test_the_loop_judge_asks_only_about_loops_without_values() -> None:
             ]
         }
     ]
-    verdicts = await LLMOpenLoopJudge(llm, model="gpt-6-luna").judge(conversation(), OUTPUT)
+    verdicts = await LLMOpenLoopJudge(llm, model="gpt-6-luna").judge(conversation(), LOOP_OUTPUT)
 
     assert verdicts == {"c90.c2": True}  # q1 was not asked about: ignored
     (request,) = llm.requests
@@ -246,13 +299,13 @@ async def test_the_loop_judge_is_asked_about_values_the_string_match_did_not_fin
     llm.parsed = [
         {
             "items": [
-                {"id": "c90.q2", "evidence": "250 ming so'm?", "surfaced": True},
+                {"id": "c90.q2", "evidence": "To'lov 250  ming so'm?", "surfaced": True},
                 {"id": "c90.c2", "evidence": "", "surfaced": False},
             ]
         }
     ]
     verdicts = await LLMOpenLoopJudge(llm, model="gpt-6-luna").judge(
-        conversation(), OUTPUT, ["c90.q2", "c90.c2"]
+        conversation(), LOOP_OUTPUT, ["c90.q2", "c90.c2"]
     )
 
     assert verdicts == {"c90.q2": True, "c90.c2": False}
@@ -270,9 +323,46 @@ async def test_the_loop_judge_quotes_its_evidence_before_the_verdict() -> None:
     report for the owner's review); its schema puts the evidence first."""
     llm = FakeLLM()
     llm.parsed = [{"items": [{"id": "c90.c2", "evidence": "Manzilni aytadi.", "surfaced": True}]}]
-    verdicts = await LLMOpenLoopJudge(llm, model="gpt-6-luna").verdicts(conversation(), OUTPUT)
+    verdicts = await LLMOpenLoopJudge(llm, model="gpt-6-luna").verdicts(conversation(), LOOP_OUTPUT)
     assert verdicts["c90.c2"].evidence == "Manzilni aytadi."
+    assert verdicts["c90.c2"].surfaced
     assert list(LoopVerdict.model_json_schema()["properties"]) == ["id", "evidence", "surfaced"]
+
+
+async def test_a_loop_verdict_quoting_a_line_not_in_the_summary_is_not_surfaced() -> None:
+    """S03.7 A2 (c05.c3 in the v5 run): the judge quoted a line the summary does
+    not contain. Its quote is checked in code; a quote that does not occur is no
+    evidence, so the loop is not surfaced in the pre-screen, and the report says so."""
+    llm = FakeLLM()
+    llm.parsed = [
+        {
+            "items": [
+                {"id": "c90.c2", "evidence": "Siz va'dangizni bajarmadingiz", "surfaced": True},
+                {"id": "c90.q2", "evidence": "", "surfaced": True},
+            ]
+        }
+    ]
+    verdicts = await LLMOpenLoopJudge(llm, model="gpt-6-luna").verdicts(
+        conversation(), LOOP_OUTPUT, ["c90.c2", "c90.q2"]
+    )
+    for loop in ("c90.c2", "c90.q2"):
+        assert not verdicts[loop].surfaced
+        assert verdicts[loop].judge_surfaced
+        assert not verdicts[loop].quoted
+    assert verdicts["c90.c2"].evidence == "Siz va'dangizni bajarmadingiz"
+
+
+def test_a_quote_counts_when_every_quoted_line_occurs_in_the_summary() -> None:
+    summary = LOOP_OUTPUT.text
+    # Line breaks, bullets, spacing, case and apostrophe forms may differ.
+    assert evidence_in_summary(
+        "- Dilnoza promised you: Dilnoza manzilni aytadi.\nTo'lov 250 ming so’m?", summary
+    )
+    # An ellipsis may join two parts of one line.
+    assert evidence_in_summary("Dilnoza promised you: ... manzilni aytadi.", summary)
+    assert not evidence_in_summary("Dilnoza manzilni aytadi.\nUchrashuv bekor", summary)
+    assert not evidence_in_summary("", summary)
+    assert not evidence_in_summary(" ... ", summary)
 
 
 async def test_the_loop_judge_makes_no_call_when_every_loop_is_checkable() -> None:
