@@ -3,6 +3,8 @@
     python -m evals verify
     python -m evals run retrieval [--mode deterministic|variants|both] [--live] ...
     python -m evals run retrieval --mode replay --replay-from docs/evals/<variants run>.json
+    python -m evals run retrieval --mode agent --live --limit 1   # a trial of the real agent loop
+    python -m evals run retrieval --mode agent --live --calibrate-from docs/evals/<agent trial>.json
     python -m evals run summary [--owner-language uz-Latn|uz-Cyrl|ru|en] [--live] ...
     python -m evals compare docs/evals/<run>.json [...]
     python -m evals cleanup [--yes]        # list (or drop) throwaway databases a killed run left
@@ -27,6 +29,7 @@ from pathlib import Path
 from typing import get_args
 
 from assistant.core.clock import SystemClock
+from evals.agent_mode import AgentModeTarget, Calibration, check_agent_estimate, load_calibration
 from evals.budget import (
     DEFAULT_BUDGET_USD,
     BudgetedLLMClient,
@@ -96,7 +99,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=RetrievalMode.DETERMINISTIC.value,
         help=(
             "retrieval only: deterministic (no model, default), variants (a model), both, "
-            "replay (no model: a recorded variants run searched again, see --replay-from)"
+            "replay (no model: a recorded variants run searched again, see --replay-from), "
+            "agent (the real owner_request runtime per query, a model)"
+        ),
+    )
+    run.add_argument(
+        "--calibrate-from",
+        type=Path,
+        metavar="TRIAL.json",
+        help=(
+            "retrieval --mode agent: the JSON report of a --limit 1 agent trial; the run then "
+            "starts on its expected cost under the in-flight cap (E-ab)"
         ),
     )
     run.add_argument(
@@ -109,7 +122,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--owner-language",
         choices=get_args(OwnerLanguage),
         default="uz-Latn",
-        help="summary only: the owner's language and script the summaries are written in",
+        help=(
+            "summary and retrieval --mode agent: the owner's language and script "
+            "(summaries are written in it; the agent's owner preference)"
+        ),
     )
     run.add_argument(
         "--live",
@@ -269,6 +285,8 @@ async def _summary(args: argparse.Namespace) -> int:
     """The summary target: the real S03.2 catch-up path on the E1 set, in a
     throwaway database. It always calls a model, so every guard applies."""
     _require_recorded(args)
+    if args.calibrate_from is not None:
+        raise RefusedError("--calibrate-from is only for retrieval --mode agent")
     digests = ensure_frozen()
     cap, prices = _cap(args.budget_usd), _prices(args.price)
     reviews = _reviews(args.reviews, "e1")
@@ -317,10 +335,14 @@ async def _retrieval(args: argparse.Namespace) -> int:
         if args.mode == "both"
         else [RetrievalMode(args.mode)]
     )
+    if args.calibrate_from is not None and modes != [RetrievalMode.AGENT]:
+        raise RefusedError("--calibrate-from is only for --mode agent")
     queries = load_queries()
     recorded = _recorded(args)
-    targets = [
-        RetrievalTarget(
+    targets: list[RetrievalTarget | AgentModeTarget] = [
+        AgentModeTarget(queries, owner_language=args.owner_language)
+        if mode is RetrievalMode.AGENT
+        else RetrievalTarget(
             queries,
             mode=mode,
             recorded=recorded if mode is RetrievalMode.REPLAY else None,
@@ -392,9 +414,12 @@ def _recorded(args: argparse.Namespace) -> dict[str, QueryVariants | None] | Non
     return load_recorded(args.replay_from)
 
 
-def _set_name(target: RetrievalTarget) -> str:
-    """A replay's report must not take the name of the deterministic baseline's."""
-    return f"{target.name}-replay" if target.mode is RetrievalMode.REPLAY else target.name
+def _set_name(target: RetrievalTarget | AgentModeTarget) -> str:
+    """A replay's report must not take the name of the deterministic baseline's,
+    nor an agent run's the name of a variants run with the same model."""
+    if target.mode in (RetrievalMode.REPLAY, RetrievalMode.AGENT):
+        return f"{target.name}-{target.mode.value}"
+    return target.name
 
 
 def _guard(
@@ -415,10 +440,31 @@ def _guard(
             require_live(target, live=args.live)
         choice = resolve_model(target.route, args.model)
         context = RunContext(model=choice.model, reviews=reviews, limit=args.limit)
-        result = check_estimate(target, context, model=choice.model, cap_usd=cap, prices=prices)
+        expected_text = ""
+        if isinstance(target, AgentModeTarget):
+            calibration = _calibration(args, choice.model)
+            result, expected = check_agent_estimate(
+                target,
+                context,
+                model=choice.model,
+                cap_usd=cap,
+                prices=prices,
+                calibration=calibration,
+            )
+            if expected is not None and calibration is not None:
+                expected_text = f", expected ${expected:.4f} (calibrated from {calibration.source})"
+        else:
+            result = check_estimate(target, context, model=choice.model, cap_usd=cap, prices=prices)
         _say(
             f"{target.name} ({label}): model {choice.model}, {result.calls} calls, "
-            f"worst case ${result.upper_bound_usd:.4f}, cap ${cap}"
+            f"worst case ${result.upper_bound_usd:.4f}{expected_text}, cap ${cap}"
         )
         choices.append(choice)
     return choices
+
+
+def _calibration(args: argparse.Namespace, model: str) -> Calibration | None:
+    """The agent trial a full agent run is calibrated from (E-ab), if given."""
+    if args.calibrate_from is None:
+        return None
+    return load_calibration(args.calibrate_from, model=model)

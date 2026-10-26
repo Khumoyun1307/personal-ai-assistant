@@ -219,3 +219,41 @@ def test_variants_are_capped_like_the_search_tool() -> None:
     assert len(queries) == MAX_QUERIES
     assert queries[0] == "q"
     assert all(len(q) <= 200 for q in _search_queries("q", ["x" * 500]))
+
+
+# ------------------------------------------------------------ agent mode (E-aa)
+def agent_verdict(model_text: str, **overrides: object) -> tuple[bool, tuple[str, ...]]:
+    from evals.agent_mode import check_agent_answer
+
+    values: dict[str, object] = {
+        "succeeded": True,
+        "model_text": model_text,
+        "cited": ("c09.m05",),
+        "unverified": 0,
+        "query": QUERY,
+        "cited_texts": {"c09.m05": TEXT},
+    }
+    values.update(overrides)
+    result = check_agent_answer(**values)  # type: ignore[arg-type]
+    return result.correct, result.problems
+
+
+def test_an_agent_answer_needs_a_succeeded_run_a_verified_target_citation_and_the_values() -> None:
+    assert agent_verdict("Qorasuv-3, 17-uy [msg:41]") == (True, ())
+    assert agent_verdict("Qorasuv-3, 17-uy", succeeded=False)[1][0] == "run_not_succeeded"
+    assert "no_citation" in agent_verdict("Qorasuv-3, 17-uy", cited=())[1]
+    assert "no_target_cited" in agent_verdict("Qorasuv-3, 17-uy", cited=("c09.m02",))[1]
+    assert "unverified_citation" in agent_verdict("Qorasuv-3, 17-uy", unverified=1)[1]
+    assert "missing_value" in agent_verdict("Qorasuv-3 [msg:41]")[1]
+
+
+def test_an_agent_answer_value_counts_inflected_only_where_a_cited_target_has_that_form() -> None:
+    """E-aa: values as whole words in the model's own words; an inflected form
+    (E-s) only when a cited target message has that very form."""
+    inflected = {"c09.m05": "Manzil: Qorasuv-3dagi 17-uy, topasiz"}
+    assert agent_verdict("Qorasuv-3dagi 17-uy", cited_texts=inflected) == (True, ())
+    # The same inflection without a cited message that says it: a miss.
+    assert "missing_value" in agent_verdict("Qorasuv-3dagi 17-uy")[1]
+    # The markers are not the model's words: an id never carries a value.
+    numeric = QUERY.model_copy(update={"answer_values": ["41"]})
+    assert "missing_value" in agent_verdict("See [msg:41]", query=numeric)[1]
