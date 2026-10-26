@@ -11,11 +11,13 @@ Owner instructions, preferences, facts and contact notes in `memory_items`
 - `remember` is idempotent on `(run_id, tool_call_id)`;
 - results are factual ("ok" only when saved), never content in logs or steps.
 
-The results carry the owner's own words, not managed content: no
-`ai_managed` consent is needed, and no contact name is returned (names are
-managed; the model finds ids with `resolve_contact`). An item saved from a
-run that had other people's text in it (confirmed by the owner on a card) is
-shown wrapped as untrusted, without tainting the run that reads it (M03 D70).
+No contact name is returned (names are managed; the model finds ids with
+`resolve_contact`). An item saved by a run that had other people's text
+anywhere in its context (`run_origin`) is stored tainted and managed (M03
+D70, as revised by the safety review): it reaches a model only through
+`list_memories`, wrapped as untrusted; a result holding one taints the run
+(invariant 3b) and is marked managed, so without `ai_managed` it is withheld
+and the consent wrapper refuses it anyway (invariant 9).
 """
 
 from __future__ import annotations
