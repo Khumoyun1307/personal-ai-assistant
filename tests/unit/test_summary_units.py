@@ -162,7 +162,7 @@ def test_the_v5_output_schema_is_plain_strict() -> None:
     commitment = ConversationSummaryOutput.model_json_schema()["$defs"]["Commitment"]
     assert list(commitment["properties"]) == ["by", "status", "text", "due", "message_ids"]
     assert commitment["properties"]["status"]["enum"] == ["promised", "agreed", "requested"]
-    for current in ("v5", "v6"):  # v6 (S03.7 A2) changed the prompt only
+    for current in ("v5", "v6", "v7"):  # v6, v7 (S03.7 A2, round 3) changed the prompt only
         assert output_model_for(prompt_registry.load("summarize", current)) is (
             ConversationSummaryOutput
         )
@@ -174,10 +174,11 @@ def test_the_v5_output_schema_is_plain_strict() -> None:
     assert "status" not in v4_commitment["properties"]
 
 
-def test_summarize_v6_is_active_and_v1_to_v5_remain() -> None:
-    """S03.7 A2: v5 was used in eval runs, so its fixes are a new version."""
-    assert prompt_registry.ACTIVE["summarize"] == "v6"
-    for version in ("v1", "v2", "v3", "v4", "v5"):
+def test_summarize_v7_is_active_and_v1_to_v6_remain() -> None:
+    """S03.7 A2: v5 was used in eval runs, so its fixes are a new version; the
+    same for v6 (round 3)."""
+    assert prompt_registry.ACTIVE["summarize"] == "v7"
+    for version in ("v1", "v2", "v3", "v4", "v5", "v6"):
         assert prompt_registry.load("summarize", version).text
     text = prompt_registry.active("summarize").text
     # v4 rule 10's English role example is gone: roles live in fields (S03.7).
@@ -194,6 +195,52 @@ def test_summarize_v6_is_active_and_v1_to_v5_remain() -> None:
     assert "one commitment per side" in text
     # Recall: a person's own "I will" is a commitment, never a doer-less key fact.
     assert "never a key fact" in text
+
+
+def test_summarize_v7_writes_clock_times_in_24_hour_form() -> None:
+    """E1 v6 run, c28: "Sunday 5 pm" became "soat 5:00" (rule 9 let the model
+    translate "pm" away as one of the words around a number)."""
+    text = prompt_registry.active("summarize").text
+    assert "24-hour" in text
+    assert "6 pm → 18:00" in text
+    assert "yakshanba 17:00" in text
+    # Dates and amounts stay exactly as the messages give them.
+    assert "dates, amounts" in text
+
+
+def test_summarize_v7_keeps_what_a_mentioned_person_will_do_as_a_named_key_fact() -> None:
+    """E1 v6 run, c15.c3: "Farhod will send the flight number" had nowhere to go:
+    `by` is owner or contact only, and v6 said a key fact never says who is to do
+    something. v7: a third person (neither side) who will do something is a key
+    fact naming them; `by` stays owner|contact (no schema change)."""
+    text = prompt_registry.active("summarize").text
+    assert "said, wants or will do" in text
+    assert "of the two sides" in text
+    commitment = ConversationSummaryOutput.model_json_schema()["$defs"]["Commitment"]
+    assert commitment["properties"]["by"]["enum"] == ["owner", "contact"]
+
+
+def test_summarize_v7_says_a_change_note_after_an_edit_refers_to_the_edited_text() -> None:
+    """E1 c36, three runs in a row: an edited message (new time) followed by "I
+    changed the time" was summarized as "the new time is not given". The context
+    marks the edit (checked below against the marker the context really renders);
+    v7 says the text before an edit is never shown, so such a note means the
+    edited text holds the new value."""
+    text = prompt_registry.active("summarize").text
+    line = (
+        build_summarize(
+            prompt=prompt_registry.active("summarize"),
+            account=Account(telegram_user_id=1, timezone="UTC", locale_pref="uz"),
+            messages=[_message(1, "contact", "Soat 18:00 da", edited_at=T + HOUR)],
+        )
+        .items[-1]
+        .text
+    )
+    marker = "(edited at 2026-10-18 10:00; this is its current text)"
+    assert marker in line
+    assert "(edited at <time>; this is its current text)" in text
+    assert "never shown" in text
+    assert "I changed the time" in text
 
 
 # ------------------------------------------------------------ attribution (S03.7)
