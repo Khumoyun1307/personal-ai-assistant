@@ -17,9 +17,11 @@ from evals.judge import (
     LLMFabricationJudge,
     LLMOpenLoopJudge,
     LoopVerdict,
+    QuoteMatch,
     ScreenResult,
     evidence_in_summary,
     fabrication_metric,
+    quote_match,
 )
 from evals.metrics import SummaryOutput
 from evals.render import render_conversation
@@ -363,6 +365,95 @@ def test_a_quote_counts_when_every_quoted_line_occurs_in_the_summary() -> None:
     assert not evidence_in_summary("Dilnoza manzilni aytadi.\nUchrashuv bekor", summary)
     assert not evidence_in_summary("", summary)
     assert not evidence_in_summary(" ... ", summary)
+
+
+#: Summary lines of the summarize.v6 E1 run (synthetic chats) and the judge's copies
+#: of them that the exact check rejected although each line is there (E-af round 3).
+_V6_LINES = (
+    "- You promised Мавлуда хола: 20 ta stulni mahalladan so‘rab, kechqurun javob berish "
+    "(due: 2026-10-10 kechqurun)\n"
+    "- You promised Гавҳар Раҳимовна (синф раҳбари): Ota-onalar majlisida qatnashish "
+    "(due: 2026-10-16 soat 18:00)\n"
+    "- You promised Гавҳар Раҳимовна (синф раҳбари): Majlisdan keyin 15 daqiqa qolish "
+    "(due: 2026-10-16, majlisdan keyin)\n"
+    "- Гавҳар Раҳимовна (синф раҳбари) promised you: Faylni qayta yuborish "
+    "(due: 2026-10-12 kechqurun)\n"
+    "- Laylo asks you to (not agreed yet): Yakshanba kuni soat 5:00 ga o‘quv xonasini band "
+    "qilish (due: yakshanba kuni soat 5:00)\n"
+    "- You promised Timur: Palatk a olib kelish"
+)
+_V6_SLIPS = {
+    # A Cyrillic "ули" copied into a Latin word.
+    "c04.c2": "You promised Мавлуда хола: 20 ta stулни mahalladan so‘rab, kechqurun javob "  # noqa: RUF001
+    "berish (due: 2026-10-10 kechqurun)",
+    # Latin "ari" copied into a Cyrillic word, on both quoted lines.
+    "c18.c1": "- You promised Гавҳар Раҳимовна (синф раҳбari): Ota-onalar majlisida "  # noqa: RUF001
+    "qatnashish (due: 2026-10-16 soat 18:00)\n- You promised Гавҳар Раҳимовна (синф "
+    "раҳбari): Majlisdan keyin 15 daqiqa qolish (due: 2026-10-16, majlisdan keyin)",  # noqa: RUF001
+    "c18.c3": "- Гавҳар Раҳимовна (синф раҳбari) promised you: Faylni qayta yuborish "  # noqa: RUF001
+    "(due: 2026-10-12 kechqurun)",
+    # "(not agreed yet)" left out.
+    "c28.q2": "- Laylo asks you to: Yakshanba kuni soat 5:00 ga o‘quv xonasini band qilish "
+    "(due: yakshanba kuni soat 5:00)",
+}
+
+
+def test_a_quote_copied_with_a_slip_counts_as_a_near_quote() -> None:
+    """E-af round 3: in the summarize.v6 run the exact check rejected four correct
+    verdicts whose quotes mixed Latin and Cyrillic letters or dropped a parenthesis.
+    A quoted line at least 0.90 similar to a summary line counts, as a near quote
+    (listed apart so the owner sees it)."""
+    for loop, quote in _V6_SLIPS.items():
+        assert quote_match(quote, _V6_LINES) is QuoteMatch.NEAR, loop
+        assert evidence_in_summary(quote, _V6_LINES), loop
+    exact = "You promised Мавлуда хола: 20 ta stulni mahalladan so‘rab"
+    assert quote_match(exact, _V6_LINES) is QuoteMatch.EXACT
+
+
+def test_an_invented_or_empty_quote_is_still_no_evidence() -> None:
+    """The v5 run's invented line (c05.c3: an item text under a made-up "you did not
+    keep your promise" lead-in) is about 0.55 similar to its closest line."""
+    invented = "Siz va’dangizni bajarmadingiz: Palatk a olib kelish"
+    assert quote_match(invented, _V6_LINES) is QuoteMatch.NONE
+    assert not evidence_in_summary(invented, _V6_LINES)
+    assert quote_match("", _V6_LINES) is QuoteMatch.NONE
+    assert quote_match(" ... ", _V6_LINES) is QuoteMatch.NONE
+
+
+def test_a_near_quote_must_carry_the_lines_numbers() -> None:
+    """Similarity alone would accept a copy with another time or amount (one digit
+    in a long line); a near quote must have exactly the line's numbers."""
+    wrong_time = _V6_SLIPS["c28.q2"].replace("5:00", "6:00")
+    assert quote_match(wrong_time, _V6_LINES) is QuoteMatch.NONE
+    wrong_count = _V6_SLIPS["c04.c2"].replace("20 ta", "25 ta")
+    assert quote_match(wrong_count, _V6_LINES) is QuoteMatch.NONE
+
+
+async def test_a_loop_verdict_with_a_near_quote_is_surfaced_and_marked_near() -> None:
+    llm = FakeLLM()
+    llm.parsed = [
+        {
+            "items": [
+                # "Dilnoza" with a Cyrillic "о": the same line, copied with a slip.  # noqa: RUF003
+                {
+                    "id": "c90.c2",
+                    "evidence": "- Dilnoza promised you: Dilnоza manzilni aytadi.",  # noqa: RUF001
+                    "surfaced": True,
+                },
+                {"id": "c90.q2", "evidence": "To‘lov 250 ming so'm?", "surfaced": True},
+            ]
+        }
+    ]
+    verdicts = await LLMOpenLoopJudge(llm, model="gpt-6-luna").verdicts(
+        conversation(), LOOP_OUTPUT, ["c90.c2", "c90.q2"]
+    )
+    near, exact = verdicts["c90.c2"], verdicts["c90.q2"]
+    assert near.surfaced
+    assert near.quoted
+    assert near.near
+    assert exact.surfaced
+    assert exact.quoted
+    assert not exact.near
 
 
 async def test_the_loop_judge_makes_no_call_when_every_loop_is_checkable() -> None:
