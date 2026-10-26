@@ -7,10 +7,10 @@ Two things the owner must hear about, through `notify_owner`:
   recoverable, but only if someone knows. At most one alert per hour.
 - **dead-lettered updates** — rows the inbox set aside after repeated
   deterministic failures. They can be requeued only while they still hold a
-  payload, and the retention sweep clears it 7 days after receipt, so the
-  alert says by when, goes to the account the rows belong to, and repeats
-  daily until the payloads are gone (§6.2). It is content-free: a count and
-  a date.
+  payload, and the retention sweep clears it after the raw-update period (7
+  days unless the owner shortened it; S03.5), so the alert says by when,
+  goes to the account the rows belong to, and repeats daily until the
+  payloads are gone (§6.2). It is content-free: a count and a date.
 """
 
 from __future__ import annotations
@@ -80,10 +80,19 @@ async def _recoverable_dead_letters(session: AsyncSession) -> list[_DeadLetters]
         .where(InboundUpdate.payload.is_not(None))
         .order_by(InboundUpdate.id)
     )
+    rows = result.all()
+    # Rows with no account are swept after the shortest period any owner
+    # chose (S03.5, M03 D80): the same rule as the sweep, so the date holds.
+    all_settings = (await session.execute(select(Account.settings))).scalars().all()
+    unrouted = retention_policy.unrouted_period(all_settings, retention_policy.RAW_UPDATES)
     groups: dict[int | None, _DeadLetters] = {}
-    for row_id, account_id, received_at, timezone, settings in result.all():
+    for row_id, account_id, received_at, timezone, settings in rows:
         # The owner's shorter raw-update retention, if set (S03.5).
-        purge_at = received_at + retention_policy.period(settings, retention_policy.RAW_UPDATES)
+        purge_at = received_at + (
+            unrouted
+            if account_id is None
+            else retention_policy.period(settings, retention_policy.RAW_UPDATES)
+        )
         known = groups.get(account_id)
         groups[account_id] = _DeadLetters(
             account_id=account_id,

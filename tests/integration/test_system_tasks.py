@@ -223,6 +223,36 @@ async def test_the_dead_letter_date_is_in_the_owners_timezone(
     assert "until 2026-10-25 17:00 +05" in channel.sends[0]
 
 
+async def test_an_unattributed_dead_letter_gives_the_sweeps_purge_date(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    """A row with no account is swept after the shortest raw-update period any
+    owner chose (S03.5); the alert must not promise the default 7 days."""
+    from assistant.accounts.models import Account
+    from assistant.privacy import retention_policy
+
+    account_id = await owner(factory, clock)
+    async with transaction(factory) as uow:
+        account = await uow.session.get(Account, account_id)
+        assert account is not None
+        account.settings = retention_policy.with_override(
+            account.settings, retention_policy.RAW_UPDATES, 1
+        )
+    await heartbeat(factory, NOW)
+    channel = FakeChannel()
+    await update_row(factory, update_id=1, status="failed", received_at=NOW, processed_at=NOW)
+
+    await check_ingestion(factory, clock, OwnerAlerts(factory, channel, clock))
+
+    assert "until 2026-10-19 12:00 UTC" in channel.sends[0]
+    clock.advance(days=1, minutes=1)
+    await sweep_inbound_payloads(factory, clock)
+    async with factory() as session:
+        assert (
+            await session.execute(select(InboundUpdate.payload).where(InboundUpdate.update_id == 1))
+        ).scalar_one() is None
+
+
 async def test_an_undelivered_alert_is_tried_again(
     factory: async_sessionmaker[AsyncSession], clock: FakeClock
 ) -> None:

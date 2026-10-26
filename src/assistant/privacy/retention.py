@@ -142,10 +142,6 @@ def periods_by_account(
     return dict(groups)
 
 
-def _shortest(groups: Mapping[timedelta, list[int]], default: timedelta) -> timedelta:
-    return min([default, *groups])
-
-
 async def _groups(
     session_factory: async_sessionmaker[AsyncSession], key: str
 ) -> dict[timedelta, list[int]]:
@@ -159,7 +155,9 @@ async def sweep_inbound_payloads(
 ) -> int:
     """Clear payloads older than the retention period. Returns rows cleared."""
     now = clock.now()
-    groups = await _groups(session_factory, RAW_UPDATES)
+    async with session_factory() as session:
+        settings = await account_settings(session)
+    groups = periods_by_account(settings, RAW_UPDATES)
     cleared = 0
     async with transaction(session_factory) as uow:
 
@@ -182,8 +180,9 @@ async def sweep_inbound_payloads(
                 )
             )
         # Rows with no account (the control chat's, unknown senders'): the
-        # shortest period any owner chose, never longer than the default.
-        shortest = _shortest(groups, INBOUND_PAYLOAD_RETENTION)
+        # shortest period any owner chose, never longer than the default
+        # (the dead-letter alert states the same date).
+        shortest = retention_policy.unrouted_period(settings.values(), RAW_UPDATES)
         cleared += _count(
             await uow.session.execute(
                 clear(now - shortest).where(InboundUpdate.account_id.is_(None))

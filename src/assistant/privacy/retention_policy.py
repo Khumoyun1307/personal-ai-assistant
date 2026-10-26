@@ -18,7 +18,7 @@ longer than the policy, never a crash in the sweep).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -74,6 +74,16 @@ def days(settings: Mapping[str, Any] | None, key: str) -> int:
 
 def period(settings: Mapping[str, Any] | None, key: str) -> timedelta:
     return timedelta(days=days(settings, key))
+
+
+def unrouted_period(all_settings: Iterable[Mapping[str, Any] | None], key: str) -> timedelta:
+    """The period of rows not routed to an account (the control chat's raw
+    updates, unknown senders'): the shortest any account chose, never longer
+    than the default (M03 D80). One rule for the sweep and for the
+    dead-letter alert's purge date, so the alert never promises longer."""
+    return timedelta(
+        days=min([CLASSES[key].default_days, *(days(settings, key) for settings in all_settings)])
+    )
 
 
 def with_override(settings: Mapping[str, Any] | None, key: str, value: int) -> dict[str, Any]:
