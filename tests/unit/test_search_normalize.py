@@ -207,6 +207,37 @@ def test_function_words_are_not_search_terms(query: str, expected: list[str]) ->
 
 def test_a_query_of_function_words_only_is_searched_as_typed() -> None:
     assert content_terms(query_terms("what is this")) == ["what", "is", "this"]
+    assert content_terms(query_terms("is the")) == ["is", "the"]
+    assert content_terms(query_terms("qachon?")) == ["qachon"]
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        # Once folded, these function words are Uzbek content words: kept unless
+        # the query's other function words show the language they are function
+        # words in (S03.6 review).
+        ("Ona uchun dori", ["ona", "dori"]),  # ona: mother (Uzbek), she (Russian)
+        ("o'n ming so'm qachon", ["on", "ming", "som"]),  # o'n: ten
+        ("ot narxi", ["ot", "narxi"]),  # ot / o't: horse, name, fire
+        ("o't o'chirgich", ["ot", "ochirgich"]),
+        ("his qildim", ["his", "qildim"]),  # his: feeling
+        ("iz qoldi", ["iz", "qoldi"]),  # iz: trace
+        ("nam joy", ["nam", "joy"]),  # nam: damp
+        ("it bilan sayr", ["it", "sayr"]),  # it: dog
+        ("is hidi", ["is", "hidi"]),  # is: soot, smell
+        ("Kim bilan uchrashuv", ["kim", "uchrashuv"]),  # Kim: a surname
+        # ...and dropped where the query is in the language they are function words in
+        ("where is the address", ["address"]),
+        ("когда она приедет", ["priyedet"]),
+        ("what is on the list", ["list"]),
+        ("сколько он заплатил", ["zaplatil"]),
+    ],
+)
+def test_function_words_that_are_also_uzbek_words_are_kept_in_uzbek(
+    query: str, expected: list[str]
+) -> None:
+    assert content_terms(query_terms(query)) == expected
 
 
 @pytest.mark.parametrize(
@@ -224,6 +255,16 @@ def test_a_query_of_function_words_only_is_searched_as_typed() -> None:
         ("kolodka", {"kolodka", "kolodk", "kolodg"}),
         ("narxi", {"narxi", "narx"}),
         ("uyi", {"uyi"}),  # a final vowel is stripped only from longer words
+        # S03.6 review: a verb ending keeps a stem of 4+ letters, and -a/-o/-u/-e/-y
+        # only after two consonants (Russian -ka), so names stay whole
+        ("keldi", {"keldi", "keld"}),  # not "kel" (kelin, kelajak)
+        ("hamdi", {"hamdi", "hamd"}),  # not "ham"
+        ("morgan", {"morgan"}),  # not "mor"
+        ("aziza", {"aziza"}),  # not "aziz"
+        ("nodira", {"nodira"}),  # not "nodir"
+        ("kamola", {"kamola"}),  # not "kamol"
+        ("kelishmadi", {"kelishmadi", "kelishma"}),
+        ("pulni", {"pulni", "pul"}),  # case endings keep 3-letter nouns
     ],
 )
 def test_light_uzbek_stem_variants(term: str, expected: set[str]) -> None:

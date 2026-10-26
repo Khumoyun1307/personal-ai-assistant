@@ -144,6 +144,22 @@ async def test_light_uzbek_stems_match_inflected_forms(env: Env) -> None:
     assert await find(env, "kitob") == ["Kitoblarni olib keldim"]
 
 
+async def test_a_stem_does_not_turn_a_name_or_a_verb_into_another_word(env: Env) -> None:
+    """S03.6 review: `aziza` is not the prefix `aziz`, `keldi` not `kel` (a
+    trigram near-miss may still follow, never as a word match)."""
+    await connect(env)
+    await say(env, "Azizbek akaga salom")
+    await say(env, "Kelinoyim uyda")
+    await say(env, "Aziza opa keldi")
+    for query in ("aziza", "keldi"):
+        async with env.factory() as session:
+            result = await search_messages(
+                session, await account_id(env), [query], now=env.clock.now()
+            )
+        assert [hit.text for hit in result.hits if hit.word_match] == ["Aziza opa keldi"]
+        assert result.hits[0].text == "Aziza opa keldi"
+
+
 async def test_a_typo_still_matches_through_trigrams(env: Env) -> None:
     await connect(env)
     await say(env, "Uchrashuv joyini o'zgartirdik")
@@ -215,6 +231,21 @@ async def test_ranking_prefers_all_words_then_newer(env: Env) -> None:
     assert result.hits[0].sent_at > result.hits[1].sent_at
     assert set(texts[2:]) <= {"Uchrashuv qoldirildi"}
     assert all(hit.score > later.score for hit in result.hits[:2] for later in result.hits[2:])
+    assert result.relaxed is False
+
+
+@pytest.mark.parametrize("query", ["where is the address", "manzil qayerda", "какой адрес"])
+async def test_question_words_are_not_demanded_of_a_message(env: Env, query: str) -> None:
+    """S03.6 (`content_terms`): the all-words pass searches the content words only,
+    so it finds the message without falling back to any word, where chatter full
+    of "the" would compete."""
+    await connect(env)
+    await say(env, "Address: Navoi street 5, manzil shu, адрес верный", days_ago=3)
+    await say(env, "The cat is on the mat, the end of the day is near", days_ago=1)
+    async with env.factory() as session:
+        result = await search_messages(session, await account_id(env), [query], now=env.clock.now())
+    assert result.hits
+    assert result.hits[0].text == "Address: Navoi street 5, manzil shu, адрес верный"
     assert result.relaxed is False
 
 
