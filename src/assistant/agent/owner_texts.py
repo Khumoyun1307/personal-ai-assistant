@@ -10,7 +10,8 @@ change them here only.
 - `CITATION_REMOVED`: appended once when the reply cited a message no tool
   returned in the run, and the marker was removed (`agent/citations.py`);
 - `CHAT_ACCESS_OFF`: appended to a reply whose run needed the owner's chats
-  while AI for them is off; the `/privacy managed` card follows (D104).
+  while AI for them is off; the `/privacy managed` card follows (D104), but
+  not within a day of the owner choosing "Not now" (D110).
 """
 
 from __future__ import annotations

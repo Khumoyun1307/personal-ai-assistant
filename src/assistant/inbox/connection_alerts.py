@@ -207,11 +207,21 @@ async def send_managed_consent_card(
     or no business connection exists. As with the connection notice, the
     card is recorded only once its message arrived, so a failed send leaves
     nothing open. Control chat only: `ControlChannel` cannot name another.
+
+    Not again for a day after the owner chose "Not now" (owner decision 5,
+    2026-10-26: the same quiet period as the connection notice); the caller's
+    one-line "chat access is off" text still says how to turn it on.
     """
     async with transaction(session_factory) as uow:
         if not await _managed_consent_missing(uow.session, account_id):
             return None
         if await connection_for_account(uow.session, account_id) is None:
+            return None
+        if await service.managed_consent_declined_since(
+            uow.session,
+            account_id=account_id,
+            since=clock.now() - service.MANAGED_CONSENT_TTL,
+        ):
             return None
     token = new_token()
     delivery = await channel.send(

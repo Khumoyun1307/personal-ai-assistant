@@ -309,6 +309,15 @@ GET_CONVERSATION = ToolDefinition(
 
 
 # ------------------------------------------------------------ resolve_contact
+#: No contact by that name: it may be someone mentioned inside a chat, so the
+#: model searches for it before saying nothing was found (S03.7 fix round,
+#: owner decision 2 of 2026-10-26; r21, r30 stopped here).
+NO_CONTACT_NOTE = (
+    "No stored contact matches that name. It may be a person mentioned inside a chat: "
+    "search for it with search_messages across all chats before saying nothing was found."
+)
+
+
 class ResolveContactArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -341,7 +350,7 @@ async def resolve_contact_tool(ctx: ToolContext, args: ResolveContactArgs) -> To
     if len(candidates) > 1 and matches[0].kind == matches[1].kind:
         data["note"] = "Several contacts match equally: ask the owner which one they mean."
     if not candidates:
-        data["note"] = "No stored contact matches that name."
+        data["note"] = NO_CONTACT_NOTE
     return ToolOutcome(
         "ok",
         data,

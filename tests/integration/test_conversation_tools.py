@@ -22,6 +22,7 @@ from assistant.agent import owner_texts
 from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.agent.models import AgentRun, AgentRunStep, ToolConfirmation
 from assistant.agent.runtime import RunStatus
+from assistant.agent.tools.conversations import NO_CONTACT_NOTE
 from assistant.agent.tools.registry import (
     CHAT_ACCESS_OFF,
     CHAT_ACCESS_OFF_REASON,
@@ -56,6 +57,7 @@ from tests.integration.business_env import (
     callback,
     connect,
     connection_update,
+    decline_managed,
     deliver,
     environment,
     grant_managed,
@@ -759,6 +761,59 @@ async def test_with_managed_consent_the_real_tool_runs(env: Env) -> None:
     assert found["result_count"] == 1
     assert channel.sends == ["The plan is ready."]
     assert outcome.chat_access_off is False
+
+
+async def test_the_card_is_not_offered_again_for_a_day_after_not_now(env: Env) -> None:
+    """Owner decision 5 (2026-10-26): after "Not now", a chat question gets the
+    one-line "chat access is off" text but not the card, for 24 hours."""
+    await seed(env, managed=False)
+    await decline_managed(env)
+    line = await _access_off_line(env)
+
+    async def chat_question() -> FakeChannel:
+        turn = await ask(env, "What did Kamola say about the plan?")
+        fake = FakeLLM(
+            tool_response(("c1", "search_messages", SEARCH_PLAN)),
+            text_response("Chat access is off."),
+        )
+        channel = FakeChannel()
+        await runtime(env, fake, channel).run(turn)
+        return channel
+
+    cards_before = len(await _managed_cards(env))
+    env.clock.advance(hours=23)
+    quiet = await chat_question()
+    assert quiet.sends == [f"Chat access is off.\n\n{line}"]
+    assert quiet.buttons == [()]
+    assert len(await _managed_cards(env)) == cards_before
+
+    env.clock.advance(hours=2)  # more than a day after "Not now"
+    again = await chat_question()
+    assert again.sends[0] == f"Chat access is off.\n\n{line}"
+    assert again.sends[1] == MANAGED_CONSENT_QUESTION.format(processors=", ".join(AI_PROCESSORS))
+    assert len(await _managed_cards(env)) == cards_before + 1
+
+
+# ------------------------------------------------------------ owner decision 2
+async def test_resolve_contact_without_a_match_points_to_a_search_across_all_chats(
+    env: Env,
+) -> None:
+    """A name that is no contact may be someone mentioned inside a chat (r21, r30)."""
+    await seed(env)
+    turn = await ask(env, "tom ustasi Hamid")
+    fake = FakeLLM(
+        tool_response(("c1", "resolve_contact", args(name="Hamid", limit=None))),
+        text_response("Searching."),
+    )
+
+    await runtime(env, fake, FakeChannel()).run(turn)
+
+    [found] = results(fake.requests[1])
+    assert found["status"] == "ok"
+    assert found["count"] == 0
+    assert found["note"] == NO_CONTACT_NOTE
+    assert "search_messages" in NO_CONTACT_NOTE
+    assert "across all chats" in NO_CONTACT_NOTE
 
 
 # ------------------------------------------------------------ B1 widening, B3 citations
