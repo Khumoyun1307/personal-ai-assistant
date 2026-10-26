@@ -97,7 +97,7 @@ def distinctive_loop() -> tuple[Conversation, Any]:
             if not loop.values:
                 continue
             rest = UZ_FILLER + " ".join(words_of(other) for other in loops if other is not loop)
-            if values_matcher(loop, rest) is False:
+            if values_matcher(loop, rest) is not True:
                 return conversation, loop
     raise AssertionError("E1 has no distinctive open loop")
 
@@ -247,9 +247,12 @@ async def test_the_target_runs_the_real_summarize_path_and_produces_every_metric
     assert result.prompts == (
         prompt_registry.active("summarize").label,
         "fabrication.v1",
-        "open_loops.v1",
+        "open_loops.v2",
     )
     assert all(d["status"] == "summarized" and d["error"] is None for d in result.details)
+    # The report keeps the structured summary too: who promised what (attribution
+    # cannot be reviewed from the plain text the checks read).
+    assert all("Commitments not yet done:" in d["summary_labelled"] for d in result.details)
     # A perfect summarizer and judge: every open loop surfaced, nothing flagged.
     assert metric(result, "open_loop_recall").all_items.ratio == 1.0
     assert metric(result, "owner_language").all_items.ratio == 1.0
@@ -386,7 +389,9 @@ async def test_a_summary_that_misses_an_open_loop_lowers_recall(
     assert recall.all_items.ratio is not None
     assert recall.all_items.ratio < 1.0
     assert recall.all_items.numerator == recall.all_items.denominator - 1
-    assert record(flawed, chat.id)["open_loops"][missed.id] is False
+    # Not found by string: undecided (E-s), and the judge rules it missed.
+    assert record(flawed, chat.id)["open_loops"][missed.id] is None
+    assert record(flawed, chat.id)["open_loops_judged"][missed.id] is False
 
 
 async def test_a_run_whose_caveat_is_dropped_fails_the_caveat_metric(

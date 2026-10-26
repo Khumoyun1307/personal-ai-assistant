@@ -376,6 +376,9 @@ class _Record:
                 for finding in self.screen.findings
             ],
             "summary_text": self.plain,
+            # The same summary with its structure (who promised what, due dates) as
+            # the judges read it: attribution cannot be reviewed from the plain text.
+            "summary_labelled": self.output.text,
         }
 
 
@@ -532,6 +535,7 @@ class SummaryTarget:
         output = SummaryOutput(
             conversation.id, text, self.owner_language, facts.gap_ids, facts.pre_connection
         )
+        loops = _loop_coverage(conversation, plain, summarized=summary is not None)
         if summary is None:
             screen = ScreenResult(conversation.id, (), screened=False, error="summary_failed")
             judged: dict[str, bool] = {}
@@ -549,7 +553,11 @@ class SummaryTarget:
                 model=context.model,
                 effort=context.effort,
                 account_id=loaded.account_id,
-            ).judge(conversation, output)
+            ).judge(
+                conversation,
+                output,
+                [loop for loop, checked in loops.items() if checked is None],
+            )
             language = check_language(plain, self.owner_language)
         return _Record(
             conversation=conversation,
@@ -560,7 +568,7 @@ class SummaryTarget:
             plain=plain,
             counts=counts,
             language=language,
-            coverage=_loop_coverage(conversation, plain, summarized=summary is not None),
+            coverage=loops,
             judged=judged,
             check=check_caveats(conversation, output),
             caveat_lines=facts.lines,

@@ -218,6 +218,27 @@ async def test_the_loop_judge_asks_only_about_loops_without_values() -> None:
     assert "Dilnoza" in text  # the commitment's description, not the conversation
 
 
+async def test_the_loop_judge_is_asked_about_values_the_string_match_did_not_find() -> None:
+    """E-s: a loop whose values were not found literally goes to the judge, with its
+    values, which it must find in the summary in any language or format."""
+    llm = FakeLLM()
+    llm.parsed = [
+        {"items": [{"id": "c90.q2", "surfaced": True}, {"id": "c90.c2", "surfaced": False}]}
+    ]
+    verdicts = await LLMOpenLoopJudge(llm, model="gpt-6-luna").judge(
+        conversation(), OUTPUT, ["c90.q2", "c90.c2"]
+    )
+
+    assert verdicts == {"c90.q2": True, "c90.c2": False}
+    (request,) = llm.requests
+    text = request.items[0].text  # type: ignore[union-attr]
+    assert "c90.q2" in text
+    assert "[key values: 250 ming]" in text
+    assert "c90.q1" not in text
+    assert "c90.c1" not in text
+    assert "same meaning, in any language, script or format" in request.instructions
+
+
 async def test_the_loop_judge_makes_no_call_when_every_loop_is_checkable() -> None:
     conv = conversation()
     conv = conv.model_copy(

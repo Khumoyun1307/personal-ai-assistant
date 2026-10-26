@@ -160,10 +160,13 @@ def test_values_match_across_scripts_and_apostrophes() -> None:
     assert coverage == {"c90.q1": True, "c90.q2": True, "c90.c1": True, "c90.c2": None}
 
 
-def test_a_dropped_value_is_a_miss_and_partial_words_do_not_match() -> None:
+def test_a_value_not_found_is_left_to_the_judge_and_partial_words_do_not_match() -> None:
+    """E-s: a literal miss is not evidence of a miss (the summary may translate the
+    value), so the loop is undecided (None), never a definite miss."""
     coverage = open_loop_coverage(conversation(), "Встреча в 15:00. Отчёт: juma.")
-    assert coverage["c90.q2"] is False
-    assert coverage["c90.c1"] is False  # "juma" alone is not "juma kuni"
+    assert coverage["c90.q1"] is True
+    assert coverage["c90.q2"] is None
+    assert coverage["c90.c1"] is None  # "juma" alone is not "juma kuni"
 
 
 def test_values_matcher_needs_every_value() -> None:
@@ -172,8 +175,56 @@ def test_values_matcher_needs_every_value() -> None:
         .labels.questions_to_owner[1]
         .model_copy(update={"values": ["250 ming", "15:00"]})
     )
-    assert values_matcher(both, "250 ming") is False
+    assert values_matcher(both, "250 ming") is None
     assert values_matcher(both, "250 ming va 15:00") is True
+
+
+def loop_with(values: list[str]) -> Any:
+    return conversation().labels.questions_to_owner[1].model_copy(update={"values": values})
+
+
+@pytest.mark.parametrize(
+    ("value", "summary"),
+    [
+        # Observed in the 2026-10-26 Luna run: Uzbek inflects what it quotes.
+        ("900 ming", "Cobalt avtomobilini 2 kunga 900 mingga ijaraga oladi."),
+        ("15-oktabr", "15-oktabrdagi darsni ko‘chirish mumkinmi?"),
+        ("narxlar ro'yxati", "Narxlar ro‘yxatini dushanbagacha tayyorlash."),
+        ("1 million 150 ming", "1 million 150 mingni ustaga beradimi?"),
+        ("shokolad", "Shokoladli tortni olib keladi."),
+        ("30-октябр", "Vannaxona 30-oktyabrgacha bitadi."),
+        ("16:30", "Notariusga 16:30da boradi."),
+    ],
+)
+def test_an_inflected_value_is_found(value: str, summary: str) -> None:
+    """The defect: these summaries carry the value, but the whole-word match
+    counted every one of them as a miss."""
+    assert values_matcher(loop_with([value]), summary) is True
+
+
+@pytest.mark.parametrize(
+    ("value", "summary"),
+    [
+        ("80%", "Hisobotning 800 qismi"),  # only letters may follow
+        ("12-й", "12 yanvarda kalitni qoldiradi"),  # a one-letter last word matches whole
+        ("narxlar ro'yxati", "narxlari ro‘yxatini"),  # only the last word inflects
+        ("ming", "Toshkent"),
+    ],
+)
+def test_a_suffix_never_turns_another_value_into_a_match(value: str, summary: str) -> None:
+    assert values_matcher(loop_with([value]), summary) is None
+
+
+def test_a_translated_value_goes_to_the_judge_not_to_a_miss() -> None:
+    """The defect: "до пятницы" written in an Uzbek summary as "juma kunigacha" was a
+    definite miss that not even the owner could overrule."""
+    coverage = recall_metric(
+        {"c90.c1": values_matcher(loop_with(["до пятницы"]), "Juma kunigacha o‘tkazadi.")},
+        ReviewLedger(frozenset({"c90"}), {}, {"c90.c1": "covered"}),
+        judged={"c90.c1": True},
+    )
+    assert coverage.all_items == Measure(1, 1)  # the judge's pre-screen
+    assert coverage.confirmed == Measure(1, 1)  # the owner's verdict decides the gate
 
 
 def test_recall_prescreen_counts_uncheckable_items_as_missed_and_the_gate_stays_open() -> None:
@@ -183,7 +234,7 @@ def test_recall_prescreen_counts_uncheckable_items_as_missed_and_the_gate_stays_
     assert metric.prescreen_status() is Status.FAIL  # 75 % < 95 %
     assert metric.confirmed == Measure(0, 0)
     assert metric.gate_status() is Status.NOT_EVALUABLE
-    assert "1 open loop(s) have no `values`" in metric.note
+    assert "1 open loop(s) not matched on `values`" in metric.note
 
 
 def test_recall_gate_needs_the_owners_verdict_for_uncheckable_items() -> None:
@@ -203,8 +254,10 @@ def test_recall_gate_needs_the_owners_verdict_for_uncheckable_items() -> None:
 
 def test_recall_gate_fails_on_a_confirmed_miss_even_with_items_pending() -> None:
     coverage = open_loop_coverage(conversation(), "Встреча в 15:00.")
-    metric = recall_metric(coverage, ReviewLedger(frozenset({"c90"}), {}, {}))
-    assert metric.pending == 1
+    # q2 and c1 are undecided by string (E-s); the owner rules q2 missed.
+    ledger = ReviewLedger(frozenset({"c90"}), {}, {"c90.q2": "missed"})
+    metric = recall_metric(coverage, ledger)
+    assert metric.pending == 2
     assert metric.gate_status() is Status.FAIL
 
 
