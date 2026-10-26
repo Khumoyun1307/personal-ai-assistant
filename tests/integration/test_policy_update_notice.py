@@ -28,6 +28,7 @@ from assistant.inbox.policy_notice import (
 from assistant.jobs.tasks import JobHandlers
 from assistant.privacy.retention import sweep_all
 from tests.fakes.channel import FakeChannel
+from tests.fakes.deletions import RecordingDeleter
 from tests.fakes.summaries import RecordingRefresher
 from tests.integration.business_env import OWNER, Env, deliver, onboard, private_message
 
@@ -258,6 +259,7 @@ async def test_the_ingestion_watchdog_sends_the_notice(env: Env) -> None:
         heartbeat_url=None,
         confirmation_applier=_NoApplier(),
         summary_refresher=RecordingRefresher(),
+        data_deleter=RecordingDeleter(),
         privacy_policy_url=POLICY_URL,
     )
 

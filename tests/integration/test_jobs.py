@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import itertools
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
@@ -46,6 +47,7 @@ from assistant.telegram.control.handlers import IncomingMessage
 from assistant.telegram.gateway import OutboundGateway
 from tests.fakes.channel import FakeChannel
 from tests.fakes.clock import FakeClock
+from tests.fakes.deletions import RecordingDeleter
 from tests.fakes.sender import FakeTelegramSender
 from tests.fakes.summaries import RecordingRefresher
 
@@ -100,6 +102,7 @@ class Env:
     runtime: RecordingRuntime
     clock: FakeClock
     handlers: JobHandlers
+    deleter: RecordingDeleter
 
 
 @pytest.fixture
@@ -112,6 +115,7 @@ async def env(migrated_url: str) -> AsyncIterator[Env]:
     scheduler = ProcrastinateScheduler(app)
     runtime = RecordingRuntime()
     clock = FakeClock(datetime.now(UTC))
+    deleter = RecordingDeleter()
     handlers = JobHandlers(
         session_factory=factory,
         clock=clock,
@@ -122,10 +126,11 @@ async def env(migrated_url: str) -> AsyncIterator[Env]:
         heartbeat_url=None,
         confirmation_applier=RecordingApplier(),
         summary_refresher=RecordingRefresher(),
+        data_deleter=deleter,
     )
     register_tasks(app, handlers)
     async with app.open_async():
-        yield Env(engine, factory, app, scheduler, runtime, clock, handlers)
+        yield Env(engine, factory, app, scheduler, runtime, clock, handlers, deleter)
     async with engine.begin() as conn:
         await conn.exec_driver_sql(TRUNCATE)
     await engine.dispose()
@@ -357,6 +362,29 @@ async def test_the_summary_task_is_never_retried_by_procrastinate(env: Env) -> N
     """A failed refresh leaves the flag set and the reconciler re-creates the
     job; a procrastinate retry could collide with the queueing lock."""
     assert env.app.tasks["memory.refresh_summary"].retry_strategy is None
+
+
+async def test_the_deletion_task_is_never_retried_by_procrastinate(env: Env) -> None:
+    """S03.5 fix round 2, item 1: a failed deletion tells the owner that
+    nothing was deleted; an automatic retry would then delete after that
+    message. The owner asks again instead (M03 D87)."""
+    assert env.app.tasks["privacy.delete_data"].retry_strategy is None
+
+
+async def test_the_deletion_task_passes_the_turn_cutoff_through(env: Env) -> None:
+    """Ids only (AGENTS §13); a job queued before the cutoff existed still runs."""
+    task = env.app.tasks["privacy.delete_data"].func
+    await task(account_id=1, scope="everything", subject_id=1, card_id=2, turn_cutoff=5)
+    await task(account_id=1, scope="everything", subject_id=1, card_id=3)
+    assert env.deleter.runs == [(1, "everything", 1, 2, 5), (1, "everything", 1, 3, None)]
+
+
+def test_a_worker_cannot_be_built_without_a_data_deleter() -> None:
+    """Like the confirmation applier: a worker that could not run an owner's
+    deletion must not start (the job would fail where the owner was told
+    "deleting now")."""
+    [deleter] = [f for f in dataclasses.fields(JobHandlers) if f.name == "data_deleter"]
+    assert deleter.default is dataclasses.MISSING
 
 
 async def test_the_reconciler_redefers_only_a_lost_recent_turn(env: Env) -> None:

@@ -9,7 +9,7 @@ queue, lock and schedule. Job arguments are ids only (AGENTS §13).
 | `agent.owner_request(turn_id)` | llm | lock `acct:{id}:control` (set at defer) |
 | `connections.notify_owner(event_id)` | system | deferred with the registry change (S02.1) |
 | `agent.apply_confirmation(confirmation_id)` | llm | lock `acct:{id}:control` (at defer) |
-| `privacy.delete_data(account, scope, subject, card)` | llm | lock `acct:{id}:control` (S03.5) |
+| `privacy.delete_data(account, scope, subject, card, cutoff)` | llm | lock `acct:{id}:control` |
 | `memory.refresh_summary(conversation_id)` | llm | qlock `sum:{conv}`, `schedule_at`; no lock |
 | `system.ingestion_watchdog` | system | every minute |
 | `system.reconcile_pending` | system | every minute |
@@ -103,7 +103,14 @@ class SummaryRefresher(Protocol):
 
 
 class DataDeleter(Protocol):
-    async def run(self, account_id: int, scope: str, subject_id: int, card_id: int) -> str: ...
+    async def run(
+        self,
+        account_id: int,
+        scope: str,
+        subject_id: int,
+        card_id: int,
+        turn_cutoff: int | None = None,
+    ) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +127,10 @@ class JobHandlers:
     confirmation_applier: Applier
     #: Refreshes rolling summaries (S03.2).
     summary_refresher: SummaryRefresher
+    #: Runs the owner's button deletions (S03.5, M03 D83). Required, like the
+    #: applier: a worker that could not run one must not start — the owner
+    #: was told "deleting now" (fix round 2, item 1).
+    data_deleter: DataDeleter
     #: Release flag `summary.refresh` (M03 D61): background refreshes run
     #: only when it is on; the read tools still summarize on demand.
     summaries_enabled: bool = False
@@ -130,14 +141,16 @@ class JobHandlers:
     backup_upload_required: bool = False
     #: Linked from the policy-update notice (AGENTS §16).
     privacy_policy_url: str | None = None
-    #: Runs the owner's button deletions (S03.5, M03 D83). Bootstrap always
-    #: sets it; a worker without it fails such a job rather than skip it.
-    data_deleter: DataDeleter | None = None
 
-    async def delete_data(self, account_id: int, scope: str, subject_id: int, card_id: int) -> str:
-        if self.data_deleter is None:
-            raise RuntimeError("no data deleter configured")
-        return await self.data_deleter.run(account_id, scope, subject_id, card_id)
+    async def delete_data(
+        self,
+        account_id: int,
+        scope: str,
+        subject_id: int,
+        card_id: int,
+        turn_cutoff: int | None = None,
+    ) -> str:
+        return await self.data_deleter.run(account_id, scope, subject_id, card_id, turn_cutoff)
 
     async def apply_confirmation(self, confirmation_id: int) -> ApplyOutcome:
         return await self.confirmation_applier.apply(confirmation_id)
@@ -331,11 +344,21 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
         # a no-op once the row has left `confirmed`.
         await handlers.apply_confirmation(confirmation_id)
 
-    @app.task(name=DELETE_DATA_TASK, queue=QUEUE_LLM, retry=OWNER_REQUEST_RETRY)
-    async def delete_data(account_id: int, scope: str, subject_id: int, card_id: int) -> None:
+    @app.task(name=DELETE_DATA_TASK, queue=QUEUE_LLM)
+    async def delete_data(
+        account_id: int,
+        scope: str,
+        subject_id: int,
+        card_id: int,
+        turn_cutoff: int | None = None,
+    ) -> None:
         # Lock `acct:{id}:control` is set at defer (the queue of owner runs
-        # and applied confirmations); a retry finds its audit row and stops.
-        await handlers.delete_data(account_id, scope, subject_id, card_id)
+        # and applied confirmations). No procrastinate retry (M03 D87): a
+        # failure is reported to the owner ("nothing was deleted"), and a
+        # retry would then delete after that message. A stalled-worker rerun
+        # finds its audit row and stops. `turn_cutoff` defaults for a job
+        # queued before it existed.
+        await handlers.delete_data(account_id, scope, subject_id, card_id, turn_cutoff)
 
     @app.task(name=REFRESH_SUMMARY_TASK, queue=QUEUE_LLM)
     async def refresh_summary(conversation_id: int) -> None:

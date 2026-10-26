@@ -48,6 +48,7 @@ from tests.integration.business_env import (
     deliver,
     press,
     private_message,
+    run_deletion_jobs,
 )
 
 pytestmark = pytest.mark.integration
@@ -101,6 +102,7 @@ async def test_rg10_full_scenario_logs_are_content_free(
     await deliver(env, private_message(OWNER, f"no {CANARY}"))  # free text, not an answer
     await press(env, "managed_consent", "decline")
     await press(env, "managed_delete", "delete")
+    await run_deletion_jobs(env)  # queued under the control lock (M03 D83)
     await press(env, "managed_mode", "stop")
     await deliver(env, private_message(OWNER, f"/settings timezone {CANARY}"))
     get_logger("tests").info("scenario_done", conversation_id=1)

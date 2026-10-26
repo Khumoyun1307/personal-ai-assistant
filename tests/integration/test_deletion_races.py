@@ -36,6 +36,7 @@ from tests.integration.business_env import (
     deliver,
     environment,
     grant_managed,
+    press,
     private_message,
     run_deletion_jobs,
 )
@@ -176,3 +177,46 @@ async def test_a_note_confirmed_while_the_deletion_waits_is_not_saved(env: Env) 
         assert (
             await session.execute(text("SELECT count(*) FROM app.memory_items"))
         ).scalar_one() == 0
+
+
+# ------------------------------------------------------------ fix round 2
+async def test_an_answer_written_after_the_revocation_cards_delete_does_not_keep_the_chats_text(
+    env: Env,
+) -> None:
+    """Item 5: the run's last model call is in flight when the owner revokes
+    and taps the revocation card's Delete; the run then sends its answer and
+    records it. The managed-data deletion is queued under the control lock
+    too, so it runs after the answer is recorded and clears it (M03 D83)."""
+    await seed(env)
+    turn = await ask(env, "What did Kamola say?")
+
+    async def revoke_and_delete(request: LLMRequest) -> Any:
+        await deliver(env, private_message(OWNER, "/privacy revoke"))
+        await press(env, "managed_delete", "delete")
+        return text_response(f"Kamola said: {SAID}")
+
+    fake = FakeLLM(tool_response(search()), revoke_and_delete)
+    await runtime(env, fake, FakeChannel(), flags=FLAGS).run(turn)
+    await run_deletion_jobs(env)
+    assert await hits(env, "CHATK") == set()
+
+
+async def test_a_question_whose_text_was_deleted_before_its_run_is_not_answered_blind(
+    env: Env,
+) -> None:
+    """Item 2, every path: a deletion that ran before the question's run (a
+    confirmed deletion tool, a sweep) left the turn without text. The run
+    calls no model and asks the owner to send it again."""
+    await seed(env)
+    turn = await ask(env, "OWNSYN a question")
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text("UPDATE app.control_turns SET text = NULL WHERE id = :t"), {"t": turn}
+        )
+    fake = FakeLLM()
+    channel = FakeChannel()
+    outcome = await runtime(env, fake, channel, flags=FLAGS).run(turn)
+    assert fake.requests == []
+    assert outcome.note == "turn_text_deleted"
+    [said] = channel.sends
+    assert "send it again" in said

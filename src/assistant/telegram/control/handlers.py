@@ -416,10 +416,12 @@ async def queue_deletion(
     """Queue an owner's button deletion (M03 D83): in the press's
     transaction, under the owner's control lock, so it runs after any owner
     run already in flight (whose answer may quote the chat) and deletes that
-    too (safety review item 1). The job sends the receipt; this returns the
-    "deleting now" note."""
+    too (safety review item 1). The newest control turn now is the cutoff:
+    a question the owner sends while the job waits keeps its text (D88).
+    The job sends the receipt; this returns the "deleting now" note."""
     if scheduler is None or card_id is None:
         raise RuntimeError("a job scheduler and the card are required to delete data")
+    turn_cutoff = await deletion.latest_turn_id(session, account_id)
     connection = await session.connection()
     raw = await connection.get_raw_connection()
     await scheduler.defer(
@@ -429,6 +431,7 @@ async def queue_deletion(
             "scope": scope,
             "subject_id": subject_id,
             "card_id": card_id,
+            "turn_cutoff": turn_cutoff,
         },
         lock=owner_control_lock(account_id),
         connection=raw.driver_connection,
@@ -630,13 +633,22 @@ async def handle_card_press(
                 )
                 note = "declined"
         case (k, "delete") if k == MANAGED_DELETE_KIND:
-            report = await deletion.delete_managed_data(session, account_id=account.id, clock=clock)
+            # Queued like every button deletion (D83; fix round 2, item 5): an
+            # answer or a confirmed change in flight is recorded first and
+            # then deleted with the rest. The revocation itself is inline.
             settlement = _Settlement(
-                "Deleted",
-                escape(report.receipt()),
+                "Deleting",
+                await queue_deletion(
+                    session,
+                    scheduler,
+                    account.id,
+                    deletion.SCOPE_MANAGED,
+                    account.id,
+                    card.id,
+                ),
                 await _mode_choice_card(session, clock, account),
             )
-            note = "deleted"
+            note = "deleting"
         case (k, "everything") if k == MANAGED_DELETE_KIND:
             settlement = _Settlement(
                 "Deleting",
@@ -940,7 +952,14 @@ async def handle_status(
 PANEL_UNKNOWN = "I don't have that chat. Only chats included under Chat Automation appear here."
 
 
-def render_panel(panel: ConversationPanel, *, timezone: str) -> str:
+#: The panel's first line while its stored data is being deleted.
+PANEL_DELETING = "🗑 <b>Deleting what is stored from this chat…</b> The receipt follows."
+
+
+def render_panel(panel: ConversationPanel, *, timezone: str, deleting: bool = False) -> str:
+    """The conversation panel (J12). `deleting`: a deletion of its data is
+    queued (D83), so the name, summary and notes it would show are left out
+    (fix round 2, item 4); counts and dates are not content."""
     name = panel.display_name or "(no name)"
     handle = f" @{escape(panel.username)}" if panel.username else ""
     counts = ", ".join(
@@ -953,7 +972,7 @@ def render_panel(panel: ConversationPanel, *, timezone: str) -> str:
         else "closed (no contact message in the last 24 h)"
     )
     lines = [
-        f"<b>{escape(name)}</b>{handle}",
+        PANEL_DELETING if deleting else f"<b>{escape(name)}</b>{handle}",
         "",
         f"Mode: {escape(panel.mode)}",
         f"First seen: {local_time(panel.first_seen_at, timezone)}",
@@ -974,6 +993,8 @@ def render_panel(panel: ConversationPanel, *, timezone: str) -> str:
         lines.append(f"⚠️ {panel.unresolved_gaps} coverage gap(s): some messages may be missing.")
     if panel.mode == "ignore":
         lines.append("Ignored: new messages from this chat are not stored.")
+    if deleting:
+        return "\n".join(lines)
     if panel.summary_overview:
         lines += ["", f"<b>Summary</b> (AI-written): {escape(panel.summary_overview)}"]
     if panel.notes:

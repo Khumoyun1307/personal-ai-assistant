@@ -14,22 +14,29 @@ Synthetic text only.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError
 
-from assistant.accounts.models import AuditLogEntry
+from assistant.accounts.models import AuditLogEntry, ControlTurn
 from assistant.conversations.models import Conversation
+from assistant.inbox.processor import requeue_failed
 from assistant.memory import catch_up, items
 from assistant.memory.models import MemoryItem
+from assistant.privacy import deletion
+from assistant.privacy.requests import RequestedDeletions
 from assistant.telegram.control import panels
 from tests.fakes.channel import FakeChannel
 from tests.integration.business_env import (
     CONTACT,
     OTHER_CONTACT,
     OWNER,
+    T_BASE,
     Env,
     business_message,
     callback,
@@ -37,7 +44,9 @@ from tests.integration.business_env import (
     deliver,
     environment,
     grant_managed,
+    inbound,
     live_card,
+    payload_is_sql_null,
     press,
     private_message,
     run_deletion_jobs,
@@ -334,7 +343,7 @@ async def test_a_button_deletion_is_a_job_under_the_owners_control_lock(env: Env
         ).one()
     assert lock == f"acct:{account_id}:control"
     assert queue == "llm"
-    assert set(job_args) == {"account_id", "scope", "subject_id", "card_id"}
+    assert set(job_args) == {"account_id", "scope", "subject_id", "card_id", "turn_cutoff"}
     assert job_args["scope"] == "conversation"
     assert all(isinstance(v, int) for k, v in job_args.items() if k != "scope")
 
@@ -363,8 +372,6 @@ async def test_a_deletion_job_run_twice_deletes_once(env: Env) -> None:
             message_id=9, from_id=OTHER_CONTACT, chat_id=OTHER_CONTACT, message_text="CHATB new"
         ),
     )
-    from assistant.privacy.requests import RequestedDeletions
-
     await RequestedDeletions(env.factory, env.clock, receipts).run(**job_args)
     assert await stored(env, "CHATB") > 0
     assert await deletions(env) == 1
@@ -407,8 +414,6 @@ async def test_a_catch_up_after_a_chat_deletion_says_earlier_messages_were_delet
         assert not says_deleted(await lines(now - timedelta(days=7), [bobur]))
         # A range that starts after the deletion lost nothing to it.
         assert not says_deleted(await lines(now + timedelta(minutes=1), [conversation]))
-    from assistant.privacy import deletion
-
     assert deletion.EVENT_DATA_DELETED in catch_up.DELETION_EVENTS
 
 
@@ -426,3 +431,180 @@ async def test_revoking_consent_offers_deleting_everything_too(env: Env) -> None
     for marker in ("CHATK", "NOTEK", "CHATB"):
         assert await stored(env, marker) == 0, marker
     assert await deletions(env) == 1
+
+
+# ------------------------------------------------------------ fix round 2
+async def queued_job_args(env: Env) -> dict[str, Any]:
+    async with env.factory() as session:
+        found = (
+            await session.execute(
+                text(
+                    "SELECT args FROM procrastinate.procrastinate_jobs "
+                    "WHERE task_name = 'privacy.delete_data' AND status = 'todo'"
+                )
+            )
+        ).scalar_one()
+    return dict(found)
+
+
+async def turn_texts(env: Env) -> list[str]:
+    async with env.factory() as session:
+        rows = await session.execute(
+            select(ControlTurn.text).where(ControlTurn.text.is_not(None)).order_by(ControlTurn.id)
+        )
+        return [str(value) for (value,) in rows.all()]
+
+
+async def test_a_failed_deletion_job_tells_the_owner_that_nothing_was_deleted(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 2, item 1 (invariant 11): the press promised a receipt. A job
+    that fails part-way says so; the deletion is one transaction, so nothing
+    of it was deleted, and the job ends failed (no silent success)."""
+    await seed(env)
+    await open_panel(env)
+    await tap(env, panels.PANEL_CARD, "delete")
+    await tap(env, panels.DELETE_CARD, "chat")
+
+    async def broken(*args: Any, **kwargs: Any) -> int:
+        raise RuntimeError("synthetic failure after the messages went")
+
+    monkeypatch.setattr(deletion, "_clear_names", broken)
+    receipts = FakeChannel()
+    with pytest.raises(RuntimeError):
+        await RequestedDeletions(env.factory, env.clock, receipts).run(**await queued_job_args(env))
+    [report] = receipts.sends
+    assert "nothing was deleted" in report
+    assert "Deleted:" not in report
+    assert await stored(env, "CHATK") > 0  # rolled back as a whole
+    assert await deletions(env) == 0
+
+
+async def test_a_deletion_whose_commit_reports_an_error_is_checked_before_reporting(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The commit went through but the connection dropped while saying so:
+    the job looks for its audit row and sends the real receipt, not
+    "failed"."""
+    await seed(env)
+    await open_panel(env)
+    await tap(env, panels.PANEL_CARD, "delete")
+    await tap(env, panels.DELETE_CARD, "chat")
+    real = deletion.delete_conversation_data
+
+    async def then_commit_reports_failure(session: Any, **kwargs: Any) -> Any:
+        report = await real(session, **kwargs)
+        commit = session.commit
+
+        async def committed_then_lost() -> None:
+            await commit()
+            raise OperationalError("synthetic", {}, Exception("connection lost after commit"))
+
+        session.commit = committed_then_lost
+        return report
+
+    monkeypatch.setattr(deletion, "delete_conversation_data", then_commit_reports_failure)
+    receipts = FakeChannel()
+    outcome = await RequestedDeletions(env.factory, env.clock, receipts).run(
+        **await queued_job_args(env)
+    )
+    assert outcome == "deleted"
+    [report] = receipts.sends
+    assert report.startswith("🗑 Deleted:")
+    assert await stored(env, "CHATK") == 0
+    assert await deletions(env) == 1
+
+
+async def test_a_question_sent_after_delete_everything_keeps_its_text(env: Env) -> None:
+    """Fix round 2, item 2: the question's run queues behind the deletion
+    (same lock); the deletion clears the owner's turns only up to the tap."""
+    await seed(env)
+    await deliver(env, private_message(OWNER, "OLDQ asked before the tap"))
+    await deliver(env, private_message(OWNER, "/privacy delete"))
+    await tap(env, panels.DELETE_ALL_CARD, "everything")
+    await deliver(env, private_message(OWNER, "NEWQ asked after the tap"))
+    job = await queued_job_args(env)
+    assert isinstance(job["turn_cutoff"], int)  # an id, not content
+    await run_deletion_jobs(env)
+    assert await turn_texts(env) == ["NEWQ asked after the tap"]
+
+
+async def test_a_forward_from_the_chat_sent_after_its_deletion_keeps_its_text(env: Env) -> None:
+    """The per-chat scope clears turns whose refs name the chat; a forward
+    the owner sends after the tap is a new message and keeps its text."""
+    await seed(env)
+    before = private_message(OWNER, "CHATK forwarded before")
+    before["message"]["forward_from"] = {"id": CONTACT, "is_bot": False, "first_name": "K"}
+    before["message"]["forward_date"] = T_BASE
+    await deliver(env, before)
+    await open_panel(env)
+    await tap(env, panels.PANEL_CARD, "delete")
+    await tap(env, panels.DELETE_CARD, "chat")
+    after = private_message(OWNER, "FWDNEW forwarded after")
+    after["message"]["forward_from"] = {"id": CONTACT, "is_bot": False, "first_name": "K"}
+    after["message"]["forward_date"] = T_BASE
+    await deliver(env, after)
+    await run_deletion_jobs(env)
+    texts = await turn_texts(env)
+    assert "FWDNEW forwarded after" in texts
+    assert not any("CHATK" in t for t in texts)
+
+
+async def test_the_pressed_panel_stops_showing_what_is_being_deleted(env: Env) -> None:
+    """Fix round 2, item 4: the press re-renders the panel before the job
+    runs; it must not show the name, summary or notes being deleted."""
+    conversation, _ = await seed(env)
+    async with env.factory() as session, session.begin():
+        account_id = (
+            await session.execute(
+                select(Conversation.account_id).where(Conversation.id == conversation)
+            )
+        ).scalar_one()
+        await session.execute(
+            text(
+                "INSERT INTO app.conversation_summaries "
+                "(account_id, conversation_id, kind, summary) "
+                "VALUES (:a, :c, 'rolling', CAST(:j AS jsonb))"
+            ),
+            {"a": account_id, "c": conversation, "j": json.dumps({"overview": "CHATK summary"})},
+        )
+    await open_panel(env)
+    shown = env.sender.sends[-1]["text"]
+    assert "CHATK summary" in shown
+    assert "CHATK chat note" in shown
+    await tap(env, panels.PANEL_CARD, "delete")
+    await tap(env, panels.DELETE_CARD, "contact")
+    deleting = env.sender.edits[-1]["text"]
+    assert "CHATK" not in deleting
+    assert "NOTEK" not in deleting
+    assert "Deleting" in deleting
+
+    await deliver(env, private_message(OWNER, f"/start bizChat{OTHER_CONTACT}"))
+    await tap(env, panels.PANEL_CARD, "ignore")
+    assert panels.IGNORE_DELETE_OPTION is not None
+    await tap(env, panels.IGNORE_CARD, panels.IGNORE_DELETE_OPTION[1])
+    deleting = env.sender.edits[-1]["text"]
+    assert "CHATB" not in deleting
+    assert "Deleting" in deleting
+    assert "Ignore ✓" in keyboard_labels(env.sender.edits[-1]["reply_markup"])
+
+
+async def test_a_dead_letter_cleared_by_a_deletion_is_not_requeued_empty(env: Env) -> None:
+    """Fix round 2, item 7: the deletion clears a dead-lettered control
+    update too (its text may quote the chat); `inbox requeue` then leaves it
+    failed and counts it, instead of processing an empty update."""
+    await seed(env)
+    failed = private_message(OWNER, "CHATK dead letter")
+    await deliver(env, failed)
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text("UPDATE app.inbound_updates SET status = 'failed' WHERE update_id = :u"),
+            {"u": failed["update_id"]},
+        )
+    await deliver(env, private_message(OWNER, "/privacy delete"))
+    await tap(env, panels.DELETE_ALL_CARD, "everything")
+    await run_deletion_jobs(env)
+    assert await payload_is_sql_null(env, failed)
+    requeued = await requeue_failed(env.factory)
+    assert (requeued.reset, requeued.cleared) == (0, 1)
+    assert (await inbound(env, failed)).status == "failed"

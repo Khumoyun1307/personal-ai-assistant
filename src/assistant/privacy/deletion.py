@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select, text, true, update
+from sqlalchemy import ColumnElement, delete, func, or_, select, text, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
@@ -39,6 +39,9 @@ MANAGED_PAYLOAD_KINDS = (
     "business_connection",
 )
 
+#: The audit event of `delete_managed_data` (S02.4); the owner's scoped
+#: deletions write `EVENT_DATA_DELETED`.
+EVENT_MANAGED_DATA_DELETED = "managed_data_deleted"
 
 #: Said with every deletion (privacy policy v4: encrypted daily backups, kept
 #: up to 35 days; safety review item 6).
@@ -110,12 +113,43 @@ class DeletionReport:
         }
 
 
+def _owner_turns_up_to(cutoff: int | None) -> ColumnElement[bool]:
+    """Turns a deletion may clear: every assistant turn, and the owner's own
+    turns up to `cutoff` (the newest turn id when the owner tapped Delete).
+    A question sent after the tap waits behind the deletion (same lock) and
+    must keep its text, or its run answers a blank (fix round 2, item 2).
+    Answers are never newer than the tap's queue position: the runs that
+    write them are serialized with the deletion."""
+    if cutoff is None:
+        return true()
+    return or_(ControlTurn.role != "owner", ControlTurn.id <= cutoff)
+
+
+async def latest_turn_id(session: AsyncSession, account_id: int) -> int:
+    """The `cutoff` for `_owner_turns_up_to`: the account's newest control
+    turn (0 if none). An id, never content, so it can be a job argument."""
+    newest = (
+        await session.execute(
+            select(func.max(ControlTurn.id)).where(ControlTurn.account_id == account_id)
+        )
+    ).scalar_one_or_none()
+    return int(newest or 0)
+
+
 async def delete_managed_data(
-    session: AsyncSession, *, account_id: int, clock: Clock
+    session: AsyncSession,
+    *,
+    account_id: int,
+    clock: Clock,
+    actor: str = "owner",
+    request: DeletionRequest | None = None,
+    owner_turns_up_to: int | None = None,
 ) -> DeletionReport:
     """Delete everything stored from the owner's managed chats, in one
     transaction (the caller's). Conversations and coverage gaps stay: they
-    hold no content and keep the coverage record honest."""
+    hold no content and keep the coverage record honest. `request` keys the
+    audit row so a repeated job deletes once (the revocation card's Delete
+    runs as `privacy.delete_data`, M03 D83)."""
     # FOR NO KEY UPDATE, not FOR UPDATE: ingestion holds a conversation and
     # then inserts a message, which takes a key share on the account through
     # the foreign key; FOR UPDATE would block that while this waits for the
@@ -161,25 +195,32 @@ async def delete_managed_data(
             .values(payload=None)
         )
     )
+    # The owner's raw control-chat updates may repeat a managed chat's text
+    # (a panel press carries the rendered summary, a forward): as for every
+    # other scope (fix round 2, item 6).
+    payloads += await _clear_control_payloads(session, account)
     turns = _count(
         await session.execute(
             update(ControlTurn)
             .where(ControlTurn.account_id == account_id)
             .where(ControlTurn.contains_managed.is_(True))
+            .where(_owner_turns_up_to(owner_turns_up_to))
             .where((ControlTurn.text.is_not(None)) | (ControlTurn.quoted_text.is_not(None)))
             .values(text=None, quoted_text=None)
         )
     )
     # Held tool calls may carry managed text in their arguments (S03.1).
     # Named by table: the model belongs to the agent layer (import-linter).
-    await session.execute(
-        text(
-            "UPDATE app.tool_confirmations SET args = NULL, "
-            "status = CASE WHEN status = 'pending' THEN 'expired' ELSE status END, "
-            "decided_at = COALESCE(decided_at, :now) "
-            "WHERE account_id = :account_id AND args IS NOT NULL"
-        ),
-        {"account_id": account_id, "now": clock.now()},
+    held = _count(
+        await session.execute(
+            text(
+                "UPDATE app.tool_confirmations SET args = NULL, "
+                "status = CASE WHEN status = 'pending' THEN 'expired' ELSE status END, "
+                "decided_at = COALESCE(decided_at, :now) "
+                "WHERE account_id = :account_id AND args IS NOT NULL"
+            ),
+            {"account_id": account_id, "now": clock.now()},
+        )
     )
     await session.execute(
         update(Conversation)
@@ -191,25 +232,21 @@ async def delete_managed_data(
             select(func.count()).select_from(Message).where(Message.account_id == account_id)
         )
     ).scalar_one()
+    report = DeletionReport(messages, contacts, payloads, turns, summaries, notes, held)
+    details: dict[str, Any] = {**report.counts(), "messages_remaining": int(remaining)}
+    if request is not None:
+        details.update(request.key)
     session.add(
         AuditLogEntry(
             account_id=account_id,
             at=clock.now(),
-            actor="owner",
-            event="managed_data_deleted",
-            details={
-                "messages": messages,
-                "contacts_cleared": contacts,
-                "payloads_cleared": payloads,
-                "control_turns_cleared": turns,
-                "summaries_deleted": summaries,
-                "memory_items_deleted": notes,
-                "messages_remaining": int(remaining),
-            },
+            actor=actor,
+            event=EVENT_MANAGED_DATA_DELETED,
+            details=details,
         )
     )
     await session.flush()
-    return DeletionReport(messages, contacts, payloads, turns, summaries, notes)
+    return report
 
 
 #: Business update kinds whose payload names a chat (`<kind>.chat.id`).
@@ -363,6 +400,8 @@ EVENT_DATA_DELETED = "data_deleted"
 SCOPE_CONVERSATION = "conversation"
 SCOPE_CONTACT = "contact"
 SCOPE_EVERYTHING = "everything"
+#: The revocation card's Delete (`delete_managed_data`), queued like the rest.
+SCOPE_MANAGED = "managed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,9 +466,12 @@ async def _redact_turns(
     *,
     conversation_ids: Sequence[int],
     contact_ids: Sequence[int],
+    owner_turns_up_to: int | None = None,
 ) -> tuple[int, list[int]]:
     """Clear control turns whose `refs` name one of these conversations or
-    contacts (§10.4). Returns (turns cleared, the runs that wrote them)."""
+    contacts (§10.4), the owner's own only up to the tap
+    (`_owner_turns_up_to`). Returns (turns cleared, the runs that wrote
+    them)."""
     conditions = [ControlTurn.refs.contains({"conversation_ids": [c]}) for c in conversation_ids]
     conditions += [ControlTurn.refs.contains({"contact_ids": [c]}) for c in contact_ids]
     if not conditions:
@@ -439,6 +481,7 @@ async def _redact_turns(
             update(ControlTurn)
             .where(ControlTurn.account_id == account_id)
             .where(or_(*conditions))
+            .where(_owner_turns_up_to(owner_turns_up_to))
             .where((ControlTurn.text.is_not(None)) | (ControlTurn.quoted_text.is_not(None)))
             .values(text=None, quoted_text=None)
             .returning(ControlTurn.run_id)
@@ -523,6 +566,7 @@ async def _purge_chats(
     *,
     person_ids: Sequence[int],
     clock: Clock,
+    owner_turns_up_to: int | None = None,
 ) -> DeletionReport:
     """Everything stored from these (already locked) chats: raw updates,
     messages, summaries, notes about the chats, the turns that drew on the
@@ -562,7 +606,11 @@ async def _purge_chats(
         notes += await items.delete_for_contact(session, account_id, person_id, conversation_ids)
     notes += await items.delete_for_chats(session, account_id, conversation_ids, contact_ids)
     turns, run_ids = await _redact_turns(
-        session, account_id, conversation_ids=conversation_ids, contact_ids=contact_ids
+        session,
+        account_id,
+        conversation_ids=conversation_ids,
+        contact_ids=contact_ids,
+        owner_turns_up_to=owner_turns_up_to,
     )
     held = await _clear_held_args(
         session,
@@ -602,7 +650,8 @@ async def find_deletion(
             await session.execute(
                 select(AuditLogEntry)
                 .where(AuditLogEntry.account_id == account_id)
-                .where(AuditLogEntry.event == EVENT_DATA_DELETED)
+                # The revocation card's Delete writes the managed-data event.
+                .where(AuditLogEntry.event.in_((EVENT_DATA_DELETED, EVENT_MANAGED_DATA_DELETED)))
                 .where(AuditLogEntry.details.contains(dict(request.key)))
                 .limit(1)
             )
@@ -649,6 +698,7 @@ async def delete_conversation_data(
     actor: str,
     clock: Clock,
     request: DeletionRequest | None = None,
+    owner_turns_up_to: int | None = None,
 ) -> DeletionReport:
     """Everything stored from one chat (FR-PRV-04), in the caller's
     transaction: its messages, summaries, raw updates and notes about the
@@ -659,7 +709,14 @@ async def delete_conversation_data(
     chats = await _lock_chats(session, account_id, Conversation.id == conversation_id)
     if not chats:
         raise LookupError("conversation not found in this account")
-    report = await _purge_chats(session, account_id, chats, person_ids=(), clock=clock)
+    report = await _purge_chats(
+        session,
+        account_id,
+        chats,
+        person_ids=(),
+        clock=clock,
+        owner_turns_up_to=owner_turns_up_to,
+    )
     _audit(
         session,
         account_id=account_id,
@@ -683,6 +740,7 @@ async def delete_contact_data(
     actor: str,
     clock: Clock,
     request: DeletionRequest | None = None,
+    owner_turns_up_to: int | None = None,
 ) -> DeletionReport:
     """Everything stored about one person: all their chats (as
     `delete_conversation_data`), the owner's notes about them, held calls
@@ -699,7 +757,14 @@ async def delete_contact_data(
     if found is None:
         raise LookupError("contact not found in this account")
     chats = await _lock_chats(session, account_id, Conversation.contact_id == contact_id)
-    report = await _purge_chats(session, account_id, chats, person_ids=[contact_id], clock=clock)
+    report = await _purge_chats(
+        session,
+        account_id,
+        chats,
+        person_ids=[contact_id],
+        clock=clock,
+        owner_turns_up_to=owner_turns_up_to,
+    )
     _audit(
         session,
         account_id=account_id,
@@ -757,11 +822,13 @@ async def delete_everything(
     actor: str,
     clock: Clock,
     request: DeletionRequest | None = None,
+    owner_turns_up_to: int | None = None,
 ) -> DeletionReport:
     """All of the account's content (FR-PRV-04 "delete everything"), in the
     caller's transaction: every message, summary, note (the owner's own
-    too), name, raw update, control-chat text and held call argument. The
-    account stays usable: its settings, consents, connection, conversation
+    too), name, raw update, control-chat text (the owner's own turns up to
+    `owner_turns_up_to`, the tap) and held call argument. The account stays
+    usable: its settings, consents, connection, conversation
     modes, coverage record, audit log and run accounting are kept, and new
     messages are stored as before (M03 D78)."""
     # §9.4: the account first (FOR NO KEY UPDATE, as managed-data deletion:
@@ -795,6 +862,7 @@ async def delete_everything(
         await session.execute(
             update(ControlTurn)
             .where(ControlTurn.account_id == account_id)
+            .where(_owner_turns_up_to(owner_turns_up_to))
             .where((ControlTurn.text.is_not(None)) | (ControlTurn.quoted_text.is_not(None)))
             .values(text=None, quoted_text=None)
         )

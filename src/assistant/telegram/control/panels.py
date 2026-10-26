@@ -265,14 +265,21 @@ OP_DELETE = "delete"
 
 
 async def panel_screen(
-    session: AsyncSession, clock: Clock, account: Account, panel: ConversationPanel
+    session: AsyncSession,
+    clock: Clock,
+    account: Account,
+    panel: ConversationPanel,
+    *,
+    deleting: bool = False,
 ) -> Screen:
+    """The panel with its buttons. `deleting`: a deletion of the chat's data
+    was just queued, so the panel shows none of it (`render_panel`)."""
     return await _screen(
         session,
         clock,
         account.id,
         PANEL_CARD,
-        render_panel(panel, timezone=account.timezone),
+        render_panel(panel, timezone=account.timezone, deleting=deleting),
         panel_rows(panel),
         ref_id=panel.conversation_id,
     )
@@ -437,7 +444,7 @@ async def _press_ignore(
     if panel is None:
         _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
         return HandlerResult(False, "card", None, note="no_longer_active")
-    screen = await panel_screen(session, clock, account, panel)
+    screen = await panel_screen(session, clock, account, panel, deleting=receipt is not None)
     answer = {
         "ignored": "Ignored: new messages are not stored",
         "ignored_and_deleting": "Ignored; deleting its data",
@@ -485,7 +492,7 @@ async def _press_delete(
     if panel is None:
         _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
         return HandlerResult(False, "card", None, note="no_longer_active")
-    screen = await panel_screen(session, clock, account, panel)
+    screen = await panel_screen(session, clock, account, panel, deleting=receipt is not None)
     answer = "Deleting" if receipt is not None else "Nothing was deleted"
     _after_press(session, gateway, press, target, answer=answer, edit=screen, send=receipt)
     return HandlerResult(True, "card", None, note=press.op if receipt else "cancelled")
