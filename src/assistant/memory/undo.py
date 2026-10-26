@@ -43,6 +43,9 @@ class UndoStatus(StrEnum):
     UNDONE = "undone"
     #: Changed again since: nothing was reversed.
     SUPERSEDED = "superseded"
+    #: What the change was about no longer exists (a note already deleted —
+    #: by the sweep, a deletion or a purge): nothing to reverse.
+    GONE = "gone"
     #: Unknown, another account's, or not a change Undo can reverse.
     NOT_FOUND = "not_found"
 
@@ -68,6 +71,11 @@ async def undo(
         return UndoOutcome(UndoStatus.NOT_FOUND)
     details = entry.details or {}
     now = clock.now()
+    memory_id = details.get("memory_id")
+    if entry.event in (items.EVENT_MEMORY_SAVED, items.EVENT_MEMORY_FORGOTTEN) and (
+        not isinstance(memory_id, int) or await items.get(session, account_id, memory_id) is None
+    ):
+        return UndoOutcome(UndoStatus.GONE, entry.event)
     done = False
     if entry.event == items.EVENT_MEMORY_SAVED:
         memory_id = details.get("memory_id")

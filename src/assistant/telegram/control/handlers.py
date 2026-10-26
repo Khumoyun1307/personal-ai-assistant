@@ -690,6 +690,7 @@ async def handle_tool_confirmation_press(
 
 
 UNDONE_TEXT = "↩️ Undone."
+UNDO_GONE_TEXT = "That note no longer exists (it was deleted), so there is nothing to undo."
 UNDO_SUPERSEDED_TEXT = (
     "It was changed again since, so nothing was undone. Check /settings or ask me what is "
     "saved now."
@@ -726,6 +727,8 @@ async def handle_undo_press(
         settlement = _Settlement("Undone", UNDONE_TEXT, keep_body=True)
     elif outcome.status is undo.UndoStatus.SUPERSEDED:
         settlement = _Settlement("Not undone", UNDO_SUPERSEDED_TEXT, keep_body=True)
+    elif outcome.status is undo.UndoStatus.GONE:
+        settlement = _Settlement("Not undone", UNDO_GONE_TEXT, keep_body=True)
     else:
         settlement = _Settlement(CALLBACK_EXPIRED_TEXT)
     _queue_settlement(session, gateway, press, target, message_id, settlement)
