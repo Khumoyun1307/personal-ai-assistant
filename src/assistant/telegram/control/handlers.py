@@ -971,14 +971,20 @@ async def handle_status(
 PANEL_UNKNOWN = "I don't have that chat. Only chats included under Chat Automation appear here."
 
 
-#: The panel's first line while its stored data is being deleted.
-PANEL_DELETING = "🗑 <b>Deleting what is stored from this chat…</b> The receipt follows."
+#: The pressed panel's first line once a deletion of its data is queued. The
+#: receipt is a message of its own and nothing edits this panel again, so
+#: the line stays true after the deletion (fix round 3, G).
+PANEL_DELETING = (
+    "🗑 <b>You asked me to delete this chat's stored data.</b> The receipt comes as "
+    "a separate message; open the panel again from /settings to see what is left."
+)
 
 
 def render_panel(panel: ConversationPanel, *, timezone: str, deleting: bool = False) -> str:
-    """The conversation panel (J12). `deleting`: a deletion of its data is
-    queued (D83), so the name, summary and notes it would show are left out
-    (fix round 2, item 4); counts and dates are not content."""
+    """The conversation panel (J12). `deleting`: a deletion of its data was
+    just queued (D83), so the name, summary and notes it would show are left
+    out (fix round 2, item 4); counts and dates are not content, and are
+    those of the moment of the tap."""
     name = panel.display_name or "(no name)"
     handle = f" @{escape(panel.username)}" if panel.username else ""
     counts = ", ".join(

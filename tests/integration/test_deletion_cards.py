@@ -577,7 +577,7 @@ async def test_the_pressed_panel_stops_showing_what_is_being_deleted(env: Env) -
     deleting = env.sender.edits[-1]["text"]
     assert "CHATK" not in deleting
     assert "NOTEK" not in deleting
-    assert "Deleting" in deleting
+    assert "You asked me to delete" in deleting
 
     await deliver(env, private_message(OWNER, f"/start bizChat{OTHER_CONTACT}"))
     await tap(env, panels.PANEL_CARD, "ignore")
@@ -585,8 +585,26 @@ async def test_the_pressed_panel_stops_showing_what_is_being_deleted(env: Env) -
     await tap(env, panels.IGNORE_CARD, panels.IGNORE_DELETE_OPTION[1])
     deleting = env.sender.edits[-1]["text"]
     assert "CHATB" not in deleting
-    assert "Deleting" in deleting
+    assert "You asked me to delete" in deleting
     assert "Ignore ✓" in keyboard_labels(env.sender.edits[-1]["reply_markup"])
+
+
+async def test_the_pressed_panel_stays_true_after_the_receipt(env: Env) -> None:
+    """Fix round 3, G: the receipt is a message of its own and nothing edits
+    the pressed panel again, so its first line must still be true once the
+    deletion is done: it says the deletion was asked for and how to see the
+    chat afterwards, not that it is in progress."""
+    await seed(env)
+    await open_panel(env)
+    await tap(env, panels.PANEL_CARD, "delete")
+    await tap(env, panels.DELETE_CARD, "chat")
+    shown = env.sender.edits[-1]["text"]
+    await run_deletion_jobs(env)
+    assert env.sender.edits[-1]["text"] == shown  # the panel is not edited again
+    heading = shown.splitlines()[0]
+    assert "Deleting" not in heading
+    assert "…" not in heading
+    assert "/settings" in heading
 
 
 async def paused_reason(env: Env, conversation: int) -> str | None:
