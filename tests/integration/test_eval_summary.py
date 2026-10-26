@@ -244,7 +244,11 @@ async def test_the_target_runs_the_real_summarize_path_and_produces_every_metric
         "fabricated_facts",
     ]
     assert (result.items, result.items_planned, result.items_total) == (5, 5, 5)
-    assert result.prompts == ("summarize.v1", "fabrication.v1", "open_loops.v1")
+    assert result.prompts == (
+        prompt_registry.active("summarize").label,
+        "fabrication.v1",
+        "open_loops.v1",
+    )
     assert all(d["status"] == "summarized" and d["error"] is None for d in result.details)
     # A perfect summarizer and judge: every open loop surfaced, nothing flagged.
     assert metric(result, "open_loop_recall").all_items.ratio == 1.0
@@ -257,7 +261,7 @@ async def test_the_target_runs_the_real_summarize_path_and_produces_every_metric
         assert request.tools == ()
         assert prompt_registry.active("summarize").text in request.instructions
         assert "preferred language: uz-Latn" in request.instructions
-        assert request.prompt_cache_key == "summarize:summarize.v1"
+        assert request.prompt_cache_key == f"summarize:{prompt_registry.active('summarize').label}"
         assert request.effort == "low"
 
 
@@ -815,7 +819,7 @@ def test_run_summary_works_end_to_end_on_a_throwaway_database(
     (markdown,) = first_out.glob("*.md")
     text = markdown.read_text(encoding="utf-8")
     assert "TRIAL RUN" in text
-    assert "summarize.v1" in text
+    assert prompt_registry.active("summarize").label in text
     assert markdown.name == f"2026-10-25-summary-{LUNA}-trial.md"
     for report in reports:
         assert report["set"] == "summary"

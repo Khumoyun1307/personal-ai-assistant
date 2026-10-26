@@ -158,7 +158,8 @@ product needs to summarize it: an `ai_control` and an `ai_managed` consent namin
 processor of the run's model, an active business connection (dated at the dataset's
 `coverage_started_at` where it has one) and a `coverage_gaps` row for every labelled
 gap (the `delayed` one too: it must not be reported). Then `Summarizer.summarize_period`
-runs over the chat's whole range, so the prompt (`summarize.v1`), the structured-output
+runs over the chat's whole range, using the product's active summarize prompt
+(`summarize.vN` from the prompt registry). The structured-output
 schema, the output guard (items citing no shown message are dropped) and the stop-reason
 handling, including the one truncation retry at a larger budget, are the product's own;
 the effort is the product's `LLM_SUMMARIZE_EFFORT`. The range is fixed (E-n): from one hour

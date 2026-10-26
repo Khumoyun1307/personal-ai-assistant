@@ -11,9 +11,10 @@ account (so one chat's coverage facts can never colour another's):
    and a `coverage_gaps` row for every gap the dataset labels (the `delayed` one
    included: it must not be reported);
 3. the **real** `Summarizer.summarize_period` runs over the chat's whole range:
-   the same prompt (`summarize.v1`), schema, output guard and validation the
-   product uses. The consent wrapper is not in the evaluation stack (E-j), but
-   the summarizer's own consent check is, which is why the consent rows exist;
+   the product's active summarize prompt (`summarize.vN` from the prompt registry),
+   schema, output guard and validation. The consent wrapper is not in the
+   evaluation stack (E-j), but the summarizer's own consent check is, which is why
+   the consent rows exist;
 4. the product's coverage renderer (`memory.catch_up.period_coverage` +
    `caveats`) is asked about the same range and the same chat. Which gap ids and
    whether a pre-connection note it carried become the **structured** caveats of
