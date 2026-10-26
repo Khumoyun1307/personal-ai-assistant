@@ -196,6 +196,23 @@ async def seed(env: Env) -> Seeded:
                 now=env.clock.now(),
                 **target,  # type: ignore[arg-type]
             )
+        # Owner-scope items saved by runs that read a chat (S03.3 provenance
+        # refs): they may hold that chat's text, so they go with it.
+        for content, refs in (
+            ("CHATK owner fact from the chat", {"conversation_ids": [kamola_chat]}),
+            ("CHATK owner fact about her", {"contact_ids": [kamola]}),
+            ("CHATB owner fact from the chat", {"conversation_ids": [bobur_chat]}),
+        ):
+            await items.save(
+                session,
+                account_id=account_id,
+                content=content,
+                kind="fact",
+                tainted=True,
+                refs=refs,
+                actor="owner",
+                now=env.clock.now(),
+            )
         for content, quoted, refs in (
             ("CHATK answer", None, {"conversation_ids": [kamola_chat], "contact_ids": []}),
             ("CHATK by contact", None, {"conversation_ids": [], "contact_ids": [kamola]}),
@@ -273,7 +290,7 @@ async def test_deleting_a_conversation_leaves_no_text_from_it_in_any_content_col
         assert after[marker] == before[marker], marker
     assert report.messages == 3
     assert report.summaries == 2
-    assert report.memory_items == 1
+    assert report.memory_items == 3  # the chat note and two owner items saved from it
     assert report.control_turns_cleared == 3
     # The chat and contact rows stay (mode, ids), content-free.
     assert await scalar(
@@ -309,7 +326,7 @@ async def test_deleting_a_contact_leaves_no_text_about_them_in_any_content_colum
     assert after["NOTEK"] == set()
     for marker in ("CHATB", "NOTEB", "OWNSYN", "ACCTB"):
         assert after[marker] == before[marker], marker
-    assert report.memory_items == 2
+    assert report.memory_items == 4  # notes about her and her chat, items saved from them
     assert (
         await scalar(env, "SELECT count(*) FROM app.contacts WHERE id = :c", c=seeded.kamola) == 1
     )  # the row stays, content-free (ids, bot flag)

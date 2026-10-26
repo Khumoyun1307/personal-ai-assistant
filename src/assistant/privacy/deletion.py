@@ -522,9 +522,11 @@ async def _purge_chats(
             .where(Conversation.id.in_(conversation_ids))
             .values(pending_ai_since=None, updated_at=clock.now())
         )
-    notes = await items.delete_for_scope(
-        session, account_id, conversation_ids=conversation_ids, contact_ids=person_ids
-    )
+    notes = 0
+    for person_id in person_ids:
+        # Their notes, their chats' notes, items saved from runs that drew on them.
+        notes += await items.delete_for_contact(session, account_id, person_id, conversation_ids)
+    notes += await items.delete_for_chats(session, account_id, conversation_ids, contact_ids)
     turns, run_ids = await _redact_turns(
         session, account_id, conversation_ids=conversation_ids, contact_ids=contact_ids
     )

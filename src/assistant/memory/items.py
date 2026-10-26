@@ -607,35 +607,31 @@ async def delete_for_contact(
     )
 
 
-async def delete_for_scope(
+async def delete_for_chats(
     session: AsyncSession,
     account_id: int,
-    *,
-    conversation_ids: Sequence[int] = (),
-    contact_ids: Sequence[int] = (),
+    conversation_ids: Sequence[int],
+    contact_ids: Sequence[int],
 ) -> int:
-    """S03.5 per-conversation / per-contact deletion (FR-PRV-04): the items
-    about these conversations (conversation scope) and about these contacts
-    (contact scope), active or forgotten. Owner-scope items stay.
-
-    The one place the deletion cascades ask which items belong to a scope:
-    the S03.3 safety fixes extend it with owner-scope items whose provenance
-    refs point into the scope."""
-    conditions = []
-    if conversation_ids:
-        conditions.append(
-            (MemoryItem.scope == SCOPE_CONVERSATION)
-            & MemoryItem.conversation_id.in_(list(conversation_ids))
-        )
-    if contact_ids:
-        conditions.append(
-            (MemoryItem.scope == SCOPE_CONTACT) & MemoryItem.contact_id.in_(list(contact_ids))
-        )
-    if not conditions:
+    """S03.5 per-conversation deletion (FR-PRV-04): the notes about these
+    chats, and every item (any scope) saved by a run that drew on the chats
+    or their contacts (provenance refs) — it may hold their text. The
+    owner's own notes about the people (contact scope, not from their text)
+    stay; `delete_for_contact` takes those too (M03 D79)."""
+    if not conversation_ids:
         return 0
+    condition: Any = MemoryItem.conversation_id.in_(list(conversation_ids))
+    for conversation_id in conversation_ids:
+        condition = condition | MemoryItem.provenance.contains(
+            {"refs": {"conversation_ids": [conversation_id]}}
+        )
+    for contact_id in contact_ids:
+        condition = condition | MemoryItem.provenance.contains(
+            {"refs": {"contact_ids": [contact_id]}}
+        )
     return _rowcount(
         await session.execute(
-            delete(MemoryItem).where(MemoryItem.account_id == account_id).where(or_(*conditions))
+            delete(MemoryItem).where(MemoryItem.account_id == account_id).where(condition)
         )
     )
 
