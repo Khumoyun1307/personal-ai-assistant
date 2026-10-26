@@ -100,12 +100,22 @@ contact filter and the final answer (synthetic data, for review; E-s, E-t, E-u).
 | 2026-10-26 | `summary-gpt-6-luna-s036-v3-trial`, `summary-gpt-6-luna-s036-v3` (S03.6) | summarize.v3, fabrication.v1, open_loops.v2 | 0.0011 + 0.0359 |
 | 2026-10-26 | `summary-gpt-6-luna-s036-v4-trial`, `…-s036-v4-aborted.json` (run lost its database, no results), `summary-gpt-6-luna-s036-v4` (S03.6) | summarize.v4, fabrication.v1 (the report says so; its judge read **local** times, which later reports label `fabrication.v1+render.v2`), open_loops.v3 | 0.0011 + 0.0210 + 0.0392 |
 
-Total so far: USD 0.1523 of the owner's USD 1 (baseline 0.0435, S03.6 0.1088), tracked here and in M03.md S03.6.
+| 2026-10-26 | `summary-gpt-6-luna-s037-v5-trial`, `summary-gpt-6-luna-s037-v5` (S03.7) | summarize.v5, fabrication.v1+render.v2+labels.v2, open_loops.v3 | 0.0014 + 0.0463 |
+| 2026-10-26 | `retrieval-agent-gpt-6-luna-s037-v6-trial`, `retrieval-agent-gpt-6-luna-s037-v6` (S03.7, agent mode) | owner_request.v6 (the shipped runtime, E-aa) | 0.0011 + 0.0481 |
+| 2026-10-26 | `summary-gpt-6-luna-s037-v6-trial`, `…-s037-v6-aborted.json` (the checkout changed branch under the run, no results), `summary-gpt-6-luna-s037-v6` (S03.7) | summarize.v6, fabrication.v2+render.v3+labels.v2, open_loops.v4 | 0.0016 + 0.0110 + 0.0474 |
+| 2026-10-26 | `summary-gpt-6-luna-s037-v7-only-low`, `summary-gpt-6-luna-s037-v7-only-medium` (S03.7, `--only c36,c28,c15` effort trials, never a gate) | summarize.v7, fabrication.v2+render.v3+labels.v2, open_loops.v4; effort low / medium | 0.0037 + 0.0081 |
+| 2026-10-26 | `summary-gpt-6-luna-s037-v7` (S03.7) | summarize.v7, fabrication.v2+render.v3+labels.v2, open_loops.v4 | 0.0506 |
+| 2026-10-26 | `retrieval-agent-gpt-6-luna-s037-v7-trial`, `retrieval-agent-gpt-6-luna-s037-v7` (S03.7, agent mode; **incomplete**: r24 not evaluated after 3 provider outages, E-ag) | owner_request.v7 | 0.0011 + 0.0616 |
+
+Total so far: USD 0.4343 of the owner's USD 1 (baseline 0.0435, S03.6 0.1088, S03.7 0.2820 — the sum of `cost.spent_usd` in the S03.7 reports), tracked here and in M03.md S03.6 and S03.7.
 
 The fabrication judge reads the conversation as `evals/render.py` draws it. Reports name it
 `fabrication.v1` up to the summarize.v4 runs and `fabrication.v1+render.v2` from the S03.6
 review on; the baseline and summarize.v3 runs' judge read **UTC** times (render v1), the
 summarize.v4 runs' judge **local** times (render v2), though their reports say `fabrication.v1`.
+From S03.7 the label also names the attribution wording the judges read (`labels.v2`, D98), and
+from summarize.v6 the rubric (`fabrication.v2`: "you" is the owner) and the rendering (`render.v3`:
+edit times) changed (E-ae); counts under different labels are not one series.
 
 ## Model-free runs (no cost)
 
@@ -115,3 +125,5 @@ summarize.v4 runs' judge **local** times (render v2), though their reports say `
 | 2026-10-26 | `retrieval-deterministic` (S03.6) | after the S03.6 search tuning, 32/38 |
 | 2026-10-26 | `retrieval-deterministic-2` (S03.6 review) | after the review's stopword and stem changes, 32/38 (same misses) |
 | 2026-10-26 | `retrieval-replay-deterministic` (S03.6 review) | replay of `retrieval-gpt-6-luna-s036` (run 2) with the current search code, 36/38 |
+| 2026-10-26 | `retrieval-deterministic-3` (S03.7) | with the product's widening (D100) and Russian case siblings (D101), 32/38 |
+| 2026-10-26 | `retrieval-replay-deterministic-2` (S03.7) | replay of run 2 through the product's widening (E-z), 36/38 |
