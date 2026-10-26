@@ -38,7 +38,7 @@ The owner develops on **Windows 11 + Docker Desktop (WSL2 backend)**. All Python
 | First-time setup | `just setup` | — |
 | Start / stop dev stack (app + Postgres) | `just up` / `just down` | — |
 | Install git hooks | `just hooks` | — |
-| Full check (DoD gate) | `just check` | ruff check + format check + mypy + lint-imports + pytest |
+| Full check (DoD gate; runs in CI — not on the owner's machine, §11) | `just check` | ruff check + format check + mypy + lint-imports + pytest |
 | Run all tests | `just test` | `uv run pytest` |
 | Lint + format check | `just lint` | `uv run ruff check . && uv run ruff format --check .` |
 | Type check | `just typecheck` | `uv run mypy src evals` |
@@ -130,7 +130,7 @@ Every change must preserve these. Each invariant gets a named regression test in
 - Retention is implemented, not aspirational: new data classes need a retention rule and deletion cascade.
 - **Logs never contain** message text, captions, contact names/usernames, phone numbers, tokens, API keys, or Bot API URLs (they embed the token). Use internal ids. The redaction test must pass.
 - **Coding agents never read real Telegram content.** Do not open, print, grep or summarise `var/` dumps, backups, database rows with message content, or anything else holding real chat data. Fixtures are produced by a deterministic sanitiser (`tools/probe/sanitize.py`) that keeps an allow-list of structural fields and replaces every string, name, username, caption and file id. The agent writes the sanitiser and sees only its output. **This rule is absolute and is not waived by any authorization below:** permission to *run* a command is never permission to *read* content.
-- **Two bots (owner decision 2026-10-22, superseding the 2026-10-21 one-bot decision).** **Alviro** is the **production** bot: its token lives only in the server's `.env` and only the server polls it — never a laptop (one poller per token: a second `getUpdates` caller gets `409 Conflict` or steals updates and advances the offset, so production messages are lost to the server and real content lands on the laptop). The **dev bot** (neutral name, connected under Chat Automation to the owner's second account) is used for every local run: `just run`, probes, acceptance runs and the agent's checks. The local `.env` holds only the dev bot's token.
+- **Two bots (owner decision 2026-10-22, superseding the 2026-10-21 one-bot decision).** **Alviro** is the **production** bot: only the server uses its token to poll — never a laptop. On the laptop the token lives only in the git-ignored `var/prod.env`, read by `just prod-env-push` and the non-polling `just probe-prod` (wording approved by the owner 2026-10-25) (one poller per token: a second `getUpdates` caller gets `409 Conflict` or steals updates and advances the offset, so production messages are lost to the server and real content lands on the laptop). The **dev bot** (neutral name, connected under Chat Automation to the owner's second account) is used for every local run: `just run`, probes, acceptance runs and the agent's checks. The local `.env` holds only the dev bot's token.
 - **Live runs need the owner's go-ahead.** Anything using a real `BOT_TOKEN` or LLM provider key (`just run` against a real bot, evals, provider spikes) runs only when the owner asked for that specific run. Never use the production (Alviro) token in development. A one-off, non-polling call with Alviro's token from a laptop (`just probe-prod getfile …` for an LV re-check; the flag refuses every command but `me` and `getfile`) needs a per-run owner go-ahead and never runs `listen` or any `getUpdates` call; production-only behaviours are checked on the server in planned windows (R0 session).
   - **Standing exception, granted by the owner on 2026-10-18 — M00 probe commands** (from 2026-10-22: the dev bot). The agent may run `tools/probe/` commands (`me`, `listen`, `send`, `dm`, `edit`, `typing`, `delete`, `getfile`, `sendphoto`, `burst`, `connection`, `summary`) against the **dev bot** without asking each time, to execute the LV protocol. Conditions, all of which must hold:
     1. The probe's console output is content-free by default; `--verbose` prints real payloads and **an agent must never pass it**.
@@ -167,6 +167,8 @@ Every change must preserve these. Each invariant gets a named regression test in
 - Any change touching sending, policy, classification, ingestion, or consent must keep the **mandatory regression suite** green (IMPLEMENTATION_PLAN §10) and add a test for the new behaviour.
 - Bug fixes start with a failing test.
 - Tests are deterministic: no sleeps for timing (use the fake clock), no reliance on wall-clock ordering.
+- **Where tests run (owner decision 2026-10-26).** GitHub CI runs the full suite; it is the test gate. Never run `just check` or the full pytest suite on the owner's machine. Locally, run only the tests directly relevant to the change, and only when they are short (a few files, minutes — not tens of minutes); lint, format and mypy on the changed files are fine. Reviewers likewise read the diff and run only the relevant tests.
+- **Per-slice loop.** Build (implement; relevant tests locally) → review (reviewers on the diff; relevant tests only) → fix → push so CI runs the full suite. If CI fails or the review finds more, fix and repeat until CI is green and the review is clean.
 
 ## 12. Database and migrations
 
@@ -186,15 +188,16 @@ Every change must preserve these. Each invariant gets a named regression test in
 
 ## 14. Dependencies and upgrades
 
-- Versions pinned in `uv.lock`. Upgrades are deliberate: read the changelog (especially aiogram — Bot API changes; openai — API changes; procrastinate — migrations), run the full suite, and note the upgrade in the commit.
+- Versions pinned in `uv.lock`. Upgrades are deliberate: read the changelog (especially aiogram — Bot API changes; openai — API changes; procrastinate — migrations), let CI run the full suite (§11), and note the upgrade in the commit.
 - Do not move to Python 3.15 until aiogram and pydantic-core support it.
 - Re-check Bot API changes against TELEGRAM_FEASIBILITY when upgrading aiogram; if behaviour changed, add the finding to TF §13 and report it to the owner (§2).
 
 ## 15. Git and commits
 
 - Branch per slice (`m01/s01.2-durable-ingestion`); small, focused commits; Conventional Commit style (`feat:`, `fix:`, `test:`, `docs:`, `refactor:`, `chore:`).
-- Never commit secrets, `.env`, `var/`, probe dumps, or database files. Before committing, run `just check`. The pre-commit hook (installed by `just hooks`; runs gitleaks and ruff inside the container) must pass; never use `--no-verify`.
-- Commit or push only when asked by the owner (or as part of an approved workflow).
+- Never commit secrets, `.env`, `var/`, probe dumps, or database files. Before committing, run the tests relevant to the change (§11); CI runs the full suite. The pre-commit hook (installed by `just hooks`; runs gitleaks and ruff inside the container) must pass; never use `--no-verify`.
+- **Stacked draft PRs (owner decision 2026-10-26).** Each slice gets a draft PR as soon as it is ready for CI; CI is the test gate. Each slice branches from the previous slice, and its PR targets the previous slice's branch (main for the first). The owner merges everything at the end of each milestone, in stack order; after the merges the agent removes the merged slices' worktrees, containers and volumes and updates local `main`.
+- Commit or push only when asked by the owner (or as part of an approved workflow — the per-slice loop above is one).
 
 ## 16. Documentation rules
 

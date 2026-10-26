@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import secrets
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -180,6 +181,28 @@ def _create_database(base_url: str, name: str) -> str:
     return sa.engine.make_url(base_url).set(database=name).render_as_string(hide_password=False)
 
 
+#: The throwaway databases are `assistant_eval_` plus 8 hex digits, and nothing else
+#: is ever listed or dropped by `leftover_databases` / `drop_leftover_databases`.
+EVAL_DATABASE_PREFIX = "assistant_eval_"
+_EVAL_DATABASE_NAME = re.compile(rf"^{EVAL_DATABASE_PREFIX}[0-9a-f]{{8}}$")
+
+
+def leftover_databases(base_url: str) -> list[str]:
+    """Throwaway databases a killed run left on the server of `base_url` (a normal
+    run, a failure and Ctrl+C all drop theirs; a killed process cannot)."""
+    with psycopg.connect(_admin_url(base_url), autocommit=True) as conn:
+        rows = conn.execute("SELECT datname FROM pg_database ORDER BY datname").fetchall()
+    return [name for (name,) in rows if _EVAL_DATABASE_NAME.fullmatch(name)]
+
+
+def drop_leftover_databases(base_url: str, names: list[str]) -> list[str]:
+    """Drop the named leftovers; a name that is not one of ours is ignored."""
+    dropped = [name for name in names if _EVAL_DATABASE_NAME.fullmatch(name)]
+    for name in dropped:
+        _drop_database(base_url, name)
+    return dropped
+
+
 def _drop_database(base_url: str, name: str) -> None:
     with psycopg.connect(_admin_url(base_url), autocommit=True) as conn:
         conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
@@ -203,7 +226,7 @@ def _migrate(url: str) -> None:
 @asynccontextmanager
 async def scratch_database(base_url: str) -> AsyncIterator[str]:
     """A migrated throwaway database, dropped on exit. Yields its URL."""
-    name = f"assistant_eval_{secrets.token_hex(4)}"
+    name = f"{EVAL_DATABASE_PREFIX}{secrets.token_hex(4)}"
     url = await asyncio.to_thread(_create_database, base_url, name)
     try:
         await asyncio.to_thread(_migrate, url)

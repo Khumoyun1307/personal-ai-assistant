@@ -23,7 +23,9 @@ from evals.live import LiveSetupError
 from evals.report import RunMeta, render_comparison, render_markdown, to_json, write_report
 from evals.review import ReviewLedger
 from evals.runner import RefusedError, ensure_frozen, run_target
-from evals.targets import Measure, MetricResult, RunContext, SummaryTarget, TargetResult
+from evals.schema import load_e1
+from evals.summary import SummaryTarget
+from evals.targets import Measure, MetricResult, RunContext, TargetResult
 from pydantic import SecretStr
 
 from assistant.config import Settings
@@ -45,6 +47,7 @@ def no_database(monkeypatch: pytest.MonkeyPatch) -> None:
         raise DatabaseTouchedError("the evaluation database was opened")
 
     monkeypatch.setattr(cli, "isolated_corpus", boom)
+    monkeypatch.setattr(cli, "isolated_summary", boom)
 
 
 @pytest.fixture
@@ -290,21 +293,104 @@ def test_the_eval_client_never_retries_invisibly(monkeypatch: pytest.MonkeyPatch
 
 
 # ------------------------------------------------------------------- summary
-def test_the_summary_target_is_a_placeholder_until_s03_2(
-    capsys: pytest.CaptureFixture[str],
+def test_a_summary_run_refuses_without_the_live_flag(
+    no_settings: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert cli.main(["run", "summary"]) == cli.EXIT_NOT_AVAILABLE
-    assert "S03.2" in capsys.readouterr().err
+    code = cli.main(["run", "summary", "--model", LUNA])
+    assert code == cli.EXIT_REFUSED
+    assert "--live" in capsys.readouterr().err  # and the autouse fixture proves no database
 
 
-def test_the_placeholder_only_declares_the_interface() -> None:
-    target = SummaryTarget()
+def test_the_summary_estimate_prints_the_worst_case_and_calls_nothing(
+    forbid_client: None, no_settings: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = cli.main(["run", "summary", "--model", LUNA, "--estimate-only"])
+    out = capsys.readouterr().out
+    match = re.search(
+        r"summary \(period-uz-Latn\): model gpt-6-luna, (\d+) calls, worst case \$(\d\.\d{4})", out
+    )
+    assert code == 0
+    assert match
+    # 40 conversations: the summarize call, its truncation retry, the fabrication judge,
+    # and the open-loop judge where a conversation has loops without `values`.
+    assert 3 * 40 < int(match.group(1)) <= 4 * 40
+    assert 0 < Decimal(match.group(2)) < 1  # fits the per-run cap
+
+
+def test_the_summary_estimate_follows_the_owner_language_and_limit(
+    no_settings: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cli.main(["run", "summary", "--model", LUNA, "--estimate-only", "--limit", "2"])
+    cli.main(["run", "summary", "--model", LUNA, "--estimate-only", "--owner-language", "ru"])
+    first, second = capsys.readouterr().out.splitlines()
+    assert "summary (period-uz-Latn)" in first
+    assert re.search(r"\b[678] calls", first)
+    assert "summary (period-ru)" in second
+
+
+def test_a_summary_run_over_the_cap_does_not_start(
+    no_settings: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = cli.main(["run", "summary", "--model", LUNA, "--live", "--budget-usd", "0.01"])
+    assert code == cli.EXIT_REFUSED
+    assert "over the $0.01 cap" in capsys.readouterr().err
+
+
+def test_the_summary_model_needs_a_price_and_an_owner_language_must_be_known(
+    no_settings: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = ["run", "summary", "--model", "gpt-6-sol", "--estimate-only"]
+    assert cli.main(args) == cli.EXIT_REFUSED
+    assert "--price gpt-6-sol=" in capsys.readouterr().err
+    priced = [*args, "--price", "gpt-6-sol=0.30:1.50"]
+    # A pricier model's full worst case is over the USD 1 cap: the run does not start.
+    assert cli.main(priced) == cli.EXIT_REFUSED
+    assert "over the $1 cap" in capsys.readouterr().err
+    assert cli.main([*priced, "--limit", "5"]) == 0
+    with pytest.raises(SystemExit):
+        cli.main(["run", "summary", "--owner-language", "klingon"])
+
+
+def test_no_client_is_built_for_a_summary_run_without_live(
+    forbid_client: None, no_settings: None
+) -> None:
+    summary = ["run", "summary", "--model", LUNA]
+    assert cli.main(summary) == cli.EXIT_REFUSED
+    assert cli.main([*summary, "--live", "--estimate-only"]) == 0  # estimating builds nothing
+    assert cli.main([*summary, "--live", "--no-write"]) == cli.EXIT_REFUSED
+    assert cli.main([*summary, "--live", "--budget-usd", "0.01"]) == cli.EXIT_REFUSED
+
+
+def test_a_summary_run_with_the_flag_reaches_the_client_before_any_database(
+    forbid_client: None, no_settings: None
+) -> None:
+    # Every guard passes, so it gets as far as building the client, which the
+    # fixture refuses: and the autouse fixture shows no database was opened first.
+    with pytest.raises(AssertionError, match="a model client was configured or built"):
+        cli.main(["run", "summary", "--model", LUNA, "--live"])
+
+
+def test_the_summary_target_declares_the_interface() -> None:
+    target = SummaryTarget(load_e1(), owner_language="uz-Latn")
     assert (target.name, target.dataset, target.route, target.uses_model) == (
         "summary",
         "e1",
         "summarize",
         True,
     )
+    assert target.label == "period-uz-Latn"
+
+
+def test_each_route_uses_the_effort_the_product_sends(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        database_url="postgresql+psycopg://u:p@db:5432/a",
+        llm_summarize_effort="medium",
+        llm_owner_request_effort="high",
+    )
+    monkeypatch.setattr(live, "_settings", lambda: settings)
+    assert live.resolve_model("summarize", None) == live.ModelChoice(LUNA, "medium")
+    assert live.resolve_model("owner_request", None) == live.ModelChoice(LUNA, "high")
 
 
 # -------------------------------------------------------------------- reports

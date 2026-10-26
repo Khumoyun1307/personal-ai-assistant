@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from assistant.memory.search import normalize
-from evals.review import ReviewLedger
+from evals.review import ReviewLedger, coverage_key
 from evals.schema import Commitment, Conversation, QuestionToOwner
 from evals.targets import Measure, MetricResult
 
@@ -82,6 +82,7 @@ def count_metric(
     pending: int = 0,
     note: str = "",
     set_size: int | None = None,
+    gated: bool = True,
 ) -> MetricResult:
     """A "no more than `threshold` offences" metric (zero fabrications)."""
     confirmed_items = {item for item in items if ledger.is_confirmed(item)}
@@ -98,6 +99,7 @@ def count_metric(
         pending=pending,
         note=note,
         set_size=set_size,
+        gated=gated,
     )
 
 
@@ -172,6 +174,7 @@ def recall_metric(
     ledger: ReviewLedger,
     judged: Mapping[str, bool] | None = None,
     set_size: int | None = None,
+    summary_texts: Mapping[str, str] | None = None,
 ) -> MetricResult:
     """Open-loop recall, with three sources of truth for "was it surfaced":
 
@@ -184,6 +187,11 @@ def recall_metric(
     An item with no verdict from any source counts as **missed** in the
     pre-screen. In the gate it is *unresolved*: it leaves the metric pending
     (never a pass) until the owner rules on it.
+
+    With `summary_texts` (loop id -> the text of the summary it was judged in), the
+    owner's verdict is looked up under `coverage_key(loop, text)`: it belongs to that
+    summary and does not carry over to another run's. Without it the plain loop id
+    is the key (hand-built fixtures).
     """
     judged = judged or {}
     pre_screen: dict[str, bool] = {}
@@ -193,7 +201,8 @@ def recall_metric(
         pre_screen[item] = checked if checked is not None else judged.get(item, False)
         if not ledger.is_confirmed(item):
             continue
-        owner = ledger.coverage_verdict(item)
+        key = item if summary_texts is None else coverage_key(item, summary_texts.get(item, ""))
+        owner = ledger.coverage_verdict(key)
         if checked is not None:
             gate[item] = checked
         elif owner is not None:
@@ -261,9 +270,22 @@ def check_caveats(conversation: Conversation, output: SummaryOutput) -> CaveatCh
     )
 
 
-def caveat_metrics(checks: Sequence[CaveatCheck], ledger: ReviewLedger) -> list[MetricResult]:
+def caveat_metrics(
+    checks: Sequence[CaveatCheck],
+    ledger: ReviewLedger,
+    *,
+    presence_set_size: int | None = None,
+    spurious_set_size: int | None = None,
+    gated: bool = True,
+    note: str = "",
+) -> list[MetricResult]:
     """Presence (every conversation that has expected caveats carries them all)
-    and spurious caveats (none, e.g. for a delayed gap that lost nothing)."""
+    and spurious caveats (none, e.g. for a delayed gap that lost nothing).
+
+    The set sizes are the whole set's (a `--limit` or stopped run measures
+    fewer, and its gate must not read as complete); default: the items measured.
+    `gated=False` keeps the thresholds as a pre-screen comparison only, with `note`
+    saying why (the summary target: the caveats do not come from the model)."""
     with_caveats = {c.conversation_id: not c.missing for c in checks if c.expected}
     presence = ratio_metric(
         key="caveat_presence",
@@ -271,6 +293,9 @@ def caveat_metrics(checks: Sequence[CaveatCheck], ledger: ReviewLedger) -> list[
         outcomes=with_caveats,
         threshold=CAVEAT_THRESHOLD,
         ledger=ledger,
+        set_size=presence_set_size,
+        gated=gated,
+        note=note,
     )
     spurious = count_metric(
         key="spurious_caveats",
@@ -279,6 +304,9 @@ def caveat_metrics(checks: Sequence[CaveatCheck], ledger: ReviewLedger) -> list[
         offending=[c.conversation_id for c in checks if c.spurious],
         threshold=0,
         ledger=ledger,
+        set_size=spurious_set_size,
+        gated=gated,
+        note=note,
     )
     return [presence, spurious]
 
@@ -495,11 +523,14 @@ def check_language(text: str, expected: OwnerLanguage) -> LanguageVerdict:
     return LanguageVerdict(detected == language and share >= SCRIPT_SHARE_MIN, detected, share)
 
 
-def language_metric(verdicts: Mapping[str, LanguageVerdict], ledger: ReviewLedger) -> MetricResult:
+def language_metric(
+    verdicts: Mapping[str, LanguageVerdict], ledger: ReviewLedger, set_size: int | None = None
+) -> MetricResult:
     return ratio_metric(
         key="owner_language",
         label="Owner-facing language and script correct",
         outcomes={item: verdict.ok for item, verdict in verdicts.items()},
         threshold=LANGUAGE_THRESHOLD,
         ledger=ledger,
+        set_size=set_size,
     )
