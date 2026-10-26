@@ -45,7 +45,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnClause
 
 from assistant.conversations.models import Conversation, Message
-from assistant.memory.search import TsqueryMode, build_tsquery, normalize, query_terms
+from assistant.memory.search import (
+    TsqueryMode,
+    build_tsquery,
+    content_terms,
+    normalize,
+    query_terms,
+)
 
 #: How many variants of one question are searched, and how many hits returned.
 MAX_QUERIES = 6
@@ -213,7 +219,7 @@ async def search_messages(
     for raw in list(queries)[:MAX_QUERIES]:
         key = normalize(raw)
         if key:
-            variants.setdefault(key, query_terms(raw))
+            variants.setdefault(key, content_terms(query_terms(raw)))
 
     best: dict[int, SearchHit] = {}
 

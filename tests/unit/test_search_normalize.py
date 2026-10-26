@@ -17,6 +17,7 @@ from hypothesis import strategies as st
 from assistant.memory.search import (
     NORMALIZER_VERSION,
     build_tsquery,
+    content_terms,
     detect_script,
     guess_lang,
     normalize,
@@ -186,6 +187,26 @@ def test_query_terms_let_no_tsquery_syntax_through() -> None:
 
 def test_query_terms_of_punctuation_only_is_empty() -> None:
     assert query_terms("?! — …") == []
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("the address Kamola sent", ["address", "kamola", "sent"]),
+        ("when does Daniel land", ["daniel", "land"]),
+        ("сколько стоит замена колодок", ["stoit", "zamena", "kolodok"]),
+        ("предоплата за мёд Эргаш", ["predoplata", "myod", "ergash"]),
+        ("Nilufar opa bilan uchrashuv qachon", ["nilufar", "opa", "uchrashuv"]),
+    ],
+)
+def test_function_words_are_not_search_terms(query: str, expected: list[str]) -> None:
+    """S03.6: as prefixes, "the", "za", "bilan" match nearly every message, so an
+    any-word search ranked chatter (an English message full of "the") first."""
+    assert content_terms(query_terms(query)) == expected
+
+
+def test_a_query_of_function_words_only_is_searched_as_typed() -> None:
+    assert content_terms(query_terms("what is this")) == ["what", "is", "this"]
 
 
 @pytest.mark.parametrize(
