@@ -13,7 +13,8 @@ Safe by default: `run retrieval` is the deterministic, model-free baseline, and
 `run summary` (which always calls a model) refuses without `--live`. Any run
 that calls a model refuses without `--live`, refuses when the worst-case cost
 exceeds the cap, and stops mid-run before overspending. See `evals/README.md`
-"Running". Exit codes: 0 done, 2 refused or misconfigured, 4 stopped early.
+"Running". Exit codes: 0 done, 2 refused or misconfigured, 4 stopped early or
+items not evaluated.
 """
 
 from __future__ import annotations
@@ -66,14 +67,15 @@ REPO = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_DIR = REPO / "docs" / "evals"
 REVIEWS_DIR = Path(__file__).resolve().parent / "reviews"
 EXIT_REFUSED = 2
-#: A run that stopped before its planned items (the budget cap): its report was
-#: written, but the run failed.
+#: A run that stopped before its planned items (the budget cap), or with items it
+#: could not evaluate (the provider stayed unavailable): its report was written,
+#: but the run failed.
 EXIT_INCOMPLETE = 4
 
 
 def exit_code(result: TargetResult) -> int:
-    """Non-zero for a stopped run. A deliberate `--limit` trial is not a failure."""
-    return EXIT_INCOMPLETE if result.stopped else 0
+    """Non-zero for an incomplete run. A deliberate `--limit` trial is not a failure."""
+    return EXIT_INCOMPLETE if result.incomplete else 0
 
 
 def _positive(value: str) -> int:

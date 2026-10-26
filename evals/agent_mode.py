@@ -17,20 +17,29 @@ runtime answers it, and then the account's control turns, agent runs, memory
 items, summaries, cards, confirmations and audit rows are deleted and its
 settings and chat modes restored, so **no query sees another's history**.
 
-Instrumentation only, never a behaviour change: a wrapper around the
-`search_messages` handler records what each call returned, and a wrapper
-around the model client keeps the model's own final text (to check the values
-in the model's words, not in the sources the application added).
+Instrumentation only, never a behaviour change: wrappers around the
+`search_messages` and `get_conversation` handlers record what each call
+returned (every result, as dataset ids), the run's tool sequence is read from
+`agent_run_steps` before the reset, and a wrapper around the model client
+keeps the model's own final text (to check the values in the model's words,
+not in the sources the application added) and the provider errors.
 
-Metrics (E-aa):
+Metrics (E-aa; S03.7 fix round):
 
-- **top 5**: a target message among the first 5 results of **any**
+- **top 5** (gated): a target message among the first 5 results of **any**
   `search_messages` call in the run (no search at all: a miss, `no_search`);
-- **correct answer with reference**: the run succeeded, at least one
+- **correct answer with reference** (gated): the run succeeded, at least one
   *verified* citation (a `[msg:id]` the runtime turned into a source) points to
   a target, no citation was removed as unverified, and every `answer_values`
-  string is in the model's own words as whole words — or inflected (E-s
-  endings) only where a cited target message has that very form.
+  string is in the model's own words as whole words — amounts and clock times
+  compared as values (`value_key`) — or inflected (E-s endings) only where a
+  cited target message has that very form;
+- **target reached the model** (informational): a target among any search
+  result or any message `get_conversation` showed.
+
+A run that fails on the provider (`llm_unavailable`, `llm_rate_limited`) is
+run again from a fresh state, at most twice; if it never gets through, the
+item is *not evaluated* (neither hit nor miss) and the run is incomplete.
 
 Cost (E-ab): the loop's worst case is far above a typical run, so a full run
 may start on the **expected** cost calibrated from a `--limit 1` trial
@@ -41,9 +50,11 @@ gate.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+import re
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -67,7 +78,7 @@ from assistant.accounts.service import (
 )
 from assistant.agent import prompt_registry
 from assistant.agent.citations import MARKER
-from assistant.agent.models import AgentRun, ToolConfirmation
+from assistant.agent.models import AgentRun, AgentRunStep, ToolConfirmation
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime, RunStatus
 from assistant.agent.summarize import SummarizeConfig, Summarizer
 from assistant.agent.tools.registry import (
@@ -80,8 +91,16 @@ from assistant.agent.tools.registry import (
 from assistant.conversations.models import Conversation, Message
 from assistant.core.channel import Button, Delivery
 from assistant.core.model_routes import processor_for_model
-from assistant.llm.port import LLMClient, LLMRequest, LLMResponse, ParsedResponse, StopReason
+from assistant.llm.port import (
+    LLMClient,
+    LLMError,
+    LLMRequest,
+    LLMResponse,
+    ParsedResponse,
+    StopReason,
+)
 from assistant.memory.models import ConversationSummary, MemoryItem
+from assistant.memory.search import normalize
 from evals.budget import BudgetExceededError, CostEstimate, Prices, estimate
 from evals.corpus import LoadedCorpus
 from evals.errors import RefusedError
@@ -91,7 +110,6 @@ from evals.metrics import (
     contains_words,
     is_inflection,
     ratio_metric,
-    word_key,
 )
 from evals.retrieval import (
     ANSWER_THRESHOLD,
@@ -197,6 +215,8 @@ def load_calibration(path: Path, *, model: str) -> Calibration:
         problems.append(f"it did not run {prompt}")
     if report.get("stopped"):
         problems.append("it stopped early")
+    if report.get("not_evaluated"):
+        problems.append("it has items not evaluated (a provider outage)")
     items = report.get("items")
     if not isinstance(items, int) or items < 1:
         problems.append("no item ran")
@@ -247,10 +267,123 @@ def check_agent_estimate(
     return worst, expected
 
 
+# ------------------------------------------------------------ values as values
+#: Words that multiply the number before them, in the product's ASCII key form
+#: (млн -> mln, минг -> ming, тысяч -> tisyach), with their power of ten.
+_MULTIPLIERS: dict[str, int] = {
+    **dict.fromkeys(
+        ("mlrd", "milliard", "milliarda", "milliardov", "billion", "billions", "bn"), 9
+    ),
+    **dict.fromkeys(("mln", "million", "milliona", "millionov", "millions"), 6),
+    **dict.fromkeys(
+        ("ming", "tisyach", "tisyacha", "tisyachi", "tis", "thousand", "thousands", "k"), 3
+    ),
+}
+_LONGEST_FIRST = sorted(_MULTIPLIERS, key=len, reverse=True)
+#: A number (digits grouped by thousands with a space, comma or dot; or a
+#: plain or decimal number), then perhaps a word right after it.
+_AMOUNT = re.compile(
+    r"(?<![0-9.,:])(?P<num>\d{1,3}(?:[ ,.]\d{3})+(?![0-9])|\d+(?:[.,]\d+)?)"
+    r"(?:(?P<space> ?)(?P<word>[a-z]+)\.?)?"
+)
+_GROUPED = re.compile(r"\d{1,3}(?:[ ,.]\d{3})+")
+#: A clock time `H:MM` or `H.MM`, perhaps with a.m./p.m., perhaps with an
+#: Uzbek ending glued on (`16:30da`). Not part of a date (`14.10.2026`).
+_TIME = re.compile(
+    r"(?<![0-9.,:])(?P<h>\d{1,2})[:.](?P<m>\d{2})(?![0-9]|[.,:][0-9])"
+    r"(?:(?P<ampm> ?(?P<half>[ap])\.? ?m\b\.?)|(?P<suffix>[a-z]+))?"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _Term:
+    start: int
+    end: int
+    value: Decimal
+    power: int | None
+    #: An Uzbek ending glued to the multiplier (`300 mingga`): kept, so E-s
+    #: still decides whether the inflected form counts.
+    suffix: str
+    grouped: bool
+
+
+def _multiplier(word: str, *, glued: bool) -> tuple[int, str] | None:
+    for key in _LONGEST_FIRST:
+        rest = word[len(key) :]
+        if not word.startswith(key) or (key == "k" and (not glued or rest)):
+            continue
+        if is_inflection(rest):
+            return _MULTIPLIERS[key], rest
+    return None
+
+
+def _terms(text: str) -> Iterator[_Term]:
+    for match in _AMOUNT.finditer(text):
+        raw = match["num"]
+        grouped = _GROUPED.fullmatch(raw) is not None
+        value = Decimal(re.sub(r"[ ,.]", "", raw) if grouped else raw.replace(",", "."))
+        found = _multiplier(match["word"], glued=not match["space"]) if match["word"] else None
+        if found is None:
+            yield _Term(match.start(), match.end("num"), value, None, "", grouped)
+        else:
+            yield _Term(match.start(), match.end(), value, found[0], found[1], grouped)
+
+
+def _amounts(text: str) -> str:
+    """Every amount as its integer: `1 500 000`, `1,5 mln`, `1 million 500 ming`
+    and `1.5 million` all become `1500000`. A plain number without a unit or a
+    thousands group (`17`, `3,5`) is left as written."""
+    terms = list(_terms(text))
+    out: list[str] = []
+    position = index = 0
+    while index < len(terms):
+        term = terms[index]
+        start, end, power, suffix = term.start, term.end, term.power, term.suffix
+        value = term.value * 10**power if power is not None else term.value
+        # "3 mln 380 ming": a smaller unit right after a larger one adds up.
+        while (
+            power is not None
+            and not suffix
+            and index + 1 < len(terms)
+            and (following := terms[index + 1]).power is not None
+            and following.power < power
+            and text[end : following.start].isspace()
+        ):
+            index += 1
+            value += following.value * 10**following.power
+            end, power, suffix = following.end, following.power, following.suffix
+        index += 1
+        if (power is None and not term.grouped) or value != value.to_integral_value():
+            continue
+        out += [text[position:start], f"{int(value)}{suffix}"]
+        position = end
+    out.append(text[position:])
+    return "".join(out)
+
+
+def _time(match: re.Match[str]) -> str:
+    hour, minute = int(match["h"]), int(match["m"])
+    if match["ampm"]:
+        if not 1 <= hour <= 12:
+            return match[0]
+        hour = hour % 12 + (12 if match["half"] == "p" else 0)
+    if hour > 23 or minute > 59:
+        return match[0]
+    return f"h{hour:02d}{minute:02d}{match['suffix'] or ''}"
+
+
+def value_key(text: str) -> str:
+    """`metrics.word_key` with amounts and clock times read as values (S03.7 fix
+    round): `03:15` = `3:15 a.m.`, `16:30` = `4:30 p.m.`, `1 500 000` = `1,5 mln`
+    = `1 million 500 ming`, `3 mln` = `3 миллион`, `300 ming` = `300 000`. Two
+    different values never become equal; everything else is `word_key`."""
+    return " ".join(re.findall(r"[a-z0-9]+", _TIME.sub(_time, _amounts(normalize(text)))))
+
+
 # ------------------------------------------------------------ answer checking
 def _inflected_phrases(haystack: str, needle: str) -> list[str]:
     """The phrases of `haystack` that carry `needle` with E-s endings on its
-    last word (both are `word_key`s), as `metrics.contains_value` accepts them."""
+    last word (both are `value_key`s), as `metrics.contains_value` accepts them."""
     words = needle.split()
     if not words:
         return []
@@ -294,12 +427,14 @@ def check_agent_answer(
         problems.append("no_target_cited")
     if unverified:
         problems.append("unverified_citation")
-    words = word_key(MARKER.sub(" ", model_text))
+    # Amounts and times compare as values (`value_key`); E-s endings still
+    # count only where a cited target has that very form.
+    words = value_key(MARKER.sub(" ", model_text))
     targets = [
-        word_key(text) for ref, text in cited_texts.items() if ref in query.target_message_ids
+        value_key(text) for ref, text in cited_texts.items() if ref in query.target_message_ids
     ]
     for value in query.answer_values:
-        needle = word_key(value)
+        needle = value_key(value)
         if contains_words(words, needle):
             continue
         if any(
@@ -327,26 +462,55 @@ class _SearchCall:
             "contact": self.contact,
             "widened": self.widened,
             "top5": list(self.results[:TOP_N]),
+            "results": list(self.results),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _ChatRead:
+    """One `get_conversation` call: the dataset ids of the messages it showed."""
+
+    conversation: str | None
+    messages: tuple[str, ...]
+
+    def as_json(self) -> dict[str, Any]:
+        return {"conversation": self.conversation, "messages": list(self.messages)}
+
+
+@dataclass(slots=True)
+class _Reads:
+    """What the run's read tools returned (instrumentation only)."""
+
+    searches: list[_SearchCall] = field(default_factory=list)
+    chats: list[_ChatRead] = field(default_factory=list)
 
 
 class _FinalText:
     """The model client, unchanged, keeping the model's last final text of an
-    `owner_request` call (instrumentation only)."""
+    `owner_request` call and the provider errors (instrumentation only)."""
 
     def __init__(self, inner: LLMClient) -> None:
         self._inner = inner
         self.processor = inner.processor
         self.text: str | None = None
+        self.errors: list[LLMError] = []
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
-        response = await self._inner.complete(request)
+        try:
+            response = await self._inner.complete(request)
+        except LLMError as error:
+            self.errors.append(error)
+            raise
         if request.purpose == ROUTE and response.stop_reason is StopReason.COMPLETED:
             self.text = response.text
         return response
 
     async def parse[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> ParsedResponse[T]:
-        return await self._inner.parse(request, schema)
+        try:
+            return await self._inner.parse(request, schema)
+        except LLMError as error:
+            self.errors.append(error)
+            raise
 
 
 class _Capture:
@@ -374,6 +538,18 @@ class _FixedClock:
 
 
 # --------------------------------------------------------------- the target
+#: Run errors that measure the provider or the network, not the pipeline: such
+#: an item is run again (fresh state), and if it never gets through it is not
+#: evaluated (S03.7 fix round; the 2026-10-26 run lost r14-r18 to one outage).
+OUTAGE_ERRORS = frozenset({"llm_unavailable", "llm_rate_limited"})
+#: Attempts per item: the first and at most two retries, like the product's
+#: two SDK retries (the evaluation's SDK client retries nothing, so the ledger
+#: sees every attempt; `evals/live.py`).
+MAX_ATTEMPTS = 3
+#: Seconds to wait before each retry.
+RETRY_DELAYS = (15.0, 60.0)
+
+
 @dataclass(frozen=True, slots=True)
 class _Record:
     query_id: str
@@ -389,21 +565,46 @@ class _Record:
     error: str | None
     #: The reply the owner would read (synthetic data), for review.
     reply: str
+    #: The run's tool calls in order, from `agent_run_steps` (content-free).
+    tools: tuple[tuple[str, str], ...] = ()
+    reads: tuple[_ChatRead, ...] = ()
+    #: A target was among the results of any search or the messages of any
+    #: chat read in the run (whether the model ranked it high or not).
+    target_reached: bool = False
+    #: The run failed on the provider (`OUTAGE_ERRORS`).
+    outage: bool = False
+    #: The last provider error's SDK class name and code, if any.
+    exc_type: str | None = None
+    error_code: str | None = None
+    attempts: int = 1
+    failed_attempts: tuple[Mapping[str, Any], ...] = ()
+    #: Every attempt failed on the provider: neither a hit nor a miss.
+    not_evaluated: bool = False
+
+    def attempt_json(self) -> dict[str, Any]:
+        return {"error": self.error, "exc_type": self.exc_type, "code": self.error_code}
 
     def as_json(self) -> dict[str, Any]:
         return {
             "id": self.query_id,
             "intents": list(self.intents),
+            "not_evaluated": self.not_evaluated,
             "hit_top5": self.hit,
             "rank": self.rank,
+            "target_reached_model": self.target_reached,
             "miss": "no_search" if not self.searches else None,
+            "tools": [{"tool": name, "status": status} for name, status in self.tools],
             "searches": [search.as_json() for search in self.searches],
+            "reads": [read.as_json() for read in self.reads],
             "answer_correct": self.answer_correct,
             "answer_problems": list(self.problems),
             "citations": list(self.citations),
             "unverified_citations": self.unverified,
             "run_status": self.run_status,
             "error": self.error,
+            "exc_type": self.exc_type,
+            "attempts": self.attempts,
+            "failed_attempts": [dict(attempt) for attempt in self.failed_attempts],
             "reply": self.reply,
         }
 
@@ -432,16 +633,20 @@ class AgentModeTarget:
         *,
         owner_language: OwnerLanguage = "uz-Latn",
         corpus: LoadedCorpus | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._queries = list(queries)
         self._owner_language = owner_language
         self._bound = corpus
+        self._sleep = sleep
         self._saved: _Saved | None = None
         self._contacts: dict[int, str] = {}
         self._turns = 0
 
     def bind(self, corpus: LoadedCorpus) -> AgentModeTarget:
-        return AgentModeTarget(self._queries, owner_language=self._owner_language, corpus=corpus)
+        return AgentModeTarget(
+            self._queries, owner_language=self._owner_language, corpus=corpus, sleep=self._sleep
+        )
 
     @property
     def _corpus(self) -> LoadedCorpus:
@@ -469,17 +674,33 @@ class AgentModeTarget:
         stopped: str | None = None
         for query in queries:
             try:
-                records.append(await self._evaluate(query, context))
+                records.append(await self._attempts(query, context))
             except BudgetExceededError as stop:
                 stopped = str(stop)
                 break
         return self._result(records, planned=len(queries), ledger=context.reviews, stopped=stopped)
 
+    async def _attempts(self, query: RetrievalQuery, context: RunContext) -> _Record:
+        """One item, run again after a provider outage (each attempt from a
+        fresh state: `_evaluate` resets the account); never scored as a miss
+        when every attempt failed on the provider. Each attempt is billed."""
+        failed: list[Mapping[str, Any]] = []
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            record = await self._evaluate(query, context)
+            if not record.outage:
+                return replace(record, attempts=attempt, failed_attempts=tuple(failed))
+            failed.append(record.attempt_json())
+            if attempt < MAX_ATTEMPTS:
+                await self._sleep(RETRY_DELAYS[attempt - 1])
+        return replace(
+            record, attempts=MAX_ATTEMPTS, failed_attempts=tuple(failed), not_evaluated=True
+        )
+
     async def _evaluate(self, query: RetrievalQuery, context: RunContext) -> _Record:
         assert context.llm is not None
         assert context.model is not None
         corpus = self._corpus
-        searches: list[_SearchCall] = []
+        reads = _Reads()
         llm = _FinalText(context.llm)
         channel = _Capture()
         clock = _FixedClock(corpus.now)
@@ -487,7 +708,7 @@ class AgentModeTarget:
             session_factory=corpus.session_factory,
             llm=llm,
             channel=channel,
-            registry=self._registry(searches),
+            registry=self._registry(reads),
             clock=clock,
             config=AgentConfig(
                 model=context.model, effort=context.effort, enabled_flags=PRODUCTION_FLAGS
@@ -503,6 +724,8 @@ class AgentModeTarget:
         try:
             outcome = await runtime.run(turn_id)
             error_class = await self._error_class(outcome.run_id)
+            # Read before `_reset`, which deletes the run and its steps.
+            tools = await self._tool_steps(outcome.run_id)
             cited = tuple(corpus.refs[i] for i in outcome.cited_message_ids if i in corpus.refs)
             cited_texts = await self._texts(outcome.cited_message_ids)
         finally:
@@ -516,22 +739,25 @@ class AgentModeTarget:
             query=query,
             cited_texts=cited_texts,
         )
+        targets = set(query.target_message_ids)
         rank: int | None = None
-        for search in searches:
+        for search in reads.searches:
             positions = [
-                i
-                for i, ref in enumerate(search.results[:TOP_N], start=1)
-                if ref in query.target_message_ids
+                i for i, ref in enumerate(search.results[:TOP_N], start=1) if ref in targets
             ]
             if positions:
                 rank = positions[0]
                 break
+        reached = any(targets & set(search.results) for search in reads.searches) or any(
+            targets & set(chat.messages) for chat in reads.chats
+        )
+        last_error = llm.errors[-1] if llm.errors else None
         return _Record(
             query_id=query.id,
             intents=tuple(query.intents),
             hit=rank is not None,
             rank=rank,
-            searches=tuple(searches),
+            searches=tuple(reads.searches),
             answer_correct=verdict.correct,
             problems=verdict.problems,
             citations=cited,
@@ -541,34 +767,47 @@ class AgentModeTarget:
             if succeeded
             else f"run:{outcome.status.value}" + (f":{error_class}" if error_class else ""),
             reply=channel.sends[0] if channel.sends else "",
+            tools=tools,
+            reads=tuple(reads.chats),
+            target_reached=reached,
+            outage=not succeeded and error_class in OUTAGE_ERRORS,
+            exc_type=None if last_error is None else last_error.exc_type,
+            error_code=None if last_error is None else last_error.code,
         )
 
-    def _registry(self, searches: list[_SearchCall]) -> ToolRegistry:
-        """The product's registry, with `search_messages` results recorded."""
+    def _registry(self, reads: _Reads) -> ToolRegistry:
+        """The product's registry, with what `search_messages` and
+        `get_conversation` returned recorded (dataset ids, in order)."""
         refs, contacts = self._corpus.refs, self._contacts
+
+        def dataset_ids(rows: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+            return tuple(refs[r["message_id"]] for r in rows if r.get("message_id") in refs)
 
         def recording(tool: ToolDefinition) -> ToolDefinition:
             real = tool.handler
 
             async def handler(ctx: ToolContext, args: Any) -> ToolOutcome:
                 outcome = await real(ctx, args)
-                results = outcome.data.get("results") or []
-                searches.append(
-                    _SearchCall(
-                        queries=tuple(args.queries),
-                        contact=contacts.get(args.contact_id) if args.contact_id else None,
-                        widened=bool(outcome.data.get("widened")),
-                        results=tuple(
-                            refs[r["message_id"]] for r in results if r["message_id"] in refs
-                        ),
+                if tool.name == "search_messages":
+                    reads.searches.append(
+                        _SearchCall(
+                            queries=tuple(args.queries),
+                            contact=contacts.get(args.contact_id) if args.contact_id else None,
+                            widened=bool(outcome.data.get("widened")),
+                            results=dataset_ids(outcome.data.get("results") or []),
+                        )
                     )
-                )
+                else:
+                    shown = dataset_ids(outcome.data.get("messages") or [])
+                    reads.chats.append(
+                        _ChatRead(shown[0].split(".", 1)[0] if shown else None, shown)
+                    )
                 return outcome
 
             return replace(tool, handler=handler)
 
         return ToolRegistry(
-            recording(tool) if tool.name == "search_messages" else tool
+            recording(tool) if tool.name in ("search_messages", "get_conversation") else tool
             for tool in default_registry().all()
         )
 
@@ -666,6 +905,20 @@ class AgentModeTarget:
             run = await session.get(AgentRun, run_id)
             return None if run is None else run.error_class
 
+    async def _tool_steps(self, run_id: int | None) -> tuple[tuple[str, str], ...]:
+        """The run's tool calls in order (`agent_run_steps`: names and statuses)."""
+        if run_id is None:
+            return ()
+        async with self._corpus.session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(AgentRunStep.tool_name, AgentRunStep.status)
+                    .where(AgentRunStep.run_id == run_id)
+                    .order_by(AgentRunStep.seq)
+                )
+            ).all()
+        return tuple((str(name), str(status)) for name, status in rows)
+
     async def _texts(self, message_ids: Sequence[int]) -> dict[str, str]:
         if not message_ids:
             return {}
@@ -720,11 +973,14 @@ class AgentModeTarget:
         stopped: str | None,
     ) -> TargetResult:
         total = len(self._queries)
+        # An item the provider never let through is neither a hit nor a miss.
+        measured = [r for r in records if not r.not_evaluated]
+        skipped = tuple(r.query_id for r in records if r.not_evaluated)
         metrics: list[MetricResult] = [
             ratio_metric(
                 key="top5_hit",
                 label="Target message in the top 5 of any search in the agent run",
-                outcomes={r.query_id: r.hit for r in records},
+                outcomes={r.query_id: r.hit for r in measured},
                 threshold=HIT_THRESHOLD,
                 ledger=ledger,
                 set_size=total,
@@ -732,45 +988,73 @@ class AgentModeTarget:
             ratio_metric(
                 key="answer_correct",
                 label="Correct reply with a verified citation of a target",
-                outcomes={r.query_id: r.answer_correct for r in records},
+                outcomes={r.query_id: r.answer_correct for r in measured},
                 threshold=ANSWER_THRESHOLD,
                 ledger=ledger,
                 set_size=total,
+            ),
+            ratio_metric(
+                key="target_reached_model",
+                label="Target message reached the model (any search result or chat read)",
+                outcomes={r.query_id: r.target_reached for r in measured},
+                threshold=HIT_THRESHOLD,
+                ledger=ledger,
+                set_size=total,
+                gated=False,
+                note=(
+                    "Pipeline signal next to the gated top 5: it also counts search results "
+                    "past the fifth and messages get_conversation showed, which can hide a "
+                    "ranking regression; the answer metric already scores the pipeline end "
+                    "to end."
+                ),
             ),
         ]
         notes: list[str] = [
             "Agent mode: the real owner_request runtime with the shipped prompt, the "
             "production release flags and the product's citation step (E-aa)."
         ]
-        unsearched = sorted(r.query_id for r in records if not r.searches)
+        unsearched = sorted(r.query_id for r in measured if not r.searches)
         if unsearched:
             notes.append(
                 f"{len(unsearched)} item(s) made no search_messages call (a top-5 miss, "
                 "`no_search`): " + ", ".join(unsearched)
             )
-        widened = sorted(r.query_id for r in records if any(s.widened for s in r.searches))
+        widened = sorted(r.query_id for r in measured if any(s.widened for s in r.searches))
         if widened:
             notes.append(
                 f"{len(widened)} item(s) had a search widened by the service: " + ", ".join(widened)
             )
-        failed = sorted(r.query_id for r in records if r.error)
+        retried = sorted(r.query_id for r in records if r.failed_attempts)
+        if retried:
+            notes.append(
+                f"{len(retried)} item(s) were run again after a provider outage: "
+                + ", ".join(retried)
+            )
+        failed = sorted(r.query_id for r in measured if r.error)
         if failed:
             notes.append(
                 f"{len(failed)} run(s) did not succeed and count as misses: " + ", ".join(failed)
+            )
+        if skipped:
+            notes.append(
+                f"INCOMPLETE: {len(skipped)} item(s) not evaluated (the provider stayed "
+                f"unavailable through {MAX_ATTEMPTS} attempts; neither hits nor misses): "
+                + ", ".join(skipped)
             )
         if stopped:
             notes.append(f"STOPPED EARLY: {stopped}; {len(records)} of {planned} items ran")
         return TargetResult(
             target=self.name,
             dataset=self.dataset,
-            items=len(records),
+            items=len(measured),
             items_planned=planned,
             items_total=total,
             metrics=tuple(metrics),
             details=tuple(r.as_json() for r in records),
-            breakdowns={"top-5 hit by intent": _by_intent(records)},
+            breakdowns={"top-5 hit by intent": _by_intent(measured)},
             notes=tuple(notes),
             prompts=(prompt_registry.active(ROUTE).label,),
+            not_evaluated=skipped,
         )
 
 

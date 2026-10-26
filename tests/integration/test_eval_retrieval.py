@@ -735,7 +735,7 @@ async def test_agent_mode_runs_the_owner_request_runtime_with_the_shipped_prompt
     assert set(record["citations"]) <= set(QUERIES_BY_ID["r01"].target_message_ids)
     assert "[msg:" not in record["reply"]
     assert record["unverified_citations"] == 0
-    assert [m.key for m in result.metrics] == ["top5_hit", "answer_correct"]
+    assert [m.key for m in result.metrics] == ["top5_hit", "answer_correct", "target_reached_model"]
     assert len(ledger.entries) == len(oracle.requests) == 2  # a search turn, then the answer
 
 
@@ -840,3 +840,235 @@ def test_agent_mode_requires_live_and_records_its_spend(
     assert report["cost"]["calls"] == len(oracle.requests) == 2
     assert Decimal(report["cost"]["spent_usd"]) > 0
     assert report["details"][0]["id"] == QUERIES[0].id
+
+
+# ---------------------------------------- agent mode: S03.7 fix round (H1, M1)
+class FlakyOracle(AgentOracle):
+    """The agent oracle behind a provider that fails its first `failures` calls
+    the way the adapter classifies a timeout."""
+
+    def __init__(self, failures: int, kind: LLMErrorKind = LLMErrorKind.UNAVAILABLE) -> None:
+        super().__init__()
+        self.failures = failures
+        self.kind = kind
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        if self.failures:
+            self.failures -= 1
+            self.requests.append(request)
+            raise LLMError(self.kind, exc_type="APITimeoutError")
+        return await super().complete(request)
+
+
+class Waits:
+    def __init__(self) -> None:
+        self.delays: list[float] = []
+
+    async def __call__(self, delay: float) -> None:
+        self.delays.append(delay)
+
+
+def flaky_target(corpus: LoadedCorpus, waits: Waits, *ids: str) -> AgentModeTarget:
+    return AgentModeTarget([QUERIES_BY_ID[i] for i in ids], corpus=corpus, sleep=waits)
+
+
+@pytest.mark.parametrize("kind", [LLMErrorKind.UNAVAILABLE, LLMErrorKind.RATE_LIMITED])
+async def test_agent_mode_retries_an_item_after_a_provider_outage(
+    corpus: LoadedCorpus, kind: LLMErrorKind
+) -> None:
+    """H1: the 5 failed runs of the 2026-10-26 run (r14-r18) measured the network,
+    not retrieval. An outage is retried on a fresh state, at most twice."""
+    oracle, waits, ledger = FlakyOracle(failures=2, kind=kind), Waits(), CallLedger()
+
+    result = await flaky_target(corpus, waits, "r01").run(context(oracle, ledger))
+
+    [record] = result.details
+    assert record["run_status"] == "succeeded"
+    assert record["answer_correct"] is True, record["answer_problems"]
+    assert record["attempts"] == 3
+    assert [a["error"] for a in record["failed_attempts"]] == [f"run:failed:llm_{kind.value}"] * 2
+    assert {a["exc_type"] for a in record["failed_attempts"]} == {"APITimeoutError"}
+    assert len(waits.delays) == 2
+    assert result.not_evaluated == ()
+    # Every billable attempt is in the ledger (a 429 generated nothing to bill).
+    unbilled = 2 if kind is LLMErrorKind.RATE_LIMITED else 0
+    assert len(ledger.entries) == len(oracle.requests) - unbilled
+    assert sum(entry.estimated for entry in ledger.entries) == 2 - unbilled
+    async with corpus.session_factory() as session:
+        turns = (
+            await session.execute(
+                sa.text("SELECT count(*) FROM app.control_turns WHERE account_id = :a"),
+                {"a": corpus.account_id},
+            )
+        ).scalar_one()
+    assert turns == 0  # every attempt started without history and left none
+
+
+async def test_agent_mode_an_item_the_provider_keeps_failing_is_not_evaluated_not_a_miss(
+    corpus: LoadedCorpus,
+) -> None:
+    oracle, waits = FlakyOracle(failures=3), Waits()
+
+    result = await flaky_target(corpus, waits, "r01", "r02").run(context(oracle, CallLedger()))
+
+    assert result.not_evaluated == ("r01",)
+    assert result.items == 1  # r02 only
+    assert not result.complete
+    first, second = result.details
+    assert first["id"] == "r01"
+    assert first["not_evaluated"] is True
+    assert first["attempts"] == 3
+    assert first["error"] == "run:failed:llm_unavailable"
+    assert second["not_evaluated"] is False
+    for metric in result.metrics:
+        assert "r01" not in metric.failed_items
+        assert metric.all_items.denominator == 1
+        assert metric.gate_status() is not Status.PASS
+    assert any("not evaluated" in note and "r01" in note for note in result.notes)
+    assert cli.exit_code(result) == cli.EXIT_INCOMPLETE
+
+
+async def test_agent_mode_does_not_retry_other_failures(corpus: LoadedCorpus) -> None:
+    oracle, waits = FlakyOracle(failures=1, kind=LLMErrorKind.BAD_REQUEST), Waits()
+
+    result = await flaky_target(corpus, waits, "r01").run(context(oracle, CallLedger()))
+
+    [record] = result.details
+    assert record["attempts"] == 1
+    assert record["not_evaluated"] is False
+    assert record["error"] == "run:failed:llm_bad_request"
+    assert waits.delays == []
+    assert result.metrics[0].failed_items == ("r01",)
+
+
+class ReadsTheChat(AgentOracle):
+    """M1 (r04): a search that misses, then `get_conversation` of the target's
+    chat, then an answer citing the target from what the chat showed."""
+
+    def __init__(self, corpus: LoadedCorpus) -> None:
+        super().__init__()
+        self._corpus = corpus
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        query = asked(request)
+        outputs = [
+            json.loads(item.output) for item in request.items if isinstance(item, ToolResultItem)
+        ]
+        if not outputs:
+            return self._call(
+                "search_messages",
+                {
+                    "queries": ["zzqx synthetic nothing"],
+                    "contact_id": None,
+                    "conversation_id": None,
+                    "since": None,
+                    "until": None,
+                    "limit": None,
+                },
+            )
+        if len(outputs) == 1:
+            target = query.target_message_ids[0]
+            [db_id] = [i for i, ref in self._corpus.refs.items() if ref == target]
+            async with self._corpus.session_factory() as session:
+                conversation_id = (
+                    await session.execute(
+                        select(Message.conversation_id).where(Message.id == db_id)
+                    )
+                ).scalar_one()
+            return self._call(
+                "get_conversation",
+                {
+                    "conversation_id": conversation_id,
+                    "contact_id": None,
+                    "cursor": None,
+                    "limit": 50,
+                },
+            )
+        return LLMResponse(
+            StopReason.COMPLETED,
+            "gpt-6-luna",
+            Usage(400, 100),
+            text=cite_a_target(query, outputs[-1]["messages"]),
+            output_items=ProviderItems("fake", ({"type": "message"},)),
+        )
+
+    @staticmethod
+    def _call(name: str, arguments: dict[str, Any]) -> LLMResponse:
+        call = ToolCall(f"call-{name}", name, json.dumps(arguments))
+        return LLMResponse(
+            StopReason.TOOL_CALLS,
+            "gpt-6-luna",
+            Usage(400, 100),
+            tool_calls=(call,),
+            output_items=ProviderItems("fake", ({"type": "function_call"},)),
+        )
+
+
+async def test_agent_mode_records_the_tool_sequence_and_what_reached_the_model(
+    corpus: LoadedCorpus,
+) -> None:
+    """M1: top-5 (the gate) stays a search measure; "target reached the model"
+    also counts every search result and the messages `get_conversation` showed."""
+    result = await agent_target(corpus, "r01").run(context(ReadsTheChat(corpus), CallLedger()))
+
+    [record] = result.details
+    assert record["tools"] == [
+        {"tool": "search_messages", "status": "ok"},
+        {"tool": "get_conversation", "status": "ok"},
+    ]
+    [search] = record["searches"]
+    assert search["results"] == search["top5"] == []
+    [read] = record["reads"]
+    assert set(QUERIES_BY_ID["r01"].target_message_ids) & set(read["messages"])
+    assert record["hit_top5"] is False
+    assert record["target_reached_model"] is True
+    assert record["answer_correct"] is True, record["answer_problems"]
+    hit, answered, reached = result.metrics
+    assert (hit.key, answered.key, reached.key) == (
+        "top5_hit",
+        "answer_correct",
+        "target_reached_model",
+    )
+    assert hit.gated
+    assert answered.gated
+    assert not reached.gated
+    assert reached.all_items.numerator == 1
+
+
+async def test_agent_mode_records_every_search_result_not_only_the_top_5(
+    corpus: LoadedCorpus,
+) -> None:
+    broad = AgentOracle(searches=lambda q: [["salom", "rahmat", "ertaga", "bugun"]])
+    result = await agent_target(corpus, "r01").run(context(broad, CallLedger()))
+
+    [record] = result.details
+    [search] = record["searches"]
+    assert len(search["results"]) > 5
+    assert search["top5"] == search["results"][:5]
+
+
+async def test_every_loaded_conversation_has_a_coverage_start(corpus: LoadedCorpus) -> None:
+    """The product sets a chat's coverage start when it stores the chat's first
+    message, so a stored chat never has none. The loader did not, and the
+    account-wide start (the minimum over chats that have one) came out as the
+    one labelled chat's start: every search then claimed coverage began after
+    messages it returned (r05, r26)."""
+    starts = {
+        c.id: c.coverage_started_at or min(m.sent_at for m in c.messages) for c in CONVERSATIONS
+    }
+    async with corpus.session_factory() as session:
+        rows = (
+            await session.execute(
+                sa.text(
+                    "SELECT c.coverage_started_at, min(m.id) FROM app.conversations c "
+                    "JOIN app.messages m ON m.conversation_id = c.id "
+                    "WHERE c.account_id = :a GROUP BY c.id"
+                ),
+                {"a": corpus.account_id},
+            )
+        ).all()
+    assert len(rows) == len(CONVERSATIONS)
+    for started, message_id in rows:
+        conversation = corpus.refs[int(message_id)].split(".", 1)[0]
+        assert started == starts[conversation], conversation

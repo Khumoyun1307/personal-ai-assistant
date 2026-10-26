@@ -154,6 +154,10 @@ class TargetResult:
     notes: tuple[str, ...] = ()
     #: Prompt/rubric versions used, `name.vN`.
     prompts: tuple[str, ...] = ()
+    #: Items that ran but could not be evaluated (the provider stayed unavailable
+    #: through the retries): neither a hit nor a miss, and not in `items`. Any
+    #: makes the run incomplete (S03.7 fix round).
+    not_evaluated: tuple[str, ...] = ()
 
     @property
     def trial(self) -> bool:
@@ -163,11 +167,16 @@ class TargetResult:
     @property
     def stopped(self) -> bool:
         """The run ended before its planned items (a budget stop): a failure."""
-        return self.items < self.items_planned
+        return self.items + len(self.not_evaluated) < self.items_planned
+
+    @property
+    def incomplete(self) -> bool:
+        """Stopped early, or some item could not be evaluated: a failure."""
+        return self.stopped or bool(self.not_evaluated)
 
     @property
     def complete(self) -> bool:
-        return not self.trial and not self.stopped
+        return not self.trial and not self.incomplete
 
 
 @dataclass(frozen=True, slots=True)

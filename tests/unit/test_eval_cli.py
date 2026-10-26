@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -729,3 +730,31 @@ def test_the_only_sdk_client_is_built_in_live_py() -> None:
         if "AsyncOpenAI(" in p.read_text(encoding="utf-8")
     ]
     assert builders == ["live.py"]
+
+
+def test_items_not_evaluated_make_the_run_incomplete_never_a_pass(tmp_path: Path) -> None:
+    """S03.7 fix round (H1): an item the provider kept failing is neither a hit
+    nor a miss; the run is incomplete, flagged, and exits non-zero."""
+    full = result(items=37, planned=38, confirmed=Measure(37, 37))
+    outage = replace(full, not_evaluated=("r14",))
+    assert not outage.stopped  # every planned item ran
+    assert not outage.complete
+    assert cli.exit_code(outage) == cli.EXIT_INCOMPLETE
+    text = render_markdown(meta(LUNA), outage, spent())
+    assert "INCOMPLETE RUN" in text
+    assert "r14" in text
+    assert "STOPPED RUN" not in text
+    assert "**PASS**" not in text
+    _, machine = write_report(tmp_path, meta(LUNA), outage, spent())
+    data = json.loads(machine.read_text(encoding="utf-8"))
+    assert data["not_evaluated"] == ["r14"]
+    assert data["complete"] is False
+
+
+def test_a_trial_with_an_item_not_evaluated_cannot_calibrate(
+    no_settings: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    agent = ["run", "retrieval", "--mode", "agent", "--model", LUNA, "--estimate-only"]
+    path = _agent_trial(tmp_path, "outage.json", not_evaluated=["r01"])
+    assert cli.main([*agent, "--calibrate-from", str(path)]) == cli.EXIT_REFUSED
+    assert "not evaluated" in capsys.readouterr().err

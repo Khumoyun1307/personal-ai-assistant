@@ -257,3 +257,71 @@ def test_an_agent_answer_value_counts_inflected_only_where_a_cited_target_has_th
     # The markers are not the model's words: an id never carries a value.
     numeric = QUERY.model_copy(update={"answer_values": ["41"]})
     assert "missing_value" in agent_verdict("See [msg:41]", query=numeric)[1]
+
+
+# ------------------------------------------------- agent mode: values as values
+def test_value_key_reads_amounts_and_times_as_values() -> None:
+    """S03.7 fix round (r19, r24, r26, r31): the model reformats amounts and
+    times; the value is the same, so the check compares values."""
+    from evals.agent_mode import value_key
+
+    same = [
+        ("03:15", ["3:15", "3:15 a.m.", "3:15 am", "03.15"]),
+        ("16:30", ["4:30 p.m.", "16.30", "16:30"]),
+        ("00:30", ["12:30 a.m."]),
+        ("12:30", ["12:30 p.m."]),
+        (
+            "1 million 500 ming",
+            ["1 500 000", "1,5 mln", "1.5 million", "1 500 000", "1 mln 500 ming", "1500000"],
+        ),
+        ("3 million 600 ming", ["3 600 000", "3 mln 600 ming", "3,6 млн", "3.600.000"]),
+        ("3 миллион 380 минг", ["3 mln 380 ming", "3 380 000", "3 million 380 ming"]),
+        ("3 mln", ["3 миллион", "3 000 000", "3 млн"]),
+        ("300 ming", ["300 000", "300 тысяч", "300 минг", "300k", "300 thousand"]),
+    ]
+    for value, forms in same:
+        for form in forms:
+            assert value_key(form) == value_key(value), (value, form)
+
+
+def test_value_key_never_makes_different_values_equal() -> None:
+    from evals.agent_mode import value_key
+
+    different = [
+        ("03:15", "15:15"),
+        ("03:15", "3:51"),
+        ("16:30", "6:30"),
+        ("1 million 500 ming", "1 million 50 ming"),
+        ("3 mln", "3 ming"),
+        ("300 ming", "300"),
+        ("80", "800"),
+        ("50%", "5%"),
+    ]
+    for left, right in different:
+        assert value_key(left) != value_key(right), (left, right)
+    # Words, addresses and numbers without a unit are untouched.
+    assert value_key("Qorasuv-3, 17-uy") == "qorasuv 3 17 uy"
+    assert value_key("3 kun") == "3 kun"
+    assert value_key("Chilonzor 9 mavze 15 uy") == "chilonzor 9 mavze 15 uy"
+
+
+def test_an_agent_answer_value_is_compared_as_a_value() -> None:
+    """r24, r31 as recorded: the reply reformats the amount; r19: the time."""
+    amount = QUERY.model_copy(update={"answer_values": ["1 million 500 ming"]})
+    assert agent_verdict("Dacha 1 500 000 сўм [msg:41]", query=amount) == (True, ())
+    assert agent_verdict("Dacha 1,5 mln so'm [msg:41]", query=amount) == (True, ())
+    assert "missing_value" in agent_verdict("Dacha 1 050 000 [msg:41]", query=amount)[1]
+    total = QUERY.model_copy(update={"answer_values": ["3 миллион 380 минг"]})
+    assert agent_verdict("Jami 3 mln 380 ming [msg:41]", query=total) == (True, ())
+    time = QUERY.model_copy(update={"answer_values": ["03:15"]})
+    assert agent_verdict("He lands at 3:15 a.m. [msg:41]", query=time) == (True, ())
+    assert "missing_value" in agent_verdict("He lands at 3:15 p.m. [msg:41]", query=time)[1]
+
+
+def test_an_inflected_amount_still_needs_a_cited_target_with_that_form() -> None:
+    """E-s is not loosened: an Uzbek ending on an amount counts only where a
+    cited target message has that very form."""
+    amount = QUERY.model_copy(update={"answer_values": ["300 ming"]})
+    assert "missing_value" in agent_verdict("300 mingga [msg:41]", query=amount)[1]
+    inflected = {"c09.m05": "Sovg'a 300 mingga tushdi"}
+    assert agent_verdict("300 mingga [msg:41]", query=amount, cited_texts=inflected) == (True, ())

@@ -130,6 +130,7 @@ def to_json(meta: RunMeta, result: TargetResult, ledger: CallLedger) -> dict[str
         "complete": result.complete,
         "trial": result.trial,
         "stopped": result.stopped,
+        "not_evaluated": list(result.not_evaluated),
         "items": items,
         "items_planned": result.items_planned,
         "items_total": result.items_total,
@@ -181,6 +182,14 @@ def render_markdown(meta: RunMeta, result: TargetResult, ledger: CallLedger) -> 
             "> **STOPPED RUN.** "
             f"{result.items} of {result.items_planned} items ran before the run stopped "
             "(budget cap); no gate can pass.",
+            "",
+        ]
+    if result.not_evaluated:
+        lines += [
+            "> **INCOMPLETE RUN.** "
+            f"{len(result.not_evaluated)} item(s) could not be evaluated (the provider stayed "
+            "unavailable through the retries): " + ", ".join(result.not_evaluated) + ". They are "
+            "neither hits nor misses; no gate can pass.",
             "",
         ]
     if result.trial:
