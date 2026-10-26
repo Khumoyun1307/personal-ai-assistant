@@ -594,7 +594,7 @@ async def test_requeue_after_a_fix_clears_the_caveat(env: Env) -> None:
             ),
             {"id": poison["update_id"]},
         )
-    assert await requeue_failed(env.factory) == 1
+    assert (await requeue_failed(env.factory)).reset == 1
     await env.processor.process_batch()
 
     assert (await inbound(env, poison)).status == "processed"

@@ -207,8 +207,15 @@ def _inbox(args: argparse.Namespace) -> int:
                 for status, count in sorted((await inbox_backlog(factory)).items()):
                     print(f"{status:>10}: {count}")
                 return EXIT_OK
-            reset = await requeue_failed(factory, row_id=args.id)
-            print(f"OK: {reset} update(s) reset to pending")
+            requeued = await requeue_failed(factory, row_id=args.id)
+            print(f"OK: {requeued.reset} update(s) reset to pending")
+            if requeued.cleared:
+                # Swept, or cleared by an owner's deletion (M03 D89): nothing
+                # left to process, so they stay failed.
+                print(
+                    f"Skipped: {requeued.cleared} failed update(s) whose content was "
+                    "already deleted; they stay failed."
+                )
             return EXIT_OK
         finally:
             await engine.dispose()
