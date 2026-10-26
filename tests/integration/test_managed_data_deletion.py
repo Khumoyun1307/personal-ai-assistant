@@ -147,12 +147,21 @@ async def test_deletion_clears_quoted_text_and_held_tool_arguments(env: Env) -> 
     assert {"app.control_turns.quoted_text", "app.tool_confirmations.args"} <= set(before)
 
     async with env.factory() as session, session.begin():
-        await delete_managed_data(session, account_id=account_id, clock=env.clock)
+        report = await delete_managed_data(session, account_id=account_id, clock=env.clock)
 
     assert await _columns_containing(env, CANARY) == []
     async with env.factory() as session:
         status = (await session.execute(select(ToolConfirmation.status))).scalar_one()
+        details = (
+            await session.execute(
+                text("SELECT details FROM app.audit_log WHERE event = 'managed_data_deleted'")
+            )
+        ).scalar_one()
     assert status == "expired"
+    # S03.5 fix round 2, item 3: the held call is counted, not "0 held change(s)".
+    assert report.held_calls_cleared == 1
+    assert "1 held change(s)" in report.receipt()
+    assert details["held_calls_cleared"] == 1
 
 
 async def test_purging_a_conversation_redacts_the_turns_that_referred_to_it(env: Env) -> None:

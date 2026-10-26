@@ -23,6 +23,7 @@ from assistant.inbox.connection_alerts import notify_connection_change
 from assistant.inbox.notify import OwnerAlerts
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.port import LLMRequest, Provenance, TextItem
+from assistant.privacy.requests import RequestedDeletions
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM
 from tests.integration.business_env import (
@@ -40,6 +41,7 @@ from tests.integration.business_env import (
     live_card,
     press,
     private_message,
+    run_deletion_jobs,
 )
 
 pytestmark = pytest.mark.integration
@@ -62,7 +64,7 @@ async def test_declining_managed_consent_offers_the_deletion_card(env: Env) -> N
     assert "Delete what I stored" in env.sender.texts[-1]
     keyboard = env.sender.sends[-1]["reply_markup"]
     labels = [b.text for row in keyboard.inline_keyboard for b in row]
-    assert labels == ["Delete", "Keep"]
+    assert labels == ["Delete", "Delete everything", "Keep"]  # S03.5 scopes
     assert all(
         f":{card.token}:" in b.callback_data for row in keyboard.inline_keyboard for b in row
     )
@@ -131,6 +133,15 @@ async def test_delete_removes_managed_data_and_writes_one_audit_row(env: Env) ->
     await decline_managed(env)
 
     await press(env, "managed_delete", "delete")
+    # S03.5 fix round 2, item 5: queued under the owner's control lock like
+    # every button deletion (M03 D83); the card says so, card B follows.
+    assert await count(env, Message) == 2
+    assert env.sender.edits[-1]["text"].startswith("🗑 Deleting now")
+    assert env.sender.answered_callbacks[-1]["text"] == "Deleting"
+    assert "How should I continue?" in env.sender.texts[-1]
+    await live_card(env, "managed_mode")
+    receipts = FakeChannel()
+    assert await run_deletion_jobs(env, receipts) == 1
 
     assert await count(env, Message) == 0
     async with env.factory() as session:
@@ -149,11 +160,45 @@ async def test_delete_removes_managed_data_and_writes_one_audit_row(env: Env) ->
     assert audits[0].details["messages"] == 2
     assert CANARY not in repr(audits[0].details)
     assert (await inbound(env, original)).payload is None
-    # The card was edited in place and answered; card B follows.
-    assert env.sender.edits[-1]["text"].startswith("🗑 Deleted: 2 message(s)")
-    assert env.sender.answered_callbacks[-1]["text"] == "Deleted"
-    assert "How should I continue?" in env.sender.texts[-1]
-    await live_card(env, "managed_mode")
+    # The receipt comes from the job; the audit row is keyed by the card, so
+    # a re-run deletes nothing more.
+    [receipt] = receipts.sends
+    assert receipt.startswith("🗑 Deleted: 2 message(s)")
+    assert "backups" in receipt  # S03.5 review item 6
+    assert isinstance(audits[0].details["card_id"], int)
+
+
+async def test_the_revocation_delete_runs_once_and_clears_the_owners_control_updates(
+    env: Env,
+) -> None:
+    """Fix round 2, items 5 and 6: a re-run of the job finds its audit row
+    (`managed_data_deleted`), and the owner's raw control-chat updates (a
+    panel press repeats the rendered summary) are cleared like every scope."""
+    await seed(env)
+    panel_press = callback("settings:zzzzzzzzzz:noop")
+    panel_press["callback_query"]["message"]["text"] = f"{CANARY} panel summary"
+    await deliver(env, panel_press)
+    await decline_managed(env)
+    await press(env, "managed_delete", "delete")
+    async with env.factory() as session:
+        job_args = (
+            await session.execute(
+                text(
+                    "SELECT args FROM procrastinate.procrastinate_jobs "
+                    "WHERE task_name = 'privacy.delete_data'"
+                )
+            )
+        ).scalar_one()
+    assert job_args["scope"] == "managed"
+    receipts = FakeChannel()
+    await run_deletion_jobs(env, receipts)
+    assert (await inbound(env, panel_press)).payload is None
+    await deliver(env, business_message(message_id=9, message_text=f"{CANARY} later"))
+    assert await RequestedDeletions(env.factory, env.clock, receipts).run(**job_args) == (
+        "already_done"
+    )
+    assert await count(env, Message) == 1  # the later message stays
+    assert len(receipts.sends) == 1
 
 
 async def test_a_card_press_holds_no_row_lock_while_calling_telegram(env: Env) -> None:
@@ -184,7 +229,7 @@ async def test_a_card_press_holds_no_row_lock_while_calling_telegram(env: Env) -
 
     assert seen_locked, "the press must have called Telegram"
     assert not any(seen_locked)
-    assert env.sender.edits[-1]["text"].startswith("🗑 Deleted:")
+    assert env.sender.edits[-1]["text"].startswith("🗑 Deleting now")
     assert "How should I continue?" in env.sender.texts[-1]
     await live_card(env, "managed_mode")
 
@@ -215,8 +260,10 @@ async def test_a_card_press_whose_commit_fails_announces_once(env: Env) -> None:
 
     new_edits = env.sender.edits[edits_before:]
     new_sends = env.sender.sends[sends_before:]
-    assert [e["text"].startswith("🗑 Deleted:") for e in new_edits] == [True]
+    assert [e["text"].startswith("🗑 Deleting now") for e in new_edits] == [True]
     assert ["How should I continue?" in s["text"] for s in new_sends] == [True]
+    # The failed transaction's job was rolled back with it: one deletion runs.
+    assert await run_deletion_jobs(env) == 1
     async with env.factory() as session:
         cards = (
             (await session.execute(select(PendingInput).where(PendingInput.kind == "managed_mode")))
@@ -256,6 +303,7 @@ async def test_a_card_is_single_use(env: Env) -> None:
 
     await deliver(env, callback(data, message_id=card.prompt_message_id))
     await deliver(env, callback(data, message_id=card.prompt_message_id))
+    assert await run_deletion_jobs(env) == 1
 
     async with env.factory() as session:
         audits = (

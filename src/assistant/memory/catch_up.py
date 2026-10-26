@@ -29,7 +29,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts.models import BusinessConnection, BusinessConnectionEvent
+from assistant.accounts.models import AuditLogEntry, BusinessConnection, BusinessConnectionEvent
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 
 #: Gap certainties a summary reports. `delayed` means the messages arrived
@@ -158,6 +158,11 @@ class PeriodCoverage:
     #: Closed intervals in which the connection was off (disabled, then
     #: reconnected), overlapping the period — from the connection events.
     off_intervals: tuple[tuple[datetime, datetime], ...] = ()
+    #: Deletions the owner asked for after the period began that covered the
+    #: chats asked about, and the latest one's time: the rows are gone without
+    #: tombstones, so the audit row is the marker (M03 D86).
+    deleted_on_request: int = 0
+    deleted_on_request_last: datetime | None = None
 
 
 async def period_coverage(
@@ -291,6 +296,7 @@ async def period_coverage(
     if conversation_ids is not None:
         paused_query = paused_query.where(Conversation.id.in_(list(conversation_ids)))
     paused = int((await session.execute(paused_query)).scalar_one())
+    on_request = await _deletions_on_request(session, account_id, start, conversation_ids)
     return PeriodCoverage(
         start=start,
         end=end,
@@ -305,7 +311,61 @@ async def period_coverage(
         connection_inactive_since=inactive_since,
         ignored_in_scope=ignored_in_scope,
         off_intervals=off_intervals,
+        deleted_on_request=len(on_request),
+        deleted_on_request_last=max(on_request, default=None),
     )
+
+
+#: Audit events of deletions the owner asked for (`privacy/deletion.py`;
+#: named here, not imported, because privacy depends on memory). Owner
+#: deletions remove rows without tombstones, so these rows are the marker
+#: that earlier messages existed (M03 D86).
+DELETION_EVENTS = ("data_deleted", "managed_data_deleted")
+
+
+async def _deletions_on_request(
+    session: AsyncSession,
+    account_id: int,
+    start: datetime,
+    conversation_ids: Sequence[int] | None,
+) -> list[datetime]:
+    """When the owner's deletions after `start` that covered the chats asked
+    about happened: a deletion at T removed what was sent before T."""
+    rows = (
+        await session.execute(
+            select(
+                AuditLogEntry.at,
+                AuditLogEntry.event,
+                AuditLogEntry.subject_type,
+                AuditLogEntry.subject_id,
+            )
+            .where(AuditLogEntry.account_id == account_id)
+            .where(AuditLogEntry.event.in_(DELETION_EVENTS))
+            .where(AuditLogEntry.at > start)
+        )
+    ).all()
+    if conversation_ids is None:
+        return [at for at, *_ in rows]
+    chats = set(conversation_ids)
+    contacts = set(
+        (
+            await session.execute(
+                select(Conversation.contact_id)
+                .where(Conversation.account_id == account_id)
+                .where(Conversation.id.in_(list(chats)))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        at
+        for at, event, subject_type, subject_id in rows
+        if event != "data_deleted"  # managed-data deletion: every chat
+        or subject_type == "account"
+        or (subject_type == "conversation" and subject_id in chats)
+        or (subject_type == "contact" and subject_id in contacts)
+    ]
 
 
 #: Connection events that switch observation off, and back on (accounts/
@@ -399,6 +459,18 @@ def caveats(coverage: PeriodCoverage, timezone: str) -> list[str]:
         lines.append(
             f"{coverage.deleted_in_period} message(s) from this period were deleted and are "
             "not included."
+        )
+    if coverage.deleted_on_request and coverage.deleted_on_request_last is not None:
+        when = _local(coverage.deleted_on_request_last, timezone)
+        times = (
+            f"at {when}"
+            if coverage.deleted_on_request == 1
+            else f"{coverage.deleted_on_request} times (the latest at {when})"
+        )
+        lines.append(
+            f"Stored chat data was deleted at the owner's request {times}: messages sent "
+            "before a deletion, in the chats it covered, are no longer stored and are not "
+            "included."
         )
     return lines
 

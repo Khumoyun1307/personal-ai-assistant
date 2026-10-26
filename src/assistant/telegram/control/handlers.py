@@ -23,12 +23,18 @@ from assistant.agent.confirmations import OP_CONFIRM, OP_REJECT, TOOL_CONFIRM_CA
 from assistant.conversations.coverage import STATUS_GAP_WINDOW
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
-from assistant.core.jobs import APPLY_CONFIRMATION_TASK, JobScheduler, owner_control_lock
+from assistant.core.jobs import (
+    APPLY_CONFIRMATION_TASK,
+    DELETE_DATA_TASK,
+    JobScheduler,
+    owner_control_lock,
+)
 from assistant.db.uow import after_commit, transaction
 from assistant.inbox.connection_alerts import MANAGED_CONSENT_BUTTONS, MANAGED_CONSENT_QUESTION
 from assistant.memory import undo
 from assistant.observability.status import StatusReport
 from assistant.privacy import deletion
+from assistant.privacy.requests import MANAGED_DELETE_CARD, QUEUED_TEXT
 from assistant.telegram.control.cards import card_keyboard
 from assistant.telegram.gateway import ControlChat, OutboundGateway, SendResult
 from assistant.telegram.render import escape
@@ -115,8 +121,10 @@ HELP_TEXT = (
     "/start — set up or re-run onboarding\n"
     "/help — this message\n"
     "/status — what I can see: connection, rights, coverage, gaps, consent\n"
-    "/settings — language, timezone, the mode new chats start in, chats by mode\n"
-    "/privacy — what I store, who sees it, and how to delete it\n\n"
+    "/settings — language, timezone, chat modes, replies, how long things are kept, "
+    "deleting data\n"
+    "/privacy — what I store, who sees it, and how to delete it "
+    "(<code>/privacy delete</code> deletes everything, after asking)\n\n"
     "Send me anything else and I will answer it.\n"
     "Send <b>stop</b> at any time to pause everything."
 )
@@ -325,7 +333,10 @@ async def handle_privacy(
         "their message. Everything is on a server in the US (Oracle, Ashburn) with "
         "encrypted daily backups, also kept at Backblaze B2 in the EU, for up to 35 "
         "days.\n\n"
-        "Your messages are never used to train a model."
+        "Your messages are never used to train a model.\n\n"
+        "To delete one chat's data, open its panel from /settings; "
+        "<code>/privacy delete</code> deletes everything (I ask first). /settings also "
+        "lets you keep messages for a shorter time."
     )
     if connected and not managed.granted:
         text += "\n\nSend <code>/privacy managed</code> to decide about your other chats."
@@ -378,16 +389,58 @@ async def handle_revoke(
 
 
 # ------------------------------------------------------------ managed-data cards
-MANAGED_DELETE_KIND = "managed_delete"
+#: Card A. A failed managed-data deletion offers it again (with a `ref_id`:
+#: a retry, which asks nothing more; `privacy/requests.py`, fix round 3).
+MANAGED_DELETE_KIND = MANAGED_DELETE_CARD
 MANAGED_MODE_KIND = "managed_mode"
 
 DELETE_CARD_TEXT = (
     "<b>Delete what I stored from your chats?</b>\n\n"
     "This removes every message, name, summary and raw update I kept from the chats "
     "you included under Chat Automation, and your notes about the people in them. It "
-    "cannot be undone. Your own notes and settings stay."
+    "cannot be undone. Your own notes and settings stay.\n\n"
+    "<b>Delete everything</b> also deletes the history of this chat and all your "
+    "notes. To delete one chat only, open its panel from /settings instead.\n\n"
+    f"{deletion.ARRIVING_NOTE} {deletion.BACKUP_NOTE}"
 )
-DELETE_CARD_BUTTONS = [("Delete", "delete"), ("Keep", "keep")]
+#: The deletion scopes revocation offers (S02.4; S03.5 adds "everything").
+DELETE_CARD_BUTTONS = [("Delete", "delete"), ("Delete everything", "everything"), ("Keep", "keep")]
+
+
+async def queue_deletion(
+    session: AsyncSession,
+    scheduler: JobScheduler | None,
+    account_id: int,
+    scope: str,
+    subject_id: int,
+    card_id: int | None,
+) -> str:
+    """Queue an owner's button deletion (M03 D83): in the press's
+    transaction, under the owner's control lock, so it runs after any owner
+    run already in flight (whose answer may quote the chat) and deletes that
+    too (safety review item 1). The newest control turn now is the cutoff:
+    a question the owner sends while the job waits keeps its text (D88).
+    The job sends the receipt; this returns the "deleting now" note."""
+    if scheduler is None or card_id is None:
+        raise RuntimeError("a job scheduler and the card are required to delete data")
+    turn_cutoff = await deletion.latest_turn_id(session, account_id)
+    connection = await session.connection()
+    raw = await connection.get_raw_connection()
+    await scheduler.defer(
+        DELETE_DATA_TASK,
+        args={
+            "account_id": account_id,
+            "scope": scope,
+            "subject_id": subject_id,
+            "card_id": card_id,
+            "turn_cutoff": turn_cutoff,
+        },
+        lock=owner_control_lock(account_id),
+        connection=raw.driver_connection,
+    )
+    return QUEUED_TEXT
+
+
 MODE_CARD_TEXT = (
     "<b>How should I continue?</b>\n\n"
     "<b>Without AI</b> — I keep observing your included chats for coverage and "
@@ -517,12 +570,24 @@ async def _mode_choice_card(
     )
 
 
+async def _mode_choice_unless_retry(
+    session: AsyncSession, clock: Clock, account: Account, card: PendingInput
+) -> tuple[int, str, str, str, list[tuple[str, str]]] | None:
+    """Card B follows card A, except after a retry card (a failed deletion's
+    fresh card A, whose `ref_id` names the failed card): how to continue was
+    asked with the first one (fix round 3, B)."""
+    if card.ref_id is not None:
+        return None
+    return await _mode_choice_card(session, clock, account)
+
+
 async def handle_card_press(
     session: AsyncSession,
     gateway: OutboundGateway,
     clock: Clock,
     account: Account,
     press: CardPress,
+    scheduler: JobScheduler | None = None,
 ) -> HandlerResult:
     """Resolve a card exactly once; edit it in place; always answer the press.
 
@@ -581,20 +646,41 @@ async def handle_card_press(
                 )
                 note = "declined"
         case (k, "delete") if k == MANAGED_DELETE_KIND:
-            report = await deletion.delete_managed_data(session, account_id=account.id, clock=clock)
+            # Queued like every button deletion (D83; fix round 2, item 5): an
+            # answer or a confirmed change in flight is recorded first and
+            # then deleted with the rest. The revocation itself is inline.
             settlement = _Settlement(
-                "Deleted",
-                f"🗑 Deleted: {report.messages} message(s), {report.contacts_cleared} "
-                f"contact name(s), {report.payloads_cleared} raw update(s), "
-                f"{report.summaries} summary(ies), {report.memory_items} note(s).",
-                await _mode_choice_card(session, clock, account),
+                "Deleting",
+                await queue_deletion(
+                    session,
+                    scheduler,
+                    account.id,
+                    deletion.SCOPE_MANAGED,
+                    account.id,
+                    card.id,
+                ),
+                await _mode_choice_unless_retry(session, clock, account, card),
             )
-            note = "deleted"
+            note = "deleting"
+        case (k, "everything") if k == MANAGED_DELETE_KIND:
+            settlement = _Settlement(
+                "Deleting",
+                await queue_deletion(
+                    session,
+                    scheduler,
+                    account.id,
+                    deletion.SCOPE_EVERYTHING,
+                    account.id,
+                    card.id,
+                ),
+                await _mode_choice_unless_retry(session, clock, account, card),
+            )
+            note = "deleting_everything"
         case (k, "keep") if k == MANAGED_DELETE_KIND:
             settlement = _Settlement(
                 "Kept",
                 "Kept. Nothing was deleted.",
-                await _mode_choice_card(session, clock, account),
+                await _mode_choice_unless_retry(session, clock, account, card),
             )
             note = "kept"
         case (k, "observe") if k == MANAGED_MODE_KIND:
@@ -676,7 +762,13 @@ async def handle_tool_confirmation_press(
         raw = await connection.get_raw_connection()
         await scheduler.defer(
             APPLY_CONFIRMATION_TASK,
-            args={"confirmation_id": card.ref_id},
+            args={
+                "confirmation_id": card.ref_id,
+                # The newest control turn now, as for a button deletion (M03
+                # D88): a confirmed deletion spares the owner's turns sent
+                # after this tap, which queue behind the job (an id).
+                "turn_cutoff": await deletion.latest_turn_id(session, account.id),
+            },
             lock=owner_control_lock(account.id),
             connection=raw.driver_connection,
         )
@@ -879,7 +971,20 @@ async def handle_status(
 PANEL_UNKNOWN = "I don't have that chat. Only chats included under Chat Automation appear here."
 
 
-def render_panel(panel: ConversationPanel, *, timezone: str) -> str:
+#: The pressed panel's first line once a deletion of its data is queued. The
+#: receipt is a message of its own and nothing edits this panel again, so
+#: the line stays true after the deletion (fix round 3, G).
+PANEL_DELETING = (
+    "🗑 <b>You asked me to delete this chat's stored data.</b> The receipt comes as "
+    "a separate message; open the panel again from /settings to see what is left."
+)
+
+
+def render_panel(panel: ConversationPanel, *, timezone: str, deleting: bool = False) -> str:
+    """The conversation panel (J12). `deleting`: a deletion of its data was
+    just queued (D83), so the name, summary and notes it would show are left
+    out (fix round 2, item 4); counts and dates are not content, and are
+    those of the moment of the tap."""
     name = panel.display_name or "(no name)"
     handle = f" @{escape(panel.username)}" if panel.username else ""
     counts = ", ".join(
@@ -892,7 +997,7 @@ def render_panel(panel: ConversationPanel, *, timezone: str) -> str:
         else "closed (no contact message in the last 24 h)"
     )
     lines = [
-        f"<b>{escape(name)}</b>{handle}",
+        PANEL_DELETING if deleting else f"<b>{escape(name)}</b>{handle}",
         "",
         f"Mode: {escape(panel.mode)}",
         f"First seen: {local_time(panel.first_seen_at, timezone)}",
@@ -913,6 +1018,8 @@ def render_panel(panel: ConversationPanel, *, timezone: str) -> str:
         lines.append(f"⚠️ {panel.unresolved_gaps} coverage gap(s): some messages may be missing.")
     if panel.mode == "ignore":
         lines.append("Ignored: new messages from this chat are not stored.")
+    if deleting:
+        return "\n".join(lines)
     if panel.summary_overview:
         lines += ["", f"<b>Summary</b> (AI-written): {escape(panel.summary_overview)}"]
     if panel.notes:

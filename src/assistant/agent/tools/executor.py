@@ -118,7 +118,7 @@ class ToolExecutor:
                 }
             )
             return ToolOutcome("error", {"reason": "invalid arguments", "fields": fields}), digest
-        if tool.needs_confirmation(tainted=self.context.tainted):
+        if tool.needs_confirmation(tainted=self.context.tainted, args=args):
             try:
                 held = await confirmations.hold(
                     self.context, tool, call.call_id, args.model_dump(mode="json")

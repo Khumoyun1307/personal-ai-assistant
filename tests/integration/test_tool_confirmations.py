@@ -29,6 +29,7 @@ from assistant.inbox.notify import OwnerAlerts
 from assistant.jobs.tasks import JobHandlers
 from assistant.llm.port import LLMRequest, ToolResultItem
 from tests.fakes.channel import FakeChannel
+from tests.fakes.deletions import RecordingDeleter
 from tests.fakes.llm import FakeLLM, text_response, tool_response
 from tests.fakes.summaries import RecordingRefresher
 from tests.integration.agent_env import (
@@ -323,6 +324,7 @@ def handlers(env: Env, channel: FakeChannel) -> JobHandlers:
         heartbeat_url=None,
         confirmation_applier=applier(env, channel),
         summary_refresher=RecordingRefresher(),
+        data_deleter=RecordingDeleter(),
     )
 
 

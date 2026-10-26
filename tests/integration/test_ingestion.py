@@ -302,7 +302,7 @@ async def test_requeue_resets_dead_lettered_rows(factory) -> None:  # type: igno
         await proc.process_batch()
     assert (await fetch(factory, 70)).status == "failed"
 
-    assert await requeue_failed(factory) == 1
+    assert (await requeue_failed(factory)).reset == 1
     row = await fetch(factory, 70)
     assert row.status == "pending"
     assert row.attempts == 0

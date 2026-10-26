@@ -29,6 +29,7 @@ from tests.fakes.llm import FakeLLM, text_response, tool_response
 from tests.integration.agent_env import (
     MEMORY_FLAGS,
     READ_FLAGS,
+    S035_PREFS_UNCHANGED,
     applier,
     ask,
     one_id,
@@ -345,7 +346,12 @@ async def test_an_undo_waits_for_a_concurrent_settings_change(env: Env) -> None:
     channel = FakeChannel()
     await update_preferences_tool(
         await ctx(env, channel),
-        UpdatePreferencesArgs(preferred_language=None, timezone="Asia/Tashkent", default_mode=None),
+        UpdatePreferencesArgs(
+            preferred_language=None,
+            timezone="Asia/Tashkent",
+            default_mode=None,
+            **S035_PREFS_UNCHANGED,
+        ),
     )
     mine = await account_id(env)
     async with env.factory() as holder, holder.begin():
@@ -367,11 +373,18 @@ async def test_a_partial_preference_undo_says_what_it_restored(env: Env) -> None
     channel = FakeChannel()
     await update_preferences_tool(
         await ctx(env, channel),
-        UpdatePreferencesArgs(preferred_language="ru", timezone="Asia/Tashkent", default_mode=None),
+        UpdatePreferencesArgs(
+            preferred_language="ru",
+            timezone="Asia/Tashkent",
+            default_mode=None,
+            **S035_PREFS_UNCHANGED,
+        ),
     )
     await update_preferences_tool(
         await ctx(env, channel),
-        UpdatePreferencesArgs(preferred_language="en", timezone=None, default_mode=None),
+        UpdatePreferencesArgs(
+            preferred_language="en", timezone=None, default_mode=None, **S035_PREFS_UNCHANGED
+        ),
     )
     await tap_undo(env, channel, 0)
     async with env.factory() as session:

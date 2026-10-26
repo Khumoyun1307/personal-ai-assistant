@@ -140,6 +140,12 @@ class ToolContext:
     #: the runtime's check (§14.3, M03 D48). Fail closed: False unless the
     #: runtime established it.
     managed_ok: bool = False
+    #: A held call the owner confirmed: the newest control turn at the
+    #: Confirm tap (an id). A deletion clears the owner's own turns only up to
+    #: it, so a question sent after the tap keeps its text (M03 D88). None:
+    #: all of them (a job re-created by the reconciler; the runtime then asks
+    #: the owner to send an emptied question again).
+    turn_cutoff: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,16 +191,25 @@ class ToolDefinition:
     min_tier: CapabilityTier = CapabilityTier.CONTROL_ONLY
     returns_managed: bool = False
     describe: ToolDescriber | None = None
+    #: Always a confirmation card, tainted or not: the deletions (S03.5,
+    #: §8.1 "deletions require a confirmation card").
+    always_confirm: bool = False
+    #: A card, tainted or not, for arguments this matches (S03.5: a
+    #: retention change, which deletes data at the next sweep).
+    confirm_if: Callable[[Any], bool] | None = None
 
     @property
     def changes_state(self) -> bool:
         return self.capability in (CapabilityClass.CONFIGURE, CapabilityClass.CONTROL)
 
-    def needs_confirmation(self, *, tainted: bool) -> bool:
+    def needs_confirmation(self, *, tainted: bool, args: BaseModel | None = None) -> bool:
         """The confirmation gate (§7.1): a model-initiated state change in a
         tainted run becomes a card, except calls that only reduce autonomy;
-        `resume_autonomy` is a card whatever the taint."""
-        if self.name in CARD_ONLY_TOOLS:
+        `resume_autonomy` and the `always_confirm` tools are a card whatever
+        the taint, and so is a call whose arguments `confirm_if` matches."""
+        if self.name in CARD_ONLY_TOOLS or self.always_confirm:
+            return True
+        if self.confirm_if is not None and args is not None and self.confirm_if(args):
             return True
         return tainted and self.changes_state and self.name not in TAINT_EXEMPT_TOOLS
 
@@ -229,6 +244,8 @@ class ToolRegistry:
             raise ToolRegistrationError(f"{tool.name}: only owner_request runs may have tools")
         if not tool.release_flag:
             raise ToolRegistrationError(f"{tool.name}: a release flag is required")
+        if (tool.always_confirm or tool.confirm_if is not None) and not tool.changes_state:
+            raise ToolRegistrationError(f"{tool.name}: only state changes need a card")
         self._tools[tool.name] = tool
 
     def all(self) -> tuple[ToolDefinition, ...]:
@@ -266,6 +283,11 @@ def default_registry() -> ToolRegistry:
         LIST_CONVERSATIONS,
         RESOLVE_CONTACT,
     )
+    from assistant.agent.tools.deletion import (
+        DELETE_CONTACT_DATA,
+        DELETE_CONVERSATION_DATA,
+        DELETE_EVERYTHING,
+    )
     from assistant.agent.tools.memory import FORGET, LIST_MEMORIES, REMEMBER
     from assistant.agent.tools.modes import SET_CONVERSATION_MODE, UPDATE_PREFERENCES
     from assistant.agent.tools.search import SEARCH_MESSAGES
@@ -286,6 +308,9 @@ def default_registry() -> ToolRegistry:
             LIST_MEMORIES,
             UPDATE_PREFERENCES,
             SET_CONVERSATION_MODE,
+            DELETE_CONVERSATION_DATA,
+            DELETE_CONTACT_DATA,
+            DELETE_EVERYTHING,
         ]
     )
 

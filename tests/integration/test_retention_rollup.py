@@ -30,6 +30,7 @@ from assistant.llm.port import LLMError, LLMErrorKind, LLMRequest
 from assistant.memory import items
 from assistant.memory.models import ConversationSummary, MemoryItem
 from tests.fakes.channel import FakeChannel
+from tests.fakes.deletions import RecordingDeleter
 from tests.fakes.llm import FakeLLM
 from tests.integration.agent_env import one_id, request_texts, summarizer
 from tests.integration.business_env import (
@@ -76,6 +77,7 @@ def handlers(env: Env, fake: FakeLLM, *, summaries_enabled: bool = True) -> JobH
         heartbeat_url=None,
         confirmation_applier=NotUsed(),
         summary_refresher=summarizer(env, fake),
+        data_deleter=RecordingDeleter(),
         summaries_enabled=summaries_enabled,
     )
 

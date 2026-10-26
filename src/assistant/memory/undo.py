@@ -75,6 +75,14 @@ async def undo(
     if entry is None or entry.event not in UNDOABLE_EVENTS:
         return UndoOutcome(UndoStatus.NOT_FOUND)
     details = entry.details or {}
+    changed = details.get("changes")
+    if (
+        entry.event == preferences.EVENT_PREFERENCES_CHANGED
+        and isinstance(changed, dict)
+        and preferences.changes_retention(changed)
+    ):
+        # No Undo for a retention change (M03 D85); none is offered either.
+        return UndoOutcome(UndoStatus.NOT_FOUND, entry.event)
     now = clock.now()
     memory_id = details.get("memory_id")
     if entry.event in (items.EVENT_MEMORY_SAVED, items.EVENT_MEMORY_FORGOTTEN) and (

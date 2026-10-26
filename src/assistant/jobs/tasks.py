@@ -9,6 +9,7 @@ queue, lock and schedule. Job arguments are ids only (AGENTS §13).
 | `agent.owner_request(turn_id)` | llm | lock `acct:{id}:control` (set at defer) |
 | `connections.notify_owner(event_id)` | system | deferred with the registry change (S02.1) |
 | `agent.apply_confirmation(confirmation_id)` | llm | lock `acct:{id}:control` (at defer) |
+| `privacy.delete_data(account, scope, subject, card, cutoff)` | llm | lock `acct:{id}:control` |
 | `memory.refresh_summary(conversation_id)` | llm | qlock `sum:{conv}`, `schedule_at`; no lock |
 | `system.ingestion_watchdog` | system | every minute |
 | `system.reconcile_pending` | system | every minute |
@@ -23,6 +24,7 @@ Periodic tasks carry a queueing lock so a slow run never piles up copies.
 
 from __future__ import annotations
 
+import asyncio
 import html
 from dataclasses import dataclass
 from datetime import timedelta
@@ -30,9 +32,9 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
 
-from procrastinate import App, RetryStrategy
+from procrastinate import App, BaseRetryStrategy, RetryDecision, RetryStrategy
 from procrastinate.exceptions import UniqueViolation
-from procrastinate.jobs import Status
+from procrastinate.jobs import Job, Status
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -44,6 +46,7 @@ from assistant.core.clock import Clock
 from assistant.core.jobs import (
     APPLY_CONFIRMATION_TASK,
     CONNECTION_NOTIFY_TASK,
+    DELETE_DATA_TASK,
     OWNER_REQUEST_TASK,
     REFRESH_SUMMARY_TASK,
     JobScheduler,
@@ -88,16 +91,50 @@ NOTIFY_RETRY = RetryStrategy(
 )
 
 
+class RequeueOnShutdown(BaseRetryStrategy):
+    """`privacy.delete_data` (M03 D87, D90): a failure is never retried — the
+    job has told the owner, and a retry would delete behind "nothing was
+    deleted". A run cut off by a worker shutdown (procrastinate cancels a job
+    still running when the grace ends) has told nothing new, so it goes back
+    to the queue at once — never scheduled later, since it keeps the owner's
+    control lock (AGENTS §13) — and runs after the restart, at most
+    `attempts` times: if its transaction rolled back, that run deletes and
+    sends the receipt; if its outcome was already on record, that run finds
+    it and stays silent (at most one announcement)."""
+
+    def __init__(self, attempts: int = 3) -> None:
+        self.attempts = attempts
+
+    def get_retry_decision(self, *, exception: BaseException, job: Job) -> RetryDecision | None:
+        if not isinstance(exception, asyncio.CancelledError) or job.attempts >= self.attempts:
+            return None
+        return RetryDecision()  # now, same queue, same lock
+
+
+DELETE_DATA_RETRY = RequeueOnShutdown()
+
+
 class OwnerRuntime(Protocol):
     async def run(self, turn_id: int) -> RunOutcome: ...
 
 
 class Applier(Protocol):
-    async def apply(self, confirmation_id: int) -> ApplyOutcome: ...
+    async def apply(self, confirmation_id: int, turn_cutoff: int | None = None) -> ApplyOutcome: ...
 
 
 class SummaryRefresher(Protocol):
     async def refresh(self, conversation_id: int) -> RefreshOutcome: ...
+
+
+class DataDeleter(Protocol):
+    async def run(
+        self,
+        account_id: int,
+        scope: str,
+        subject_id: int,
+        card_id: int,
+        turn_cutoff: int | None = None,
+    ) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +151,10 @@ class JobHandlers:
     confirmation_applier: Applier
     #: Refreshes rolling summaries (S03.2).
     summary_refresher: SummaryRefresher
+    #: Runs the owner's button deletions (S03.5, M03 D83). Required, like the
+    #: applier: a worker that could not run one must not start — the owner
+    #: was told "deleting now" (fix round 2, item 1).
+    data_deleter: DataDeleter
     #: Release flag `summary.refresh` (M03 D61): background refreshes run
     #: only when it is on; the read tools still summarize on demand.
     summaries_enabled: bool = False
@@ -125,8 +166,20 @@ class JobHandlers:
     #: Linked from the policy-update notice (AGENTS §16).
     privacy_policy_url: str | None = None
 
-    async def apply_confirmation(self, confirmation_id: int) -> ApplyOutcome:
-        return await self.confirmation_applier.apply(confirmation_id)
+    async def delete_data(
+        self,
+        account_id: int,
+        scope: str,
+        subject_id: int,
+        card_id: int,
+        turn_cutoff: int | None = None,
+    ) -> str:
+        return await self.data_deleter.run(account_id, scope, subject_id, card_id, turn_cutoff)
+
+    async def apply_confirmation(
+        self, confirmation_id: int, turn_cutoff: int | None = None
+    ) -> ApplyOutcome:
+        return await self.confirmation_applier.apply(confirmation_id, turn_cutoff)
 
     async def owner_request(self, turn_id: int) -> RunOutcome:
         outcome = await self.owner_runtime.run(turn_id)
@@ -312,10 +365,28 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
         await handlers.owner_request(turn_id)
 
     @app.task(name=APPLY_CONFIRMATION_TASK, queue=QUEUE_LLM, retry=OWNER_REQUEST_RETRY)
-    async def apply_confirmation(confirmation_id: int) -> None:
+    async def apply_confirmation(confirmation_id: int, turn_cutoff: int | None = None) -> None:
         # Lock `acct:{id}:control` is set at defer; a retry or redelivery is
-        # a no-op once the row has left `confirmed`.
-        await handlers.apply_confirmation(confirmation_id)
+        # a no-op once the row has left `confirmed`. `turn_cutoff` (the
+        # newest control turn at the tap, for deletions; M03 D88) is absent
+        # from a job the reconciler re-created or one queued before it existed.
+        await handlers.apply_confirmation(confirmation_id, turn_cutoff)
+
+    @app.task(name=DELETE_DATA_TASK, queue=QUEUE_LLM, retry=DELETE_DATA_RETRY)
+    async def delete_data(
+        account_id: int,
+        scope: str,
+        subject_id: int,
+        card_id: int,
+        turn_cutoff: int | None = None,
+    ) -> None:
+        # Lock `acct:{id}:control` is set at defer (the queue of owner runs
+        # and applied confirmations). A failure is never retried (M03 D87):
+        # it is reported to the owner ("nothing was deleted") and recorded,
+        # and any re-run — a stalled worker's, or one requeued after a
+        # shutdown cut it off (D90) — finds the outcome on record and stops.
+        # `turn_cutoff` defaults for a job queued before it existed.
+        await handlers.delete_data(account_id, scope, subject_id, card_id, turn_cutoff)
 
     @app.task(name=REFRESH_SUMMARY_TASK, queue=QUEUE_LLM)
     async def refresh_summary(conversation_id: int) -> None:

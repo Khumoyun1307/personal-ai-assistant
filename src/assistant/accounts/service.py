@@ -333,6 +333,7 @@ async def claim_card(
     if card is None:
         return None
     claimed = PendingInput(
+        id=card.id,  # the claimed card's id: an idempotency key (S03.5)
         account_id=card.account_id,
         kind=card.kind,
         ref_id=card.ref_id,

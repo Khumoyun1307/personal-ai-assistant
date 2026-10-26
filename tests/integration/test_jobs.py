@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import itertools
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
@@ -46,6 +47,7 @@ from assistant.telegram.control.handlers import IncomingMessage
 from assistant.telegram.gateway import OutboundGateway
 from tests.fakes.channel import FakeChannel
 from tests.fakes.clock import FakeClock
+from tests.fakes.deletions import RecordingDeleter
 from tests.fakes.sender import FakeTelegramSender
 from tests.fakes.summaries import RecordingRefresher
 
@@ -65,9 +67,11 @@ class RecordingApplier:
     """Stands in for the confirmation applier."""
 
     applied: list[int] = field(default_factory=list)
+    cutoffs: list[int | None] = field(default_factory=list)
 
-    async def apply(self, confirmation_id: int) -> ApplyOutcome:
+    async def apply(self, confirmation_id: int, turn_cutoff: int | None = None) -> ApplyOutcome:
         self.applied.append(confirmation_id)
+        self.cutoffs.append(turn_cutoff)
         return ApplyOutcome("applied")
 
 
@@ -100,6 +104,7 @@ class Env:
     runtime: RecordingRuntime
     clock: FakeClock
     handlers: JobHandlers
+    deleter: RecordingDeleter
 
 
 @pytest.fixture
@@ -112,6 +117,7 @@ async def env(migrated_url: str) -> AsyncIterator[Env]:
     scheduler = ProcrastinateScheduler(app)
     runtime = RecordingRuntime()
     clock = FakeClock(datetime.now(UTC))
+    deleter = RecordingDeleter()
     handlers = JobHandlers(
         session_factory=factory,
         clock=clock,
@@ -122,10 +128,11 @@ async def env(migrated_url: str) -> AsyncIterator[Env]:
         heartbeat_url=None,
         confirmation_applier=RecordingApplier(),
         summary_refresher=RecordingRefresher(),
+        data_deleter=deleter,
     )
     register_tasks(app, handlers)
     async with app.open_async():
-        yield Env(engine, factory, app, scheduler, runtime, clock, handlers)
+        yield Env(engine, factory, app, scheduler, runtime, clock, handlers, deleter)
     async with engine.begin() as conn:
         await conn.exec_driver_sql(TRUNCATE)
     await engine.dispose()
@@ -357,6 +364,100 @@ async def test_the_summary_task_is_never_retried_by_procrastinate(env: Env) -> N
     """A failed refresh leaves the flag set and the reconciler re-creates the
     job; a procrastinate retry could collide with the queueing lock."""
     assert env.app.tasks["memory.refresh_summary"].retry_strategy is None
+
+
+DELETE_ARGS = {
+    "account_id": 1,
+    "scope": "everything",
+    "subject_id": 1,
+    "card_id": 2,
+    "turn_cutoff": 3,
+}
+
+
+@contextlib.asynccontextmanager
+async def llm_worker_with_short_grace(app: App) -> AsyncIterator[None]:
+    """The `llm` worker as `run_queue_worker` starts it, with a shutdown grace
+    short enough for a test: a job still running then is cancelled."""
+    task = asyncio.create_task(
+        app.run_worker_async(
+            queues=["llm"],
+            name="worker-llm-test",
+            concurrency=1,
+            wait=True,
+            install_signal_handlers=False,
+            shutdown_graceful_timeout=0.1,
+            listen_notify=True,
+        )
+    )
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_a_failed_deletion_is_never_retried_by_procrastinate(env: Env) -> None:
+    """S03.5 fix round 2, item 1: a failed deletion tells the owner that
+    nothing was deleted; an automatic retry would then delete after that
+    message. The owner asks again instead (M03 D87)."""
+    env.deleter.error = RuntimeError("synthetic failure")
+
+    async def settled() -> bool:
+        statuses = await job_statuses(env, "privacy.delete_data")
+        return bool(statuses) and statuses[0] not in ("todo", "doing")
+
+    await env.scheduler.defer("privacy.delete_data", args=DELETE_ARGS, lock=owner_control_lock(1))
+    async with llm_worker_with_short_grace(env.app):
+        await wait_until(settled)
+    assert await job_statuses(env, "privacy.delete_data") == ["failed"]
+    assert len(env.deleter.runs) == 1
+
+
+async def test_a_deletion_cut_off_by_a_worker_shutdown_goes_back_to_the_queue(env: Env) -> None:
+    """Fix round 3, D: procrastinate cancels a job still running when the
+    shutdown grace ends. A deletion cut off so has decided nothing (its
+    transaction rolled back) and told nobody, so it is requeued — at once,
+    keeping its lock and its place before later owner runs — and runs after
+    the restart; that run deletes once and sends the receipt."""
+    env.deleter.gate = asyncio.Event()  # never set: still running at shutdown
+
+    async def doing() -> bool:
+        return await job_statuses(env, "privacy.delete_data") == ["doing"]
+
+    await env.scheduler.defer("privacy.delete_data", args=DELETE_ARGS, lock=owner_control_lock(1))
+    async with llm_worker_with_short_grace(env.app):
+        await wait_until(doing)
+    assert await job_statuses(env, "privacy.delete_data") == ["todo"]
+    async with env.factory() as session:
+        lock, args, later = (
+            await session.execute(
+                text(
+                    "SELECT lock, args, scheduled_at > now() + interval '1 second' "
+                    "FROM procrastinate.procrastinate_jobs WHERE task_name = 'privacy.delete_data'"
+                )
+            )
+        ).one()
+    assert lock == owner_control_lock(1)
+    assert args == DELETE_ARGS
+    assert not later  # never a future-scheduled job holding the lock (AGENTS §13)
+
+
+async def test_the_deletion_task_passes_the_turn_cutoff_through(env: Env) -> None:
+    """Ids only (AGENTS §13); a job queued before the cutoff existed still runs."""
+    task = env.app.tasks["privacy.delete_data"].func
+    await task(account_id=1, scope="everything", subject_id=1, card_id=2, turn_cutoff=5)
+    await task(account_id=1, scope="everything", subject_id=1, card_id=3)
+    assert env.deleter.runs == [(1, "everything", 1, 2, 5), (1, "everything", 1, 3, None)]
+
+
+def test_a_worker_cannot_be_built_without_a_data_deleter() -> None:
+    """Like the confirmation applier: a worker that could not run an owner's
+    deletion must not start (the job would fail where the owner was told
+    "deleting now")."""
+    [deleter] = [f for f in dataclasses.fields(JobHandlers) if f.name == "data_deleter"]
+    assert deleter.default is dataclasses.MISSING
 
 
 async def test_the_reconciler_redefers_only_a_lost_recent_turn(env: Env) -> None:

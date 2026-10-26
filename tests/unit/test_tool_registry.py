@@ -145,8 +145,17 @@ class Nested(BaseModel):
 
 
 #: Keywords kept out of tool schemas: constraints are validated by our own
-#: Pydantic validators, so the schema stays within plain strict mode.
-_UNUSED_KEYWORDS = {"format", "minLength", "maxLength", "minItems", "maxItems", "pattern"}
+#: Pydantic validators, so the schema stays within plain strict mode; no
+#: `default` either (D52: every field required and nullable).
+_UNUSED_KEYWORDS = {
+    "format",
+    "minLength",
+    "maxLength",
+    "minItems",
+    "maxItems",
+    "pattern",
+    "default",
+}
 
 
 def _keywords(node: Any) -> set[str]:

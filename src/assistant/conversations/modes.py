@@ -73,6 +73,20 @@ async def conversation_for_contact(session: AsyncSession, account_id: int, conta
     return int(found)
 
 
+async def contact_of(session: AsyncSession, account_id: int, conversation_id: int) -> int:
+    """The contact of one of the account's chats; LookupError otherwise."""
+    found = (
+        await session.execute(
+            select(Conversation.contact_id)
+            .where(Conversation.account_id == account_id)
+            .where(Conversation.id == conversation_id)
+        )
+    ).scalar_one_or_none()
+    if found is None:
+        raise LookupError("conversation not found in this account")
+    return int(found)
+
+
 async def has_unsummarized_content(
     session: AsyncSession, account_id: int, conversation_id: int
 ) -> bool:

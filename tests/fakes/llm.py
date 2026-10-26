@@ -23,7 +23,8 @@ from assistant.llm.port import (
     Usage,
 )
 
-Script = LLMResponse | LLMError | Callable[[LLMRequest], LLMResponse]
+#: A callable step may be async (a hook that acts while the call is in flight).
+Script = LLMResponse | LLMError | Callable[[LLMRequest], Any]
 
 
 def text_response(text: str, *, tokens: int = 30) -> LLMResponse:
@@ -74,7 +75,11 @@ class FakeLLM:
         if isinstance(step, LLMError):
             raise step
         if callable(step) and not isinstance(step, LLMResponse):
-            return step(request)
+            value = step(request)
+            if inspect.isawaitable(value):
+                # An async hook: e.g. the owner taps a button while the run waits.
+                value = await value
+            return value
         return step
 
     async def parse[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> ParsedResponse[T]:

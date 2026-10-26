@@ -247,8 +247,12 @@ class ControlDispatcher:
                 session, self._gateway, self._clock, account, press
             )
         if parsed.kind in panels.KINDS:
-            return await panels.handle_press(session, self._gateway, self._clock, account, press)
-        return await handlers.handle_card_press(session, self._gateway, self._clock, account, press)
+            return await panels.handle_press(
+                session, self._gateway, self._clock, account, press, self._scheduler
+            )
+        return await handlers.handle_card_press(
+            session, self._gateway, self._clock, account, press, self._scheduler
+        )
 
     async def _load_account_by_id(self, session: AsyncSession, from_id: int) -> Account | None:
         from sqlalchemy import select
@@ -303,6 +307,11 @@ class ControlDispatcher:
             case "privacy":
                 if argument.strip().lower() == "revoke":
                     return await handlers.handle_revoke(
+                        session, self._gateway, self._clock, account, message
+                    )
+                if argument.strip().lower() == "delete":
+                    # S03.5: the "delete everything" card; it asks first.
+                    return await panels.handle_delete_all_command(
                         session, self._gateway, self._clock, account, message
                     )
                 if argument.strip().lower() == "managed":

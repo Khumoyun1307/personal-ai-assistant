@@ -26,7 +26,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -333,30 +333,49 @@ class InboxProcessor:
             await session.refresh(row)
 
 
+@dataclass(frozen=True, slots=True)
+class Requeued:
+    """What `inbox requeue` did: rows reset to pending, and dead letters left
+    failed because their payload is gone (swept, or cleared by an owner's
+    deletion, M03 D89) — processing them would handle an empty update."""
+
+    reset: int
+    cleared: int
+
+
 async def requeue_failed(
     session_factory: async_sessionmaker[AsyncSession], *, row_id: int | None = None
-) -> int:
-    """Reset dead-lettered rows to pending (`inbox requeue`, §6.2).
-
-    The runbook is: fix the bug, deploy, requeue. Returns rows reset.
+) -> Requeued:
+    """Reset dead-lettered rows that still hold their payload to pending
+    (`inbox requeue`, §6.2). The runbook is: fix the bug, deploy, requeue.
     """
     async with session_factory() as session, session.begin():
         statement = (
             update(InboundUpdate)
             .where(InboundUpdate.status == "failed")
+            .where(InboundUpdate.payload.is_not(None))
             .values(status="pending", attempts=0, error_code=None, processed_at=None)
+        )
+        cleared = (
+            select(func.count())
+            .select_from(InboundUpdate)
+            .where(InboundUpdate.status == "failed")
+            .where(InboundUpdate.payload.is_(None))
         )
         if row_id is not None:
             statement = statement.where(InboundUpdate.id == row_id)
+            cleared = cleared.where(InboundUpdate.id == row_id)
         result = await session.execute(statement)
+        left = int((await session.execute(cleared)).scalar_one())
         # CursorResult carries rowcount; the base Result type does not expose it.
-        return int(getattr(result, "rowcount", 0) or 0)
+        reset = int(getattr(result, "rowcount", 0) or 0)
+    if left:
+        logger.warning("inbox_requeue_skipped_cleared", count=left)
+    return Requeued(reset, left)
 
 
 async def inbox_backlog(session_factory: async_sessionmaker[AsyncSession]) -> dict[str, Any]:
     """Counts per status, for `/status` and the ingestion watchdog."""
-    from sqlalchemy import func
-
     async with session_factory() as session:
         result = await session.execute(
             select(InboundUpdate.status, func.count()).group_by(InboundUpdate.status)
@@ -367,7 +386,7 @@ async def inbox_backlog(session_factory: async_sessionmaker[AsyncSession]) -> di
 async def inbox_backlog_for(session: AsyncSession, account_id: int) -> dict[str, int]:
     """Counts per status for one account's rows plus the unrouted pending ones
     (a pending row has no account yet, and may be this owner's)."""
-    from sqlalchemy import func, or_
+    from sqlalchemy import or_
 
     result = await session.execute(
         select(InboundUpdate.status, func.count())
