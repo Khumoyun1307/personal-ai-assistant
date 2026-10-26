@@ -19,6 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import evals.summary as summary_module
 import psycopg
 import pytest
 import sqlalchemy as sa
@@ -56,7 +57,7 @@ from assistant.llm.port import (
 )
 from assistant.memory.catch_up import GapFact, PeriodCoverage
 from tests.fakes.llm import FakeLLM
-from tests.integration.conftest import admin_url
+from tests.integration.conftest import admin_url, create_scratch_database, drop_scratch_database
 
 pytestmark = pytest.mark.integration
 
@@ -333,6 +334,27 @@ async def test_every_conversation_has_its_own_account_and_leaves_nothing_behind(
     owners = [r.account_id for r in llm.requests if r.purpose == SUMMARIZE_PURPOSE]
     assert len(owners) == 5
     assert len(set(owners)) == 5  # one account per conversation, none shared
+
+
+async def test_a_failure_while_preparing_a_chat_leaves_no_account_behind(
+    factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The messages are committed before the consents and the connection are added:
+    a failure in between must still remove the account (the cleanup covers the whole
+    chat from the moment it is stored)."""
+
+    async def boom(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("the consent could not be written")
+
+    async def accounts() -> int:
+        async with factory() as session:
+            return (await session.execute(select(func.count()).select_from(Account))).scalar_one()
+
+    monkeypatch.setattr(summary_module, "grant_consent", boom)
+    before = await accounts()
+    with pytest.raises(RuntimeError, match="consent"):
+        await target(factory).run(context(SummaryOracle(SLICE)))
+    assert await accounts() == before
 
 
 async def test_the_run_is_reproducible(factory: async_sessionmaker[AsyncSession]) -> None:
@@ -668,6 +690,36 @@ async def test_the_throwaway_database_is_migrated_isolated_and_dropped(
             "SELECT count(*) FROM pg_database WHERE datname = %s", (name,)
         ).fetchone()
     assert left == (0,)
+
+
+def test_cleanup_lists_and_drops_only_the_leftover_evaluation_databases(
+    test_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A killed run cannot drop its throwaway database; `cleanup` finds it by its
+    exact name pattern, lists it, and drops it only with --yes. Look-alike names stay."""
+    monkeypatch.setenv("EVAL_DATABASE_URL", test_database_url)
+    leftover, lookalike = "assistant_eval_deadbeef", "assistant_eval_notes"
+    create_scratch_database(test_database_url, leftover)
+    create_scratch_database(test_database_url, lookalike)
+    try:
+        assert cli.main(["cleanup"]) == 0
+        listed = capsys.readouterr().out
+        assert leftover in listed
+        assert lookalike not in listed
+        assert "--yes" in listed
+        assert leftover in _databases(test_database_url)  # listing drops nothing
+
+        assert cli.main(["cleanup", "--yes"]) == 0
+        assert "dropped 1 database" in capsys.readouterr().out
+        assert leftover not in _databases(test_database_url)
+        assert lookalike in _databases(test_database_url)
+        assert cli.main(["cleanup"]) == 0
+        assert "no leftover" in capsys.readouterr().out
+    finally:
+        drop_scratch_database(test_database_url, leftover)
+        drop_scratch_database(test_database_url, lookalike)
 
 
 # ------------------------------------------------------------------ the CLI, live

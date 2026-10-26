@@ -476,11 +476,17 @@ class SummaryTarget:
 
     async def _evaluate(self, conversation: Conversation, context: RunContext) -> _Record:
         assert context.model is not None  # checked in run()
-        loaded = await self._load(conversation, context.model)
+        processor = processor_for_model(context.model)
+        if processor is None:
+            raise ValueError("the model has no known processor to name in the synthetic consent")
+        # `load_corpus` commits the account and its messages before anything else is
+        # added, so the cleanup must cover everything from here on.
+        corpus = await load_corpus(self._database, [conversation])
         try:
+            loaded = await self._prepare(corpus.account_id, conversation, processor)
             return await self._evaluate_loaded(conversation, loaded, context)
         finally:
-            await unload_corpus(self._database, loaded.account_id)
+            await unload_corpus(self._database, corpus.account_id)
 
     async def _evaluate_loaded(
         self, conversation: Conversation, loaded: _Loaded, context: RunContext
@@ -571,17 +577,15 @@ class SummaryTarget:
         return f"summary:{status.value}" + (f":{error_class}" if error_class else "")
 
     # -------------------------------------------------------------- the data
-    async def _load(self, conversation: Conversation, model: str) -> _Loaded:
-        """One synthetic account holding this conversation and what the product
-        needs to summarize it (the module docstring, step 2)."""
-        processor = processor_for_model(model)
-        if processor is None:
-            raise ValueError("the model has no known processor to name in the synthetic consent")
+    async def _prepare(
+        self, account_id: int, conversation: Conversation, processor: str
+    ) -> _Loaded:
+        """Add to the stored conversation what the product needs to summarize it
+        (the module docstring, step 2). The caller removes the account on any failure."""
         start, end = catch_up_window(conversation)
-        corpus = await load_corpus(self._database, [conversation])
         clock = _FixedClock(end)
         async with self._database() as session, session.begin():
-            account = await session.get(Account, corpus.account_id)
+            account = await session.get(Account, account_id)
             assert account is not None  # just created
             account.locale_pref = self.owner_language
             for kind in (CONSENT_AI_CONTROL, CONSENT_AI_MANAGED):
@@ -625,7 +629,7 @@ class SummaryTarget:
                 key = (gap.kind, gap.certainty, gap.at_risk_from, gap.at_risk_to, row.id)
                 gap_ids[key] = gap.id
             conversation_row_id = row.id
-        return _Loaded(corpus.account_id, conversation_row_id, start, end, gap_ids)
+        return _Loaded(account_id, conversation_row_id, start, end, gap_ids)
 
     # --------------------------------------------------------------- metrics
     def _result(

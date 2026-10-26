@@ -4,6 +4,7 @@
     python -m evals run retrieval [--mode deterministic|variants|both] [--live] ...
     python -m evals run summary [--owner-language uz-Latn|uz-Cyrl|ru|en] [--live] ...
     python -m evals compare docs/evals/<run>.json [...]
+    python -m evals cleanup [--yes]        # list (or drop) throwaway databases a killed run left
 
 Safe by default: `run retrieval` is the deterministic, model-free baseline, and
 `run summary` (which always calls a model) refuses without `--live`. Any run
@@ -33,7 +34,12 @@ from evals.budget import (
     check_overrides,
     parse_price,
 )
-from evals.corpus import eval_database_url, isolated_corpus
+from evals.corpus import (
+    drop_leftover_databases,
+    eval_database_url,
+    isolated_corpus,
+    leftover_databases,
+)
 from evals.errors import EvalsError
 from evals.live import ModelChoice, build_client, load_live_config, resolve_model
 from evals.metrics import OwnerLanguage
@@ -124,6 +130,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--reviews", type=Path, help="owner review ledger (JSON)")
     run.add_argument("--date", type=date.fromisoformat, help="run date (default: today, UTC)")
 
+    cleanup = sub.add_parser(
+        "cleanup", help="list (or, with --yes, drop) throwaway databases a killed run left behind"
+    )
+    cleanup.add_argument("--yes", action="store_true", help="drop them (default: only list)")
+
     compare = sub.add_parser("compare", help="compare recorded runs (quality and cost)")
     compare.add_argument("reports", nargs="+", type=Path, help="JSON reports from docs/evals/")
     return parser
@@ -169,6 +180,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "verify":
             return _verify()
+        if args.command == "cleanup":
+            return _cleanup(drop=args.yes)
         if args.command == "compare":
             return _compare(args.reports)
         if args.target == "summary":
@@ -183,6 +196,26 @@ def _verify() -> int:
     _say("datasets match evals/datasets/MANIFEST.sha256:")
     for name, digest in digests.items():
         _say(f"  {digest}  {name}")
+    return 0
+
+
+def _cleanup(*, drop: bool) -> int:
+    """A run drops its throwaway database when it ends, fails or is interrupted; a
+    process that is killed cannot. This lists such leftovers on the evaluation
+    server (`assistant_eval_` and 8 hex digits, nothing else) and drops them with
+    `--yes`. Do not run it while another evaluation is running."""
+    base = eval_database_url()
+    names = leftover_databases(base)
+    if not names:
+        _say("no leftover evaluation databases")
+        return 0
+    for name in names:
+        _say(name)
+    if not drop:
+        _say(f"{len(names)} leftover database(s); run again with --yes to drop them")
+        return 0
+    dropped = drop_leftover_databases(base, names)
+    _say(f"dropped {len(dropped)} database(s)")
     return 0
 
 
