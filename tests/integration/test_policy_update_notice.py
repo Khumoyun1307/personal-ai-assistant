@@ -28,6 +28,7 @@ from assistant.inbox.policy_notice import (
 from assistant.jobs.tasks import JobHandlers
 from assistant.privacy.retention import sweep_all
 from tests.fakes.channel import FakeChannel
+from tests.fakes.summaries import RecordingRefresher
 from tests.integration.business_env import OWNER, Env, deliver, onboard, private_message
 
 pytestmark = pytest.mark.integration
@@ -256,6 +257,7 @@ async def test_the_ingestion_watchdog_sends_the_notice(env: Env) -> None:
         monthly_budget_usd=None,
         heartbeat_url=None,
         confirmation_applier=_NoApplier(),
+        summary_refresher=RecordingRefresher(),
         privacy_policy_url=POLICY_URL,
     )
 

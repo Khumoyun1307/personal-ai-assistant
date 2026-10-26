@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import IntEnum, StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -29,6 +29,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from assistant.core.channel import ControlChannel
 from assistant.core.clock import Clock
 from assistant.llm.port import ToolSpec
+
+if TYPE_CHECKING:
+    from assistant.agent.summarize import Summarizer
 
 
 class CapabilityClass(StrEnum):
@@ -76,6 +79,9 @@ class ToolServices:
     #: The owner's control chat, for confirmation cards (None in unit tests
     #: that never reach the confirmation gate).
     channel: ControlChannel | None = None
+    #: The `summarize` run type (S03.2), for catch-up and attention tools;
+    #: None where no summary can be made (those tools then say so).
+    summarizer: Summarizer | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +128,14 @@ class ToolContext:
     run_type: str
     tainted: bool
     services: ToolServices
+    #: The model's id for this call: with `run_id`, the idempotency key of a
+    #: state change (§8.3 step 4). Empty outside a model call.
+    call_id: str = ""
+    #: A held call the owner confirmed, run by the applier: it came from a
+    #: tainted run whatever the run row says now (fail closed).
+    held: bool = False
+    #: Conversations and contacts the run's results drew on so far.
+    refs: ToolRefs = field(default_factory=ToolRefs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +162,11 @@ class ToolOutcome:
 
 
 ToolHandler = Callable[[ToolContext, Any], Awaitable[ToolOutcome]]
+#: For a confirmation card: what a held call's ids refer to, in plain text
+#: for the owner (the note's words, the chat's contact name). LookupError
+#: for an id that is not the account's. Owner-facing only, never sent to a
+#: model (S03.3 safety review S1).
+ToolDescriber = Callable[[AsyncSession, int, Mapping[str, Any]], Awaitable[str | None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +180,7 @@ class ToolDefinition:
     allowed_run_types: frozenset[str] = TOOL_RUN_TYPES
     min_tier: CapabilityTier = CapabilityTier.CONTROL_ONLY
     returns_managed: bool = False
+    describe: ToolDescriber | None = None
 
     @property
     def changes_state(self) -> bool:
@@ -242,11 +262,27 @@ def default_registry() -> ToolRegistry:
         LIST_CONVERSATIONS,
         RESOLVE_CONTACT,
     )
+    from assistant.agent.tools.memory import FORGET, LIST_MEMORIES, REMEMBER
+    from assistant.agent.tools.modes import SET_CONVERSATION_MODE, UPDATE_PREFERENCES
     from assistant.agent.tools.search import SEARCH_MESSAGES
     from assistant.agent.tools.status import GET_STATUS
+    from assistant.agent.tools.summaries import GET_ATTENTION_LIST, SUMMARIZE_PERIOD
 
     return ToolRegistry(
-        [GET_STATUS, SEARCH_MESSAGES, RESOLVE_CONTACT, GET_CONVERSATION, LIST_CONVERSATIONS]
+        [
+            GET_STATUS,
+            SEARCH_MESSAGES,
+            RESOLVE_CONTACT,
+            GET_CONVERSATION,
+            LIST_CONVERSATIONS,
+            SUMMARIZE_PERIOD,
+            GET_ATTENTION_LIST,
+            REMEMBER,
+            FORGET,
+            LIST_MEMORIES,
+            UPDATE_PREFERENCES,
+            SET_CONVERSATION_MODE,
+        ]
     )
 
 

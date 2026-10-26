@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -50,6 +50,29 @@ MAX_ID = 2**63 - 1
 
 _CURSOR = re.compile(r"^(\d{1,17})\.(\d{1,19})$")
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+_MOMENT = re.compile(r"^(\d{4}-\d{2}-\d{2})(?: (\d{2}):(\d{2}))?$")
+
+
+def parse_local_moment(value: str | None) -> datetime | None:
+    """`YYYY-MM-DD HH:MM` (or `YYYY-MM-DD` = midnight) as a naive local time,
+    within `MIN_DATE`..`MAX_DATE`, or None. Raises ValueError otherwise."""
+    if value is None:
+        return None
+    match = _MOMENT.fullmatch(value)
+    if match is None:
+        raise ValueError("times must be 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD'")
+    day = parse_local_date(match.group(1))
+    assert day is not None
+    hour, minute = int(match.group(2) or 0), int(match.group(3) or 0)
+    return datetime.combine(day, time(hour, minute))
+
+
+def local_to_utc(moment: datetime, timezone: str) -> datetime:
+    """A naive owner-local time as UTC (DST gaps resolve forward, folds to
+    the first occurrence — zoneinfo's defaults)."""
+    return moment.replace(tzinfo=zone(timezone)).astimezone(UTC)
 
 
 def parse_local_date(value: str | None) -> date | None:
@@ -139,6 +162,61 @@ def message_text(value: str | None, direction: str, *, limit: int) -> str | None
     clipped = value if len(value) <= limit else value[:limit] + "…"
     source = Source.CONTACT if direction == "contact" else Source.OWNER_IN_BUSINESS_CHAT
     return wrap(clipped, source)
+
+
+def _summary_text(value: object) -> str | None:
+    return wrap(value, Source.SUMMARY) if isinstance(value, str) and value else None
+
+
+def _ids(value: object) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    return [i for i in value if isinstance(i, int) and not isinstance(i, bool)]
+
+
+def summary_view(summary: Mapping[str, Any]) -> dict[str, Any]:
+    """A stored summary as the model sees it: every string is model output
+    derived from contact text, so each is wrapped as untrusted (§6 inv. 3b);
+    message ids let it check a point with `get_conversation`."""
+
+    def points(key: str) -> list[dict[str, Any]]:
+        items = summary.get(key)
+        return [
+            {"text": _summary_text(item.get("text")), "message_ids": _ids(item.get("message_ids"))}
+            for item in (items if isinstance(items, list) else [])
+            if isinstance(item, dict)
+        ]
+
+    commitments = summary.get("commitments")
+    return {
+        "overview": _summary_text(summary.get("overview")),
+        "open_questions_to_owner": points("open_questions_to_owner"),
+        "decisions_requested": points("decisions_requested"),
+        "commitments": [
+            {
+                "by": item.get("by") if item.get("by") in ("owner", "contact") else None,
+                "text": _summary_text(item.get("text")),
+                "due": _summary_text(item.get("due")),
+                "message_ids": _ids(item.get("message_ids")),
+            }
+            for item in (commitments if isinstance(commitments, list) else [])
+            if isinstance(item, dict)
+        ],
+        "key_facts": points("key_facts"),
+        "needs_reply": bool(summary.get("needs_reply")),
+        "needs_reply_reason": _summary_text(summary.get("needs_reply_reason")),
+        **_omitted(summary.get("items_omitted")),
+    }
+
+
+def _omitted(value: object) -> dict[str, Any]:
+    """The list cap's count, said out loud when it cut anything."""
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return {
+            "items_omitted": value,
+            "note": f"{value} more item(s) were left out of these lists (each list is capped).",
+        }
+    return {}
 
 
 async def require_contacts(session: AsyncSession, account_id: int, ids: Sequence[int]) -> None:

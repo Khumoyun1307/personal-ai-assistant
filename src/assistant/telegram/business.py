@@ -22,6 +22,7 @@ from assistant.conversations.events import (
 from assistant.core.clock import Clock
 from assistant.core.routing import Disposition, RouteDecision
 from assistant.inbox.models import InboundUpdate
+from assistant.memory.summaries import SummaryRefreshTrigger
 from assistant.observability.logging import get_logger
 from assistant.telegram.connections import ConnectionRegistry
 from assistant.telegram.normalize import normalize
@@ -36,10 +37,20 @@ MESSAGE_KINDS = ("business_message", "edited_business_message")
 class BusinessPipeline:
     """Handles live business updates for an onboarded owner."""
 
-    def __init__(self, registry: ConnectionRegistry, clock: Clock, *, bot_id: int) -> None:
+    def __init__(
+        self,
+        registry: ConnectionRegistry,
+        clock: Clock,
+        *,
+        bot_id: int,
+        summaries: SummaryRefreshTrigger | None = None,
+    ) -> None:
         self._registry = registry
         self._clock = clock
         self._bot_id = bot_id
+        #: Defers the debounced summary refresh after the commit (S03.2);
+        #: None while background refreshes are off (flag `summary.refresh`).
+        self._summaries = summaries
 
     async def handle(
         self, session: AsyncSession, row: InboundUpdate, decision: RouteDecision
@@ -76,6 +87,9 @@ class BusinessPipeline:
             if outcome.metadata_only:
                 # Ignore mode: the deletion's payload names the contact.
                 row.payload = None
+            elif outcome.content_lost_ids and self._summaries is not None:
+                # A covering summary was dropped and must be rebuilt.
+                self._summaries.after_new_content(session, outcome.conversation_id)
             await service.resolve_ingest_failure(
                 session, account_id=account_id, inbound_update_id=row.id, clock=self._clock
             )
@@ -92,6 +106,12 @@ class BusinessPipeline:
             # Ignore mode: the row is processed, but the content is not ours
             # to keep (§6.5 last paragraph).
             row.payload = None
+        elif self._summaries is not None and result.effect in (
+            service.Effect.INSERTED,
+            service.Effect.UPDATED,
+        ):
+            # New content: a debounced refresh, deferred after the commit.
+            self._summaries.after_new_content(session, result.conversation_id)
         await service.resolve_ingest_failure(
             session, account_id=account_id, inbound_update_id=row.id, clock=self._clock
         )

@@ -11,7 +11,8 @@ The rules that matter most, each pinned by an integration test:
   however late, never moves the reply window (TF §12 LV-08/LV-15);
 - a no-op edit (same content hash) touches nothing, not even `edited_at`;
 - a deletion purges content and leaves a tombstone, so a requeued or
-  redelivered update cannot bring the content back;
+  redelivered update cannot bring the content back, and drops the summaries
+  that covered it (S03.2);
 - content is stored whether or not `ai_managed` consent exists; the consent
   gate is at the LLM boundary (§14.3). `pending_ai_since` only remembers that
   something new is waiting.
@@ -28,7 +29,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts.models import AuditLogEntry
+from assistant.accounts.models import Account, AuditLogEntry
+from assistant.accounts.preferences import FALLBACK_DEFAULT_MODE, default_mode
 from assistant.accounts.service import active_consent
 from assistant.conversations.events import (
     Direction,
@@ -44,6 +46,7 @@ from assistant.conversations.models import (
 from assistant.core.clock import Clock
 from assistant.inbox.models import InboundUpdate
 from assistant.memory.search import detect_script, guess_lang, normalize
+from assistant.memory.summaries import invalidate_covering
 from assistant.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -88,6 +91,9 @@ class DeletionOutcome:
     tombstoned_telegram_ids: tuple[int, ...] = ()
     #: The conversation is in Ignore mode: the update's payload is not kept.
     metadata_only: bool = False
+    #: Messages that still held content until this deletion (a subset of
+    #: `purged_message_ids`, which also lists rows already deleted).
+    content_lost_ids: tuple[int, ...] = ()
 
 
 # ------------------------------------------------------------------ helpers
@@ -150,13 +156,55 @@ async def _upsert_contact(
     return int((await session.execute(upsert)).scalar_one())
 
 
+async def _refresh_names(
+    session: AsyncSession,
+    *,
+    contact_id: int,
+    display_name: str | None,
+    username: str | None,
+    clock: Clock,
+) -> None:
+    """Names are refreshed from messages (§10.3); a message without a name
+    does not erase one we have."""
+    if display_name is None and username is None:
+        return
+    await session.execute(
+        update(Contact)
+        .where(Contact.id == contact_id)
+        .values(
+            display_name=func.coalesce(display_name, Contact.display_name),
+            username=func.coalesce(username, Contact.username),
+            updated_at=clock.now(),
+        )
+    )
+
+
+async def new_chat_mode(session: AsyncSession, account_id: int) -> str:
+    """The mode a conversation created now starts in: the owner's default
+    (PRD §11.1; /settings, S03.3), Observe unless they chose otherwise."""
+    account = await session.get(Account, account_id)
+    return FALLBACK_DEFAULT_MODE if account is None else default_mode(account)
+
+
 async def _lock_conversation(
-    session: AsyncSession, *, account_id: int, business_chat_id: int, contact_id: int
+    session: AsyncSession,
+    *,
+    account_id: int,
+    business_chat_id: int,
+    contact_id: int,
+    mode: str | None = None,
 ) -> Conversation:
-    """Upsert, then lock: every write to a conversation goes through here."""
+    """Upsert, then lock: every write to a conversation goes through here.
+    `mode` applies only if the conversation is created now."""
+    values: dict[str, Any] = {
+        "account_id": account_id,
+        "business_chat_id": business_chat_id,
+        "contact_id": contact_id,
+    }
+    values["mode"] = mode or await new_chat_mode(session, account_id)
     await session.execute(
         insert(Conversation)
-        .values(account_id=account_id, business_chat_id=business_chat_id, contact_id=contact_id)
+        .values(**values)
         .on_conflict_do_nothing(constraint="uq_conversations_account_id_business_chat_id")
     )
     result = await session.execute(
@@ -218,24 +266,41 @@ async def record_message(
     conversation_probe = await _find_conversation(
         session, account_id=account_id, business_chat_id=event.business_chat_id
     )
-    metadata_only = conversation_probe is not None and conversation_probe.mode == "ignore"
+    # A new chat starts in the owner's default mode (S03.3).
+    mode = (
+        conversation_probe.mode
+        if conversation_probe is not None
+        else await new_chat_mode(session, account_id)
+    )
     contact_id = await _upsert_contact(
         session,
         account_id=account_id,
         telegram_user_id=event.counterpart.telegram_user_id,
-        display_name=event.counterpart.display_name,
-        username=event.counterpart.username,
+        display_name=None,
+        username=None,
         is_bot=event.counterpart.is_bot,
         clock=clock,
-        write_names=not metadata_only,
+        write_names=False,
     )
     conversation = await _lock_conversation(
         session,
         account_id=account_id,
         business_chat_id=event.business_chat_id,
         contact_id=contact_id,
+        mode=mode,
     )
+    # The mode read under the conversation lock decides — not the probe,
+    # which may predate a concurrent creation or Ignore switch. In Ignore not
+    # even the contact's name is stored (S03.3, safety review N2).
     metadata_only = conversation.mode == "ignore"
+    if not metadata_only:
+        await _refresh_names(
+            session,
+            contact_id=contact_id,
+            display_name=event.counterpart.display_name,
+            username=event.counterpart.username,
+            clock=clock,
+        )
 
     # Step 2: the message.
     if event.is_edit:
@@ -274,6 +339,9 @@ async def record_message(
 
     # Step 5: something new for the AI to look at, once consent allows.
     content_changed = effect in (Effect.INSERTED, Effect.UPDATED) and not metadata_only
+    if effect is Effect.UPDATED and not metadata_only and message_id is not None:
+        # The pre-edit text must not live on in a summary either (M03 D66).
+        await invalidate_covering(session, conversation, [message_id], now=now)
     if content_changed and conversation.pending_ai_since is None:
         conversation.pending_ai_since = now
     conversation.updated_at = now
@@ -428,6 +496,21 @@ async def record_deletion(
     # Telegram may list an id more than once; two tombstones for one id
     # would violate the unique key and dead-letter the deletion.
     ids = list(dict.fromkeys(event.telegram_message_ids))
+    # Rows that still hold content: only these lose something now. A
+    # redelivered deletion or a never-stored id must not invalidate a summary
+    # (and force a paid rebuild) — the conversation row lock orders this read
+    # against any concurrent edit of the chat.
+    content_lost = tuple(
+        int(message_id)
+        for message_id in (
+            await session.execute(
+                select(Message.id)
+                .where(Message.conversation_id == conversation.id)
+                .where(Message.telegram_message_id.in_(ids))
+                .where((Message.text.is_not(None)) | (Message.media.is_not(None)))
+            )
+        ).scalars()
+    )
     purged = await session.execute(
         update(Message)
         .where(Message.conversation_id == conversation.id)
@@ -470,6 +553,8 @@ async def record_deletion(
             .where(InboundUpdate.message_id.in_(purged_ids))
             .values(payload=None)
         )
+    # A deleted message must not live on in a summary (S03.2, M03 D63).
+    await invalidate_covering(session, conversation, content_lost, now=now)
     conversation.updated_at = now
     logger.info(
         "business_messages_deleted",
@@ -478,7 +563,11 @@ async def record_deletion(
         tombstoned=len(missing),
     )
     return DeletionOutcome(
-        conversation.id, purged_ids, missing, metadata_only=conversation.mode == "ignore"
+        conversation.id,
+        purged_ids,
+        missing,
+        metadata_only=conversation.mode == "ignore",
+        content_lost_ids=content_lost,
     )
 
 

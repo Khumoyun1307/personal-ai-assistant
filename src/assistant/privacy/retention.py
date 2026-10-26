@@ -12,9 +12,12 @@ Every data class the privacy policy names has a rule here, and the hourly
 | `business_connection_events` | 1 year | rows deleted (ids, rights, flags only) |
 | `foreign_connections` | 30 days after last seen | rows deleted (metadata of non-owners) |
 | `messages` content | 90 days from `sent_at`/last edit | content cleared, `purged_at` set, kept |
-| (text, media, search key, hash) | | `summary_gap_before` advanced (rollup: M03) |
+| (text, media, search key, hash) | rollup tried from day 80 | gap noted if never summarized |
 | `contacts` names | while message content is retained | names cleared afterwards |
 | `pending_inputs` | until expiry | rows deleted (questions and cards) |
+| `conversation_summaries` (period) | 30 days | rows deleted (catch-up caches, S03.2) |
+| `conversation_summaries` (rolling) | until deleted | deletion cascades only (R-07) |
+| `memory_items` | until deleted; forgotten 24 h | forgotten rows deleted (S03.3) |
 
 Other classes join as their tables arrive.
 """
@@ -24,7 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import BigInteger, column, delete, func, select, text, update, values
+from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import (
@@ -36,8 +40,19 @@ from assistant.accounts.models import (
 from assistant.accounts.service import sweep_expired_cards
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
+from assistant.core.jobs import JobScheduler
 from assistant.db.uow import transaction
 from assistant.inbox.models import InboundUpdate
+from assistant.memory.items import sweep_forgotten
+from assistant.memory.summaries import (
+    covered_through,
+    defer_refresh,
+    rollup_candidates,
+    sweep_period_summaries,
+)
+from assistant.observability.logging import get_logger
+
+logger = get_logger(__name__)
 
 INBOUND_PAYLOAD_RETENTION = timedelta(days=7)
 CONTROL_TURN_TEXT_RETENTION = timedelta(days=90)
@@ -61,11 +76,18 @@ class SweepReport:
     contact_names: int = 0
     expired_inputs: int = 0
     tool_confirmations: int = 0
+    period_summaries: int = 0
+    #: Forgotten memory items deleted after their Undo window (S03.3).
+    forgotten_memories: int = 0
+    #: Chats whose rollup was queued before the ceiling (S03.3; not a deletion).
+    rollups_scheduled: int = 0
 
     @property
     def total(self) -> int:
         return (
-            self.tool_confirmations
+            self.forgotten_memories
+            + self.rollups_scheduled
+            + self.tool_confirmations
             + self.inbound_payloads
             + self.control_turn_texts
             + self.llm_calls
@@ -76,6 +98,7 @@ class SweepReport:
             + self.message_contents
             + self.contact_names
             + self.expired_inputs
+            + self.period_summaries
         )
 
 
@@ -101,8 +124,16 @@ async def sweep_inbound_payloads(
         return _count(result)
 
 
-async def sweep_all(session_factory: async_sessionmaker[AsyncSession], clock: Clock) -> SweepReport:
-    """Apply every retention rule. Each class in its own short transaction."""
+async def sweep_all(
+    session_factory: async_sessionmaker[AsyncSession],
+    clock: Clock,
+    *,
+    scheduler: JobScheduler | None = None,
+    rollups_enabled: bool = False,
+) -> SweepReport:
+    """Apply every retention rule. Each class in its own short transaction.
+    The rollup before the message ceiling runs only with background
+    summaries on (flag `summary.refresh`, M03 D61) and a scheduler."""
     now = clock.now()
     inbound = await sweep_inbound_payloads(session_factory, clock)
     async with transaction(session_factory) as uow:
@@ -156,7 +187,20 @@ async def sweep_all(session_factory: async_sessionmaker[AsyncSession], clock: Cl
     message_contents = await sweep_message_content(session_factory, clock)
     contact_names = await sweep_contact_names(session_factory, clock)
     async with transaction(session_factory) as uow:
+        period_summaries = await sweep_period_summaries(uow.session, now)
+    async with transaction(session_factory) as uow:
         expired = await sweep_expired_cards(uow.session, clock)
+    async with transaction(session_factory) as uow:
+        forgotten = await sweep_forgotten(uow.session, now)
+    # The rollup (content 80-90 days old) runs last and on its own: the
+    # purges never depend on it, and a failure here is logged, not raised
+    # (review item 1). It retries at the next hourly sweep.
+    rollups = 0
+    if rollups_enabled and scheduler is not None:
+        try:
+            rollups = await schedule_rollups(session_factory, clock, scheduler)
+        except Exception as error:
+            logger.error("rollup_scheduling_failed", exc_type=type(error).__name__)
     return SweepReport(
         inbound,
         turns,
@@ -169,6 +213,9 @@ async def sweep_all(session_factory: async_sessionmaker[AsyncSession], clock: Cl
         contact_names,
         expired,
         confirmations,
+        period_summaries,
+        forgotten,
+        rollups,
     )
 
 
@@ -218,19 +265,94 @@ async def sweep_tool_confirmations(
     return expired + cleared
 
 
+#: The rollup starts this long before the retention ceiling (§10.4: from day
+#: `retention_days - 10`), so a summary can still be written from the
+#: messages before they go.
+ROLLUP_LEAD = timedelta(days=10)
+
+
+async def schedule_rollups(
+    session_factory: async_sessionmaker[AsyncSession], clock: Clock, scheduler: JobScheduler
+) -> int:
+    """Try the rolling summary before the ceiling (§10.4, S03.3).
+
+    A chat whose retained content will expire within `ROLLUP_LEAD` and that
+    its rolling summary has not covered yet is flagged (`pending_ai_since`,
+    no later than that content) and its `memory.refresh_summary` is queued
+    for now — only for accounts with an active `ai_managed` consent, never
+    for Ignore-mode or bot chats. The job re-checks consent, budget and
+    back-off when it runs; the purge never waits for it. Returns the number
+    of chats queued."""
+    now = clock.now()
+    rollup_cutoff = now - (MESSAGE_CONTENT_RETENTION - ROLLUP_LEAD)
+    flagged: list[int] = []
+    async with transaction(session_factory) as uow:
+        due = await rollup_candidates(uow.session, rollup_cutoff)
+        if due:
+            # One short transaction with no account lock and no network call
+            # (AGENTS §13): the conversation rows are locked in id order
+            # (§9.4), then flagged in one UPDATE; a chat set to Ignore
+            # meanwhile is left alone and not queued (review item 8).
+            ids = sorted(conversation_id for conversation_id, _ in due)
+            await uow.session.execute(
+                select(Conversation.id)
+                .where(Conversation.id.in_(ids))
+                .order_by(Conversation.id)
+                .with_for_update()
+            )
+            batch = values(
+                column("cid", BigInteger),
+                column("oldest", TIMESTAMP(timezone=True)),
+                name="due",
+            ).data(due)
+            returned = await uow.session.execute(
+                update(Conversation)
+                .where(Conversation.id == batch.c.cid)
+                .where(Conversation.mode != "ignore")
+                .values(
+                    pending_ai_since=func.least(
+                        func.coalesce(Conversation.pending_ai_since, batch.c.oldest),
+                        batch.c.oldest,
+                    )
+                )
+                .returning(Conversation.id)
+            )
+            flagged = sorted(int(row) for row in returned.scalars().all())
+    queued = 0
+    for conversation_id in flagged:
+        # After the commit: a queueing-lock conflict (a refresh already
+        # queued) must not roll the flag back; that queued job does the work.
+        if await defer_refresh(scheduler, conversation_id, at=None) is not None:
+            queued += 1
+    return queued
+
+
 async def sweep_message_content(
     session_factory: async_sessionmaker[AsyncSession], clock: Clock
 ) -> int:
     """Purge message content past the retention ceiling (§10.4).
 
-    Unconditional: the ceiling holds whether or not a summary exists (M03
-    adds the rollup that *tries* to run first). When content goes without a
-    summary the conversation remembers it in `summary_gap_before`, so later
-    summaries can say that earlier messages expired unsummarised.
+    Unconditional: the ceiling holds whether or not a summary exists (the
+    rollup only *tries* to run first, `schedule_rollups`). When content goes
+    that the chat's rolling summary never covered, the conversation remembers
+    it in `summary_gap_before`, so later summaries can say that earlier
+    messages expired unsummarised.
     """
     now = clock.now()
     cutoff = now - MESSAGE_CONTENT_RETENTION
     async with transaction(session_factory) as uow:
+        due = (func.coalesce(Message.edited_at, Message.sent_at) < cutoff) & (
+            (Message.text.is_not(None)) | (Message.media.is_not(None))
+        )
+        # §9.4 lock order: the conversations first, then their messages —
+        # as ingestion and deletion do — so the sweep cannot deadlock with
+        # them on the same chat.
+        await uow.session.execute(
+            select(Conversation.id)
+            .where(Conversation.id.in_(select(Message.conversation_id).where(due)))
+            .order_by(Conversation.id)
+            .with_for_update()
+        )
         purged = await uow.session.execute(
             update(Message)
             .where(func.coalesce(Message.edited_at, Message.sent_at) < cutoff)
@@ -245,11 +367,15 @@ async def sweep_message_content(
                 purged_at=now,
                 updated_at=now,
             )
-            .returning(Message.conversation_id, Message.sent_at)
+            .returning(Message.conversation_id, Message.id, Message.sent_at)
         )
         rows = purged.all()
+        covers = await covered_through(uow.session, {int(row[0]) for row in rows})
         newest: dict[int, datetime] = {}
-        for conversation_id, sent_at in rows:
+        for conversation_id, message_id, sent_at in rows:
+            covered = covers.get(conversation_id)
+            if covered is not None and message_id <= covered:
+                continue  # the rolling summary keeps it (the rollup ran)
             if sent_at is not None and (
                 conversation_id not in newest or sent_at > newest[conversation_id]
             ):

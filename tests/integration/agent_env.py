@@ -20,6 +20,7 @@ from assistant.accounts.models import AuditLogEntry, ControlTurn
 from assistant.agent.confirmations import ConfirmationApplier
 from assistant.agent.persistence import DbCallRecorder, DbConsentReader
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime
+from assistant.agent.summarize import SummarizeConfig, Summarizer
 from assistant.agent.tools.registry import (
     CapabilityClass,
     ToolContext,
@@ -44,10 +45,23 @@ READ_FLAGS = frozenset(
         "tool.resolve_contact",
         "tool.get_conversation",
         "tool.list_conversations",
+        "tool.summarize_period",
+        "tool.get_attention_list",
     }
 )
 NOTE_FLAG = "tool.test_set_note"
 ALL_FLAGS = READ_FLAGS | {NOTE_FLAG}
+#: The S03.3 memory, preference and mode tools (not in ALL_FLAGS, so the
+#: S03.1/S03.2 tests keep the tool offer they were written against).
+MEMORY_FLAGS = frozenset(
+    {
+        "tool.remember",
+        "tool.forget",
+        "tool.list_memories",
+        "tool.update_preferences",
+        "tool.set_conversation_mode",
+    }
+)
 
 
 class SetNoteArgs(BaseModel):
@@ -99,6 +113,25 @@ def registry_with_note_tool() -> ToolRegistry:
     return registry
 
 
+def gated(env: Env, fake: FakeLLM) -> ConsentGatedLLMClient:
+    """The production LLM wiring over FakeLLM: consent gate → metering → fake."""
+    return ConsentGatedLLMClient(
+        MeteredLLMClient(fake, DbCallRecorder(env.factory, env.clock)), DbConsentReader(env.factory)
+    )
+
+
+def summarizer(env: Env, fake: FakeLLM, **config: Any) -> Summarizer:
+    """The `summarize` run type (S03.2) over the same wiring."""
+    values: dict[str, Any] = {"model": "gpt-6-luna"}
+    values.update(config)
+    return Summarizer(
+        session_factory=env.factory,
+        llm=gated(env, fake),
+        clock=env.clock,
+        config=SummarizeConfig(**values),
+    )
+
+
 def runtime(
     env: Env,
     fake: FakeLLM,
@@ -106,17 +139,16 @@ def runtime(
     *,
     flags: frozenset[str] = ALL_FLAGS,
     registry: ToolRegistry | None = None,
+    with_summaries: bool = False,
 ) -> OwnerRequestRuntime:
-    llm = ConsentGatedLLMClient(
-        MeteredLLMClient(fake, DbCallRecorder(env.factory, env.clock)), DbConsentReader(env.factory)
-    )
     return OwnerRequestRuntime(
         session_factory=env.factory,
-        llm=llm,
+        llm=gated(env, fake),
         channel=channel,
         registry=registry or registry_with_note_tool(),
         clock=env.clock,
         config=AgentConfig(model="gpt-6-luna", enabled_flags=flags),
+        summarizer=summarizer(env, fake) if with_summaries else None,
     )
 
 

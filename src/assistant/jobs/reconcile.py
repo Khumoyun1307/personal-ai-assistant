@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.core.jobs import APPLY_CONFIRMATION_TASK, OWNER_REQUEST_TASK
+from assistant.core.jobs import APPLY_CONFIRMATION_TASK, OWNER_REQUEST_TASK, REFRESH_SUMMARY_TASK
 
 #: Do not race a job that is being deferred right now.
 GRACE = timedelta(seconds=30)
@@ -113,3 +113,49 @@ async def unqueued_owner_turns(session: AsyncSession, now: datetime) -> list[tup
         {"older_than": now - GRACE, "newer_than": now - WINDOW, "task": OWNER_REQUEST_TASK},
     )
     return [(int(row[0]), int(row[1])) for row in result.all()]
+
+
+#: A conversation flagged for a summary refresh this long ago, with no queued
+#: or running `memory.refresh_summary` job, lost its job (a crash between the
+#: ingesting commit and the defer, or a run that ended without clearing the
+#: flag). Only accounts with an active `ai_managed` consent: without it
+#: nothing may be summarized (§14.3); the job re-checks the processor.
+SUMMARY_GRACE = timedelta(seconds=30)
+SUMMARY_BATCH = 500
+
+_UNQUEUED_SUMMARY_REFRESHES = text(
+    """
+    SELECT c.id
+    FROM app.conversations AS c
+    JOIN app.contacts AS k ON k.id = c.contact_id
+    WHERE c.pending_ai_since IS NOT NULL
+      AND c.pending_ai_since < :older_than
+      AND c.mode <> 'ignore'
+      AND NOT k.is_bot
+      AND EXISTS (
+          SELECT 1 FROM app.consents AS s
+          WHERE s.account_id = c.account_id
+            AND s.kind = 'ai_managed'
+            AND s.revoked_at IS NULL
+      )
+      AND NOT EXISTS (
+          -- By queueing lock (`sum:{id}`, core/jobs.py): `todo` rows are
+          -- found through procrastinate's unique queueing-lock index.
+          SELECT 1 FROM procrastinate.procrastinate_jobs AS j
+          WHERE j.queueing_lock = 'sum:' || c.id::text
+            AND j.task_name = :task
+            AND j.status IN ('todo', 'doing')
+      )
+    ORDER BY c.pending_ai_since, c.id
+    LIMIT :limit
+    """
+)
+
+
+async def unqueued_summary_refreshes(session: AsyncSession, now: datetime) -> list[int]:
+    """Conversation ids whose summary refresh job must be re-created."""
+    result = await session.execute(
+        _UNQUEUED_SUMMARY_REFRESHES,
+        {"older_than": now - SUMMARY_GRACE, "task": REFRESH_SUMMARY_TASK, "limit": SUMMARY_BATCH},
+    )
+    return [int(row[0]) for row in result.all()]

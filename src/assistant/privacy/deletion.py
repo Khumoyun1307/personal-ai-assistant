@@ -5,8 +5,9 @@ the same cascade for one chat (a recognised bot chat, FR-OBS-04).
 
 Offered when the owner declines or revokes the `ai_managed` consent. It
 cascades over every content-bearing column that managed chats reach
-(`privacy/content_columns.py`): message rows, contact names, the raw
-business payloads, and control turns that quoted managed content. Ids and
+(`privacy/content_columns.py`): message rows, conversation summaries
+(S03.2), contact names, the raw business payloads, and control turns that
+quoted managed content. Ids and
 tombstones stay where audit needs them; one content-free audit row records
 the counts.
 """
@@ -22,6 +23,8 @@ from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.inbox.models import InboundUpdate
+from assistant.memory import items
+from assistant.memory.summaries import delete_account_summaries, delete_conversation_summaries
 
 #: Raw updates that carry managed content, or the owner's name from the
 #: connection payload (`business_connection.user`).
@@ -39,14 +42,20 @@ class DeletionReport:
     contacts_cleared: int
     payloads_cleared: int
     control_turns_cleared: int
+    #: `conversation_summaries` rows deleted (S03.2).
+    summaries: int = 0
+    #: `memory_items` about a contact or chat deleted (S03.3).
+    memory_items: int = 0
 
     @property
     def total(self) -> int:
         return (
-            self.messages
+            self.memory_items
+            + self.messages
             + self.contacts_cleared
             + self.payloads_cleared
             + self.control_turns_cleared
+            + self.summaries
         )
 
 
@@ -56,9 +65,23 @@ async def delete_managed_data(
     """Delete everything stored from the owner's managed chats, in one
     transaction (the caller's). Conversations and coverage gaps stay: they
     hold no content and keep the coverage record honest."""
-    account = await session.get(Account, account_id, with_for_update=True)
+    # FOR NO KEY UPDATE, not FOR UPDATE: ingestion holds a conversation and
+    # then inserts a message, which takes a key share on the account through
+    # the foreign key; FOR UPDATE would block that while this waits for the
+    # conversation — a deadlock. Nothing here changes the account's key.
+    account = await session.get(Account, account_id, with_for_update={"key_share": True})
     if account is None:
         raise ValueError("unknown account")
+    # §9.4 lock order: account, then its conversations. A summary being
+    # stored meanwhile waits on the conversation lock and then finds its
+    # source gone (memory/summaries.py), so nothing deleted here is written
+    # back.
+    await session.execute(
+        select(Conversation.id)
+        .where(Conversation.account_id == account_id)
+        .order_by(Conversation.id)
+        .with_for_update()
+    )
 
     def _count(result: object) -> int:
         return int(getattr(result, "rowcount", 0) or 0)
@@ -66,6 +89,10 @@ async def delete_managed_data(
     messages = _count(
         await session.execute(delete(Message).where(Message.account_id == account_id))
     )
+    summaries = await delete_account_summaries(session, account_id)
+    # Notes about the people in those chats (S03.3, M03 D71); the owner's
+    # own instructions, preferences and facts stay.
+    notes = await items.delete_about_contacts(session, account_id)
     contacts = _count(
         await session.execute(
             update(Contact)
@@ -124,12 +151,14 @@ async def delete_managed_data(
                 "contacts_cleared": contacts,
                 "payloads_cleared": payloads,
                 "control_turns_cleared": turns,
+                "summaries_deleted": summaries,
+                "memory_items_deleted": notes,
                 "messages_remaining": int(remaining),
             },
         )
     )
     await session.flush()
-    return DeletionReport(messages, contacts, payloads, turns)
+    return DeletionReport(messages, contacts, payloads, turns, summaries, notes)
 
 
 #: Business update kinds whose payload names a chat (`<kind>.chat.id`).
@@ -159,6 +188,14 @@ async def purge_conversation(
     def _count(result: object) -> int:
         return int(getattr(result, "rowcount", 0) or 0)
 
+    # The conversation row first (§9.4; the caller usually holds it already):
+    # an in-flight summary store waits and then finds the chat purged.
+    await session.execute(
+        select(Conversation.id)
+        .where(Conversation.account_id == account_id)
+        .where(Conversation.id == conversation_id)
+        .with_for_update()
+    )
     message_ids = select(Message.id).where(Message.conversation_id == conversation_id)
     payloads = _count(
         await session.execute(
@@ -187,6 +224,17 @@ async def purge_conversation(
             .where(Message.conversation_id == conversation_id)
         )
     )
+    summaries = await delete_conversation_summaries(session, account_id, conversation_id)
+    contact_id = (
+        await session.execute(
+            select(Conversation.contact_id)
+            .where(Conversation.account_id == account_id)
+            .where(Conversation.id == conversation_id)
+        )
+    ).scalar_one_or_none()
+    notes = await items.delete_for_conversation(
+        session, account_id, conversation_id, [] if contact_id is None else [int(contact_id)]
+    )
     turns = await redact_turns_referring_to(
         session, account_id=account_id, conversation_id=conversation_id, clock=clock
     )
@@ -205,7 +253,7 @@ async def purge_conversation(
         )
     )
     await session.flush()
-    return DeletionReport(messages, contacts, payloads, turns)
+    return DeletionReport(messages, contacts, payloads, turns, summaries, notes)
 
 
 async def redact_turns_referring_to(

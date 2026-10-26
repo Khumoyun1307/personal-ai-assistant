@@ -19,7 +19,8 @@ import assistant.accounts.models
 import assistant.agent.models
 import assistant.conversations.models
 import assistant.db.models
-import assistant.inbox.models  # noqa: F401
+import assistant.inbox.models
+import assistant.memory.models  # noqa: F401
 from assistant.db.base import APP_SCHEMA, JOBS_SCHEMA, Base
 
 config = context.config

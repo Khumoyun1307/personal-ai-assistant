@@ -11,6 +11,7 @@ import contextlib
 import functools
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from aiogram import Bot
 from openai import AsyncOpenAI
@@ -20,6 +21,7 @@ from assistant.agent.confirmations import ConfirmationApplier
 from assistant.agent.persistence import DbCallRecorder, DbConsentReader
 from assistant.agent.ports import ControlChannel
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime
+from assistant.agent.summarize import SummarizeConfig, Summarizer
 from assistant.agent.tools.registry import ToolServices, default_registry
 from assistant.config import ConfigError, Settings
 from assistant.core.clock import Clock, SystemClock
@@ -36,6 +38,7 @@ from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.metering import MeteredLLMClient
 from assistant.llm.openai_adapter import OpenAIClient
 from assistant.llm.port import LLMClient
+from assistant.memory.summaries import SummaryRefreshTrigger
 from assistant.privacy.post_restore import assert_not_restore_pending
 from assistant.process import InboxRole, PollerRole, WorkerRole, worker_heartbeat_probe
 from assistant.telegram.business import BusinessPipeline
@@ -104,20 +107,51 @@ def build_confirmation_applier(
     )
 
 
+def summarize_config(settings: Settings) -> SummarizeConfig:
+    return SummarizeConfig(
+        model=settings.model_routes.model_for("summarize"),
+        effort=settings.llm_summarize_effort,
+        monthly_budget_usd=settings.llm_monthly_budget_usd,
+    )
+
+
+def build_summarizer(
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    clock: Clock,
+    llm: LLMClient,
+) -> Summarizer:
+    """The `summarize` run type (S03.2), on the same consent-gated client."""
+    return Summarizer(
+        session_factory=session_factory, llm=llm, clock=clock, config=summarize_config(settings)
+    )
+
+
+def summary_timing(settings: Settings) -> tuple[timedelta, timedelta]:
+    """(debounce, max wait) of the background refresh (M03 D60)."""
+    return (
+        timedelta(minutes=settings.summary_refresh_debounce_minutes),
+        timedelta(hours=settings.summary_refresh_max_wait_hours),
+    )
+
+
 def build_owner_runtime(
     settings: Settings,
     session_factory: async_sessionmaker[AsyncSession],
     channel: ControlChannel,
     clock: Clock,
     llm: LLMClient | None = None,
+    summarizer: Summarizer | None = None,
 ) -> OwnerRequestRuntime:
+    client = llm or build_llm_client(settings, session_factory, clock)
     return OwnerRequestRuntime(
         session_factory=session_factory,
-        llm=llm or build_llm_client(settings, session_factory, clock),
+        llm=client,
         channel=channel,
         registry=default_registry(),
         clock=clock,
         config=agent_config(settings),
+        summarizer=summarizer or build_summarizer(settings, session_factory, clock, client),
     )
 
 
@@ -161,15 +195,24 @@ async def running_process(
         # would come back as executable.
         async with session_factory() as session:
             await assert_not_restore_pending(session)
+        debounce, max_wait = summary_timing(settings)
         if roles & {"worker", "system"}:
             alerts = OwnerAlerts(session_factory, channel, clock)
+            llm = build_llm_client(settings, session_factory, clock)
+            summarizer = build_summarizer(settings, session_factory, clock, llm)
             register_tasks(
                 jobs_app,
                 JobHandlers(
                     session_factory=session_factory,
                     clock=clock,
                     scheduler=scheduler,
-                    owner_runtime=build_owner_runtime(settings, session_factory, channel, clock),
+                    owner_runtime=build_owner_runtime(
+                        settings, session_factory, channel, clock, llm, summarizer
+                    ),
+                    summary_refresher=summarizer,
+                    summaries_enabled=settings.summaries_enabled,
+                    summary_debounce=debounce,
+                    summary_max_wait=max_wait,
                     alerts=alerts,
                     monthly_budget_usd=settings.llm_monthly_budget_usd,
                     heartbeat_url=(
@@ -219,7 +262,16 @@ async def running_process(
                     scheduler,
                     owner_ids=owner_ids,
                 )
-                business = BusinessPipeline(registry, clock, bot_id=bot.id)
+                business = BusinessPipeline(
+                    registry,
+                    clock,
+                    bot_id=bot.id,
+                    summaries=(
+                        SummaryRefreshTrigger(scheduler, clock, debounce)
+                        if settings.summaries_enabled
+                        else None
+                    ),
+                )
                 processor = InboxProcessor(
                     session_factory,
                     clock,

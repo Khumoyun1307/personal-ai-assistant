@@ -6,6 +6,7 @@ sent — in particular that nothing reached it without consent.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from typing import Any
 
@@ -77,12 +78,23 @@ class FakeLLM:
         return step
 
     async def parse[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> ParsedResponse[T]:
+        """Each scripted `parsed` entry is a dict (the structured output), an
+        `LLMError` (raised), a `StopReason` (a response without content, e.g.
+        a refusal), or a callable that gets the request and returns one of
+        those — for calls whose order is not fixed (concurrent summaries)."""
         self.requests.append(request)
         if not self.parsed:
             raise AssertionError("FakeLLM.parse called more times than scripted")
         value = self.parsed.pop(0)
+        if callable(value):
+            value = value(request)
+            if inspect.isawaitable(value):
+                # An async hook: e.g. commits a deletion while the call is in flight.
+                value = await value
         if isinstance(value, LLMError):
             raise value
+        if isinstance(value, StopReason):
+            return ParsedResponse(value, "gpt-6-luna", Usage(10, 5))
         return ParsedResponse(
             StopReason.COMPLETED, "gpt-6-luna", Usage(10, 5), schema.model_validate(value)
         )
