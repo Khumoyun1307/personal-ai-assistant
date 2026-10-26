@@ -73,9 +73,16 @@ class SourceMessage:
     content_type: str
     text: str | None
     media_kind: str | None
-    edited: bool
+    #: When the message was last edited (its text is the edited one), or None.
+    #: Shown with the message (S03.7 A2, c36): a later "I changed the time"
+    #: refers to this edit, so the text holds the corrected value.
+    edited_at: datetime | None
     #: What the store re-checks: the message still has this content.
     content_hash: str | None = None
+
+    @property
+    def edited(self) -> bool:
+        return self.edited_at is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +160,7 @@ def _source(row: Message) -> SourceMessage:
         content_type=row.content_type,
         text=row.text,
         media_kind=(row.media or {}).get("kind") if row.media else None,
-        edited=row.edited_at is not None,
+        edited_at=row.edited_at,
         content_hash=row.content_hash,
     )
 

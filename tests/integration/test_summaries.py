@@ -541,6 +541,31 @@ async def test_each_summary_call_sees_only_its_own_contacts_name(senv: Env) -> N
     assert a != b
 
 
+async def test_the_summarize_context_says_when_an_edited_message_was_edited(senv: Env) -> None:
+    """c36 (S03.7 A2): the stored edit time reaches the model with the edited
+    message, which shows its current text, so a later "I changed the time" is
+    read against the corrected value."""
+    a, _ = await seed(senv)
+    await deliver(
+        senv,
+        business_message(
+            message_id=11,
+            message_text=TEXT_A + " soat 18:00",
+            date=ts(0),
+            edit=True,
+            edit_date=ts(40),
+        ),
+    )
+    fake = FakeLLM()
+    fake.parsed = [echo]
+    assert (await summarizer(senv, fake).refresh(a)).status is SummaryStatus.REFRESHED
+
+    (request,) = summary_requests(fake)
+    lines = request.items[-1].text  # type: ignore[union-attr]
+    assert "CONTACT (edited at 2026-10-18 09:40; this is its current text): " in lines
+    assert lines.count("(edited at") == 1
+
+
 # ============================================================ attribution (S03.7)
 #: A message line of the summarize context: id and the sender's fixed label.
 _LINE = re.compile(r"^\[(\d+)\] \S+ \S+ (CONTACT|YOU)", re.MULTILINE)

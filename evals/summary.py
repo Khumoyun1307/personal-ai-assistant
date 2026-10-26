@@ -197,7 +197,7 @@ def _source_messages(conversation: Conversation) -> list[SourceMessage]:
             content_type=message.media or "text",
             text=message.text,
             media_kind=message.media,
-            edited=message.edited_at is not None,
+            edited_at=message.edited_at,
         )
         for number, message in enumerate(conversation.messages, start=1)
         if not message.deleted
