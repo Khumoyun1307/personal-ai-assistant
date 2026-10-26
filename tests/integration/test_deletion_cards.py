@@ -15,13 +15,14 @@ Synthetic text only.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import select, text
 
 from assistant.accounts.models import AuditLogEntry
 from assistant.conversations.models import Conversation
-from assistant.memory import items
+from assistant.memory import catch_up, items
 from assistant.memory.models import MemoryItem
 from assistant.telegram.control import panels
 from tests.fakes.channel import FakeChannel
@@ -355,6 +356,46 @@ async def test_a_deletion_job_run_twice_deletes_once(env: Env) -> None:
 
 
 # ------------------------------------------------------------ revocation offers the scopes
+async def test_a_catch_up_after_a_chat_deletion_says_earlier_messages_were_deleted(
+    env: Env,
+) -> None:
+    """General review item 13: deleted rows leave no tombstone, so the
+    deletion itself is the marker: a later catch-up over a range that began
+    before it says that messages from before it are not included."""
+    conversation, _ = await seed(env)
+    await open_panel(env)
+    await tap(env, panels.PANEL_CARD, "delete")
+    await tap(env, panels.DELETE_CARD, "chat")
+    await run_deletion_jobs(env)
+    now = env.clock.now()
+    async with env.factory() as session:
+        account_id, bobur = (
+            await session.execute(
+                select(Conversation.account_id, Conversation.id).where(
+                    Conversation.business_chat_id == OTHER_CONTACT
+                )
+            )
+        ).one()
+
+        async def lines(start: datetime, ids: list[int] | None) -> list[str]:
+            coverage = await catch_up.period_coverage(
+                session, account_id, start=start, end=now + timedelta(hours=1), conversation_ids=ids
+            )
+            return catch_up.caveats(coverage, "UTC")
+
+        def says_deleted(found: list[str]) -> bool:
+            return any("deleted at the owner's request" in line for line in found)
+
+        assert says_deleted(await lines(now - timedelta(days=7), [conversation]))
+        assert says_deleted(await lines(now - timedelta(days=7), None))
+        assert not says_deleted(await lines(now - timedelta(days=7), [bobur]))
+        # A range that starts after the deletion lost nothing to it.
+        assert not says_deleted(await lines(now + timedelta(minutes=1), [conversation]))
+    from assistant.privacy import deletion
+
+    assert deletion.EVENT_DATA_DELETED in catch_up.DELETION_EVENTS
+
+
 async def test_revoking_consent_offers_deleting_everything_too(env: Env) -> None:
     await seed(env)
     await grant_managed(env)
