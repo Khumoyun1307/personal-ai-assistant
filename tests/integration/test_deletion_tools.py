@@ -117,7 +117,7 @@ async def ctx(
             session_factory=env.factory, clock=env.clock, monthly_budget_usd=None
         ),
         call_id=call_id,
-        confirmed=confirmed,
+        held=confirmed,  # the applier sets it after the owner's tap
     )
 
 
