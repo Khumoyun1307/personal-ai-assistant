@@ -131,6 +131,11 @@ class ToolContext:
     #: The model's id for this call: with `run_id`, the idempotency key of a
     #: state change (§8.3 step 4). Empty outside a model call.
     call_id: str = ""
+    #: A held call the owner confirmed, run by the applier: it came from a
+    #: tainted run whatever the run row says now (fail closed).
+    held: bool = False
+    #: Conversations and contacts the run's results drew on so far.
+    refs: ToolRefs = field(default_factory=ToolRefs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +162,11 @@ class ToolOutcome:
 
 
 ToolHandler = Callable[[ToolContext, Any], Awaitable[ToolOutcome]]
+#: For a confirmation card: what a held call's ids refer to, in plain text
+#: for the owner (the note's words, the chat's contact name). LookupError
+#: for an id that is not the account's. Owner-facing only, never sent to a
+#: model (S03.3 safety review S1).
+ToolDescriber = Callable[[AsyncSession, int, Mapping[str, Any]], Awaitable[str | None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +180,7 @@ class ToolDefinition:
     allowed_run_types: frozenset[str] = TOOL_RUN_TYPES
     min_tier: CapabilityTier = CapabilityTier.CONTROL_ONLY
     returns_managed: bool = False
+    describe: ToolDescriber | None = None
 
     @property
     def changes_state(self) -> bool:

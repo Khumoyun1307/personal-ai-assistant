@@ -119,12 +119,18 @@ class ToolExecutor:
             )
             return ToolOutcome("error", {"reason": "invalid arguments", "fields": fields}), digest
         if tool.needs_confirmation(tainted=self.context.tainted):
-            held = await confirmations.hold(
-                self.context, tool, call.call_id, args.model_dump(mode="json")
-            )
+            try:
+                held = await confirmations.hold(
+                    self.context, tool, call.call_id, args.model_dump(mode="json")
+                )
+            except LookupError:
+                # The card's description could not resolve an id: it is not
+                # this account's (AGENTS §6.12).
+                return ToolOutcome("error", {"reason": "not found"}), digest
             return held, digest
         try:
-            return await tool.handler(replace(self.context, call_id=call.call_id), args), digest
+            context = replace(self.context, call_id=call.call_id, refs=self.refs)
+            return await tool.handler(context, args), digest
         except LookupError:
             # A referenced id that does not exist in this account. Same answer
             # whether it is missing or someone else's (AGENTS §6.12).

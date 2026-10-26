@@ -309,7 +309,9 @@ class OwnerRequestRuntime:
                 now=self._clock.now(),
                 managed_allowed=managed_ok,
                 # The owner's own saved items (owner scope; S03.3, FR-CTL-01).
-                memory=await items.owner_items(session, account_id, limit=OWNER_MEMORY_ITEMS),
+                memory=await items.owner_items(
+                    session, account_id, limit=OWNER_MEMORY_ITEMS, include_managed=managed_ok
+                ),
             )
             # Tainted from the start when the context already carries
             # third-party text or managed content (§7.1, M03 D45).

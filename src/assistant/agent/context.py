@@ -60,14 +60,19 @@ def build_owner_request(
         f"- preferred language: {account.locale_pref or 'not set'}",
         f"- timezone: {account.timezone}",
     ]
-    sections = [prompt.text, "\n".join(profile)]
-    if memory:
-        # Rarely changes: before the volatile run context (prompt caching).
-        sections.append(render_owner_memory(memory))
-    sections.append(f"Current time (UTC): {now:%Y-%m-%d %H:%M}")
+    sections = [prompt.text, "\n".join(profile), f"Current time (UTC): {now:%Y-%m-%d %H:%M}"]
     instructions = "\n\n".join(sections)
 
-    items = [
+    items: list[TextItem] = []
+    if memory:
+        # The owner's saved items travel as an input item with provenance, so
+        # the consent wrapper sees them (safety review V2/N3). Only the
+        # owner's own words appear; an item from other people's text is a
+        # placeholder, read with `list_memories` (which taints the run, V1).
+        items.append(
+            TextItem("user", render_owner_memory(memory, managed_allowed), Provenance.OWNER_CONTROL)
+        )
+    items += [
         TextItem(
             role="user" if past.role == "owner" else "assistant",
             text=render_turn(past),
@@ -95,20 +100,39 @@ def build_owner_request(
     )
 
 
-def memory_line(item: MemoryView) -> str:
-    """One memory item as a model sees it: the owner's words, wrapped as
-    untrusted when it was saved from a run with other people's text in it
-    (M03 D70). It does not taint the run: the owner confirmed it."""
-    text = wrap(item.content, Source.MEMORY_FROM_TAINTED_RUN) if item.tainted else item.content
+def note_text(item: MemoryView) -> str:
+    """A note's words as a contact-facing run sees them: wrapped as
+    untrusted when they may be someone else's (M03 D70)."""
+    if item.tainted:
+        return wrap(item.content, Source.MEMORY_FROM_TAINTED_RUN) or ""
+    return item.content
+
+
+def owner_memory_line(item: MemoryView, *, managed_allowed: bool) -> str | None:
+    """One owner item in an owner run. Never the text of an item saved from
+    other people's text (safety review V1): a placeholder points the model at
+    `list_memories`, whose result taints the run; without `ai_managed` such
+    an item is not mentioned at all (it may hold managed content, V2)."""
     flags = " (for replies)" if item.applies_to_replies else ""
-    return f"- [memory {item.memory_id}] {item.kind}{flags}: {text}"
+    if item.tainted or item.managed:
+        if item.managed and not managed_allowed:
+            return None
+        return (
+            f"- [memory {item.memory_id}] {item.kind}{flags}: (saved from other people's text; "
+            "not shown here — read it with list_memories if the request needs it)"
+        )
+    return f"- [memory {item.memory_id}] {item.kind}{flags}: {item.content}"
 
 
-def render_owner_memory(memory: Sequence[MemoryView]) -> str:
+def render_owner_memory(memory: Sequence[MemoryView], managed_allowed: bool) -> str:
     """The owner's own saved instructions, preferences and facts (owner
     scope only; contact notes come through `list_memories`)."""
     lines = ["What the owner asked you to remember (owner's notes, newest first):"]
-    lines += [memory_line(item) for item in memory]
+    lines += [
+        line
+        for item in memory
+        if (line := owner_memory_line(item, managed_allowed=managed_allowed)) is not None
+    ]
     return "\n".join(lines)
 
 
@@ -200,8 +224,13 @@ def build_summarize(
     items: list[TextItem] = []
     if notes:
         lines = ["The owner's notes about this contact and chat (background, not chat messages):"]
-        lines += [memory_line(note) for note in notes]
-        items.append(TextItem("user", "\n".join(lines), Provenance.OWNER_CONTROL))
+        # No ids: a note must never be citable as a message (review nit; the
+        # uncited-item guard, D65, accepts only shown message ids).
+        lines += [f"- ({note.kind}) {note_text(note)}" for note in notes]
+        provenance = (
+            Provenance.MANAGED if any(n.managed for n in notes) else Provenance.OWNER_CONTROL
+        )
+        items.append(TextItem("user", "\n".join(lines), provenance))
     if previous is not None and period is None:
         body = wrap(json.dumps(previous, ensure_ascii=False, sort_keys=True), Source.SUMMARY)
         items.append(

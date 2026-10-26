@@ -118,16 +118,39 @@ def render_args(args: Mapping[str, Any]) -> str:
     return "".join(_visible(char) for char in rendered)
 
 
-def card_text(tool: ToolDefinition, args: Mapping[str, Any], *, tainted: bool) -> str:
+def render_description(description: str) -> str:
+    """A describer's text, in full, with invisible and bidi characters made
+    visible (the same rule as the arguments, D55)."""
+    return "".join(_visible(char) for char in description)
+
+
+#: The plain-language description shown with the arguments is limited too:
+#: shown whole, or the call is refused (D55).
+CARD_DESCRIPTION_LIMIT = 800
+
+
+def card_text(
+    tool: ToolDefinition,
+    args: Mapping[str, Any],
+    *,
+    tainted: bool,
+    description: str | None = None,
+) -> str:
     """What the owner is asked. Owner-facing only (the control chat), HTML-escaped."""
     why = (
         "This request included text from other people, so I need your tap before changing anything."
         if tainted
         else "This change needs your tap: I never do it on my own."
     )
+    about = (
+        f"What it refers to: {html.escape(render_description(description))}\n"
+        if description
+        else ""
+    )
     return (
         f"<b>Confirm a change?</b>\n\n{why}\n\n"
         f"Action: <code>{html.escape(tool.name)}</code>\n"
+        f"{about}"
         f"Details: <code>{html.escape(render_args(args))}</code>\n\n"
         "Nothing has been changed yet."
     )
@@ -186,6 +209,16 @@ async def hold(
         account = await session.get(Account, ctx.account_id)
         if account is None or account.control_chat_id is None:
             return ToolOutcome("not_executed", {"reason": "the owner cannot be reached"})
+        # What the ids refer to, so the owner sees what they confirm (S1).
+        # An id that is not this account's is "not found", like a direct call.
+        description = await tool.describe(session, ctx.account_id, args) if tool.describe else None
+        if description is not None and len(render_description(description)) > (
+            CARD_DESCRIPTION_LIMIT
+        ):
+            return ToolOutcome(
+                "not_executed",
+                {"reason": "the change is too large to show on a confirmation card"},
+            )
         existing = (
             await session.execute(
                 select(ToolConfirmation.status).where(
@@ -262,7 +295,7 @@ async def hold(
             ref_id=confirmation_id,
         )
         assert card.token is not None
-        text = card_text(tool, args, tainted=ctx.tainted)
+        text = card_text(tool, args, tainted=ctx.tainted, description=description)
         buttons = card_buttons(card.token)
         chat_id = account.control_chat_id
         card_id = card.id
@@ -490,6 +523,9 @@ class ConfirmationApplier:
                     tainted=False,
                     services=replace(self._services, channel=self._channel),
                     call_id=call_id,
+                    # It was held because its run was tainted: what it saves
+                    # stays marked so, even if the run row is gone (N1).
+                    held=True,
                 )
                 try:
                     outcome = await tool.handler(context, parsed)

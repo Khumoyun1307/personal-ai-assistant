@@ -21,13 +21,17 @@ shown wrapped as untrusted, without tainting the run that reads it (M03 D70).
 from __future__ import annotations
 
 import html
-from typing import Annotated, Literal, Self
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts.models import Account
+from assistant.accounts.models import Account, ControlTurn
+from assistant.accounts.service import CONSENT_AI_MANAGED, active_consent
+from assistant.agent.context import OWNER_HISTORY_TURNS
 from assistant.agent.models import AgentRun
 from assistant.agent.tools.common import OptionalId, check_id, local_time
 from assistant.agent.tools.echo import queue_echo
@@ -36,9 +40,10 @@ from assistant.agent.tools.registry import (
     ToolContext,
     ToolDefinition,
     ToolOutcome,
+    ToolRefs,
 )
 from assistant.agent.untrusted import Source, wrap
-from assistant.conversations.models import Contact
+from assistant.conversations.models import Contact, Conversation
 from assistant.db.uow import transaction
 from assistant.memory import items
 from assistant.memory.items import MemoryView
@@ -104,21 +109,83 @@ class RememberArgs(BaseModel):
         return self
 
 
-async def _run_tainted(session: AsyncSession, ctx: ToolContext) -> bool:
-    """Whether the run that asked had other people's text in it — also when
-    the call runs later, after the owner confirmed it on a card."""
-    if ctx.tainted:
-        return True
+@dataclass(frozen=True, slots=True)
+class Origin:
+    """Where a note's words may come from (safety review V1, V2, S3)."""
+
+    #: The run saw other people's text — taint, or the untrusted context a
+    #: tainted-run reply or a managed turn brings even when D56 does not taint.
+    tainted: bool
+    refs: ToolRefs
+
+
+def _turn_untrusted(turn: ControlTurn) -> bool:
+    return bool(
+        turn.third_party
+        or turn.from_tainted_run
+        or turn.contains_managed
+        or turn.quoted_text is not None
+    )
+
+
+async def run_origin(session: AsyncSession, ctx: ToolContext) -> Origin:
+    """Whether the run that asks to save had other people's text anywhere in
+    its context, and which chats and contacts it drew on. Fail closed: a held
+    call the owner confirmed always counts (N1), and so does a run whose row
+    is gone."""
+    refs = ctx.refs
     if ctx.run_id <= 0:
-        return False
-    tainted = (
+        return Origin(ctx.tainted or ctx.held, refs)
+    run = (
         await session.execute(
-            select(AgentRun.tainted)
+            select(AgentRun)
             .where(AgentRun.account_id == ctx.account_id)
             .where(AgentRun.id == ctx.run_id)
         )
     ).scalar_one_or_none()
-    return bool(tainted)
+    if run is None:
+        return Origin(True, refs)
+    tainted = ctx.tainted or ctx.held or run.tainted
+    # The turns this run's context was built from: the trigger and the
+    # history window before it (the same window as the context builder).
+    turn_id = _trigger_turn(run.trigger_ref)
+    if turn_id is not None:
+        turns = (
+            (
+                await session.execute(
+                    select(ControlTurn)
+                    .where(ControlTurn.account_id == ctx.account_id)
+                    .where(ControlTurn.id <= turn_id)
+                    .order_by(ControlTurn.id.desc())
+                    .limit(OWNER_HISTORY_TURNS + 1)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for turn in turns:
+            if _turn_untrusted(turn):
+                tainted = True
+                refs = refs | ToolRefs.from_json(turn.refs)
+    # The run's own reply (a held call applied after the run finished)
+    # records the chats its tool results drew on.
+    replies = (
+        await session.execute(
+            select(ControlTurn.refs)
+            .where(ControlTurn.account_id == ctx.account_id)
+            .where(ControlTurn.run_id == ctx.run_id)
+        )
+    ).scalars()
+    for reply_refs in replies:
+        refs = refs | ToolRefs.from_json(reply_refs)
+    return Origin(tainted, refs)
+
+
+def _trigger_turn(trigger_ref: str | None) -> int | None:
+    if trigger_ref is None or not trigger_ref.startswith("turn:"):
+        return None
+    value = trigger_ref.removeprefix("turn:")
+    return int(value) if value.isdigit() else None
 
 
 async def _about(session: AsyncSession, account_id: int, item: MemoryView) -> str:
@@ -142,6 +209,7 @@ async def remember_tool(ctx: ToolContext, args: RememberArgs) -> ToolOutcome:
     async with transaction(services.session_factory) as uow:
         session = uow.session
         run_id = ctx.run_id if ctx.run_id > 0 else None
+        origin = await run_origin(session, ctx)
         saved = await items.save(
             session,
             account_id=ctx.account_id,
@@ -153,7 +221,11 @@ async def remember_tool(ctx: ToolContext, args: RememberArgs) -> ToolOutcome:
             replaces_id=args.replaces_memory_id,
             run_id=run_id,
             tool_call_id=ctx.call_id or None,
-            tainted=await _run_tainted(session, ctx),
+            # Every item from other people's text is treated as managed too
+            # (the conservative rule; safety review V2, M03 D70).
+            tainted=origin.tainted,
+            managed=origin.tainted,
+            refs=origin.refs.as_json() if origin.tainted else None,
             actor="agent",
             now=services.clock.now(),
         )
@@ -180,6 +252,69 @@ async def remember_tool(ctx: ToolContext, args: RememberArgs) -> ToolOutcome:
     return ToolOutcome("ok", data)
 
 
+async def _contact_name(session: AsyncSession, account_id: int, contact_id: int) -> str:
+    name = (
+        await session.execute(
+            select(Contact.display_name)
+            .where(Contact.account_id == account_id)
+            .where(Contact.id == contact_id)
+        )
+    ).one_or_none()
+    if name is None:
+        raise LookupError("contact not found in this account")
+    return name[0] or "(a contact without a stored name)"
+
+
+async def _note(session: AsyncSession, account_id: int, memory_id: int) -> str:
+    item = await items.get(session, account_id, memory_id)
+    if item is None:
+        raise LookupError("memory item not found in this account")
+    return f'"{item.content}"'
+
+
+async def describe_remember(
+    session: AsyncSession, account_id: int, args: Mapping[str, Any]
+) -> str | None:
+    """For the confirmation card (owner-facing): who the note is about and
+    the note it replaces (safety review S1)."""
+    parts: list[str] = []
+    if isinstance(args.get("contact_id"), int):
+        parts.append(f"a note about {await _contact_name(session, account_id, args['contact_id'])}")
+    if isinstance(args.get("conversation_id"), int):
+        contact = await contact_of_chat(session, account_id, args["conversation_id"])
+        parts.append(f"a note about the chat with {contact}")
+    if isinstance(args.get("replaces_memory_id"), int):
+        parts.append(
+            f"it replaces the note {await _note(session, account_id, args['replaces_memory_id'])}"
+        )
+    return "; ".join(parts) or None
+
+
+async def describe_forget(
+    session: AsyncSession, account_id: int, args: Mapping[str, Any]
+) -> str | None:
+    """For the confirmation card: the words of the note to forget (S1)."""
+    memory_id = args.get("memory_id")
+    if not isinstance(memory_id, int):
+        return None
+    return f"the note {await _note(session, account_id, memory_id)}"
+
+
+async def contact_of_chat(session: AsyncSession, account_id: int, conversation_id: int) -> str:
+    """The contact name of one of the account's chats (owner-facing)."""
+    row = (
+        await session.execute(
+            select(Contact.display_name)
+            .join(Conversation, Conversation.contact_id == Contact.id)
+            .where(Conversation.account_id == account_id)
+            .where(Conversation.id == conversation_id)
+        )
+    ).one_or_none()
+    if row is None:
+        raise LookupError("conversation not found in this account")
+    return row[0] or "(a contact without a stored name)"
+
+
 REMEMBER = ToolDefinition(
     name="remember",
     description=(
@@ -192,6 +327,7 @@ REMEMBER = ToolDefinition(
     capability=CapabilityClass.CONFIGURE,
     handler=remember_tool,
     release_flag=REMEMBER_FLAG,
+    describe=describe_remember,
 )
 
 
@@ -242,6 +378,7 @@ FORGET = ToolDefinition(
     capability=CapabilityClass.CONFIGURE,
     handler=forget_tool,
     release_flag=FORGET_FLAG,
+    describe=describe_forget,
 )
 
 
@@ -293,6 +430,12 @@ async def list_memories_tool(ctx: ToolContext, args: ListMemoriesArgs) -> ToolOu
         account = await uow.session.get(Account, ctx.account_id)
         if account is None:
             raise LookupError("account")
+        # Items that may hold managed-chat content reach a model only with
+        # `ai_managed` (invariant 9); the consent wrapper checks the
+        # processor too, because such a result is marked managed below.
+        managed_ok = (
+            await active_consent(uow.session, ctx.account_id, kind=CONSENT_AI_MANAGED)
+        ).granted
         found, total = await items.list_items(
             uow.session,
             ctx.account_id,
@@ -300,7 +443,19 @@ async def list_memories_tool(ctx: ToolContext, args: ListMemoriesArgs) -> ToolOu
             conversation_id=args.conversation_id,
             scope=args.scope,
             limit=args.limit or 20,
+            include_managed=managed_ok,
         )
+        withheld = 0
+        if not managed_ok:
+            _, everything = await items.list_items(
+                uow.session,
+                ctx.account_id,
+                contact_id=args.contact_id,
+                conversation_id=args.conversation_id,
+                scope=args.scope,
+                limit=1,
+            )
+            withheld = everything - total
     data: dict[str, object] = {
         "items": [memory_view(item, account.timezone) for item in found],
         "count": len(found),
@@ -312,7 +467,20 @@ async def list_memories_tool(ctx: ToolContext, args: ListMemoriesArgs) -> ToolOu
     }
     if total > len(found):
         data["note"] = f"{total - len(found)} older item(s) not shown (limit)."
-    return ToolOutcome("ok", data)
+    if withheld:
+        data["withheld"] = withheld
+        data["withheld_note"] = (
+            f"{withheld} item(s) saved from the owner's chats with other people are withheld: "
+            "AI for those chats is off (/privacy managed)."
+        )
+    return ToolOutcome(
+        "ok",
+        data,
+        contains_managed=any(item.managed for item in found),
+        # Text that may be someone else's taints the run: a configure call
+        # after it needs the owner's tap (invariant 3b, safety review V1).
+        untrusted=any(item.tainted for item in found),
+    )
 
 
 LIST_MEMORIES = ToolDefinition(

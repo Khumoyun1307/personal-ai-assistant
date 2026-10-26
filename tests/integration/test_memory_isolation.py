@@ -201,7 +201,7 @@ async def test_owner_scope_facts_mentioning_another_contact_never_reach_a_contac
     assert [i.content for i in summarizing] == [NOTE_A]
 
 
-async def test_the_owners_own_runs_see_owner_items_and_tainted_ones_wrapped(env: Env) -> None:
+async def test_the_owners_own_runs_see_owner_items_but_never_a_tainted_ones_text(env: Env) -> None:
     account, _, _ = await seed(env)
     async with env.factory() as session, session.begin():
         await items.save(
@@ -221,5 +221,7 @@ async def test_the_owners_own_runs_see_owner_items_and_tainted_ones_wrapped(env:
         assert owner_item in seen
     # Contact notes are fetched with list_memories, not preloaded.
     assert NOTE_A not in seen
-    assert 'source="memory_from_tainted_run"' in seen
-    assert "SYNTH-FROM-FORWARD meeting at noon</untrusted>" in seen
+    # Safety review V1: a note from other people's text is never preloaded,
+    # not even wrapped — only a placeholder that points at list_memories.
+    assert "SYNTH-FROM-FORWARD" not in seen
+    assert "saved from other people's text" in seen

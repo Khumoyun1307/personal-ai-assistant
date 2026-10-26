@@ -10,15 +10,18 @@ account and audit; these handlers only translate.
 from __future__ import annotations
 
 import html
-from typing import Annotated, Literal, Self
+from collections.abc import Mapping
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import preferences
 from assistant.accounts.models import Account
 from assistant.agent.tools.common import OptionalId, require_contacts
 from assistant.agent.tools.echo import queue_echo
+from assistant.agent.tools.memory import contact_of_chat
 from assistant.agent.tools.registry import (
     CapabilityClass,
     ToolContext,
@@ -114,6 +117,22 @@ async def set_conversation_mode_tool(
     return ToolOutcome("ok", data)
 
 
+async def describe_mode(
+    session: AsyncSession, account_id: int, args: Mapping[str, Any]
+) -> str | None:
+    """For the confirmation card (owner-facing): whose chat it is (S1)."""
+    conversation_id = args.get("conversation_id")
+    contact_id = args.get("contact_id")
+    if isinstance(contact_id, int):
+        await require_contacts(session, account_id, [contact_id])
+        conversation_id = await modes.conversation_for_contact(session, account_id, contact_id)
+    if not isinstance(conversation_id, int):
+        return None
+    name = await contact_of_chat(session, account_id, conversation_id)
+    effect = MODE_EFFECT.get(str(args.get("mode")), "")
+    return f"the chat with {name}: {effect}"
+
+
 SET_CONVERSATION_MODE = ToolDefinition(
     name="set_conversation_mode",
     description=(
@@ -125,6 +144,7 @@ SET_CONVERSATION_MODE = ToolDefinition(
     capability=CapabilityClass.CONFIGURE,
     handler=set_conversation_mode_tool,
     release_flag=MODE_FLAG,
+    describe=describe_mode,
 )
 
 

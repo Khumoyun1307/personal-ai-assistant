@@ -23,7 +23,7 @@ is what Undo reverses (`memory/undo.py`).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -61,15 +61,39 @@ class MemoryView:
     contact_id: int | None
     conversation_id: int | None
     applies_to_replies: bool
-    #: Saved from a run that had other people's text in its context (the
-    #: owner confirmed it on a card): shown to models wrapped as untrusted.
+    #: Saved from a run that had other people's text in its context: its
+    #: words may be someone else's (M03 D70, revised by the safety review).
     tainted: bool
     created_at: datetime
     source: str
+    #: May hold content from the managed chats: needs `ai_managed` to reach
+    #: a model, and goes with managed-data deletion (invariant 9).
+    managed: bool = False
+
+
+def provenance(
+    *, tainted: bool, managed: bool, refs: Mapping[str, list[int]] | None = None
+) -> dict[str, Any]:
+    """The flags (and, for an item from other people's text, the ids of the
+    chats and contacts its run drew on) stored with an item. No content."""
+    value: dict[str, Any] = {"tainted": tainted, "managed": managed}
+    if refs and (refs.get("conversation_ids") or refs.get("contact_ids")):
+        value["refs"] = {
+            "conversation_ids": sorted(set(refs.get("conversation_ids", []))),
+            "contact_ids": sorted(set(refs.get("contact_ids", []))),
+        }
+    return value
+
+
+#: SQL conditions on the provenance flags.
+IS_TAINTED = MemoryItem.provenance.contains({"tainted": True})
+IS_MANAGED = MemoryItem.provenance.contains({"managed": True})
 
 
 def _view(row: MemoryItem) -> MemoryView:
+    flags = row.provenance or {}
     return MemoryView(
+        managed=bool(flags.get("managed")),
         memory_id=row.id,
         scope=row.scope,
         kind=row.kind,
@@ -159,12 +183,20 @@ async def save(
     run_id: int | None = None,
     tool_call_id: str | None = None,
     tainted: bool = False,
+    managed: bool | None = None,
+    refs: Mapping[str, list[int]] | None = None,
     actor: str,
     now: datetime,
 ) -> SaveOutcome:
     """Store one item (scope from the target: contact, conversation or the
     owner). `replaces_id` archives an active item of this account in the same
-    change (a correction). LookupError for a foreign or unknown id."""
+    change (a correction). LookupError for a foreign or unknown id.
+
+    `tainted`: saved by a run that had other people's text in its context.
+    `managed` defaults to `tainted` — every tainted item is treated as
+    possibly holding managed-chat content (the conservative rule, safety
+    review V2). `refs`: the chats and contacts that run drew on, so deleting
+    one of them deletes the item too (S3)."""
     if contact_id is not None and conversation_id is not None:
         raise ValueError("an item is about a contact or a conversation, not both")
     text = content.strip()
@@ -211,7 +243,9 @@ async def save(
         "kind": kind,
         "content": text,
         "applies_to_replies": applies_to_replies,
-        "provenance": {"tainted": tainted},
+        "provenance": provenance(
+            tainted=tainted, managed=tainted if managed is None else managed, refs=refs
+        ),
         "run_id": run_id if keyed else None,
         "tool_call_id": tool_call_id if keyed else None,
         "created_at": now,
@@ -228,6 +262,7 @@ async def save(
         row = (
             await session.execute(
                 select(MemoryItem)
+                .where(MemoryItem.account_id == account_id)
                 .where(MemoryItem.run_id == run_id)
                 .where(MemoryItem.tool_call_id == tool_call_id)
             )
@@ -318,14 +353,19 @@ async def list_items(
     conversation_id: int | None = None,
     scope: str | None = None,
     limit: int = 20,
+    include_managed: bool = True,
 ) -> tuple[list[MemoryView], int]:
     """Active items, newest first: (page, total matching). A contact filter
-    also returns the notes of that contact's conversations."""
+    also returns the notes of that contact's conversations. Without
+    `include_managed` (no `ai_managed` consent) items that may hold
+    managed-chat content are left out (invariant 9)."""
     statement = (
         select(MemoryItem)
         .where(MemoryItem.account_id == account_id)
         .where(MemoryItem.status == STATUS_ACTIVE)
     )
+    if not include_managed:
+        statement = statement.where(~IS_MANAGED)
     if contact_id is not None:
         await _require_contact(session, account_id, contact_id)
         chats = select(Conversation.id).where(
@@ -348,15 +388,22 @@ async def list_items(
     return [_view(row) for row in rows.scalars().all()], int(total)
 
 
-async def owner_items(session: AsyncSession, account_id: int, *, limit: int) -> list[MemoryView]:
-    """Owner-scope active items for the owner's own runs (control chat)."""
-    rows = await session.execute(
+async def owner_items(
+    session: AsyncSession, account_id: int, *, limit: int, include_managed: bool
+) -> list[MemoryView]:
+    """Owner-scope active items for the owner's own runs (control chat).
+    Without `include_managed`, managed-origin items are left out entirely
+    (invariant 9); the context builder never shows a tainted item's text."""
+    statement = (
         select(MemoryItem)
         .where(MemoryItem.account_id == account_id)
         .where(MemoryItem.status == STATUS_ACTIVE)
         .where(MemoryItem.scope == SCOPE_OWNER)
-        .order_by(MemoryItem.created_at.desc(), MemoryItem.id.desc())
-        .limit(limit)
+    )
+    if not include_managed:
+        statement = statement.where(~IS_MANAGED)
+    rows = await session.execute(
+        statement.order_by(MemoryItem.created_at.desc(), MemoryItem.id.desc()).limit(limit)
     )
     return [_view(row) for row in rows.scalars().all()]
 
@@ -399,6 +446,10 @@ async def contact_facing(
                 MemoryItem.kind.in_(CONTACT_FACING_OWNER_KINDS)
                 | ((MemoryItem.kind == "instruction") & MemoryItem.applies_to_replies.is_(True))
             )
+            # Owner items from other people's text never steer how replies
+            # to anyone are written (safety review S2).
+            & ~IS_TAINTED
+            & ~IS_MANAGED
         )
     rows = await session.execute(
         select(MemoryItem)
@@ -438,27 +489,59 @@ def _rowcount(result: object) -> int:
 
 async def delete_about_contacts(session: AsyncSession, account_id: int) -> int:
     """Managed-data deletion: every contact- and conversation-scoped item of
-    the account (notes about the people in the managed chats). Owner-scope
-    items stay (M03 D71)."""
+    the account (notes about the people in the managed chats), and every
+    item that may hold managed-chat content, in any scope. The owner's own
+    items stay (M03 D71, safety review V2)."""
     return _rowcount(
         await session.execute(
             delete(MemoryItem)
             .where(MemoryItem.account_id == account_id)
-            .where(MemoryItem.scope.in_((SCOPE_CONTACT, SCOPE_CONVERSATION)))
+            .where(MemoryItem.scope.in_((SCOPE_CONTACT, SCOPE_CONVERSATION)) | IS_MANAGED)
         )
     )
+
+
+def _drew_on(conversation_ids: Sequence[int], contact_ids: Sequence[int]) -> Any:
+    """Items about these chats/contacts, or saved by a run that drew on them."""
+    condition: Any = MemoryItem.conversation_id.in_(list(conversation_ids))
+    if contact_ids:
+        condition = condition | MemoryItem.contact_id.in_(list(contact_ids))
+    for conversation_id in conversation_ids:
+        condition = condition | MemoryItem.provenance.contains(
+            {"refs": {"conversation_ids": [conversation_id]}}
+        )
+    for contact_id in contact_ids:
+        condition = condition | MemoryItem.provenance.contains(
+            {"refs": {"contact_ids": [contact_id]}}
+        )
+    return condition
 
 
 async def delete_for_conversation(
     session: AsyncSession, account_id: int, conversation_id: int, contact_ids: Sequence[int]
 ) -> int:
-    """A purged conversation (a bot chat): its notes and its contact's."""
-    condition = MemoryItem.conversation_id == conversation_id
-    if contact_ids:
-        condition = condition | MemoryItem.contact_id.in_(list(contact_ids))
+    """A purged conversation: its notes, its contact's, and every item saved
+    from a run that drew on them (safety review S3). The helper S03.5's
+    per-conversation deletion calls."""
     return _rowcount(
         await session.execute(
-            delete(MemoryItem).where(MemoryItem.account_id == account_id).where(condition)
+            delete(MemoryItem)
+            .where(MemoryItem.account_id == account_id)
+            .where(_drew_on([conversation_id], contact_ids))
+        )
+    )
+
+
+async def delete_for_contact(
+    session: AsyncSession, account_id: int, contact_id: int, conversation_ids: Sequence[int]
+) -> int:
+    """A deleted contact (S03.5's per-contact deletion): their notes, their
+    chats' notes, and every item saved from a run that drew on them."""
+    return _rowcount(
+        await session.execute(
+            delete(MemoryItem)
+            .where(MemoryItem.account_id == account_id)
+            .where(_drew_on(conversation_ids, [contact_id]))
         )
     )
 
