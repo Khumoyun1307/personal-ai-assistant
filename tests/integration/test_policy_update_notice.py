@@ -1,9 +1,10 @@
-"""The privacy-policy update notice (AGENTS §16; policy v4, M02 D59).
+"""The privacy-policy update notice (AGENTS §16; policy v4 and v5, M02 D59).
 
-v4 widens what is kept (US hosting, encrypted backups with an EU copy), so
-an owner with a consent recorded under an older version is told once, with
-the link and the opt-out; the consent itself stays valid (nothing is
-re-asked). "Once" is durable (`accounts.policy_notice_version`), not tied to
+v4 widened what is kept (US hosting, encrypted backups with an EU copy); v5
+(M03) names the notes and chat summaries kept until deleted, beyond the
+90-day message limit. An owner with a consent recorded under an older
+version is told once, with the link and the opt-outs; the consent itself
+stays valid (nothing is re-asked). "Once" is durable (`accounts.policy_notice_version`), not tied to
 an audit row that the retention sweep deletes after a year.
 """
 
@@ -77,14 +78,14 @@ async def _deliver(env: Env, channel: FakeChannel, *, url: str | None = POLICY_U
 
 def test_the_current_policy_version_has_a_notice() -> None:
     """A bump that forgets its notice entry would skip the owner notice."""
-    assert service.POLICY_VERSION == "v4"
+    assert service.POLICY_VERSION == "v5"
     assert service.POLICY_VERSION in POLICY_CHANGES
     assert "{link}" in POLICY_CHANGES[service.POLICY_VERSION]
 
 
 async def test_an_owner_who_consented_under_an_older_policy_is_told_once(env: Env) -> None:
     await onboard(env)
-    await _consents_recorded_under(env, "v3")
+    await _consents_recorded_under(env, "v4")
     channel = FakeChannel()
 
     assert await _deliver(env, channel) == 1
@@ -92,31 +93,32 @@ async def test_an_owner_who_consented_under_an_older_policy_is_told_once(env: En
     assert await _deliver(env, channel) == 0
 
     [notice] = channel.sends
-    assert "privacy policy was updated (version 4)" in notice
-    # It names what v4 changes: storage, not processing.
-    assert "a server in the US" in notice
-    assert "backed up daily, encrypted, with a copy in the EU" in notice
+    assert "privacy policy was updated (version 5)" in notice
+    # It names what v5 changes: notes and summaries outlive the messages.
+    assert "the notes you ask Alviro to remember and the summaries of your chats" in notice
+    assert "kept until you delete them, also after the messages themselves expire" in notice
     assert (
         'Read it here: <a href="https://example.invalid/policy?a=1&amp;b=2">'
         "https://example.invalid/policy?a=1&amp;b=2</a>." in notice
     )
     # Both opt-outs: AI processing, and storage itself.
     assert "<code>/privacy revoke</code> stops all AI processing" in notice
+    assert "<code>/privacy delete</code> deletes everything stored" in notice
     assert "remove it under Settings → Chat Automation" in notice
-    assert await _marker(env) == "v4"
+    assert await _marker(env) == "v5"
     # Consent is not forced again: it stays granted, under the version agreed to.
     async with env.factory() as session:
         state = await service.active_consent(
             session, await _account_id(env), kind=service.CONSENT_AI_CONTROL
         )
-    assert (state.granted, state.policy_version) == (True, "v3")
+    assert (state.granted, state.policy_version) == (True, "v4")
 
 
 async def test_the_notice_is_not_repeated_after_its_audit_row_is_swept(env: Env) -> None:
     """Review finding C1: the audit row goes after a year; the notice must not
     come back with it."""
     await onboard(env)
-    await _consents_recorded_under(env, "v3")
+    await _consents_recorded_under(env, "v4")
     channel = FakeChannel()
     assert await _deliver(env, channel) == 1
 
@@ -137,19 +139,19 @@ async def test_no_notice_for_a_consent_given_under_the_current_policy(env: Env) 
 
 
 async def test_an_owner_who_revoked_the_older_consent_is_still_told(env: Env) -> None:
-    """Review finding C2: revoking AI does not delete what is stored, and v4
-    is about where stored data and its backups are kept."""
+    """Review finding C2: revoking AI does not delete what is stored, and v5
+    is about how long stored notes and summaries are kept."""
     await onboard(env)
-    await _consents_recorded_under(env, "v3")
+    await _consents_recorded_under(env, "v4")
     await deliver(env, private_message(OWNER, "/privacy revoke"))
     channel = FakeChannel()
     assert await _deliver(env, channel) == 1
-    assert "privacy policy was updated (version 4)" in channel.sends[0]
+    assert "privacy policy was updated (version 5)" in channel.sends[0]
 
 
 async def test_without_a_policy_url_the_notice_points_to_privacy(env: Env) -> None:
     await onboard(env)
-    await _consents_recorded_under(env, "v3")
+    await _consents_recorded_under(env, "v4")
     channel = FakeChannel()
     assert await _deliver(env, channel, url=None) == 1
     assert "Read it here: /privacy." in channel.sends[0]
@@ -158,7 +160,7 @@ async def test_without_a_policy_url_the_notice_points_to_privacy(env: Env) -> No
 
 async def test_an_undelivered_notice_is_retried_hourly_not_every_minute(env: Env) -> None:
     await onboard(env)
-    await _consents_recorded_under(env, "v3")
+    await _consents_recorded_under(env, "v4")
     channel = FakeChannel(deliver=False)
 
     assert await _deliver(env, channel) == 0
@@ -178,11 +180,11 @@ async def test_an_undelivered_notice_is_retried_hourly_not_every_minute(env: Env
 async def test_an_uncertain_notice_is_never_resent(env: Env) -> None:
     """It may be on screen (timeout): counted as settled (§6 invariant 6)."""
     await onboard(env)
-    await _consents_recorded_under(env, "v3")
+    await _consents_recorded_under(env, "v4")
     channel = FakeChannel(deliver=False, uncertain=True)
 
     assert await _deliver(env, channel) == 0
-    assert await _marker(env) == "v4"
+    assert await _marker(env) == "v5"
 
     channel.deliver = True
     env.clock.advance(hours=2)
@@ -194,7 +196,7 @@ async def test_a_notice_recorded_but_not_marked_is_settled_without_a_resend(env:
     """The process stopped between the send and the marker: the delivered
     (or uncertain) audit row settles it."""
     await onboard(env)
-    await _consents_recorded_under(env, "v3")
+    await _consents_recorded_under(env, "v4")
     async with env.factory() as session, session.begin():
         session.add(
             AuditLogEntry(
@@ -214,14 +216,14 @@ async def test_a_notice_recorded_but_not_marked_is_settled_without_a_resend(env:
     env.clock.advance(hours=2)
     assert await _deliver(env, channel) == 0
     assert channel.sends == []
-    assert await _marker(env) == "v4"
+    assert await _marker(env) == "v5"
 
 
 async def test_failed_attempts_stop_at_the_cap(env: Env) -> None:
     """A permanently unreachable owner does not get an audit row every hour
     forever."""
     await onboard(env)
-    await _consents_recorded_under(env, "v3")
+    await _consents_recorded_under(env, "v4")
     channel = FakeChannel(deliver=False)
 
     for _ in range(MAX_FAILED_ATTEMPTS + 6):
@@ -247,7 +249,7 @@ class _NoApplier:
 
 async def test_the_ingestion_watchdog_sends_the_notice(env: Env) -> None:
     await onboard(env)
-    await _consents_recorded_under(env, "v3")
+    await _consents_recorded_under(env, "v4")
     channel = FakeChannel()
     handlers = JobHandlers(
         session_factory=env.factory,

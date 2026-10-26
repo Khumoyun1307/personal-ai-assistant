@@ -1,4 +1,4 @@
-"""The owner notice for a privacy-policy update (AGENTS §16, policy v4).
+"""The owner notice for a privacy-policy update (AGENTS §16; policy v4, v5).
 
 A policy version that widens what is processed or kept needs an owner notice
 with an opt-out before it takes effect. Consents stay valid across the bump
@@ -43,6 +43,19 @@ POLICY_CHANGES: dict[str, str] = {
         "here: {link}. If you don't agree: <code>/privacy revoke</code> stops all AI "
         "processing, and to stop Alviro saving your chats, remove it under "
         "Settings → Chat Automation."
+    ),
+    # v5 (M03): what is kept longer than the 90-day message limit.
+    "v5": (
+        "Alviro's privacy policy was updated (version 5). It now covers the notes "
+        "you ask Alviro to remember and the summaries of your chats: both are kept "
+        "until you delete them, also after the messages themselves expire, and you "
+        "can delete them for one chat, for one person or all at once. It also "
+        "describes the settings that keep messages for a shorter time. Your "
+        "settings stay as they are. Read it here: {link}. If you don't agree: "
+        "<code>/privacy revoke</code> stops all AI processing, "
+        "<code>/privacy delete</code> deletes everything stored (after asking), "
+        "and to stop Alviro saving your chats, remove it under Settings → Chat "
+        "Automation."
     ),
 }
 

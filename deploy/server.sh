@@ -15,6 +15,9 @@
 #   deploy/server.sh reboot          reboot the host (then: status)
 #   deploy/server.sh reindex-search  re-key search after a normalizer change
 #                                    (idempotent; counts only)
+#   deploy/server.sh nfr04 [DAYS]    NFR-04: p50/p95 answer times of owner
+#                                    requests per class, last DAYS (30) days
+#                                    (deploy/sql/nfr04.sql; timings only)
 #   deploy/server.sh verify-r0 ARGS  tools/acceptance/verify_r0.py in a one-off
 #                                    app container (prints numbers/states only)
 #
@@ -182,6 +185,19 @@ case "$action" in
     # no-op when the stored version is current. Prints counts only.
     compose run --rm --no-deps -T app python -m assistant reindex-search
     ;;
+  nfr04)
+    require_data_volume
+    # NFR-04 (M03 acceptance): answer times of owner requests from
+    # agent_runs. The query reads timings, run types, statuses and tool names
+    # only, never a content column, in a read-only transaction; DAYS reaches
+    # it as a psql variable after this check, never spliced into the SQL.
+    days="${1:-30}"
+    [[ "$days" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "usage: nfr04 [days, 1-9999; default 30]" >&2; exit 2; }
+    # shellcheck disable=SC2016  # expanded inside the db container
+    compose exec -T db sh -c \
+      'export PGOPTIONS="-c default_transaction_read_only=on"; exec psql -X -q -v ON_ERROR_STOP=1 -v days="$1" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -' \
+      sh "$days" < deploy/sql/nfr04.sql
+    ;;
   app-stop)
     compose stop app
     ;;
@@ -212,7 +228,7 @@ case "$action" in
       app python tools/acceptance/verify_r0.py "$@"
     ;;
   *)
-    echo "usage: deploy/server.sh deploy|status|logs [N]|backup|verify-r0 ARGS" >&2
+    echo "usage: deploy/server.sh deploy|status|logs [N]|backup|nfr04 [DAYS]|verify-r0 ARGS" >&2
     exit 2
     ;;
 esac
