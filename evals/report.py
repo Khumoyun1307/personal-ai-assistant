@@ -51,7 +51,7 @@ def _safe(label: str) -> str:
 
 
 def stem_for(meta: RunMeta, *, trial: bool = False) -> str:
-    """A trial (`--limit`) run never takes a full run's name."""
+    """A trial (`--limit`, `--only`) run never takes a full run's name."""
     stem = f"{meta.run_date.isoformat()}-{_safe(meta.set_name)}-{_safe(meta.model_label)}"
     return f"{stem}-trial" if trial else stem
 
@@ -196,7 +196,7 @@ def render_markdown(meta: RunMeta, result: TargetResult, ledger: CallLedger) -> 
         lines += [
             "> **TRIAL RUN.** "
             f"Only {result.items_planned} of the set's {result.items_total} items were "
-            "selected (`--limit`); a trial is never a gate.",
+            "selected (`--limit` or `--only`); a trial is never a gate.",
             "",
         ]
     lines += [

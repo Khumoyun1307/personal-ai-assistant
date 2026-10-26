@@ -6,6 +6,7 @@
     python -m evals run retrieval --mode agent --live --limit 1   # a trial of the real agent loop
     python -m evals run retrieval --mode agent --live --calibrate-from docs/evals/<agent trial>.json
     python -m evals run summary [--owner-language uz-Latn|uz-Cyrl|ru|en] [--live] ...
+    python -m evals run summary --live --only c36,c28,c15   # a trial of chosen chats
     python -m evals compare docs/evals/<run>.json [...]
     python -m evals cleanup [--yes]        # list (or drop) throwaway databases a killed run left
 
@@ -74,7 +75,8 @@ EXIT_INCOMPLETE = 4
 
 
 def exit_code(result: TargetResult) -> int:
-    """Non-zero for an incomplete run. A deliberate `--limit` trial is not a failure."""
+    """Non-zero for an incomplete run (stopped early, or an item not evaluated).
+    A deliberate `--limit` or `--only` trial is not a failure."""
     return EXIT_INCOMPLETE if result.incomplete else 0
 
 
@@ -86,6 +88,14 @@ def _positive(value: str) -> int:
     if number < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
     return number
+
+
+def _ids(value: str) -> tuple[str, ...]:
+    """`--only c36,c28,c15`: comma-separated item ids, at least one."""
+    ids = tuple(part.strip() for part in value.split(",") if part.strip())
+    if not ids:
+        raise argparse.ArgumentTypeError("expected comma-separated ids, e.g. c36,c28")
+    return ids
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -151,6 +161,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=_positive,
         help="evaluate only the first N items (N >= 1): a trial run, never a gate",
+    )
+    run.add_argument(
+        "--only",
+        type=_ids,
+        metavar="ID,ID,...",
+        help=(
+            "summary only: evaluate only these conversations (e.g. c36,c28,c15), in set "
+            "order: a trial run, never a gate"
+        ),
     )
     run.add_argument("--estimate-only", action="store_true", help="print the cost and stop")
     run.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="where to write reports")
@@ -266,7 +285,7 @@ def _print_outcome(
     label: str, outcome: RunOutcome, *, ledger: CallLedger, cap: Decimal, spent: bool
 ) -> None:
     result = outcome.result
-    suffix = " (TRIAL: a --limit run is never a gate)" if result.trial else ""
+    suffix = " (TRIAL: a --limit or --only run is never a gate)" if result.trial else ""
     _say(f"{label}: {result.items} items{suffix}")
     for metric in result.metrics:
         confirmed, of = metric.confirmation()
@@ -293,6 +312,11 @@ async def _summary(args: argparse.Namespace) -> int:
     cap, prices = _cap(args.budget_usd), _prices(args.price)
     reviews = _reviews(args.reviews, "e1")
     target = SummaryTarget(load_e1(), owner_language=args.owner_language)
+    if args.only is not None:
+        try:
+            target.named(args.only, limit=args.limit)
+        except ValueError as error:
+            raise RefusedError(f"--only: {error}") from None
     (choice,) = _guard([target], [target.label], args, cap, prices, reviews)
     if args.estimate_only:
         return 0
@@ -303,7 +327,12 @@ async def _summary(args: argparse.Namespace) -> int:
     ledger = CallLedger()
     llm = BudgetedLLMClient(live_client, cap_usd=cap, overrides=prices, ledger=ledger)
     context = RunContext(
-        llm=llm, model=choice.model, effort=choice.effort, reviews=reviews, limit=args.limit
+        llm=llm,
+        model=choice.model,
+        effort=choice.effort,
+        reviews=reviews,
+        limit=args.limit,
+        only=args.only,
     )
     meta = RunMeta(
         run_date=run_date,
@@ -329,6 +358,8 @@ async def _summary(args: argparse.Namespace) -> int:
 
 async def _retrieval(args: argparse.Namespace) -> int:
     _require_recorded(args)
+    if args.only is not None:
+        raise RefusedError("--only is only for the summary target")
     digests = ensure_frozen()
     cap, prices = _cap(args.budget_usd), _prices(args.price)
     reviews = _reviews(args.reviews, "retrieval")
@@ -441,7 +472,7 @@ def _guard(
         if not args.estimate_only:
             require_live(target, live=args.live)
         choice = resolve_model(target.route, args.model)
-        context = RunContext(model=choice.model, reviews=reviews, limit=args.limit)
+        context = RunContext(model=choice.model, reviews=reviews, limit=args.limit, only=args.only)
         expected_text = ""
         if isinstance(target, AgentModeTarget):
             calibration = _calibration(args, choice.model)

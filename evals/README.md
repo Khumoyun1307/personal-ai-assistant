@@ -292,9 +292,21 @@ and the JSON record lists it under `open_loops_unquoted` with the judge's quote 
 `open_loops_evidence` for the owner. This changes only the pre-screen; owner verdicts decide
 the gate.
 
+**Near quotes (S03.7 round 3).** In the summarize.v6 run the exact check rejected four
+correct verdicts and caught no invented quote: the judge had copied the line with a slip (a
+Latin letter swapped for its Cyrillic look-alike next to a Cyrillic name, a dropped "(not
+agreed yet)"). A quoted piece that is not in the summary now still counts when it is at
+least 0.90 similar (`difflib`, on the same folded text) to one summary line **and** carries
+exactly that line's numbers (`judge.quote_match`, `NEAR_QUOTE_RATIO`): the four slips score
+0.925–0.973, the v5 run's invented line 0.55, and a copy with another time or amount never
+counts. Such loops count as surfaced in the pre-screen and are listed under
+`open_loops_near_quotes`, so the owner can check them. The rubric text is unchanged
+(`open_loops.v4`).
+
 `python -m evals run summary --estimate-only` prints the worst-case cost, and
-`--limit N` (a trial) runs the first N conversations; both leave the set sizes of the
-gate at the whole set, so a trial never passes.
+`--limit N` (a trial) runs the first N conversations; `--only c36,c28,c15` (a trial) runs
+just the named conversations, in set order (not with `--limit`, and never the whole set).
+Both leave the set sizes of the gate at the whole set, so a trial never passes.
 
 **Gate versus pre-screen.** Every metric is reported twice: over all items (the
 deterministic and judge *pre-screen*) and over the items the owner has confirmed

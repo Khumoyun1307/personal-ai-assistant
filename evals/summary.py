@@ -347,6 +347,10 @@ class _Record:
     #: Loops the judge called surfaced with a quote that is not in the summary:
     #: counted as missed in the pre-screen, listed for the owner (S03.7 A2).
     unquoted: tuple[str, ...] = ()
+    #: Loops judged surfaced whose quote is only a near copy of a summary line (a
+    #: letter in another script, a dropped parenthesis): counted, listed for the
+    #: owner (S03.7 round 3).
+    near_quotes: tuple[str, ...] = ()
 
     @property
     def summarized(self) -> bool:
@@ -388,6 +392,8 @@ class _Record:
             "open_loops_evidence": dict(self.evidence),
             # Judged surfaced, but the quote is not in the summary: no evidence.
             "open_loops_unquoted": list(self.unquoted),
+            # Judged surfaced on a near copy of a summary line: counted, listed.
+            "open_loops_near_quotes": list(self.near_quotes),
             "caveats_expected": self.check.expected,
             "caveats_missing": list(self.check.missing),
             "caveats_spurious": list(self.check.spurious),
@@ -457,11 +463,28 @@ class SummaryTarget:
         return self._factory
 
     def _selected(self, context: RunContext) -> list[Conversation]:
+        if context.only is not None:
+            return self.named(context.only, limit=context.limit)
         if context.limit is None:
             return self._conversations
         if context.limit < 1:
             raise ValueError("limit must be at least 1")
         return self._conversations[: context.limit]
+
+    def named(self, ids: Sequence[str], *, limit: int | None = None) -> list[Conversation]:
+        """The conversations `--only` names, in set order: a cheap trial of chosen
+        chats (S03.7 round 3). A selection is always a trial, so it must name at
+        least one chat and fewer than all of them, and cannot be combined with a
+        limit."""
+        if limit is not None:
+            raise ValueError("only and limit cannot be combined")
+        wanted = set(ids)
+        unknown = sorted(wanted - {c.id for c in self._conversations})
+        if unknown:
+            raise ValueError(f"only names unknown conversations: {', '.join(unknown)}")
+        if not wanted or len(wanted) >= len(self._conversations):
+            raise ValueError("only must name at least one conversation and not the whole set")
+        return [c for c in self._conversations if c.id in wanted]
 
     # ------------------------------------------------------------- estimate
     def plan(self, context: RunContext) -> Sequence[PlannedCall]:
@@ -577,6 +600,7 @@ class SummaryTarget:
             judged: dict[str, bool] = {}
             evidence: dict[str, str] = {}
             unquoted: tuple[str, ...] = ()
+            near_quotes: tuple[str, ...] = ()
             language = LanguageVerdict(False, None, 0.0)
         else:
             screen = await LLMFabricationJudge(
@@ -605,6 +629,11 @@ class SummaryTarget:
                     if verdict.judge_surfaced and not verdict.quoted
                 )
             )
+            near_quotes = tuple(
+                sorted(
+                    loop for loop, verdict in verdicts.items() if verdict.surfaced and verdict.near
+                )
+            )
             language = check_language(plain, self.owner_language)
         return _Record(
             conversation=conversation,
@@ -619,6 +648,7 @@ class SummaryTarget:
             judged=judged,
             evidence=evidence,
             unquoted=unquoted,
+            near_quotes=near_quotes,
             check=check_caveats(conversation, output),
             caveat_lines=facts.lines,
             screen=screen,

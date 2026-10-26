@@ -53,8 +53,13 @@ ACTIVE: dict[str, str] = {
     # message's text is current and its edit time is shown, a stated value is
     # never "not given"; answered or accepted questions/decisions are settled;
     # anyone's "I will" is a commitment with `by`, never a key fact; a split of
-    # work is one commitment per side. v1-v5 stay.
-    "summarize": "v6",
+    # work is one commitment per side. v1-v5 stay. v7 (S03.7 round 3, after
+    # the v6 E1 run; schema v5 unchanged): clock times in 24-hour form (am/pm
+    # was lost); what a person who is only mentioned will do is a key fact
+    # naming them (`by` stays owner|contact); the text before an edit is never
+    # shown, so "I changed the time" means the edited text holds the new
+    # value. v1-v6 stay.
+    "summarize": "v7",
 }
 
 

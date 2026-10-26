@@ -115,6 +115,7 @@ class SummaryOracle(FakeLLM):
         truncate_first: bool = False,
         refuse: Collection[str] = (),
         misquote: Collection[str] = (),
+        nearquote: Collection[str] = (),
         flags: dict[str, list[dict[str, Any]]] | None = None,
         during_summary: Callable[[LLMRequest], Awaitable[None]] | None = None,
         usage: Usage = Usage(400, 100),  # noqa: B008  (immutable)
@@ -128,6 +129,7 @@ class SummaryOracle(FakeLLM):
         self._truncate_first = truncate_first
         self._refuse = set(refuse)
         self._misquote = set(misquote)
+        self._nearquote = set(nearquote)
         self._flags = flags or {}
         self._during_summary = during_summary
         self._usage = usage
@@ -166,6 +168,10 @@ class SummaryOracle(FakeLLM):
             return {"id": loop_id, "evidence": "", "surfaced": False}
         loop = next(item for item in open_loops_of(self.current) if item.id == loop_id)
         line = next(line for line in summary.splitlines() if words_of(loop) in line)
+        if loop_id in self._nearquote:
+            # `nearquote` scripts a copy with one Latin letter in Cyrillic (E-af round 3).
+            slip = next(i for i, char in enumerate(line) if char in "aoe")
+            line = line[:slip] + {"a": "а", "o": "о", "e": "е"}[line[slip]] + line[slip + 1 :]  # noqa: RUF001
         return {"id": loop_id, "evidence": line, "surfaced": True}
 
     def _summarize[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> ParsedResponse[T]:
@@ -452,6 +458,25 @@ async def test_a_loop_verdict_quoting_a_line_not_in_the_summary_is_reported_as_m
     assert detail["open_loops_unquoted"] == [unchecked[0]]
     assert all(detail["open_loops_judged"][loop] for loop in unchecked[1:])
     assert unchecked[0] in metric(result, "open_loop_recall").failed_items
+    assert detail["open_loops_near_quotes"] == []
+
+
+async def test_a_loop_verdict_quoting_a_line_with_a_slip_counts_and_is_listed(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """E-af round 3: a quote copied with a one-letter slip (a Latin letter swapped
+    for its Cyrillic look-alike) is the summary's line: the loop counts as surfaced
+    in the pre-screen, and the record lists it as a near quote for the owner."""
+    chat = chat_with_unchecked_loops()
+    unchecked = [loop.id for loop in open_loops_of(chat) if not loop.values]
+    result = await target(factory, [chat]).run(
+        context(SummaryOracle([chat], nearquote={unchecked[0]}))
+    )
+    detail = record(result, chat.id)
+    assert detail["open_loops_judged"][unchecked[0]] is True
+    assert detail["open_loops_near_quotes"] == [unchecked[0]]
+    assert detail["open_loops_unquoted"] == []
+    assert unchecked[0] not in metric(result, "open_loop_recall").failed_items
 
 
 async def test_a_run_whose_caveat_is_dropped_fails_the_caveat_metric(
@@ -652,6 +677,24 @@ async def test_a_limited_run_is_never_a_gate_even_fully_confirmed(
     for m in result.metrics:
         assert m.gate_status() is not Status.PASS, m.key
     assert metric(result, "owner_language").confirmation() == (3, 40)
+
+
+async def test_a_run_of_named_conversations_runs_only_those_and_is_a_trial(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """S03.7 round 3: `--only` picks chats by id (in set order); like `--limit`, it is
+    a trial whose gates keep the whole set's sizes."""
+    everything = ReviewLedger(frozenset(c.id for c in E1), {}, {})
+    chosen = [c for c in E1 if c.id in ("c28", "c36")]
+    result = await SummaryTarget(E1, owner_language="uz-Latn", session_factory=factory).run(
+        context(SummaryOracle(chosen), only=("c36", "c28"), reviews=everything)
+    )
+
+    assert [d["id"] for d in result.details] == ["c28", "c36"]
+    assert (result.items, result.items_planned, result.items_total) == (2, 2, 40)
+    assert result.trial
+    for m in result.metrics:
+        assert m.gate_status() is not Status.PASS, m.key
 
 
 # ----------------------------------------------------------------- failures, cost

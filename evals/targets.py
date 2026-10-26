@@ -161,7 +161,7 @@ class TargetResult:
 
     @property
     def trial(self) -> bool:
-        """A `--limit` run over part of the set: never a gate."""
+        """A `--limit` or `--only` run over part of the set: never a gate."""
         return self.items_planned < self.items_total
 
     @property
@@ -192,6 +192,9 @@ class RunContext:
     reviews: ReviewLedger = field(default_factory=ReviewLedger.empty)
     #: Evaluate only the first N items (N >= 1): a trial run, never a gate.
     limit: int | None = None
+    #: Evaluate only the items with these ids, in set order (the summary target,
+    #: `--only`): a trial run, never a gate.
+    only: tuple[str, ...] | None = None
 
 
 class EvalTarget(Protocol):
