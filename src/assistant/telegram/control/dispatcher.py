@@ -133,7 +133,9 @@ class ControlDispatcher:
             if message.third_party
             else await service.get_pending_input(session, account_id=account.id, clock=self._clock)
         )
-        if pending is not None and pending.kind == "onboarding_consent":
+        # The consent question is armed only once it was delivered, after the
+        # language card (C4), so this answers a question the owner saw.
+        if pending is not None and pending.kind == handlers.ONBOARDING_CONSENT:
             result = await handlers.handle_consent_reply(
                 session, self._gateway, self._clock, message, account
             )

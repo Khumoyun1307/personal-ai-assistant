@@ -32,7 +32,7 @@ from tests.integration.business_env import (
     deleted_messages,
     deliver,
     environment,
-    private_message,
+    onboard,
 )
 
 pytestmark = pytest.mark.integration
@@ -401,8 +401,7 @@ async def test_widening_stays_within_the_account(migrated_url: str) -> None:
     async with environment(migrated_url, owner_ids=frozenset({OWNER, other_owner})) as env:
         await connect(env)
         await say(env, "Salom", contact=CONTACT)
-        await deliver(env, private_message(other_owner, "/start"))
-        await deliver(env, private_message(other_owner, "yes"))
+        await onboard(env, other_owner)
         await deliver(env, connection_update(user_id=other_owner, connection_id="synthetic-conn-b"))
         await deliver(
             env,
@@ -460,8 +459,7 @@ async def test_rg21_search_never_returns_another_accounts_messages(migrated_url:
     async with environment(migrated_url, owner_ids=frozenset({OWNER, other})) as env:
         await connect(env)
         await say(env, "Umumiy kalit soʻz mine")
-        await deliver(env, private_message(other, "/start"))
-        await deliver(env, private_message(other, "yes"))
+        await onboard(env, other)
         await deliver(env, connection_update(user_id=other, connection_id="synthetic-conn-b"))
         await deliver(
             env,

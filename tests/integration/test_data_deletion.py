@@ -56,6 +56,7 @@ from tests.integration.business_env import (
     deleted_messages,
     deliver,
     environment,
+    onboard,
     private_message,
 )
 
@@ -153,8 +154,7 @@ async def seed(env: Env) -> Seeded:
     forward["message"]["forward_date"] = T_BASE
     await deliver(env, forward)
     # Another account with its own content.
-    await deliver(env, private_message(OTHER_OWNER, "/start"))
-    await deliver(env, private_message(OTHER_OWNER, "yes"))
+    await onboard(env, OTHER_OWNER)
     await deliver(env, connection_update(user_id=OTHER_OWNER, connection_id="synthetic-conn-b"))
     await deliver(
         env,

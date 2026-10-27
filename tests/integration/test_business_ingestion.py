@@ -14,8 +14,14 @@ import pytest
 from sqlalchemy import select, text
 
 from assistant.accounts.models import AuditLogEntry
+from assistant.conversations import modes
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
-from assistant.inbox.processor import DeterministicError, requeue_failed
+from assistant.db.uow import transaction
+from assistant.inbox.notify import OwnerAlerts
+from assistant.inbox.processor import DeterministicError, Requeued, requeue_failed
+from assistant.inbox.watchdog import check_ingestion
+from assistant.memory.models import ConversationSummary
+from tests.fakes.channel import FakeChannel
 from tests.integration.business_env import (
     BOT_ID,
     CONTACT,
@@ -30,12 +36,16 @@ from tests.integration.business_env import (
     count,
     deleted_messages,
     deliver,
+    environment,
     gaps,
     inbound,
+    job_names,
     message,
     messages,
     payload_is_sql_null,
     private_message,
+    queued_refreshes,
+    take_job,
 )
 
 pytestmark = pytest.mark.integration
@@ -488,6 +498,60 @@ async def test_an_ignore_mode_deletion_keeps_no_payload(env: Env) -> None:
     assert await payload_is_sql_null(env, update)
 
 
+async def test_an_ignore_mode_deletion_purges_what_was_stored_and_queues_nothing(
+    migrated_url: str,
+) -> None:
+    """M03 fix round C3 guard: a deletion that arrives while the chat is in
+    Ignore still purges the content saved before the switch and drops the
+    summary that covered it (D63), but queues no rebuild: nothing is
+    summarized in Ignore."""
+    async with environment(migrated_url, summaries=True) as env:
+        await connect(env)
+        await deliver(env, business_message(message_id=705, message_text="synthetic SYNTH-705"))
+        stored = await message(env, 705)
+        conv = await conversation(env)
+        assert stored is not None
+        assert conv is not None
+        async with env.factory() as session, session.begin():
+            session.add(
+                ConversationSummary(
+                    account_id=conv.account_id,
+                    conversation_id=conv.id,
+                    kind="rolling",
+                    covers_through_message_id=stored.id,
+                    summary={"overview": "SYNTH summary of 705"},
+                )
+            )
+        async with transaction(env.factory) as uow:  # the setter clears the refresh flag
+            await modes.set_mode(
+                uow.session,
+                account_id=conv.account_id,
+                conversation_id=conv.id,
+                mode="ignore",
+                actor="owner",
+                clock=env.clock,
+            )
+        # 705 queued a refresh (the trigger is wired). A worker takes it, so
+        # its queueing lock no longer swallows a rebuild the deletion defers.
+        assert (await job_names(env)).count("memory.refresh_summary") == 1
+        await take_job(env, conv.id)
+        assert await queued_refreshes(env, conv.id) == 0
+        update = deleted_messages(message_ids=[705])
+        await deliver(env, update)
+
+        gone = await message(env, 705)
+        assert gone is not None
+        assert (gone.text, gone.search_key, gone.content_hash) == (None, None, None)
+        assert gone.deleted_at is not None
+        assert await count(env, ConversationSummary) == 0
+        after = await conversation(env)
+        assert after is not None
+        assert after.pending_ai_since is None
+        assert await queued_refreshes(env, conv.id) == 0
+        assert (await job_names(env)).count("memory.refresh_summary") == 1
+        assert await payload_is_sql_null(env, update)
+
+
 async def test_a_deletion_for_an_unknown_chat_stores_nothing(env: Env) -> None:
     await connect(env)
     update = deleted_messages(chat_id=OTHER_CONTACT, message_ids=[1])
@@ -604,6 +668,151 @@ async def test_requeue_after_a_fix_clears_the_caveat(env: Env) -> None:
     assert all(gap.resolved_at is not None for gap in await gaps(env))
     await deliver(env, private_message(OWNER, "/status"))
     assert "could not be processed" not in env.sender.texts[-1]
+
+
+# ------------------------------------------------------------ dead letters in Ignore
+async def _dead_letter(env: Env, **kwargs: Any) -> dict[str, Any]:
+    """A business update that never parses, delivered until it is set aside."""
+    poison = business_message(extra={"message_id": None}, **kwargs)
+    for _ in range(3):
+        await deliver(env, poison)
+    assert (await inbound(env, poison)).status == "failed"
+    return poison
+
+
+async def _watchdog(env: Env) -> tuple[int, list[str]]:
+    """The dead letters the ingestion watchdog counts as recoverable, and
+    what it sent the owner."""
+    channel = FakeChannel()
+    report = await check_ingestion(
+        env.factory, env.clock, OwnerAlerts(env.factory, channel, env.clock)
+    )
+    return report.dead_letters, channel.sends
+
+
+async def test_a_dead_letter_in_an_ignore_chat_keeps_no_payload_and_closes_its_gap(
+    env: Env,
+) -> None:
+    """Owner decision C3-2 (2026-10-27): a failed update in an Ignore chat has
+    its raw copy cleared at once, not kept for the raw-update retention. Kept,
+    a requeue after the chat is back in Observe would store the message in
+    full. Without a payload the row can never be requeued, so its gap closes
+    and the ingest pause lifts at once; the content-free audit row stays."""
+    await connect(env)
+    await deliver(env, business_message(message_text="synthetic fine"))
+    await _set_mode(env, "ignore")
+    poison = await _dead_letter(env, message_text="synthetic poison IGNDL")
+
+    row = await inbound(env, poison)
+    assert row.error_code == "NormalizeError"
+    assert await payload_is_sql_null(env, poison)
+    [gap] = await gaps(env)
+    assert (gap.kind, gap.certainty, gap.inbound_update_id) == ("dead_letter", "definite", row.id)
+    assert gap.resolved_at == env.clock.now()
+    conv = await conversation(env)
+    assert conv is not None
+    assert (conv.mode, conv.autonomy_paused_reason) == ("ignore", None)
+    async with env.factory() as session:
+        audits = (
+            (
+                await session.execute(
+                    select(AuditLogEntry).where(AuditLogEntry.event == "ingest_error")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert [(a.subject_type, a.subject_id) for a in audits] == [("conversation", conv.id)]
+
+    # Nothing to requeue, no watchdog alert, no coverage caveat on /status.
+    # Its inbox line still counts the failed row, as for one an owner
+    # deletion cleared (D91): the update did fail.
+    assert await requeue_failed(env.factory) == Requeued(reset=0, cleared=1)
+    assert await _watchdog(env) == (0, [])
+    await deliver(env, private_message(OWNER, "/status"))
+    status_text = env.sender.texts[-1]
+    assert "chat(s) could not be processed" not in status_text
+    assert "definite" not in status_text
+    assert "1 update(s) could not be processed." in status_text
+
+    # ...and nothing to store once the chat is back in Observe.
+    await _set_mode(env, "observe")
+    assert (await requeue_failed(env.factory)).reset == 0
+    await env.processor.process_batch()
+    assert (await inbound(env, poison)).status == "failed"
+    assert [m.text for m in await messages(env)] == ["synthetic fine"]
+
+
+async def test_a_dead_letter_in_an_observe_chat_keeps_its_payload_for_a_requeue(
+    env: Env,
+) -> None:
+    """Guard for C3-2: only Ignore changes. An Observe chat's failed update
+    keeps its payload for the runbook (fix, deploy, requeue), its gap stays
+    open, the chat stays paused, and the watchdog alerts."""
+    await connect(env)
+    await deliver(env, business_message(message_text="synthetic fine"))
+    poison = await _dead_letter(env, message_text="synthetic poison")
+
+    assert not await payload_is_sql_null(env, poison)
+    [gap] = await gaps(env)
+    assert gap.resolved_at is None
+    conv = await conversation(env)
+    assert conv is not None
+    assert conv.autonomy_paused_reason == "ingest_error"
+    dead, sent = await _watchdog(env)
+    assert (dead, len(sent)) == (1, 1)
+    assert await requeue_failed(env.factory) == Requeued(reset=1, cleared=0)
+
+
+async def test_an_ignore_dead_letter_leaves_an_earlier_open_one_and_its_pause(env: Env) -> None:
+    """The Ignore dead letter closes only its own gap. One that failed while
+    the chat was in Observe keeps its payload and its gap, and the chat stays
+    paused until that one is resolved too (`resolve_ingest_failure`)."""
+    await connect(env)
+    earlier = await _dead_letter(env, message_text="synthetic poison A")
+    await _set_mode(env, "ignore")
+    later = await _dead_letter(env, message_text="synthetic poison B")
+
+    assert not await payload_is_sql_null(env, earlier)
+    assert await payload_is_sql_null(env, later)
+    resolved = {gap.inbound_update_id: gap.resolved_at for gap in await gaps(env)}
+    assert resolved == {
+        (await inbound(env, earlier)).id: None,
+        (await inbound(env, later)).id: env.clock.now(),
+    }
+    conv = await conversation(env)
+    assert conv is not None
+    assert conv.autonomy_paused_reason == "ingest_error"
+    assert await requeue_failed(env.factory) == Requeued(reset=1, cleared=1)
+
+
+async def test_a_dead_letter_for_a_new_chat_that_starts_in_ignore_keeps_nothing(env: Env) -> None:
+    """C3-2 for a chat first seen through a failed update: the hook creates
+    the conversation in the owner's default mode (`new_chat_mode`, as
+    `record_message` does). With Ignore as the default, the update is one in
+    an Ignore chat: no payload, its gap closed, no pause, no name."""
+    await connect(env)
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE app.accounts SET settings = settings || "
+                '\'{"default_mode": "ignore"}\'::jsonb'
+            )
+        )
+    poison = await _dead_letter(
+        env, message_text="synthetic poison", first_name="IGNNAME", username="ignuser"
+    )
+
+    conv = await conversation(env)
+    assert conv is not None
+    assert (conv.mode, conv.autonomy_paused_reason) == ("ignore", None)
+    assert await payload_is_sql_null(env, poison)
+    [gap] = await gaps(env)
+    assert gap.resolved_at == env.clock.now()
+    person = await contact(env)
+    assert person is not None
+    assert (person.display_name, person.username) == (None, None)
+    assert await requeue_failed(env.factory) == Requeued(reset=0, cleared=1)
 
 
 async def test_a_dead_letter_hook_never_creates_rows_for_a_foreign_connection(env: Env) -> None:

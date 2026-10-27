@@ -597,7 +597,44 @@ async def test_a_catch_up_of_an_ignored_chat_says_it_is_ignored(senv: Env) -> No
 
     result = await catch_up(senv, FakeLLM(), conversation_id=a)
 
-    assert any("Ignore mode" in line for line in result.data["coverage_caveats"])
+    # Exact (M03 fix round C3): what it saved before Ignore is still stored.
+    assert (
+        "The chat asked about is in Ignore mode: its new messages are not stored and it "
+        "is not summarized."
+    ) in result.data["coverage_caveats"]
+
+
+async def test_a_catch_up_says_messages_were_not_stored_while_a_chat_was_ignored(
+    senv: Env,
+) -> None:
+    """M03 fix round C3: once a chat is back in Observe, a catch-up over the
+    period it was ignored says how many of its messages were not stored —
+    the chat-in-Ignore caveat no longer applies to it."""
+    a, _ = await seed(senv)
+
+    async def set_mode(mode: str) -> None:
+        async with senv.factory() as session, session.begin():
+            await session.execute(
+                text("UPDATE app.conversations SET mode = :m WHERE id = :c"), {"m": mode, "c": a}
+            )
+
+    await set_mode("ignore")
+    await deliver(senv, business_message(message_id=13, message_text="SYNTH-A jim", date=ts(20)))
+    await set_mode("observe")
+    fake = FakeLLM()
+    fake.parsed = [echo, echo, echo]
+
+    everywhere = await catch_up(senv, fake)
+    only_a = await catch_up(senv, fake, conversation_id=a)
+
+    line = (
+        "1 message(s) from this period arrived while their chat was in Ignore mode and "
+        "were not stored."
+    )
+    assert line in everywhere.data["coverage_caveats"]
+    assert line in only_a.data["coverage_caveats"]
+    assert not any("is in Ignore mode" in c for c in only_a.data["coverage_caveats"])
+    assert "SYNTH-A jim" not in json.dumps([everything(r) for r in fake.requests])
 
 
 # ============================================================ nits

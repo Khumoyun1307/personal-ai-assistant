@@ -45,6 +45,7 @@ from tests.integration.business_env import (
     connection_update,
     deliver,
     environment,
+    onboard,
     private_message,
 )
 from tests.integration.test_conversation_modes import card, keyboard_labels, keyboard_ops
@@ -160,8 +161,7 @@ async def test_a_shorter_raw_update_retention_clears_payloads_sooner(env: Env) -
 async def test_one_accounts_override_does_not_touch_another_account(env: Env) -> None:
     await connect(env)
     await deliver(env, business_message(message_id=1, message_text="SYNTH mine"))
-    await deliver(env, private_message(OTHER_OWNER, "/start"))
-    await deliver(env, private_message(OTHER_OWNER, "yes"))
+    await onboard(env, OTHER_OWNER)
     await deliver(env, connection_update(user_id=OTHER_OWNER, connection_id="synthetic-conn-b"))
     await deliver(
         env,
@@ -237,15 +237,20 @@ async def test_the_settings_panel_shows_reply_and_retention_settings(env: Env) -
         audited = (
             (
                 await session.execute(
-                    select(AuditLogEntry.details).where(
-                        AuditLogEntry.event == "preferences_changed"
-                    )
+                    select(AuditLogEntry.details)
+                    .where(AuditLogEntry.event == "preferences_changed")
+                    .order_by(AuditLogEntry.id)
                 )
             )
             .scalars()
             .all()
         )
-    assert len(audited) == 2
+    # The language chosen at onboarding (C4), then one row per tap here.
+    assert [list(details["changes"]) for details in audited] == [
+        ["preferred_language"],
+        ["reply_tone"],
+        ["reply_language"],
+    ]
 
 
 async def test_shortening_retention_on_the_panel_asks_first(env: Env) -> None:
@@ -403,7 +408,10 @@ async def test_an_old_undo_of_a_retention_change_changes_nothing(env: Env) -> No
     async with env.factory() as session:
         change_id = (
             await session.execute(
-                select(AuditLogEntry.id).where(AuditLogEntry.event == "preferences_changed")
+                select(AuditLogEntry.id)
+                .where(AuditLogEntry.event == "preferences_changed")
+                .order_by(AuditLogEntry.id.desc())
+                .limit(1)  # the retention change, after onboarding's language (C4)
             )
         ).scalar_one()
     owner = await account(env)

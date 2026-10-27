@@ -26,6 +26,7 @@ from pydantic import AfterValidator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.agent import owner_texts
 from assistant.agent.attribution import (
     ATTRIBUTION_RULE,
     check_attribution,
@@ -38,7 +39,7 @@ from assistant.agent.untrusted import Source, wrap
 from assistant.conversations import coverage
 from assistant.conversations.models import Contact, Conversation
 from assistant.core.errors import NotInAccountError
-from assistant.memory import summaries
+from assistant.memory import catch_up, summaries
 
 DIRECTION_LABELS = {
     "contact": "contact",
@@ -214,8 +215,15 @@ def summary_view(
     decision and commitment gets a `who` line — fixed words for who asked,
     promised or agreed, in the owner's `locale`, rendered from the structured
     fields and the contact's name, never from model text. It holds a
-    contact-chosen name, so it is wrapped as untrusted too."""
+    contact-chosen name, so it is wrapped as untrusted too.
+
+    P9 (owner, 2026-10-27): `needs_reply` stays on while a question,
+    decision or request to the owner is open in the checked summary
+    (`catch_up.needs_reply`); the model's "no reply needed" reason is then
+    replaced by our own words (`owner_texts.STILL_OPEN`)."""
     checked, _ = check_attribution(summary, authors)
+    model_verdict = bool(checked.get("needs_reply"))
+    still_open = not model_verdict and catch_up.needs_reply(checked)
 
     def who(key: str, item: Mapping[str, Any]) -> str | None:
         return wrap(render_who(key, item, contact_name, locale), Source.CONTACT_NAME)
@@ -250,8 +258,12 @@ def summary_view(
             if isinstance(item, Mapping)
         ],
         "key_facts": points("key_facts", attributed=False),
-        "needs_reply": bool(checked.get("needs_reply")),
-        "needs_reply_reason": _summary_text(checked.get("needs_reply_reason")),
+        "needs_reply": model_verdict or still_open,
+        "needs_reply_reason": (
+            owner_texts.STILL_OPEN[locale]
+            if still_open
+            else _summary_text(checked.get("needs_reply_reason"))
+        ),
         "attribution_rule": ATTRIBUTION_RULE,
         **_omitted(checked.get("items_omitted")),
     }
@@ -263,6 +275,20 @@ async def summary_authors(
     """Who wrote each message a stored summary cites (for `summary_view`)."""
     return await summaries.message_directions(
         session, account_id, conversation_id, cited_ids(dict(summary))
+    )
+
+
+async def summaries_authors(
+    session: AsyncSession, account_id: int, by_conversation: Mapping[int, Mapping[str, Any]]
+) -> dict[int, dict[int, str]]:
+    """`summary_authors` for several chats' summaries, in one query."""
+    return await summaries.message_directions_by_conversation(
+        session,
+        account_id,
+        {
+            conversation_id: cited_ids(dict(summary))
+            for conversation_id, summary in by_conversation.items()
+        },
     )
 
 

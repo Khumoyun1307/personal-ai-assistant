@@ -154,7 +154,9 @@ class BusinessPipeline:
     ) -> None:
         """A business update that will never process: pause autonomy for the
         chat and record a definite gap (§6.2), reading the payload leniently —
-        this is the path for payloads the normal path could not parse."""
+        this is the path for payloads the normal path could not parse. In an
+        Ignore chat the payload is cleared and the gap closed at once (owner
+        decision C3-2)."""
         payload = row.payload or {}
         # The same gate as live traffic (§6 invariants 7, 12): a foreign or
         # de-allowlisted connection gets nothing; an unknown, disabled or
@@ -199,7 +201,7 @@ class BusinessPipeline:
             at = optional_timestamp(body.get("date"), "date")
         except ValueError:
             at = None
-        await service.record_ingest_failure(
+        failure = await service.record_ingest_failure(
             session,
             account_id=account_id,
             business_chat_id=chat_id,
@@ -208,6 +210,21 @@ class BusinessPipeline:
             at=at or row.received_at,
             clock=self._clock,
         )
+        if failure.metadata_only:
+            # Ignore mode: the raw copy (text, the contact's name) is not ours
+            # to keep, and kept it would be stored in full by a requeue after
+            # the chat is back in Observe. Without it the row can never be
+            # requeued, so its gap closes now, as after a requeue.
+            row.payload = None
+            await service.resolve_ingest_failure(
+                session, account_id=account_id, inbound_update_id=row.id, clock=self._clock
+            )
+            logger.info(
+                "business_dead_letter_cleared",
+                update_row_id=row.id,
+                conversation_id=failure.conversation_id,
+                reason="ignore_mode",
+            )
 
 
 async def _owner_user_id(session: AsyncSession, account_id: int) -> int:

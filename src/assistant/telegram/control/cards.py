@@ -14,14 +14,23 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from assistant.accounts.callbacks import encode
 
+#: Rows of `(label, op)` buttons.
+Rows = list[list[tuple[str, str]]]
 
-def card_keyboard(kind: str, token: str, buttons: list[tuple[str, str]]) -> InlineKeyboardMarkup:
-    """One row of buttons: `(label, op)` pairs, encoded with the card's token."""
+
+def rows_keyboard(kind: str, token: str, rows: Rows) -> InlineKeyboardMarkup:
+    """Rows of buttons: `(label, op)` pairs, encoded with the card's token."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(text=label, callback_data=encode(kind, token, op))
-                for label, op in buttons
+                for label, op in row
             ]
+            for row in rows
         ]
     )
+
+
+def card_keyboard(kind: str, token: str, buttons: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+    """One row of buttons."""
+    return rows_keyboard(kind, token, [buttons])

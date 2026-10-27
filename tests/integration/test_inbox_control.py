@@ -23,7 +23,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from assistant.accounts.models import Account, ControlTurn
+from assistant.accounts.models import Account, ControlTurn, PendingInput
 from assistant.core.routing import Route
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.db.uow import transaction
@@ -122,6 +122,38 @@ async def deliver(
     await processor.process_batch()
 
 
+async def choose_language(
+    factory: async_sessionmaker[AsyncSession], processor: InboxProcessor, op: str = "en"
+) -> None:
+    """Tap `op` on the onboarding language card (M03 fix round C4)."""
+    async with factory() as session:
+        card = (
+            await session.execute(
+                select(PendingInput)
+                .where(PendingInput.kind == "onb_lang")
+                .where(PendingInput.token.is_not(None))
+            )
+        ).scalar_one()
+    await deliver(
+        factory,
+        processor,
+        {
+            "update_id": next(_next_update),
+            "callback_query": {
+                "id": "cbq-synthetic-language",
+                "from": {"id": OWNER, "is_bot": False, "first_name": "Synthetic"},
+                "chat_instance": "1",
+                "data": f"onb_lang:{card.token}:{op}",
+                "message": {
+                    "message_id": card.prompt_message_id,
+                    "date": 1792354000,
+                    "chat": {"id": OWNER, "type": "private"},
+                },
+            },
+        },
+    )
+
+
 async def test_an_owner_command_is_answered_in_the_control_chat(setup: Any) -> None:
     factory, processor, sender = setup
 
@@ -137,8 +169,10 @@ async def test_an_owner_command_is_answered_in_the_control_chat(setup: Any) -> N
 async def test_owner_free_text_becomes_a_turn_and_a_queued_job(setup: Any) -> None:
     factory, processor, sender = setup
     await deliver(factory, processor, private_message(OWNER, "/start"))
+    await choose_language(factory, processor)
     # The next plain message answers the consent question (S01.3 precedence).
     await deliver(factory, processor, private_message(OWNER, "yes"))
+    sends_before = len(sender.sends)
 
     await deliver(factory, processor, private_message(OWNER, "What is on today?"))
 
@@ -154,8 +188,8 @@ async def test_owner_free_text_becomes_a_turn_and_a_queued_job(setup: Any) -> No
         ).scalar_one()
     assert turn.text == "What is on today?"
     assert job_args == {"turn_id": turn.id}
-    # Only the /start and consent replies: the agent answers later, from the job.
-    assert len(sender.sends) == 2
+    # Nothing is sent for the free text: the agent answers later, from the job.
+    assert len(sender.sends) == sends_before
 
 
 async def test_a_stranger_gets_one_refusal_and_leaves_no_trace(setup: Any) -> None:
@@ -239,12 +273,13 @@ async def test_privacy_revoke_withdraws_consent_at_once(setup: Any) -> None:
     """FR-PRV-02: consent is revocable, and revocation is immediate."""
     factory, processor, sender = setup
     await deliver(factory, processor, private_message(OWNER, "/start"))
+    await choose_language(factory, processor)
     await deliver(factory, processor, private_message(OWNER, "yes"))
 
     await deliver(factory, processor, private_message(OWNER, "/privacy"))
     await deliver(factory, processor, private_message(OWNER, "/privacy revoke"))
 
-    privacy_text, revoke_text = sender.sends[2]["text"], sender.sends[3]["text"]
+    privacy_text, revoke_text = sender.sends[-2]["text"], sender.sends[-1]["text"]
     assert "/privacy revoke" in privacy_text
     assert "https://telegra.ph/synthetic-policy" in privacy_text
     assert "AI consent revoked" in revoke_text

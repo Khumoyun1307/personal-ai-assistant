@@ -1,0 +1,232 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-27",
+  "set": "summary",
+  "target": "summary",
+  "dataset": "e1",
+  "mode": "period-uz-Latn",
+  "model": "gpt-6-sol",
+  "live": true,
+  "effort": "low",
+  "complete": false,
+  "trial": true,
+  "stopped": false,
+  "not_evaluated": [],
+  "items": 1,
+  "items_planned": 1,
+  "items_total": 40,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "summarize.v7",
+    "fabrication.v2+render.v3+labels.v2",
+    "open_loops.v4"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "open_loop_recall",
+      "label": "Open question/commitment recall",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.95,
+      "all_items": {
+        "numerator": 2,
+        "denominator": 2,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 103,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "caveat_presence",
+      "label": "Coverage caveat present whenever gaps exist",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "not evaluable",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 6,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "spurious_caveats",
+      "label": "Caveats for gaps that lost nothing",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 1,
+        "ratio": 0.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "owner_language",
+      "label": "Owner-facing language and script correct",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "fabricated_facts",
+      "label": "Fabricated facts (zero allowed)",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 1,
+        "ratio": 0.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    }
+  ],
+  "breakdowns": {
+    "open-loop recall (pre-screen) by variant": {
+      "uz-ru-mix": {
+        "numerator": 2,
+        "denominator": 2,
+        "ratio": 1.0
+      }
+    },
+    "owner-language check by variant": {
+      "uz-ru-mix": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": "0.35",
+    "spent_usd": "0.016156",
+    "calls": 2,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-sol": {
+        "calls": 2,
+        "input_tokens": 4693,
+        "output_tokens": 677,
+        "cost_usd": "0.016156",
+        "cost_per_100_items_usd": "1.615600"
+      }
+    }
+  },
+  "notes": [
+    "Caveats come from the product's deterministic renderer over the harness's own synthetic gap rows, not from the model (E-d, E-p): the two caveat metrics are an ungated wiring regression check. Recall and language are measured on the per-chat summary (the summarize output), not on the owner-facing reply."
+  ],
+  "details": [
+    {
+      "id": "c36",
+      "variant": "uz-ru-mix",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 3,
+        "decisions_requested": 1,
+        "key_facts": 3
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c36.q2": true,
+        "c36.c1": true
+      },
+      "open_loop_keys": {},
+      "open_loops_judged": {},
+      "open_loops_evidence": {},
+      "open_loops_unquoted": [],
+      "open_loops_near_quotes": [],
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Nigora siz bilan Dildora opaning tug‘ilgan kuniga tayyorlanishni muhokama qildi. Sharlarni olishga kelishdingiz; 100 mingdan pul qo‘shish taklifi hali javobsiz.\n20 ta oq va tilla rangli shar sotib olish.\n100 ming pul qo‘shish.\nSyurpriz haqida Dildora opaga va boshqalarga aytmaslik.\nHar bir kishi 100 mingdan pul qo‘shishiga rozilik berish-bermaslik.\nDildora opaning tug‘ilgan kuni 11-oktabr, yakshanba; unga syurpriz tayyorlanmoqda.\nUchrashuv Dildora opaning uyida 11-oktabr 18:00 da; u ishdan 18:30 da keladi. Vaqt uning ishda kechroq qolishi sababli o‘zgartirilgan.\nTort buyurtma qilingan, narxi 350 ming.\nNigora sizdan 100 mingdan pul qo‘shishga rozimisiz, deb javob kutmoqda.",
+      "summary_labelled": "Overview: Nigora siz bilan Dildora opaning tug‘ilgan kuniga tayyorlanishni muhokama qildi. Sharlarni olishga kelishdingiz; 100 mingdan pul qo‘shish taklifi hali javobsiz.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- Agreed with Nigora: you will do it: 20 ta oq va tilla rangli shar sotib olish.\n- Nigora asks you to (not agreed yet): 100 ming pul qo‘shish.\n- Nigora asks you to (not agreed yet): Syurpriz haqida Dildora opaga va boshqalarga aytmaslik.\nDecisions requested from the owner:\n- Nigora is waiting for your decision: Har bir kishi 100 mingdan pul qo‘shishiga rozilik berish-bermaslik.\nKey facts:\n- Dildora opaning tug‘ilgan kuni 11-oktabr, yakshanba; unga syurpriz tayyorlanmoqda.\n- Uchrashuv Dildora opaning uyida 11-oktabr 18:00 da; u ishdan 18:30 da keladi. Vaqt uning ishda kechroq qolishi sababli o‘zgartirilgan.\n- Tort buyurtma qilingan, narxi 350 ming.\nNeeds a reply from the owner: yes - Nigora sizdan 100 mingdan pul qo‘shishga rozimisiz, deb javob kutmoqda."
+    }
+  ]
+}

@@ -336,8 +336,9 @@ class InboxProcessor:
 @dataclass(frozen=True, slots=True)
 class Requeued:
     """What `inbox requeue` did: rows reset to pending, and dead letters left
-    failed because their payload is gone (swept, or cleared by an owner's
-    deletion, M03 D89) — processing them would handle an empty update."""
+    failed because their payload is gone (swept, cleared by an owner's
+    deletion, M03 D89, or failed in an Ignore chat, C3-2) — processing them
+    would handle an empty update."""
 
     reset: int
     cleared: int

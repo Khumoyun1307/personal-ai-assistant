@@ -287,8 +287,9 @@ async def test_bizchat_panel_shows_the_conversation(env: Env) -> None:
     shown = await _start_with(env, f"bizChat{CONTACT}")
 
     assert "<b>Synthetic</b> @syn" in shown
-    assert "Mode: observe" in shown
-    assert "Messages: 2 (1 contact, 1 owner manual)" in shown
+    assert "Mode: <b>Observe</b> (new messages here are saved)" in shown
+    assert "Messages saved: 2 (1 contact, 1 owner manual)" in shown
+    assert "Not saved" not in shown  # nothing arrived while ignored (M03 fix round C3)
     assert "Deleted: 1" in shown
     assert "Observing since: 2026-10-18 20:06 UTC" in shown
     assert "Last from contact: 2026-10-18 20:08 UTC" in shown
@@ -331,8 +332,7 @@ async def test_bizchat_for_another_accounts_chat_is_refused(migrated_url: str) -
         await connect(env)
         await deliver(env, business_message())
         # The second owner onboards and connects on their own connection id.
-        await deliver(env, private_message(other_owner, "/start"))
-        await deliver(env, private_message(other_owner, "yes"))
+        await onboard(env, other_owner)
         await deliver(env, connection_update(user_id=other_owner, connection_id="synthetic-conn-b"))
         await deliver(env, private_message(other_owner, f"/start bizChat{CONTACT}"))
         shown = env.sender.texts[-1]
@@ -341,7 +341,14 @@ async def test_bizchat_for_another_accounts_chat_is_refused(migrated_url: str) -
 
 async def test_bizchat_before_onboarding_runs_onboarding(env: Env) -> None:
     await deliver(env, private_message(OWNER, f"/start bizChat{CONTACT}"))
-    assert "Before we start" in env.sender.texts[-1]
+    # Onboarding opens with the language card (M03 fix round C4).
+    shown = env.sender.sends[-1]
+    assert "Which language should I use?" in shown["text"]
+    assert all(
+        button.callback_data.startswith("onb_lang:")
+        for row in shown["reply_markup"].inline_keyboard
+        for button in row
+    )
 
 
 def test_incoming_message_shape_is_unchanged() -> None:

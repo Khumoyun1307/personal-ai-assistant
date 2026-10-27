@@ -62,6 +62,7 @@ from tests.integration.business_env import (
     environment,
     grant_managed,
     job_names,
+    onboard,
     private_message,
 )
 
@@ -327,8 +328,7 @@ async def test_another_accounts_ids_are_not_found(migrated_url: str) -> None:
     other = 7000000002
     async with environment(migrated_url, owner_ids=frozenset({OWNER, other})) as env:
         await seed(env)
-        await deliver(env, private_message(other, "/start"))
-        await deliver(env, private_message(other, "yes"))
+        await onboard(env, other)
         await deliver(env, connection_update(user_id=other, connection_id="synthetic-conn-b"))
         await deliver(
             env,

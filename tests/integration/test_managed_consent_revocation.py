@@ -519,11 +519,11 @@ async def test_answering_the_notice_card_keeps_the_notice_text(
     its question must not overwrite that. Only the buttons go; the outcome
     arrives as a new message."""
     card = await _notice_card(env)
-    sends_before = len(env.sender.sends)
+    sends_before, edits_before = len(env.sender.sends), len(env.sender.edits)
 
     await press(env, "managed_consent", op)
 
-    assert env.sender.edits == []  # the notice body is never replaced
+    assert env.sender.edits[edits_before:] == []  # the notice body is never replaced
     assert [k["message_id"] for k in env.sender.keyboard_edits] == [card.prompt_message_id]
     assert env.sender.keyboard_edits[0]["reply_markup"] is None
     new_texts = env.sender.texts[sends_before:]

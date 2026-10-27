@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
+from assistant.conversations.read import not_stored_while_ignored, saved_message
 from assistant.conversations.window import window_closes_at, window_open
 from assistant.memory import items, summaries
 
@@ -33,6 +34,7 @@ class ConversationPanel:
     mode: str
     availability: str
     autonomy_paused_reason: str | None
+    #: Messages whose content is stored now, by direction (`read.saved_message`).
     counts_by_direction: dict[str, int]
     deleted: int
     expired: int
@@ -46,6 +48,9 @@ class ConversationPanel:
     #: The owner's notes about this contact and chat, newest first (J12).
     notes: tuple[str, ...] = ()
     notes_total: int = 0
+    #: Messages that arrived while the chat was in Ignore: a row each, without
+    #: content (`read.not_stored_while_ignored`, M03 fix round C3).
+    not_stored: int = 0
 
     @property
     def total(self) -> int:
@@ -78,14 +83,23 @@ async def conversation_panel(
         return None
     conversation, contact = row
 
+    # Only rows with content count as saved: the metadata rows Ignore writes
+    # made the old count go up when a message arrived while ignored (C3).
     direction_rows = await session.execute(
         select(Message.direction, func.count())
         .where(Message.conversation_id == conversation.id)
-        .where(Message.direction.is_not(None))
-        .where(Message.deleted_at.is_(None))
+        .where(saved_message())
         .group_by(Message.direction)
     )
     counts = {str(direction): int(count) for direction, count in direction_rows.all()}
+    not_stored = (
+        await session.execute(
+            select(func.count())
+            .select_from(Message)
+            .where(Message.conversation_id == conversation.id)
+            .where(not_stored_while_ignored())
+        )
+    ).scalar_one()
     deleted = (
         await session.execute(
             select(func.count())
@@ -137,4 +151,5 @@ async def conversation_panel(
         summary_overview=overview if isinstance(overview, str) and overview else None,
         notes=tuple(note.content for note in notes),
         notes_total=notes_total,
+        not_stored=int(not_stored),
     )

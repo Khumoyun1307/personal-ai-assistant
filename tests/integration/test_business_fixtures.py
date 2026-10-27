@@ -18,7 +18,7 @@ from assistant.conversations.models import Contact, Conversation, Message
 from assistant.inbox.models import InboundUpdate
 from assistant.telegram.routing import BUSINESS_KINDS
 from tests.contract.test_telegram_fixtures import bot_id, lookups, records
-from tests.integration.business_env import deliver, environment, private_message
+from tests.integration.business_env import deliver, environment, onboard
 
 pytestmark = pytest.mark.integration
 
@@ -36,8 +36,7 @@ async def test_the_observed_session_replays_into_the_expected_store(migrated_url
     async with environment(migrated_url, owner_ids=frozenset({owner_id}), bot_id=bot_id()) as env:
         for lookup in lookups():
             env.lookup.known.setdefault(lookup["id"], lookup)
-        await deliver(env, private_message(owner_id, "/start"))
-        await deliver(env, private_message(owner_id, "yes"))
+        await onboard(env, owner_id)
         for update in updates:
             await deliver(env, update)
 

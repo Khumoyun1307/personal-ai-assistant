@@ -9,7 +9,9 @@ of a press run after the commit (AGENTS §13).
 - **Conversation panel** (`/start bizChat<id>` from "Manage Bot", or a chat
   picked in a /settings list): summary, notes, mode, and Observe / Ignore
   buttons. Observe applies at once. Ignore asks first, in place: new
-  messages will not be stored, what is stored stays.
+  messages will not be saved, what was saved before stays. After a change
+  the panel opens with a receipt of what the mode does, or "nothing to
+  change" (M03 fix round C3, D68; texts in `agent/owner_texts.py`).
 - **/settings**: language and timezone (as before), the default mode for new
   chats (Observe / Ignore), and the chats listed by mode, paginated; a chat
   opens its panel.
@@ -26,29 +28,52 @@ S03.5 adds the data controls (FR-PRV-03/04, FR-CTL-10):
 
 Every deletion is the owner's own tap on a card that says what goes and
 that it cannot be undone (`privacy/deletion.py`).
+
+M03 fix round C4 adds the language and the time zone (FR-ONB-01):
+
+- the onboarding language card (`/start`, `handlers.send_language_card`):
+  a tap saves the language through `accounts/preferences.py` (validated
+  and audited like every settings change), edits the card to a short "saved"
+  line and, without `ai_control`, sends the consent question in that
+  language, armed only once it arrived;
+- the onboarding time-zone card (`handlers.offer_timezone`): a tap saves
+  the zone the same way;
+- /settings → Language… opens the same four options on a card of its own.
+
+These screens are in the owner's language (`onboarding_texts.py`); the rest
+of /settings stays English.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from assistant.accounts import callbacks, preferences, service
+from assistant.accounts import preferences, service
 from assistant.accounts.models import Account, PendingInput
+from assistant.agent import owner_texts
+from assistant.agent.locales import SupportedLocale, supported_locale
+from assistant.agent.tools.modes import mode_change_text
 from assistant.conversations import modes, visibility
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
 from assistant.core.jobs import JobScheduler
 from assistant.db.uow import after_commit, transaction
 from assistant.privacy import deletion, retention_policy
+from assistant.telegram.control import onboarding_texts as texts
+from assistant.telegram.control.cards import Rows, rows_keyboard
 from assistant.telegram.control.handlers import (
+    AI_PROCESSORS,
     CALLBACK_EXPIRED_TEXT,
+    ONBOARDING_LANGUAGE_CARD,
+    ONBOARDING_TIMEZONE_CARD,
     PANEL_UNKNOWN,
     CardPress,
     HandlerResult,
     IncomingMessage,
+    arm_consent_question,
     queue_deletion,
     render_panel,
 )
@@ -66,6 +91,8 @@ REPLY_CARD = "set_reply"
 RETENTION_CARD = "set_keep"
 RETENTION_CONFIRM_CARD = "keep_ok"
 DELETE_ALL_CARD = "del_all"
+#: C4: /settings → Language…
+LANGUAGE_CARD = "set_lang"
 #: The card kinds this module answers.
 KINDS = frozenset(
     {
@@ -78,6 +105,9 @@ KINDS = frozenset(
         RETENTION_CARD,
         RETENTION_CONFIRM_CARD,
         DELETE_ALL_CARD,
+        LANGUAGE_CARD,
+        ONBOARDING_LANGUAGE_CARD,
+        ONBOARDING_TIMEZONE_CARD,
     }
 )
 
@@ -90,14 +120,12 @@ LABEL_CHARS = 32
 #: `(label, op)`: Ignore, and delete what is stored from the chat.
 IGNORE_DELETE_OPTION: tuple[str, str] | None = ("Ignore + delete data", "confirmdel")
 
-Rows = list[list[tuple[str, str]]]
-
 MODE_LABELS = {"observe": "Observe", "ignore": "Ignore", "assist": "Assist"}
 
-IGNORE_CONFIRM_TEXT = (
-    "<b>Ignore the chat with {name}?</b>\n\n"
-    "From now on I will not store or use new messages from this chat. What is "
-    "already stored stays: messages until they expire, the summary and your notes.\n\n"
+#: The Ignore confirmation: this question, what Ignore does in the owner's
+#: locale (`owner_texts.ignore_effects`, C3), then `IGNORE_DELETE_TEXT`.
+IGNORE_CONFIRM_QUESTION = "<b>Ignore the chat with {name}?</b>"
+IGNORE_DELETE_TEXT = (
     "<b>Ignore + delete data</b> also deletes what is stored from this chat now: its "
     "messages, summary and raw updates, notes about this chat, and every note or turn "
     "here that drew on this chat or on {name}. Other notes about {name} stay. That "
@@ -138,15 +166,7 @@ DELETE_ALL_TEXT = (
 
 
 def keyboard(kind: str, token: str, rows: Rows) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text=label, callback_data=callbacks.encode(kind, token, op))
-                for label, op in row
-            ]
-            for row in rows
-        ]
-    )
+    return rows_keyboard(kind, token, rows)
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,18 +291,62 @@ async def panel_screen(
     panel: ConversationPanel,
     *,
     deleting: bool = False,
+    change: tuple[str, str] | None = None,
 ) -> Screen:
     """The panel with its buttons. `deleting`: a deletion of the chat's data
-    was just queued, so the panel shows none of it (`render_panel`)."""
+    was just queued, so the panel shows none of it (`render_panel`).
+    `change`: the mode `(before, after)` a tap just set; the panel opens with
+    what that did, or "nothing to change" (C3). During a deletion the
+    receipt leaves out the name, as the panel does."""
+    notice = None
+    if change is not None:
+        before, after = change
+        notice = await mode_change_text(
+            session,
+            account,
+            previous=before,
+            current=after,
+            name=None if deleting else panel.display_name,
+            deleting=deleting,
+        )
+        if before != after:
+            notice = "✅ " + notice
     return await _screen(
         session,
         clock,
         account.id,
         PANEL_CARD,
-        render_panel(panel, timezone=account.timezone, deleting=deleting),
+        render_panel(
+            panel,
+            timezone=account.timezone,
+            deleting=deleting,
+            locale=supported_locale(account.locale_pref),
+            notice=notice,
+        ),
         panel_rows(panel),
         ref_id=panel.conversation_id,
     )
+
+
+def ignore_confirm_text(account: Account, name: str) -> str:
+    """The Ignore confirmation (`name` escaped): what Ignore does, in the
+    owner's locale, then what "Ignore + delete data" deletes."""
+    effects = owner_texts.ignore_effects(
+        supported_locale(account.locale_pref),
+        days=retention_policy.days(account.settings, retention_policy.MESSAGES),
+    )
+    return "\n\n".join(
+        (
+            IGNORE_CONFIRM_QUESTION.format(name=name),
+            "\n".join(effects),
+            IGNORE_DELETE_TEXT.format(name=name),
+        )
+    )
+
+
+#: The press's toast (English, like the buttons) once the mode is set.
+MODE_SET_ANSWER = {modes.MODE_OBSERVE: "Observe is on", modes.MODE_IGNORE: "Ignore is on"}
+NOTHING_CHANGED = "Nothing changed"
 
 
 async def handle_panel_command(
@@ -351,16 +415,16 @@ async def _press_panel(
             clock,
             account.id,
             IGNORE_CARD,
-            IGNORE_CONFIRM_TEXT.format(name=name),
+            ignore_confirm_text(account, name),
             _ignore_confirm(),
             ref_id=conversation_id,
         )
         _after_press(session, gateway, press, target, answer="Confirm to ignore", edit=screen)
         return HandlerResult(True, "card", None, note="ignore_asked")
-    note = "unchanged"
+    change = (panel.mode, panel.mode)
     if press.op != panel.mode:
         try:
-            await modes.set_mode(
+            changed = await modes.set_mode(
                 session,
                 account_id=account.id,
                 conversation_id=conversation_id,
@@ -371,12 +435,14 @@ async def _press_panel(
         except modes.ModeError:
             _after_press(session, gateway, press, target, answer="Bot chats stay ignored")
             return HandlerResult(False, "card", None, note="bot_chat")
-        note = press.op
+        change = (changed.previous, changed.current)
         panel = await _load_panel(session, clock, account, conversation_id)
         assert panel is not None
-    screen = await panel_screen(session, clock, account, panel)
-    _after_press(session, gateway, press, target, answer=MODE_LABELS[panel.mode], edit=screen)
-    return HandlerResult(True, "card", None, note=note)
+    screen = await panel_screen(session, clock, account, panel, change=change)
+    moved = change[0] != change[1]
+    answer = MODE_SET_ANSWER[change[1]] if moved else NOTHING_CHANGED
+    _after_press(session, gateway, press, target, answer=answer, edit=screen)
+    return HandlerResult(True, "card", None, note=press.op if moved else "unchanged")
 
 
 def _ignore_confirm() -> Rows:
@@ -415,10 +481,11 @@ async def _press_ignore(
         return HandlerResult(False, "card", None, note="unknown_op")
     note = "cancelled"
     receipt = None
+    change = None
     if press.op in ("confirm", delete_op):
         try:
             # Ignore applies at once: nothing new is stored from now on.
-            await modes.set_mode(
+            changed = await modes.set_mode(
                 session,
                 account_id=account.id,
                 conversation_id=conversation_id,
@@ -429,6 +496,7 @@ async def _press_ignore(
         except LookupError:
             _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
             return HandlerResult(False, "card", None, note="no_longer_active")
+        change = (changed.previous, changed.current)
         if press.op == delete_op:
             # Queued in this transaction: committed with the Ignore, or neither.
             receipt = await _queue_deletion(
@@ -439,16 +507,23 @@ async def _press_ignore(
                 conversation_id,
                 card_id,
             )
-        note = "ignored" if receipt is None else "ignored_and_deleting"
+        # A stale confirmation (set to Ignore another way meanwhile) changed
+        # nothing, and says so (D68, §6 invariant 11).
+        note = "ignored" if changed.changed else "unchanged"
+        if receipt is not None:
+            note = "ignored_and_deleting" if changed.changed else "deleting"
     panel = await _load_panel(session, clock, account, conversation_id)
     if panel is None:
         _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
         return HandlerResult(False, "card", None, note="no_longer_active")
-    screen = await panel_screen(session, clock, account, panel, deleting=receipt is not None)
+    screen = await panel_screen(
+        session, clock, account, panel, deleting=receipt is not None, change=change
+    )
     answer = {
-        "ignored": "Ignored: new messages are not stored",
-        "ignored_and_deleting": "Ignored; deleting its data",
-    }.get(note, "Nothing changed")
+        "ignored": MODE_SET_ANSWER[modes.MODE_IGNORE],
+        "ignored_and_deleting": "Ignore is on; deleting its data",
+        "deleting": "Deleting its data",
+    }.get(note, NOTHING_CHANGED)
     _after_press(session, gateway, press, target, answer=answer, edit=screen, send=receipt)
     return HandlerResult(True, "card", None, note=note)
 
@@ -506,7 +581,7 @@ async def settings_screen(session: AsyncSession, clock: Clock, account: Account)
     keep = {key: retention_policy.days(account.settings, key) for key in retention_policy.CLASSES}
     text = (
         "<b>Settings</b>\n\n"
-        f"Language: {escape(account.locale_pref or 'auto')}\n"
+        f"Language: {escape(texts.language_label(account.locale_pref))}\n"
         f"Timezone: {escape(account.timezone)}\n"
         f"New chats start in: {MODE_LABELS[default]}\n"
         f"Chats: {counts.get('observe', 0)} observed, {counts.get('ignore', 0)} ignored\n"
@@ -527,10 +602,116 @@ async def settings_screen(session: AsyncSession, clock: Clock, account: Account)
             (f"Observed chats ({counts.get('observe', 0)})", "lobserve"),
             (f"Ignored chats ({counts.get('ignore', 0)})", "lignore"),
         ],
-        [("Replies…", "replies"), ("Retention…", "retention")],
+        [("Language…", OP_LANGUAGE), ("Replies…", "replies"), ("Retention…", "retention")],
         [("Delete everything…", "delall")],
     ]
     return await _screen(session, clock, account.id, SETTINGS_CARD, text, rows)
+
+
+# ------------------------------------------------------------ language and time zone (C4)
+OP_LANGUAGE = "lang"
+OP_BACK = "back"
+
+
+async def language_screen(session: AsyncSession, clock: Clock, account: Account) -> Screen:
+    """/settings → Language…: the onboarding picker's four options in their
+    fixed order, the current one ticked."""
+    chosen = texts.chosen_locale(account.locale_pref)
+    order = texts.DEFAULT_ORDER
+    rows = [*texts.picker_rows(order, ticked=chosen), [("◀ Back", OP_BACK)]]
+    return await _screen(session, clock, account.id, LANGUAGE_CARD, texts.picker_text(order), rows)
+
+
+async def _save_language(
+    session: AsyncSession, clock: Clock, account: Account, op: str
+) -> SupportedLocale | None:
+    """The tapped language, saved like every preference change (validated,
+    audited); None for an op no picker offers."""
+    locale = texts.LANGUAGE_BY_OP.get(op)
+    if locale is not None:
+        await preferences.update(session, account, language=locale, actor="owner", clock=clock)
+    return locale
+
+
+async def _press_language(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    press: CardPress,
+) -> HandlerResult:
+    target = ControlChat(account_id=account.id, chat_id=press.chat_id)
+    if press.op == OP_BACK:
+        screen = await settings_screen(session, clock, account)
+        _after_press(session, gateway, press, target, answer="Settings", edit=screen)
+        return HandlerResult(True, "card", None, note="back")
+    locale = await _save_language(session, clock, account, press.op)
+    if locale is None:
+        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        return HandlerResult(False, "card", None, note="unknown_op")
+    screen = await settings_screen(session, clock, account)
+    _after_press(session, gateway, press, target, answer=texts.LANGUAGE_LABELS[locale], edit=screen)
+    return HandlerResult(True, "card", None, note="language")
+
+
+async def _press_onboarding_language(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    press: CardPress,
+) -> HandlerResult:
+    """The /start language card: save, say so in place, and — without
+    `ai_control` — ask for consent in that language once committed. The
+    question is armed only when Telegram took it (SEC-02)."""
+    target = ControlChat(account_id=account.id, chat_id=press.chat_id)
+    locale = await _save_language(session, clock, account, press.op)
+    if locale is None:
+        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        return HandlerResult(False, "card", None, note="unknown_op")
+    # Any other picker (an older /start) goes too: one language choice.
+    await service.close_cards(session, account_id=account.id, kind=ONBOARDING_LANGUAGE_CARD)
+    _after_press(
+        session,
+        gateway,
+        press,
+        target,
+        answer=texts.LANGUAGE_LABELS[locale],
+        edit=Screen(texts.LANGUAGE_SAVED[locale]),
+    )
+    consent = await service.active_consent(session, account.id, kind=service.CONSENT_AI_CONTROL)
+    if consent.granted:
+        return HandlerResult(True, "card", None, note="language")
+    account_id = account.id
+
+    async def ask(factory: async_sessionmaker[AsyncSession]) -> None:
+        result = await gateway.send_text(target, texts.consent_prompt(locale, AI_PROCESSORS))
+        if not result.ok:
+            return  # never shown: nothing for a "yes" to answer
+        async with transaction(factory) as uow:
+            await arm_consent_question(uow.session, clock, account_id, result.message_id)
+
+    after_commit(session, ask)
+    return HandlerResult(True, "card", None, note="language_consent_asked")
+
+
+async def _press_onboarding_timezone(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    press: CardPress,
+) -> HandlerResult:
+    target = ControlChat(account_id=account.id, chat_id=press.chat_id)
+    zone = texts.TIMEZONE_BY_OP.get(press.op)
+    if zone is None:
+        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        return HandlerResult(False, "card", None, note="unknown_op")
+    await preferences.update(session, account, timezone=zone, actor="owner", clock=clock)
+    locale = supported_locale(account.locale_pref)
+    saved = texts.TIMEZONE_SAVED[locale].format(zone=escape(account.timezone))
+    _after_press(session, gateway, press, target, answer=zone, edit=Screen(saved))
+    return HandlerResult(True, "card", None, note="timezone")
 
 
 # ------------------------------------------------------------ replies (S03.5)
@@ -859,7 +1040,12 @@ async def _press_settings(
         settings = await settings_screen(session, clock, account)  # re-armed
         _after_press(session, gateway, press, target, answer="Chats", edit=settings, send=listing)
         return HandlerResult(True, "card", None, note="listed")
-    screens = {"replies": reply_screen, "retention": retention_screen, "delall": delete_all_screen}
+    screens = {
+        OP_LANGUAGE: language_screen,
+        "replies": reply_screen,
+        "retention": retention_screen,
+        "delall": delete_all_screen,
+    }
     if op in screens:
         screen = await screens[op](session, clock, account)
         _after_press(session, gateway, press, target, answer="Settings", edit=screen)
@@ -939,5 +1125,11 @@ async def handle_press(
         return await _press_retention_confirm(session, gateway, clock, account, press)
     if card.kind == DELETE_ALL_CARD:
         return await _press_delete_all(session, gateway, clock, account, press, scheduler, card.id)
+    if card.kind == LANGUAGE_CARD:
+        return await _press_language(session, gateway, clock, account, press)
+    if card.kind == ONBOARDING_LANGUAGE_CARD:
+        return await _press_onboarding_language(session, gateway, clock, account, press)
+    if card.kind == ONBOARDING_TIMEZONE_CARD:
+        return await _press_onboarding_timezone(session, gateway, clock, account, press)
     _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
     return HandlerResult(False, "card", None, note="no_longer_active")

@@ -248,6 +248,30 @@ async def message_directions(
     return {int(mid): str(direction) for mid, direction in rows.all()}
 
 
+async def message_directions_by_conversation(
+    session: AsyncSession, account_id: int, cited: Mapping[int, Collection[int]]
+) -> dict[int, dict[int, str]]:
+    """`message_directions` for several conversations in one query:
+    conversation id → (message id → direction) of the ids cited for it that
+    are that conversation's own messages."""
+    wanted = {conversation_id: set(ids) for conversation_id, ids in cited.items()}
+    found: dict[int, dict[int, str]] = {conversation_id: {} for conversation_id in wanted}
+    every_id = sorted({mid for ids in wanted.values() for mid in ids})
+    if not every_id:
+        return found
+    rows = await session.execute(
+        select(Message.id, Message.conversation_id, Message.direction)
+        .where(Message.account_id == account_id)
+        .where(Message.conversation_id.in_(sorted(wanted)))
+        .where(Message.id.in_(every_id))
+        .where(Message.direction.is_not(None))
+    )
+    for mid, conversation_id, direction in rows.all():
+        if int(mid) in wanted[int(conversation_id)]:
+            found[int(conversation_id)][int(mid)] = str(direction)
+    return found
+
+
 async def rolling_summaries(
     session: AsyncSession, account_id: int, conversation_ids: Sequence[int]
 ) -> dict[int, StoredSummary]:
