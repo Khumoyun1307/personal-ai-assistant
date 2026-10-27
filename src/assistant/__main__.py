@@ -210,8 +210,9 @@ def _inbox(args: argparse.Namespace) -> int:
             requeued = await requeue_failed(factory, row_id=args.id)
             print(f"OK: {requeued.reset} update(s) reset to pending")
             if requeued.cleared:
-                # Swept, or cleared by an owner's deletion (M03 D89): nothing
-                # left to process, so they stay failed.
+                # Swept, cleared by an owner's deletion (M03 D89), or failed
+                # in an Ignore chat (C3-2): nothing left to process, so they
+                # stay failed.
                 print(
                     f"Skipped: {requeued.cleared} failed update(s) whose content was "
                     "already deleted; they stay failed."

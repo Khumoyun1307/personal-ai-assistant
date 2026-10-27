@@ -96,6 +96,14 @@ class DeletionOutcome:
     content_lost_ids: tuple[int, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class IngestFailure:
+    conversation_id: int
+    #: The conversation is in Ignore mode, read under its lock: the failed
+    #: update's raw payload is not kept (owner decision C3-2, 2026-10-27).
+    metadata_only: bool
+
+
 # ------------------------------------------------------------------ helpers
 def _content_columns(event: ObservedMessage, *, metadata_only: bool) -> dict[str, Any]:
     """The content-bearing columns for a message, or their absence."""
@@ -584,10 +592,13 @@ async def record_ingest_failure(
     inbound_update_id: int,
     at: datetime,
     clock: Clock,
-) -> int:
+) -> IngestFailure:
     """A business update for this chat was dead-lettered (§6.2, §6.6): the
     conversation is paused for autonomy and a definite gap is recorded,
-    idempotently per update row. Returns the conversation id."""
+    idempotently per update row. A chat seen first here starts in the
+    owner's default mode, as in `record_message`. The result says whether the
+    chat is in Ignore: the caller then clears the payload and resolves the
+    gap (`resolve_ingest_failure`), since the row can never be requeued."""
     contact_id = await _upsert_contact(
         session,
         account_id=account_id,
@@ -627,7 +638,10 @@ async def record_ingest_failure(
             at=clock.now(),
         )
     conversation.updated_at = clock.now()
-    return conversation.id
+    # Written now: the session does not autoflush, and in Ignore the caller
+    # resolves this gap in the same transaction.
+    await session.flush()
+    return IngestFailure(conversation.id, metadata_only=conversation.mode == "ignore")
 
 
 async def resolve_ingest_failure(

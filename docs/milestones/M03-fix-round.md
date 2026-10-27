@@ -23,7 +23,7 @@ production checks only with the owner's go-ahead.
 |---|---|---|---|
 | C2 | Notes do not save or load, silently; every tool failure logs a line | `m03fix/c2-notes` | fixed; draft PR, CI and the owner merge |
 | C1, P9 | "Who is waiting" misses a contact who asked last; an open request keeps "needs a reply" on | `m03fix/c1-waiting` | fixed; draft PR, CI and the owner merge |
-| C3 | Ignore mode stores nothing new; the panel says what a mode change did | `m03fix/c3-ignore` | in progress |
+| C3 | Ignore mode stores nothing new; the panel says what a mode change did | `m03fix/c3-ignore` | fixed; draft PR, CI and the owner merge |
 | O1 | Deleted messages are remembered and marked as deleted | — | design, waiting for the owner |
 | G1 | Stronger summary model trial | `m03fix/g1-sol-trial` | trial run; the owner decides |
 | C4 | Ask the owner's language at onboarding | — | design, waiting for the owner |
@@ -485,7 +485,315 @@ drafts, D98 practice; no name; the ru wording uses no gendered verb):
 
 ## C3 — Ignore mode
 
-_Pending._
+Owner checklist step 11 left open whether a message sent while a chat was in Ignore was stored.
+The behaviour is now verified by guard tests: nothing of such a message's content is stored. The
+step could not be read because the panel's "Messages: N" counted the metadata row that Ignore
+writes, so the number went up. The panel and the mode echo now say what a mode change did. Two
+bugs are fixed: the count, and a retention bug that kept an earlier name. After the owner's answers
+(2026-10-27), a failed update in an Ignore chat no longer keeps its raw copy either.
+
+### Verification: what an Ignore chat stores
+
+**Not stored** (each pinned by a guard test that passed before any change):
+
+- Text, caption, media details, `file_id`/`file_unique_id`, search key (`search_key`,
+  `search_tsv`), script, language guess, content hash, a new display name or username. This holds
+  for a new message, a photo with a caption, an edit of it, an edit of a message saved before the
+  switch, and an edit of a message never seen. No synthetic marker from these updates appears in
+  **any** column of any table in the `app` and `procrastinate` schemas, content-bearing or not.
+  Every one of these raw updates is cleared (`payload IS NULL`, status `processed`). No
+  `memory.refresh_summary` job is queued, `pending_ai_since` stays NULL and no coverage gap is
+  written, with the summary trigger wired as in production. A worker first takes the refresh
+  that message 1 queued before the switch, so that job's queueing lock cannot swallow a later
+  one (review) —
+  `test_conversation_modes.py::test_an_ignored_chats_messages_leave_no_text_name_or_file_id_in_any_column`.
+- A new chat that starts in Ignore (default mode) stores neither the name nor the username —
+  `…::test_new_chats_start_in_the_default_mode_set_in_settings` (extended with a username).
+- A refresh job that runs after the switch sends nothing to the model (status `SKIPPED`, no
+  request, no summary row) — `test_summaries.py::test_a_refresh_queued_before_the_switch_to_ignore_makes_no_call`.
+- A deletion in Ignore still purges the content saved before the switch and drops the rolling
+  summary that covered it (D63). It sets no refresh flag, queues no rebuild job (705's earlier
+  refresh is taken first, as above) and clears its own payload —
+  `test_business_ingestion.py::test_an_ignore_mode_deletion_purges_what_was_stored_and_queues_nothing`.
+- A failed (dead-lettered) update keeps no raw copy, since owner decision 2 (bug fix 5 below).
+
+**Kept** (metadata, unchanged by this fix): one `messages` row per message (direction,
+`sent_at`/`edited_at`, reply-to id, `content_type`, source update id); the conversation's
+`last_*_msg_at`, `coverage_started_at`, availability and the takeover pause; for a new chat, a
+contact row (Telegram id, `is_bot`). What was saved before the switch stays (D73, D74). Owner runs
+can still find and read it: `…::test_what_was_saved_before_ignore_is_still_found_by_search`
+(guard) and `…::test_existing_data_is_kept_after_switching_to_ignore`.
+
+A row with a direction, no `content_hash`, and neither `deleted_at` nor `purged_at` is exactly a
+message that arrived while its chat was ignored: Observe always writes the hash, and deletion and
+expiry set their own marks. `conversations/read.py::not_stored_while_ignored` is that predicate,
+and `saved_message` is its counterpart. No migration and no new content column were needed.
+
+### Bugs fixed
+
+1. **Panel count (step 11).** `visibility.py` counted every row with a direction, including Ignore's
+   metadata rows (and expired rows). The panel now shows `Messages saved: N (…by direction)`,
+   counting rows with content only. A separate `Not saved (arrived while ignored): N` line appears
+   when there are any.
+2. **B2, retention.** Every Ignore message moved `contacts.updated_at` (`_upsert_contact`'s
+   `ON CONFLICT`). The name sweep reads that column (`retention.py`, "names while content is
+   retained"), so a contact who kept writing in an Ignore chat kept a name saved before the switch
+   long after its messages expired. `updated_at` now moves only with the names (`_refresh_names` in
+   Observe). `record_ingest_failure` no longer moves it either, which is harmless: its only reader
+   is the sweep. ARCHITECTURE §10.4 contacts row updated.
+3. **"Nothing to change" (D68, invariant 11).** A stale Ignore confirmation (the chat was set to
+   Ignore another way in the meantime) answered "Ignored: new messages are not stored". Tapping the
+   mode already set answered with the mode's name. Both now say "Nothing changed" (toast) and
+   "Nothing to change: the chat with {name} is already in {mode}." (panel).
+4. **Coverage honesty (part of diagnosis item 7).** Set Ignore clears the refresh flag, so
+   `get_conversation` called the rolling summary `up_to_date` while unsaved messages kept arriving.
+   It now reports `coverage.not_stored_while_ignored`, and `up_to_date` is false while such rows
+   are newer than the summary's `covers_through_message_id`. A catch-up gets a new caveat: "N
+   message(s) from this period arrived while their chat was in Ignore mode and were not stored."
+   It counts rows in the period whatever the chat's mode is now, so it still appears once the chat
+   is back in Observe. The two existing Ignore caveats said "its messages are not stored or
+   summarized", which is wrong because earlier messages stay. They now say "its new messages are
+   not stored and it is not summarized" (scoped) and "their new messages are not stored and they
+   are not summarized" (account-wide).
+5. **Failed updates in Ignore (owner decision 2).** A dead-lettered update in an Ignore chat kept
+   its raw payload (text, the contact's name) for the raw-update retention, like every failed row.
+   `inbox requeue` resets every failed row that still holds its payload, and `record_message`
+   reads the mode when the row is processed, so a requeue after the chat was back in Observe
+   stored the message in full. Now `record_ingest_failure` returns the mode it reads under the
+   conversation lock, and when it is Ignore the dead-letter hook (`business.py::on_dead_letter`)
+   clears the row's payload and resolves its gap at once (`resolve_ingest_failure`: the ingest
+   pause lifts once no other dead letter of the chat is open). The content-free `ingest_error`
+   audit row stays, and one log line (`business_dead_letter_cleared`, ids and an enum) says why the
+   payload is gone. Such a row is never reset by `inbox requeue` (counted as skipped), and the
+   watchdog does not count it: `_recoverable_dead_letters` counts only failed rows that still
+   hold a payload, so no dead-letter alert is sent. `/status` shows no coverage caveat for it;
+   its inbox line ("N update(s) could not be processed.") still counts the row, because it
+   counts every failed row, as for one an owner deletion cleared (D91). A chat first seen
+   through the failed update is created in the owner's default mode (`new_chat_mode`, as in
+   `record_message`), so with Ignore as the default it is handled the same way, and its contact
+   row gets no name. An Observe chat's dead letter is unchanged: payload kept, gap open, pause
+   set, alert sent. No migration, no new column. ARCHITECTURE §6.1, §6.2 (requeue skips) and
+   §6.5 say so.
+   - Tests in `test_business_ingestion.py`, next to the other dead-letter tests:
+     `test_a_dead_letter_in_an_ignore_chat_keeps_no_payload_and_closes_its_gap` (payload NULL,
+     gap resolved, no pause, one audit row; `requeue_failed` → `Requeued(reset=0, cleared=1)`;
+     watchdog count 0 and nothing sent; no caveat on `/status`; nothing stored after the return
+     to Observe), `test_an_ignore_dead_letter_leaves_an_earlier_open_one_and_its_pause` (a dead
+     letter from Observe time keeps its payload, gap and pause; requeue resets only it),
+     `test_a_dead_letter_for_a_new_chat_that_starts_in_ignore_keeps_nothing` (default mode
+     Ignore). Guard, green before the change:
+     `test_a_dead_letter_in_an_observe_chat_keeps_its_payload_for_a_requeue`.
+   - Red first: 3 failed, 1 passed (the guard). The first two failed at
+     `assert await payload_is_sql_null(...)` (`assert False`: the payload was kept). The
+     new-chat test failed at `assert ('ignore', 'ingest_error') == ('ignore', None)`: the chat
+     was created in Ignore but stayed paused with its gap open. One assertion was corrected during
+     the build, not weakened: the first version expected no "could not be processed" on
+     `/status` at all; it now checks that the coverage caveat is gone and that the inbox line
+     still counts the failed row.
+
+### Owner decisions (2026-10-27)
+
+The owner answered the three questions this record left open. Edits in Ignore (question 1): keep
+the old text, as today; this fits O1. Failed updates in Ignore (question 2): clear the raw copy at
+once; built, bug fix 5. Ignore and earlier data (to confirm): confirmed as today. Messages saved
+before the switch stay usable when the owner asks about that chat; only summaries, catch-ups and
+the waiting list leave it out.
+
+### What the panel and the echo say now
+
+These are fixed texts in `agent/owner_texts.py`, in the owner's locale (en, uz-Latn, uz-Cyrl, ru).
+No model is involved. Button names stay in English, and a contact's name is never inflected. The
+panel's mode line and counts follow the locale; the rest of the panel stays English until C4.
+
+- Every panel view: `Mode: <b>Ignore</b> (new messages here are not saved)` /
+  `Mode: <b>Observe</b> (new messages here are saved)`. The old "Ignored: new messages from this
+  chat are not stored." line at the bottom is gone.
+- After the Ignore confirmation, the panel opens with (en):
+  > ✅ **Ignore is on** for the chat with Kamola.
+  > • New messages here are not saved: no text, media or new name, just a note that a message arrived.
+  > • The chat is left out of summaries, catch-ups and the list of who is waiting for your reply.
+  > • What was saved before stays unless deleted: messages until 90 days old, the summary and your notes. Ignore does not hide them from my answers.
+  > • To delete them: Delete stored data… on this chat's panel (/settings → Ignored chats).
+
+  "{days}" is the account's message retention. With "Ignore + delete data" the last two bullets are
+  left out, and so is the name ("the chat with the contact"), because the panel hides what is
+  being deleted.
+- After Observe: "✅ **Observe is on** for the chat with Kamola." plus "• New messages here are
+  saved (text, media details but not the files, the contact's name) and used for summaries,
+  catch-ups, search and the list of who is waiting for your reply." Coming from Ignore, it adds
+  "• Messages that arrived while the chat was ignored were not saved: Telegram does not give me
+  chat history." It does not say "cannot be recovered", because a contact's later edit, after
+  the return to Observe, stores the edited text (review). A requeued failed update could store
+  such a message too until owner decision 2; it cannot now (bug fix 5). Without
+  `ai_managed` consent, it adds "• AI for your
+  connected chats is off: I save these messages but do not read them with AI. Send /privacy
+  managed to turn it on."
+- The Ignore confirmation shows the same first three bullets before its "Ignore + delete data"
+  paragraph, which is unchanged.
+- Toasts: "Ignore is on", "Observe is on", "Ignore is on; deleting its data", "Deleting its data",
+  "Nothing changed".
+- The `set_conversation_mode` echo is "🔧 " plus the same receipt, still with Undo. No echo is sent
+  when nothing changed. `mode_change_text` (`agent/tools/modes.py`) builds the receipt for both
+  the panel and the echo. The tool result's `effect` says the same in English. A tainted run's
+  confirmation card also shows it, so it is worded for the owner as well: "the list of who is
+  waiting for a reply", "Ignore does not hide it from answers". `mode_effect` names the
+  Ignore-period messages only when the chat was in Ignore: in the tool result when the change
+  came from Ignore, and on the card when the chat is in Ignore now (review).
+
+Today's deletion behaviour is described as it is: "unless deleted" covers a deletion in the chat
+and the owner's own deletions. O1 (remember deleted messages) is not built. If it lands, this text
+and the Ignore-mode deletion path (`service.py::record_deletion`) must change together.
+
+### Tests
+
+Bug fixes and new texts started with a failing test. Locally only the relevant files ran, in the
+dev container (CI runs the full suite).
+
+- **New, red first:** `tests/unit/test_owner_texts.py` (every mode text in every locale with the
+  same placeholders; receipt lines exact, short, escaped, the deletion variant, the fallback name,
+  the mode-line fallback). `test_conversation_modes.py`: `test_the_panel_says_what_ignore_did`,
+  `test_the_panel_says_what_observe_did_and_that_ignored_messages_are_lost`,
+  `test_the_mode_receipt_follows_the_owner_language` (×4 locales),
+  `test_the_panel_counts_an_ignored_message_as_not_saved`,
+  `test_confirming_ignore_on_an_already_ignored_chat_says_nothing_changed`,
+  `test_tapping_the_current_mode_says_nothing_to_change`,
+  `test_messages_in_ignore_mode_do_not_keep_an_expired_contacts_name` (B2).
+  `test_memory_tools.py::test_the_mode_echo_says_what_the_mode_does`.
+  `test_summaries.py::test_get_conversation_reports_messages_not_stored_while_ignored`; it sits
+  next to the other `get_conversation` summary test, where the summarizer fixtures are, not in
+  `test_conversation_tools.py`. `test_summaries_review.py::test_a_catch_up_says_messages_were_not_stored_while_a_chat_was_ignored`.
+- **Guards, green before the change:** the five tests named under "Verification" plus the extended
+  `test_new_chats_start_in_the_default_mode_set_in_settings`.
+- **Existing assertions reworded (none weakened):** `test_conversation_modes.py` (mode line; the
+  confirmation now asserts "What was saved before stays unless deleted" and "New messages here are
+  not saved"); `test_visibility.py::test_bizchat_panel_shows_the_conversation` (mode line,
+  `Messages saved: 2 (1 contact, 1 owner manual)`, and no "Not saved" line); `test_deletion_cards.py`
+  (confirmation wording, plus new asserts that the Ignore + delete panel names nobody and does not
+  say the data stays); the two Ignore catch-up caveat tests now assert the exact sentence instead of
+  a prefix or "Ignore mode".
+- **Local runs (after the fix):**
+
+| Files | Result |
+|---|---|
+| `tests/unit/test_owner_texts.py`, `test_citations.py`, `test_summary_units.py`, `tests/integration/test_conversation_modes.py`, touched cases of `test_business_ingestion.py` (4), `test_summaries.py` (6), `test_summaries_review.py` (3) | 130 passed |
+| `tests/integration/test_memory_tools.py`, `test_visibility.py`, `test_deletion_cards.py`, `test_conversation_tools.py` | 100 passed |
+
+  After the review fixes (final tree):
+
+| Files | Result |
+|---|---|
+| `tests/unit/test_owner_texts.py`, `test_citations.py`, `test_summary_units.py`, `tests/integration/test_conversation_modes.py`, the two Ignore-deletion cases of `test_business_ingestion.py`, `test_summaries_verification.py::test_the_notice_names_why_a_chat_was_left_out` (3) | 122 passed |
+| `tests/integration/test_memory_tools.py` (with the new card test), `test_visibility.py`, `test_deletion_cards.py`, `test_conversation_tools.py`, plus the 4 `take_job` users and 4 touched cases of `test_summaries.py` and the 2 touched cases of `test_summaries_review.py` | 111 passed |
+
+  ruff check and format (22 changed files), `mypy src evals` (148 files, no issues) and
+  `lint-imports` (4 contracts kept) are clean.
+
+  After owner decision 2 (bug fix 5):
+
+| Files | Result |
+|---|---|
+| `tests/integration/test_business_ingestion.py` (all), `test_conversation_modes.py` | 62 passed |
+| `tests/integration/test_ingestion.py`, `test_system_tasks.py`, the two dead-letter cases of `test_deletion_cards.py` | 49 passed |
+
+  ruff check and format (8 changed files), `mypy src evals` (148 files, no issues) and
+  `lint-imports` (4 contracts kept) are clean.
+
+**Red-first evidence (before the fix).** The red run: 19 failed, 9 passed. The panel showed
+`Mode: ignore`, `Messages: 2 (2 contact)` and no receipt. A stale confirm answered "Ignored: new
+messages are not stored", and tapping the current mode answered "Observe". The name sweep left
+`('Kamola', None)`. The echo was "🔧 Chat with Kamola set to <b>Ignore</b>: new messages from this
+chat are no longer stored or processed; what is already stored stays." `get_conversation` raised
+`KeyError: 'not_stored_while_ignored'`. The catch-up had no not-stored caveat, and both Ignore
+caveats used the old wording. The unit test failed at collection (`owner_texts` has no
+`IGNORE_NOT_SAVED`). The deletion guard was red once for a test reason: switching the mode by SQL
+skips `set_mode`, which is what clears `pending_ai_since`. With the production setter it passed
+before the fix.
+
+### Review
+
+Two independent reviews read the uncommitted change against the code paths it touches. Both
+found the predicate, the B2 fix, D68, the receipts' escaping and scoping, and the log hygiene
+sound. They raised one must-fix, which was in the tests and found by both reviewers, one
+should-fix and six nits.
+
+- **Must-fix (fixed): two guards could not fail.** In both new guards, the message delivered in
+  Observe before the switch queued a `memory.refresh_summary` job. In the test that job never
+  runs, so it kept the chat's queueing lock `sum:{id}`. Any later defer was swallowed
+  (`AlreadyEnqueued` → None), so "the job count is unchanged" held either way. Shown first: with
+  `business.py` deliberately broken (both `elif` branches after the Ignore check made `if`, so
+  Ignore messages and the Ignore deletion call the trigger), the old guards passed (2 passed).
+  Now each guard checks that the earlier job exists (the trigger is wired). `take_job` (moved
+  from `test_summaries.py` to `business_env.py`) then hands that job to a worker, which frees the
+  lock. The guard asserts that no `todo` refresh exists for the chat, both before and after the
+  Ignore updates (`queued_refreshes`). Against the same broken `business.py` both guards are now
+  red (`assert 1 == 0` at the final queued-refresh check). After the revert they are green, and
+  `business.py` has no diff.
+- **Should-fix (fixed): "cannot be recovered" was not true.** A requeue after the return to
+  Observe stores a message that dead-lettered in Ignore in full, and a later edit stores its new
+  text. `OBSERVE_GAP` (4 locales), the model-facing effect and a code comment no longer say
+  "cannot be recovered". Owner question 2 and the ARCHITECTURE §6.5 pending note now state the
+  requeue case exactly. The tests assert the new line and that the old words are gone. (The
+  requeue path has been closed since owner decision 2, bug fix 5. The `OBSERVE_GAP` comment and
+  §6.5 now name only the later edit.)
+- **Nits fixed:**
+  - The model-facing effect names the ignored period only for a chat that was ignored
+    (`mode_effect`; the card reads the chat's current mode). It is worded for the owner too, and
+    its comment says it is also card text. New test:
+    `test_memory_tools.py::test_a_mode_card_names_the_ignored_period_only_for_an_ignored_chat`.
+    The echo test now pins the exact Observe effect, with and without a change.
+  - The `summarize_period` row in ARCHITECTURE §8.2 lists the new caveat.
+  - The `set_to_ignore_during_summary` notice says "not summarized and their new messages are
+    not stored". `test_summaries_verification.py` asserts the exact sentence.
+  - The receipt unit test asserts a length bound (≤ 520 characters, all locales; 459–501 today).
+- **Nits not fixed (open items above):** the AI-off line checks consent but not the processor,
+  and the panel has no length guard.
+
+### Texts for the owner to proofread
+
+The uz-Latn, uz-Cyrl and ru wording in `agent/owner_texts.py` are drafts, as before: `MODE_LINE`,
+`MODE_ON`, `IGNORE_NOT_SAVED`, `IGNORE_LEFT_OUT`, `IGNORE_KEPT`, `IGNORE_DELETE_HINT`,
+`OBSERVE_SAVED`, `OBSERVE_GAP`, `OBSERVE_AI_OFF`, `MODE_UNCHANGED`, `SAVED_COUNT`,
+`NOT_SAVED_COUNT`. In particular: Russian "чат: {name}" (chosen so the name is not inflected), and
+"catch-up" left untranslated in uz ("catch-up sharhlari") and in parentheses in ru.
+
+### Open items
+
+- **Related, by design:** when a contact edits a message that arrived in Ignore, after the chat
+  is back in Observe, the edited text is stored, as for any edit of a message never stored.
+  That is Observe behaviour, and it is why the receipt does not say "cannot be recovered".
+- **A dead letter from Observe time keeps its payload after a switch to Ignore.** Decision 2
+  applies to the mode when the row fails. A row that failed while the chat was in Observe keeps
+  its payload; a requeue while the chat is in Ignore stores metadata only, and one after a return
+  to Observe stores it in full. The message arrived in Observe, so that is Observe behaviour. A
+  failed update whose chat id cannot be read at all keeps its payload too: the hook cannot tell
+  its chat or mode.
+- **"AI is off" uses consent only:** the Observe receipt's AI-off line checks only that
+  `ai_managed` is granted. The summarizer and the runtime also require the consent to name the
+  configured model's processor (§14.3, D48). If the model moves to a processor the consent does
+  not name, the receipt says the messages are used for summaries and leaves out the AI-off line,
+  while summaries return NO_CONSENT. Not fixed: the panel handler has no access to the model
+  configuration, and plumbing it in is more than this round's scope. A real gap only after a
+  provider change without a new consent.
+- **Panel length:** the receipt adds up to 520 characters to the panel, a limit the unit test now
+  pins. The panel has no length guard: a summary overview near its 1,500-character cap plus five
+  long notes already sits close to Telegram's 4,096 characters, and the receipt can push it over.
+  The edit then fails, the stale card stays and the receipt is not shown (the mode change has
+  committed and the toast is true). This headroom problem predates C3. Options: leave out the
+  summary and notes when a receipt is shown, or send the receipt as its own message. That is a
+  product choice, so it is not built.
+- **Rest of diagnosis item 7, not done:** `coverage_started_at` still moves on Ignore messages, so
+  the panel's "Observing since" of a chat that started in Ignore is the first ignored message's
+  date. The label is unchanged; only the `models.py` docstring now says what the column means. The
+  shared `COVERAGE_RULE` text in read-tool results does not mention Ignore.
+- **Observe after Ignore** always adds the "were not saved" line to the owner's receipt, even when
+  nothing arrived while the chat was ignored. It is true as stated, but could be shown only when
+  the chat has unsaved rows. (The model-facing effect and the card now name the ignored period
+  only for a chat that was ignored; review.)
+- **Prompt relay:** the new catch-up caveat is application text that `owner_request.v7` must relay
+  (E-p caveat-relay check). No prompt changed and no eval was run.
+- **Not run locally:** the rest of the suite, including `test_memory_safety.py`, the retention and
+  eval-summary tests, the untouched cases of `test_summaries*.py` and of `test_deletion_cards.py`.
+  CI is the gate.
 
 ## G1 — stronger summary model
 

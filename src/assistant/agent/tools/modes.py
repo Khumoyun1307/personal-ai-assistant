@@ -148,7 +148,7 @@ async def set_conversation_mode_tool(
         if change.audit_id is not None:
             account = await session.get(Account, ctx.account_id)
             if account is None:  # pragma: no cover - the FK guarantees it
-                raise LookupError("account")
+                raise NotInAccountError("account")
             name = (
                 await session.execute(
                     select(Contact.display_name)

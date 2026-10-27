@@ -321,7 +321,7 @@ async def test_the_panel_says_what_observe_did_and_that_ignored_messages_are_los
     assert shown.startswith("✅ <b>Observe is on</b> for the chat with Kamola.")
     assert "• New messages here are saved" in shown
     assert "• Messages that arrived while the chat was ignored were not saved:" in shown
-    assert "cannot be recovered" not in shown  # a later edit or a requeue can store one
+    assert "cannot be recovered" not in shown  # a later edit can store one
     assert "/privacy managed" in shown  # AI for managed chats is off: said so
     assert "Mode: <b>Observe</b> (new messages here are saved)" in shown
 

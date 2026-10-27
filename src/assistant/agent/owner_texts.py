@@ -259,8 +259,9 @@ OBSERVE_SAVED: Final[dict[SupportedLocale, str]] = {
 }
 
 #: Observe after Ignore: there is no history API (AGENTS §7). Not "cannot be
-#: recovered": a later edit in Observe, or a requeued failed update, stores
-#: such a message after all (C3 review).
+#: recovered": a contact's later edit in Observe stores such a message's new
+#: text after all (C3 review). A failed update in Ignore cannot: its payload
+#: is cleared when it fails (owner decision C3-2).
 OBSERVE_GAP: Final[dict[SupportedLocale, str]] = {
     "en": (
         "Messages that arrived while the chat was ignored were not saved: Telegram does "
