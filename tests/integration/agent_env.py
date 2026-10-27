@@ -94,6 +94,11 @@ PRODUCTION_LINE = (
     "tool.delete_everything"
 )
 PRODUCTION_FLAGS = frozenset(PRODUCTION_LINE.split(","))
+#: P2 tools that are registered but not yet enabled in production (all P2
+#: flags default off, WORKFLOW §10). A flag leaves this set, and joins the
+#: production line above, in the change that records the owner enabling it.
+#: The tests that compare the registry with production subtract it.
+NOT_YET_IN_PRODUCTION = frozenset({"tool.set_contact_priority"})
 
 
 class SetNoteArgs(BaseModel):
