@@ -417,6 +417,8 @@ There is one agent identity (same principles, memory, policy), invoked in **run 
 - **As built (S03.7 A2) — `summarize.v6`, after the v5 E1 run.** The pre-review of the `summarize.v5` run found: two uz-Cyrl chats summarized in Cyrillic for a uz-Latn owner (the participants header said "call them by this name" with a Cyrillic name); an edited message's corrected time reported as "not given" (the line showed only the send time and "(edited)"); an accepted split of work shown as awaiting the owner and a done upload listed as open; and contacts' own "I will" written as key facts without the doer (role words are banned from texts, D95, and key facts have no `who`). Fixes: (1) the header asks for the contact's name written in the owner's script, transliterated (§7.3), and `summarize.v6` makes names in the owner's script mandatory; (2) the context shows when an edited message was edited and that its text is the current one (§7.3), and v6 says a later correction replaces an earlier value and a value a message states is never "not given"; (3) v6: a question or decision the owner answered or accepted later is settled, an agreed split of work is one commitment per side, anything a later message shows done is not open; (4) v6: anything either person says they will do is a commitment with `by` and `status`, never a key fact (role words stay out of texts). Schema v5 unchanged (`output_model_for` maps v6 to it); v1–v5 kept; the period cache (keyed by prompt version) never serves a v5 summary as a v6 one. Guard: each stored summary logs `owner_script_share` (the share of its letters in the owner's script, a number; `summarize.owner_script_share`), so a wrong-script summary shows in the logs; nothing is retried or discarded on it (a retry would double the cost of every such call for an error seen in 2 of 40 chats). Model, effort and token budgets unchanged. M03 D105–D108.
 - **As built (S03.7 round 3) — `summarize.v7`, after the v6 E1 run.** The pre-review of the `summarize.v6` run found: c36 still reported the edited gathering time as "not given" (third run in a row); c28 lost am/pm ("Sunday 5 pm" became "soat 5:00": rule 9 let the model translate "pm" away as one of the words around a number); and c15 dropped "Farhod will send the flight number" (a commitment by a person who is only mentioned had nowhere to go: `by` is owner|contact, and v6 said a key fact never says who is to do something). v7, prompt only on schema v5 (v1–v6 kept): (1) rule 10 says the text a message had before its edit is never shown, so a later "I changed the time" means the edited text holds the new value, with a synthetic worked example; (2) rule 9 writes clock times in 24-hour form (6 pm → 18:00, "Sunday 5 pm" → "yakshanba 17:00"), keeps a time given without am/pm as written, and keeps dates and amounts exact; (3) a key fact never says which *of the two sides* is to do something, and what a person who is only mentioned said, wants or will do is a key fact naming them. The c36 context was rendered through the harness's own path (no model call) and is unambiguous (§7.3), so no context change. Model, effort and token budgets unchanged; an effort comparison is a trial for the lead (`--only`). M03 D112–D114.
 
+- **As built (S04.2 part a) — draft generation.** `agent/drafting.py::Drafter.draft` uses `draft_reply.v1` and one tool-less structured call, with one larger-output retry after truncation. It checks account/conversation ownership, both AI consents naming the route processor, retained content and the monthly budget before creating a run. Refused, invalid and truncated output returns no draft; every started run is closed on success, failure or cancellation. This part has no proposal, approval or delivery effects; those remain in S04.2 part b and S04.3/S04.4.
+
 ### 7.2 Owned agent loop (for `owner_request`)
 
 A small, explicit loop over the `LLMClient` port (≈150 lines), chosen over the SDK's beta tool runner because the loop must be **provider-neutral**, **persist every step**, **enforce budgets**, and **scope tools per run** (ADR-07).
@@ -458,6 +460,8 @@ Context builders (`agent/context.py`) are explicit, testable functions per run t
 - **Minimality:** recent window (e.g., last 30 messages or token cap) + rolling summary instead of full history.
 - **Language & style:** owner personalization (preferred language for owner-facing output; default and per-contact reply language/tone/style) is passed as preferences; wording is the model's job.
 
+- **As built (S04.2 part a) — draft context.** `agent/draft_context.py::build_draft_reply` receives one chat's newest 30 retained messages (up to 2000 text characters each), its rolling summary and the notes permitted by `contact_facing(include_owner_preferences=True)`. Contact names appear once in an untrusted header; fixed YOU/CONTACT labels and edit times identify message authors. Reply language/tone/style come from account preferences. The owner's own instruction for this draft may enter with `OWNER_CONTROL` provenance only from an untainted run; tainted guidance is rejected defensively. Message ids used for freshness are computed from the shown messages, never supplied by the model. Stable instructions precede content and the injected current time.
+
 ### 7.4 Model configuration and provider behaviour
 
 - `LLM_DEFAULT_MODEL=gpt-6-luna`; per-route overrides: `LLM_ROUTE_<RUN_TYPE>_MODEL`. **As built (S03.1):** one setting per run type (`config.py`, `Settings.model_routes`), empty = the default; `core/model_routes.py` maps a model id to its **processor** (`gpt-*` → OpenAI, `claude-*` → Anthropic, `gemini-*` → Google — the single table). The consent wrapper resolves the processor of each request's model and refuses the call when the model is unknown, served by a processor other than the adapter's, or not named in the required consent (§14.3), so a route switched to another provider cannot send anything before re-consent. Settings validation (startup and `healthcheck`) also refuses a model no known processor serves, and the owner runtime offers managed tools and history only when `ai_managed` names the route's processor.
@@ -487,16 +491,19 @@ class TriageResult(BaseModel):
 
 
 class DraftResult(BaseModel):
-    needs_reply: bool  # Assist-mode drafting without triage; needs_reply=false ⇒ no card, audit draft_skipped
-    skip_reason: str | None
-    text: str
+    language: str  # first in S04.2's strict structured schema
+    needs_reply: bool  # false means no Assist approval card
+    skip_reason: Literal["no_reply_needed", "unclear", "not_for_owner"] | None
+    revision_kind: Literal["new", "replacement", "instruction"]
+    text: str  # normalized and checked for 1–4096 characters when needs_reply
     confidence: Literal["low", "medium", "high"]
     uses_only_permitted_information: bool
     sensitive_topic: bool
-    makes_commitment: bool  # dates, money, meetings, promises
+    makes_commitment: bool
     should_escalate: bool
-    escalation_reason: str | None
-    language: str
+    escalation_reason: (
+        Literal["decision_needed", "outside_knowledge", "sensitive", "conflict", "other"] | None
+    )
 ```
 
 `CommitmentCandidate` carries `source_message_id: int` and `existing_task_id: int | None`.
