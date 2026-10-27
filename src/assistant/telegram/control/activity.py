@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
-from assistant.actions.activity import ActivityEntry, activity
+from assistant.actions.activity import ActivityEntry, activity, count_activity
 from assistant.actions.states import (
     STATE_LABELS,
     STATE_REASON_EXPLANATIONS,
@@ -56,6 +56,7 @@ def render_activity(
     *,
     timezone: str,
     period_label: str,
+    total_count: int | None = None,
 ) -> str:
     """Render activity entries for the control chat."""
     if not entries:
@@ -63,7 +64,8 @@ def render_activity(
 
     tz = _zone(timezone)
     shown = entries[:MAX_RENDERED_ENTRIES]
-    omitted = len(entries) - MAX_RENDERED_ENTRIES
+    total = total_count if total_count is not None else len(entries)
+    omitted = total - len(shown)
 
     blocks: list[str] = []
     for entry in shown:
@@ -79,7 +81,7 @@ def render_activity(
             if entry.authorization is not None:
                 auth_time = _format_time(entry.authorization.approved_at, tz)
                 label += (
-                    f" (approved by you at {auth_time} (version {entry.authorization.version}))"
+                    f" — approved by you at {auth_time} (version {entry.authorization.version})"
                 )
             if entry.deleted_in_chat_at is not None:
                 del_time = _format_time(entry.deleted_in_chat_at, tz)
@@ -159,13 +161,18 @@ async def handle_activity(
         until = end_local.astimezone(now_utc.tzinfo)
     else:  # "7d"
         period_label = "in the last 7 days"
-        start_local = datetime.combine(today_date - timedelta(days=7), time.min, tzinfo=tz)
+        start_local = datetime.combine(today_date - timedelta(days=6), time.min, tzinfo=tz)
         since = start_local.astimezone(now_utc.tzinfo)
         until = now_utc
 
     entries = await activity(session, account_id=account.id, since=since, until=until)
-    logger.info("activity_command_executed", account_id=account.id, count=len(entries))
+    total_count = await count_activity(session, account_id=account.id, since=since, until=until)
+    logger.info(
+        "activity_command_executed", account_id=account.id, count=len(entries), total=total_count
+    )
 
-    text = render_activity(entries, timezone=account.timezone, period_label=period_label)
+    text = render_activity(
+        entries, timezone=account.timezone, period_label=period_label, total_count=total_count
+    )
     result = await gateway.send_text(target, text)
     return HandlerResult(True, "activity", result, note=arg or "today")

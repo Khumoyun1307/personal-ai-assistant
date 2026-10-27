@@ -86,6 +86,12 @@ def test_long_lists_are_cut_with_a_count() -> None:
 
     assert "…and 5 more — ask me for a narrower period." in rendered
 
+    # When total_count is provided explicitly (e.g. 60 actions, read model capped at 50)
+    rendered_total = render_activity(
+        entries[:30], timezone="UTC", period_label="7d", total_count=60
+    )
+    assert "…and 30 more — ask me for a narrower period." in rendered_total
+
 
 def test_empty_period_says_nothing_happened() -> None:
     rendered = render_activity([], timezone="UTC", period_label="today")

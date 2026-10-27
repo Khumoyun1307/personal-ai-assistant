@@ -37,6 +37,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry, BusinessConnection, BusinessConnectionEvent
+from assistant.actions.activity import group_of
 from assistant.actions.models import Action
 from assistant.actions.states import ActionState
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
@@ -824,31 +825,16 @@ async def assistant_activity(
                 "deleted_after_send": 0,
             }
         counts = grouped[key]
-        if state == ActionState.SUCCEEDED.value:
+        group = group_of(state)
+        if group == "sent":
             counts["sent"] += 1
             if action_id in deleted_msg_action_ids:
                 counts["deleted_after_send"] += 1
-        elif state in (
-            ActionState.PROPOSED.value,
-            ActionState.AWAITING_APPROVAL.value,
-            ActionState.REVISING.value,
-            ActionState.APPROVED.value,
-            ActionState.SCHEDULED.value,
-            ActionState.EXECUTING.value,
-        ):
+        elif group == "awaiting":
             counts["awaiting"] += 1
-        elif state in (
-            ActionState.REJECTED.value,
-            ActionState.OUTDATED.value,
-            ActionState.EXPIRED.value,
-            ActionState.CANCELLED.value,
-        ):
+        elif group == "not_sent":
             counts["not_sent"] += 1
-        elif state in (
-            ActionState.DELIVERY_UNCERTAIN.value,
-            ActionState.FAILED.value,
-            ActionState.BLOCKED.value,
-        ):
+        elif group in ("uncertain", "failed", "blocked"):
             counts["problems"] += 1
 
     return [

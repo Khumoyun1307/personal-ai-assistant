@@ -42,6 +42,16 @@ for _group, _states in _GROUP_STATES.items():
         _STATE_TO_GROUP[_s] = _group
 
 
+def group_of(state: str) -> str:
+    """Return the activity group for an action state string.
+
+    Raises ValueError on an unknown state.
+    """
+    if state not in _STATE_TO_GROUP:
+        raise ValueError(f"Unknown action state: {state!r}")
+    return _STATE_TO_GROUP[state]
+
+
 @dataclass(frozen=True, slots=True)
 class Authorization:
     kind: Literal["owner_approval"]
@@ -67,6 +77,37 @@ class ActivityEntry:
     excerpt: str | None
     authorization: Authorization | None
     deleted_in_chat_at: datetime | None
+
+
+async def count_activity(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    since: datetime,
+    until: datetime,
+    conversation_ids: Sequence[int] | None = None,
+    groups: Sequence[str] | None = None,
+) -> int:
+    """Return the total count of actions for an account within [since, until] matching filters."""
+    entry_time = func.coalesce(Action.executed_at, Action.decided_at, Action.created_at)
+
+    statement = (
+        select(func.count(Action.id))
+        .where(Action.account_id == account_id)
+        .where(entry_time >= since)
+        .where(entry_time <= until)
+    )
+
+    if conversation_ids is not None:
+        statement = statement.where(Action.conversation_id.in_(list(conversation_ids)))
+
+    if groups is not None:
+        allowed_states: set[str] = set()
+        for g in groups:
+            allowed_states.update(_GROUP_STATES.get(g, set()))
+        statement = statement.where(Action.state.in_(allowed_states))
+
+    return int((await session.execute(statement)).scalar_one())
 
 
 async def activity(
@@ -114,11 +155,7 @@ async def activity(
 
     # Look up deleted_in_chat_at for sent actions
     deleted_at_by_action: dict[int, datetime | None] = {}
-    sent_action_ids = [
-        action.id
-        for action, _, _, _ in rows
-        if _STATE_TO_GROUP.get(action.state, "awaiting") == "sent"
-    ]
+    sent_action_ids = [action.id for action, _, _, _ in rows if group_of(action.state) == "sent"]
     if sent_action_ids:
         msg_stmt = select(Message.action_id, Message.deleted_at).where(
             Message.account_id == account_id,
@@ -134,7 +171,7 @@ async def activity(
     auth_action_ids = [
         action.id
         for action, _, _, _ in rows
-        if _STATE_TO_GROUP.get(action.state, "awaiting") in ("sent", "uncertain", "failed")
+        if group_of(action.state) in ("sent", "uncertain", "failed")
     ]
     auth_by_action: dict[int, Authorization] = {}
     if auth_action_ids:
@@ -152,16 +189,16 @@ async def activity(
         for audit in audit_rows:
             if audit.subject_id is not None and audit.subject_id not in auth_by_action:
                 details = audit.details if isinstance(audit.details, dict) else {}
-                version = int(details.get("version", 1))
-                auth_by_action[audit.subject_id] = Authorization(
-                    kind="owner_approval",
-                    approved_at=audit.at,
-                    version=version,
-                )
+                if "version" in details:
+                    auth_by_action[audit.subject_id] = Authorization(
+                        kind="owner_approval",
+                        approved_at=audit.at,
+                        version=int(details["version"]),
+                    )
 
     entries: list[ActivityEntry] = []
     for action, contact_id, display_name, username in rows:
-        group = _STATE_TO_GROUP.get(action.state, "awaiting")
+        group = group_of(action.state)
         excerpt = action.text[:120] if action.text is not None else None
         auth = auth_by_action.get(action.id) if group in ("sent", "uncertain", "failed") else None
         del_at = deleted_at_by_action.get(action.id) if group == "sent" else None

@@ -686,3 +686,41 @@ async def test_rg20_tool_reports_uncertain_and_failed_as_they_are(env: Env) -> N
     groups = [e["group"] for e in outcome.data["entries"]]
     assert set(groups) == {"uncertain", "failed", "blocked"}
     assert "sent" not in groups
+
+
+async def test_command_7d_over_50_actions_reports_accurate_omitted_count(
+    db_session: AsyncSession,
+) -> None:
+    account = await seed_account(db_session)
+    conv = await seed_conversation(db_session, account_id=account.id)
+    # Seed 60 actions in the last 3 days
+    for i in range(60):
+        t = NOW - timedelta(days=2) + timedelta(minutes=i * 10)
+        await seed_action(
+            db_session,
+            account_id=account.id,
+            conversation_id=conv.id,
+            state=ActionState.SUCCEEDED.value,
+            text=f"Action {i}",
+            created_at=t,
+            executed_at=t,
+        )
+    await db_session.flush()
+
+    clock = FakeClock(NOW)
+    sender = FakeTelegramSender()
+    gateway = OutboundGateway(sender, clock)
+
+    msg = IncomingMessage(
+        account_id=account.id,
+        chat_id=account.control_chat_id,
+        telegram_message_id=20,
+        text="/activity 7d",
+        from_id=account.telegram_user_id,
+    )
+    result = await handle_activity(db_session, gateway, clock, None, account, msg, "7d")
+
+    assert result.handled is True
+    assert len(sender.sends) == 1
+    sent_text = sender.sends[0]["text"]
+    assert "…and 30 more — ask me for a narrower period." in sent_text

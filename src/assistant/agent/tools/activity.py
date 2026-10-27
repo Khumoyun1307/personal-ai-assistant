@@ -20,7 +20,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 from sqlalchemy import select
 
 from assistant.accounts.models import Account
-from assistant.actions.activity import activity
+from assistant.actions.activity import activity, count_activity
 from assistant.agent.tools.common import (
     ArgumentRuleError,
     OptionalId,
@@ -174,6 +174,14 @@ async def get_activity_tool(ctx: ToolContext, args: GetActivityArgs) -> ToolOutc
             groups=groups,
             limit=limit,
         )
+        total = await count_activity(
+            session,
+            account_id=ctx.account_id,
+            since=start,
+            until=end,
+            conversation_ids=conv_scope,
+            groups=groups,
+        )
 
     rendered_entries: list[dict[str, Any]] = []
     for entry in entries:
@@ -209,6 +217,7 @@ async def get_activity_tool(ctx: ToolContext, args: GetActivityArgs) -> ToolOutc
         "period": {"from": local_time(start, tz), "to": local_time(end, tz), "timezone": tz},
         "entries": rendered_entries,
         "count": len(rendered_entries),
+        "total": total,
         "status_rule": STATUS_RULE,
     }
 
