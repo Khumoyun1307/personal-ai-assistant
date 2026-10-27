@@ -28,6 +28,7 @@ import pytest
 from sqlalchemy import func, select, text
 
 from assistant.accounts.callbacks import encode, parse
+from assistant.accounts.models import Account
 from assistant.accounts.service import create_card
 from assistant.conversations.models import Conversation, Message
 from assistant.core.jobs import NOTIFY_TASK
@@ -36,12 +37,14 @@ from assistant.inbox.models import ConversationTriage, Notification
 from assistant.inbox.notification_types import NotificationKind, NotificationRefs, Priority
 from assistant.inbox.notifications import (
     NTF_CARD,
+    NotificationCounts,
     NotificationDelivery,
     enqueue,
     mark_digested,
     notifications_batched_since,
 )
 from assistant.jobs.reconcile_inbox import notification_reconciler
+from assistant.observability.status import build_status
 from assistant.telegram.control.alerts import handle_ntf_press
 from assistant.telegram.control.routes import ControlRoutes
 from tests.fakes.channel import FakeChannel
@@ -523,6 +526,49 @@ async def test_alert_texts_carry_no_message_text(env: Env) -> None:
     async with env.factory() as session:
         stored = (await session.execute(select(Notification))).scalars().all()
     assert all(CANARY not in str(n.refs) and CANARY not in n.dedupe_key for n in stored)
+
+
+async def test_status_counts_alerts_by_state(env: Env) -> None:
+    """S05.2 §3.8: the /status block and `get_status` carry counts only."""
+    env.clock.set(DAY)
+    where = await chat(env)
+    async with env.factory() as session, session.begin():
+        for i, (status, reason, after, updated) in enumerate(
+            (
+                ("queued", None, None, DAY),
+                ("queued", "quiet_hours", DAY + timedelta(hours=8), DAY),
+                ("batched", "quiet_by_default", None, DAY),
+                ("batched", "quiet_by_default", None, DAY),
+                ("uncertain", "ambiguous", None, DAY - timedelta(hours=2)),
+                ("uncertain", "ambiguous", None, DAY - timedelta(days=2)),  # too old
+                ("sent", None, None, DAY),
+            )
+        ):
+            session.add(
+                Notification(
+                    account_id=where.account_id,
+                    kind="triage_needs_reply",
+                    priority="normal",
+                    status=status,
+                    reason_code=reason,
+                    deliver_after=after,
+                    dedupe_key=f"status:{i}",
+                    refs={},
+                    created_at=updated,
+                    updated_at=updated,
+                )
+            )
+    async with env.factory() as session:
+        account = await session.get(Account, where.account_id)
+        assert account is not None
+        report = await build_status(session, account, DAY, monthly_budget_usd=None)
+    assert report.notifications == NotificationCounts(
+        queued=1, deferred=1, batched=2, uncertain_24h=1
+    )
+    assert report.notifications_line == (
+        "Alerts: 1 queued, 1 held for quiet hours, 2 waiting for the digest, 1 uncertain (24 h)"
+    )
+    assert report.as_dict()["notifications"]["batched"] == 2
 
 
 # ============================================================ buttons (`ntf`)

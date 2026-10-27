@@ -456,6 +456,50 @@ class NotificationDelivery:
         )
 
 
+# ------------------------------------------------------------------ /status
+@dataclass(frozen=True, slots=True)
+class NotificationCounts:
+    """The `/status` notifications block (S05.2 §3.8): counts only."""
+
+    queued: int = 0
+    #: Held until the owner's quiet hours end.
+    deferred: int = 0
+    #: Waiting for the next digest.
+    batched: int = 0
+    #: Sent with an unknown outcome (or claimed) in the last 24 hours.
+    uncertain_24h: int = 0
+
+
+async def notification_counts(
+    session: AsyncSession, *, account_id: int, now: datetime
+) -> NotificationCounts:
+    held = and_(Notification.deliver_after.is_not(None), Notification.deliver_after > now)
+    row = (
+        await session.execute(
+            select(
+                func.count().filter(and_(Notification.status == "queued", ~held)),
+                func.count().filter(
+                    and_(
+                        Notification.status == "queued",
+                        held,
+                        Notification.reason_code == "quiet_hours",
+                    )
+                ),
+                func.count().filter(
+                    and_(Notification.status == "batched", Notification.digest_id.is_(None))
+                ),
+                func.count().filter(
+                    and_(
+                        Notification.status == "uncertain",
+                        Notification.updated_at >= now - timedelta(hours=24),
+                    )
+                ),
+            ).where(Notification.account_id == account_id)
+        )
+    ).one()
+    return NotificationCounts(*(int(value) for value in row))
+
+
 # ------------------------------------------------------------------ digest side
 @dataclass(frozen=True, slots=True)
 class NotificationView:
