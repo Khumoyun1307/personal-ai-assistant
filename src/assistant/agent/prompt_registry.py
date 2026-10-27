@@ -60,6 +60,7 @@ ACTIVE: dict[str, str] = {
     # shown, so "I changed the time" means the edited text holds the new
     # value. v1-v6 stay.
     "summarize": "v7",
+    "draft_reply": "v1",
 }
 
 
