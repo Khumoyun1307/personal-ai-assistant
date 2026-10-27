@@ -20,7 +20,7 @@ from assistant.accounts import connections, preferences, service
 from assistant.accounts.models import Account, PendingInput
 from assistant.agent import confirmations, owner_texts
 from assistant.agent.confirmations import OP_CONFIRM, OP_REJECT, TOOL_CONFIRM_CARD
-from assistant.agent.locales import SupportedLocale
+from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.conversations.coverage import STATUS_GAP_WINDOW
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
@@ -33,12 +33,16 @@ from assistant.core.jobs import (
 from assistant.db.uow import after_commit, transaction
 from assistant.inbox.connection_alerts import MANAGED_CONSENT_BUTTONS, MANAGED_CONSENT_QUESTION
 from assistant.memory import undo
+from assistant.observability.logging import get_logger
 from assistant.observability.status import StatusReport
 from assistant.privacy import deletion
 from assistant.privacy.requests import MANAGED_DELETE_CARD, QUEUED_TEXT
-from assistant.telegram.control.cards import card_keyboard
+from assistant.telegram.control import onboarding_texts as texts
+from assistant.telegram.control.cards import card_keyboard, rows_keyboard
 from assistant.telegram.gateway import ControlChat, OutboundGateway, SendResult
 from assistant.telegram.render import escape
+
+logger = get_logger(__name__)
 
 #: The version of the consent text and policy currently in force.
 POLICY_VERSION = service.POLICY_VERSION
@@ -46,8 +50,17 @@ POLICY_VERSION = service.POLICY_VERSION
 #: Named in the consent, because consent has to say who the data goes to.
 AI_PROCESSORS = list(service.AI_PROCESSORS)
 
-#: Answers that count as agreement to a consent question. Anything else declines.
-AGREEMENT_WORDS = frozenset({"yes", "ha", "да", "y", "ok", "okay"})
+#: Answers that count as agreement to a consent question. Anything else
+#: declines. Includes the word each localised question asks for (C4).
+AGREEMENT_WORDS = frozenset({"yes", "ha", "да", "y", "ok", "okay", *texts.CONSENT_WORD.values()})
+
+#: The `ai_control` consent question: a text question (`pending_inputs`
+#: without a token) the owner's next plain message answers.
+ONBOARDING_CONSENT = "onboarding_consent"
+#: The onboarding cards (M03 fix round C4): the language picker /start
+#: shows first, and the time-zone card after the consent answer.
+ONBOARDING_LANGUAGE_CARD = "onb_lang"
+ONBOARDING_TIMEZONE_CARD = "onb_tz"
 
 #: Stop words treated as `/pause` before any model is called (§6.7). Matched
 #: against the whole message, so an ordinary sentence containing "stop" does
@@ -82,6 +95,10 @@ class IncomingMessage:
     origin_user_ids: frozenset[int] = frozenset()
     origin_chat_ids: frozenset[int] = frozenset()
     origin_names: frozenset[str] = frozenset()
+    #: The sender's Telegram `language_code` (commonly their app's), from a
+    #: control-chat message only. It orders the language picker's buttons
+    #: and is never stored or logged as given (C4).
+    language_hint: str | None = None
 
     @property
     def third_party(self) -> bool:
@@ -137,7 +154,14 @@ async def handle_start(
     clock: Clock,
     message: IncomingMessage,
 ) -> HandlerResult:
-    """`/start` — create the account, record where to reach the owner, ask for consent."""
+    """`/start` — create the account, record where to reach the owner, then
+    ask for the language and, in it, for consent (FR-ONB-01; C4).
+
+    Without a language: the language card, nothing else; a tap on it asks
+    for consent (`panels.py`). An account set up before C4 (consent given,
+    no language) gets the card too, below its "already set up" line, and is
+    not asked for consent again. With a language: the consent question in
+    it, or "already set up" in it."""
     account, created = await service.get_or_create_account(
         session, telegram_user_id=message.from_id, clock=clock
     )
@@ -145,34 +169,135 @@ async def handle_start(
 
     consent = await service.active_consent(session, account.id, kind=service.CONSENT_AI_CONTROL)
     target = ControlChat(account_id=account.id, chat_id=message.chat_id)
+    # A repeated /start leaves at most one live language card: the one below.
+    await service.close_cards(session, account_id=account.id, kind=ONBOARDING_LANGUAGE_CARD)
 
-    if consent.granted:
-        result = await gateway.send_text(
-            target,
-            "You are already set up. /help shows what I can do.",
+    if account.locale_pref is None:
+        # No consent question stays armed: a "yes" typed before the question
+        # was shown must answer nothing.
+        await service.clear_pending_input(session, account_id=account.id)
+        result = await send_language_card(
+            session, gateway, clock, account, target, message.language_hint, consent.granted
         )
+        # The hint as the locale it maps to, never as given (AGENTS §9).
+        logger.info(
+            "onboarding_language_requested",
+            account_id=account.id,
+            hint_locale=texts.hint_locale(message.language_hint) or "none",
+            created=created,
+        )
+        note = "already_onboarded_language_requested" if consent.granted else "language_requested"
+        return HandlerResult(True, "start", result, note=note)
+
+    locale = supported_locale(account.locale_pref)
+    if consent.granted:
+        result = await gateway.send_text(target, texts.ALREADY_SET_UP[locale])
         return HandlerResult(True, "start", result, note="already_onboarded")
 
     # Consent is asked for explicitly, naming the processor, before anything
     # is sent to it (§6 invariant 9).
-    await service.set_pending_input(
-        session,
-        account_id=account.id,
-        kind="onboarding_consent",
-        clock=clock,
-        prompt_message_id=message.telegram_message_id,
+    result = await ask_consent(session, gateway, clock, account, target)
+    return HandlerResult(True, "start", result, note="consent_requested")
+
+
+async def send_language_card(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    target: ControlChat,
+    hint: str | None,
+    already_set_up: bool,
+) -> SendResult:
+    """The language picker (C4): four buttons, ordered by the hint."""
+    card = await service.create_card(
+        session, account_id=account.id, kind=ONBOARDING_LANGUAGE_CARD, clock=clock
     )
+    assert card.token is not None
+    order = texts.language_order(texts.hint_locale(hint))
+    text = texts.picker_text(order)
+    if already_set_up:
+        # No language is known yet: the M01 line, in English.
+        text = texts.ALREADY_SET_UP["en"] + "\n\n" + text
     result = await gateway.send_text(
         target,
-        "<b>Before we start</b>\n\n"
-        "To answer you, I send the text of this chat to "
-        f"<b>{', '.join(AI_PROCESSORS)}</b>. Nothing is sent anywhere else, and "
-        "your messages are not used to train any model.\n\n"
-        "See /privacy for what I store and how to delete it.\n\n"
-        "Reply <b>yes</b> to agree, or anything else to decline. "
-        "You can revoke this later at any time.",
+        text,
+        keyboard=rows_keyboard(ONBOARDING_LANGUAGE_CARD, card.token, texts.picker_rows(order)),
     )
-    return HandlerResult(True, "start", result, note="created" if created else "consent_requested")
+    if result.ok:
+        card.prompt_message_id = result.message_id
+    else:
+        await session.delete(card)  # never shown: nothing to press
+    await session.flush()
+    return result
+
+
+async def ask_consent(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    target: ControlChat,
+) -> SendResult:
+    """Send the consent question in the owner's language; the next plain
+    message answers it only once it has arrived (C4): consent is never
+    given to a question the owner did not see (SEC-02)."""
+    locale = supported_locale(account.locale_pref)
+    result = await gateway.send_text(target, texts.consent_prompt(locale, AI_PROCESSORS))
+    if result.ok:
+        await arm_consent_question(session, clock, account.id, result.message_id)
+    return result
+
+
+async def arm_consent_question(
+    session: AsyncSession, clock: Clock, account_id: int, prompt_message_id: int | None
+) -> bool:
+    """Let the next plain message answer the consent question just
+    delivered — unless consent was given meanwhile."""
+    state = await service.active_consent(session, account_id, kind=service.CONSENT_AI_CONTROL)
+    if state.granted:
+        return False
+    await service.set_pending_input(
+        session,
+        account_id=account_id,
+        kind=ONBOARDING_CONSENT,
+        clock=clock,
+        prompt_message_id=prompt_message_id,
+    )
+    return True
+
+
+async def offer_timezone(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    target: ControlChat,
+) -> SendResult | None:
+    """The time-zone card after the consent answer (C4), once: only while
+    the time zone is the default nobody chose (`preferences.timezone_chosen`).
+    "Shown" is recorded only when it arrived."""
+    if await preferences.timezone_chosen(session, account):
+        return None
+    locale = supported_locale(account.locale_pref)
+    card = await service.create_card(
+        session, account_id=account.id, kind=ONBOARDING_TIMEZONE_CARD, clock=clock
+    )
+    assert card.token is not None
+    result = await gateway.send_text(
+        target,
+        texts.TIMEZONE_QUESTION[locale],
+        keyboard=rows_keyboard(
+            ONBOARDING_TIMEZONE_CARD, card.token, texts.timezone_rows(locale, clock.now())
+        ),
+    )
+    if result.ok:
+        card.prompt_message_id = result.message_id
+        await preferences.record_timezone_asked(session, account, clock)
+    else:
+        await session.delete(card)  # never shown: nothing to press
+    await session.flush()
+    return result
 
 
 async def handle_consent_reply(
@@ -182,17 +307,16 @@ async def handle_consent_reply(
     message: IncomingMessage,
     account: Account,
 ) -> HandlerResult:
-    """The owner's answer to the consent question."""
+    """The owner's answer to the consent question, in the owner's language;
+    then, either way, the time-zone card (C4)."""
     target = ControlChat(account_id=account.id, chat_id=message.chat_id)
+    locale = supported_locale(account.locale_pref)
     agreed = message.text.strip().lower() in AGREEMENT_WORDS
     await service.clear_pending_input(session, account_id=account.id)
 
     if not agreed:
-        result = await gateway.send_text(
-            target,
-            "No problem — nothing will be sent to an AI provider.\n"
-            "/settings and /privacy still work. Run /start again to change your mind.",
-        )
+        result = await gateway.send_text(target, texts.CONSENT_DECLINED[locale])
+        await offer_timezone(session, gateway, clock, account, target)
         return HandlerResult(True, "consent", result, note="declined")
 
     await service.grant_consent(
@@ -204,9 +328,8 @@ async def handle_consent_reply(
         clock=clock,
     )
     account.status = "active"
-    result = await gateway.send_text(
-        target, "Done. Ask me anything, or see /help.\n\nSend <b>stop</b> to pause."
-    )
+    result = await gateway.send_text(target, texts.CONSENT_GRANTED[locale])
+    await offer_timezone(session, gateway, clock, account, target)
     return HandlerResult(True, "consent", result, note="granted")
 
 
@@ -1047,7 +1170,7 @@ async def handle_settings(
     """`/settings` — deterministic, no model involved, so it always works."""
     text = (
         "<b>Settings</b>\n\n"
-        f"Language: {account.locale_pref or 'auto'}\n"
+        f"Language: {escape(texts.language_label(account.locale_pref))}\n"
         f"Timezone: {account.timezone}\n\n"
         "Send <code>/settings timezone Asia/Tashkent</code> or "
         "<code>/settings language uz</code> to change one."
@@ -1077,12 +1200,18 @@ async def apply_setting(
     # The same validation and audit as the panel and the agent's tool (S03.3).
     if key == "timezone":
         try:
-            await preferences.update(session, account, timezone=value, actor="owner", clock=clock)
+            change = await preferences.update(
+                session, account, timezone=value, actor="owner", clock=clock
+            )
         except preferences.PreferenceError:
             result = await gateway.send_text(
                 target, f"I do not know the timezone <code>{escape(value)}</code>."
             )
             return HandlerResult(True, "settings", result, note="invalid_timezone")
+        if not change.changes:
+            # The zone it already had, named by the owner: chosen, so
+            # onboarding does not ask for it (C4).
+            await preferences.record_timezone_confirmed(session, account, clock)
         result = await gateway.send_text(target, f"Timezone set to {escape(account.timezone)}.")
         return HandlerResult(True, "settings", result, note="timezone")
 
@@ -1128,12 +1257,17 @@ __all__ = [
     "AI_PROCESSORS",
     "HELP_TEXT",
     "MANAGED_CONSENT_TEXT",
+    "ONBOARDING_CONSENT",
+    "ONBOARDING_LANGUAGE_CARD",
+    "ONBOARDING_TIMEZONE_CARD",
     "POLICY_VERSION",
     "REFUSAL_TEXT",
     "STOP_WORDS",
     "HandlerResult",
     "IncomingMessage",
     "apply_setting",
+    "arm_consent_question",
+    "ask_consent",
     "describe_unknown_command",
     "handle_consent_reply",
     "handle_help",

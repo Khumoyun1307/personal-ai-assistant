@@ -28,7 +28,7 @@ from tests.integration.business_env import (
     deleted_messages,
     deliver,
     environment,
-    private_message,
+    onboard,
 )
 
 pytestmark = pytest.mark.integration
@@ -358,8 +358,7 @@ async def test_deletion_leaves_other_accounts_intact(migrated_url: str) -> None:
     async with environment(migrated_url, owner_ids=frozenset({OWNER, other})) as env:
         await connect(env)
         await deliver(env, business_message(message_text=f"{CANARY} mine"))
-        await deliver(env, private_message(other, "/start"))
-        await deliver(env, private_message(other, "yes"))
+        await onboard(env, other)
         await deliver(env, connection_update(user_id=other, connection_id="synthetic-conn-b"))
         await deliver(
             env,

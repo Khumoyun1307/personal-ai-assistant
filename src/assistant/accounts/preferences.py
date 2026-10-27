@@ -26,11 +26,15 @@ from functools import cache
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account, AuditLogEntry
 from assistant.core.clock import Clock
 from assistant.privacy import retention_policy
+
+#: A new account's time zone until the owner chooses one.
+DEFAULT_TIMEZONE = "UTC"
 
 DEFAULT_MODE_KEY = "default_mode"
 #: Modes a new chat may start in. `assist` arrives with drafts (M04).
@@ -39,6 +43,11 @@ SETTABLE_DEFAULT_MODES = ("observe", "ignore")
 FALLBACK_DEFAULT_MODE = "observe"
 
 EVENT_PREFERENCES_CHANGED = "preferences_changed"
+#: The onboarding time-zone card was shown (M03 fix round C4); content-free.
+EVENT_TIMEZONE_ASKED = "timezone_asked"
+#: The owner named the time zone the account already had, so nothing
+#: changed and no `preferences_changed` row says it was chosen (C4).
+EVENT_TIMEZONE_CONFIRMED = "timezone_confirmed"
 
 FIELD_LANGUAGE = "preferred_language"
 FIELD_TIMEZONE = "timezone"
@@ -264,6 +273,62 @@ async def update(
     session.add(entry)
     await session.flush()
     return PreferenceChange(changes, entry.id)
+
+
+async def timezone_chosen(session: AsyncSession, account: Account) -> bool:
+    """Whether the owner has a time zone of their own or was asked for one
+    (C4): anything but the default, any audited change of it (command,
+    panel, the agent's tool; even one back to UTC), the default named by
+    the owner (`record_timezone_confirmed`), or the onboarding time-zone
+    card once shown. That card is offered only while this is False, so it
+    is asked at most once. Audit rows go after a year (§10.4), so an owner
+    who never chose may be asked again after that."""
+    if account.timezone != DEFAULT_TIMEZONE:
+        return True
+    result = await session.execute(
+        select(AuditLogEntry.id)
+        .where(AuditLogEntry.account_id == account.id)
+        .where(
+            or_(
+                AuditLogEntry.event.in_((EVENT_TIMEZONE_ASKED, EVENT_TIMEZONE_CONFIRMED)),
+                and_(
+                    AuditLogEntry.event == EVENT_PREFERENCES_CHANGED,
+                    AuditLogEntry.details["changes"].has_key(FIELD_TIMEZONE),
+                ),
+            )
+        )
+        .limit(1)
+    )
+    return result.first() is not None
+
+
+async def record_timezone_asked(session: AsyncSession, account: Account, clock: Clock) -> None:
+    session.add(
+        AuditLogEntry(
+            account_id=account.id,
+            at=clock.now(),
+            actor="system",
+            event=EVENT_TIMEZONE_ASKED,
+        )
+    )
+    await session.flush()
+
+
+async def record_timezone_confirmed(session: AsyncSession, account: Account, clock: Clock) -> None:
+    """The owner set the time zone the account already has: a choice that
+    `update` records nowhere, since nothing changed. Written once, while the
+    zone still counts as not chosen."""
+    if await timezone_chosen(session, account):
+        return
+    session.add(
+        AuditLogEntry(
+            account_id=account.id,
+            at=clock.now(),
+            actor="owner",
+            event=EVENT_TIMEZONE_CONFIRMED,
+        )
+    )
+    await session.flush()
 
 
 async def lock(session: AsyncSession, account: Account) -> None:

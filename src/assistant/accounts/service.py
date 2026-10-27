@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts import callbacks
+from assistant.accounts import callbacks, preferences
 from assistant.accounts.models import Account, AuditLogEntry, Consent, ControlTurn, PendingInput
 from assistant.core.clock import Clock
 
@@ -83,7 +83,7 @@ async def get_or_create_account(
     account = Account(
         telegram_user_id=telegram_user_id,
         status="onboarding",
-        timezone="UTC",
+        timezone=preferences.DEFAULT_TIMEZONE,
     )
     session.add(account)
     await session.flush()

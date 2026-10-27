@@ -49,6 +49,7 @@ from tests.integration.business_env import (
     deliver,
     environment,
     grant_managed,
+    onboard,
     private_message,
 )
 
@@ -472,8 +473,7 @@ async def test_a_list_cannot_open_another_accounts_real_chat(migrated_url: str) 
     async with environment(migrated_url, owner_ids=frozenset({OWNER, other})) as env:
         await connect(env)
         await deliver(env, business_message(message_id=1, message_text="SYNTH mine"))
-        await deliver(env, private_message(other, "/start"))
-        await deliver(env, private_message(other, "yes"))
+        await onboard(env, other)
         await deliver(env, connection_update(user_id=other, connection_id="synthetic-conn-b"))
         await deliver(
             env,

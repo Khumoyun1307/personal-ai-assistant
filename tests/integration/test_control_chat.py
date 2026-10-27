@@ -2,7 +2,9 @@
 
 Named regression suite. The claims being pinned:
 
-- **no AI call without consent** (§6 invariant 9);
+- **no AI call without consent** (§6 invariant 9), asked in the owner's
+  language after the language card (M03 fix round C4;
+  `test_onboarding_language.py` has the rest of that flow);
 - onboarding state survives in Postgres, not in process memory;
 - a `/command` always beats a pending question;
 - the kill switch works without the model;
@@ -13,10 +15,11 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import service
 from assistant.accounts.models import Account, ControlTurn, PendingInput
+from assistant.db.uow import run_after_commit
 from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.handlers import IncomingMessage
 from assistant.telegram.gateway import OutboundGateway
@@ -54,10 +57,42 @@ def message(text: str, *, message_id: int = 1) -> IncomingMessage:
     )
 
 
+async def choose_language(
+    session: AsyncSession, dispatcher: ControlDispatcher, op: str = "en"
+) -> None:
+    """Tap `op` on the language card, then run what the tap queued for after
+    its commit, as the inbox processor does. This suite's transaction never
+    commits, so those follow-up transactions join it as savepoints."""
+    card = (
+        await session.execute(
+            select(PendingInput)
+            .where(PendingInput.kind == "onb_lang")
+            .where(PendingInput.token.is_not(None))
+        )
+    ).scalar_one()
+    await dispatcher.dispatch_callback(
+        session,
+        callback_id="cb-synthetic",
+        from_id=OWNER,
+        data=f"onb_lang:{card.token}:{op}",
+        chat_id=CHAT,
+        message_id=card.prompt_message_id,
+    )
+    await session.flush()
+    joined = async_sessionmaker(
+        bind=await session.connection(),
+        class_=AsyncSession,
+        join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+    await run_after_commit(session, joined)
+
+
 async def onboard(
     session: AsyncSession, dispatcher: ControlDispatcher, *, agree: bool = True
 ) -> Account:
     await dispatcher.dispatch(session, message("/start"))
+    await choose_language(session, dispatcher)
     await dispatcher.dispatch(session, message("yes" if agree else "no", message_id=2))
     result = await session.execute(select(Account).where(Account.telegram_user_id == OWNER))
     return result.scalar_one()
@@ -80,19 +115,33 @@ async def test_start_creates_the_account_and_records_where_to_reply(
 async def test_onboarding_state_lives_in_the_database_not_in_memory(
     db_session: AsyncSession, dispatcher: ControlDispatcher
 ) -> None:
-    """A restart mid-onboarding must not lose the question that was asked."""
+    """A restart mid-onboarding must not lose the question that was asked:
+    the language card after /start, the consent question after the tap."""
     await dispatcher.dispatch(db_session, message("/start"))
+
+    card = (await db_session.execute(select(PendingInput))).scalar_one()
+    assert card.kind == "onb_lang"
+    assert card.token is not None
+
+    await choose_language(db_session, dispatcher)
 
     pending = (await db_session.execute(select(PendingInput))).scalar_one()
     assert pending.kind == "onboarding_consent"
+    assert pending.token is None
 
 
+@pytest.mark.parametrize("op", ["uz_latn", "uz_cyrl", "ru", "en"])
 async def test_the_consent_prompt_names_the_processor(
-    db_session: AsyncSession, dispatcher: ControlDispatcher, sender: FakeTelegramSender
+    db_session: AsyncSession, dispatcher: ControlDispatcher, sender: FakeTelegramSender, op: str
 ) -> None:
-    """Consent that does not say who sees the data is not consent (SEC-02)."""
+    """Consent that does not say who sees the data is not consent (SEC-02) —
+    in every language; and it is asked only once the language is known."""
     await dispatcher.dispatch(db_session, message("/start"))
-    assert "OpenAI" in sender.texts[0]
+    assert "OpenAI" not in sender.texts[0]
+
+    await choose_language(db_session, dispatcher, op)
+
+    assert "<b>OpenAI</b>" in sender.texts[-1]
 
 
 async def test_agreeing_grants_consent_and_activates_the_account(
@@ -186,6 +235,7 @@ async def test_a_command_cancels_a_pending_question(
 ) -> None:
     """Otherwise /status would be swallowed as the answer to the question."""
     await dispatcher.dispatch(db_session, message("/start"))
+    await choose_language(db_session, dispatcher)
     assert (await db_session.execute(select(PendingInput))).scalar_one_or_none() is not None
 
     await dispatcher.dispatch(db_session, message("/help", message_id=2))
@@ -198,6 +248,7 @@ async def test_a_pending_question_consumes_the_next_plain_message(
     db_session: AsyncSession, dispatcher: ControlDispatcher
 ) -> None:
     await dispatcher.dispatch(db_session, message("/start"))
+    await choose_language(db_session, dispatcher)
     outcome = await dispatcher.dispatch(db_session, message("yes", message_id=2))
     assert outcome.result.command == "consent"
 
@@ -206,6 +257,18 @@ async def test_a_pending_question_expires(
     db_session: AsyncSession, dispatcher: ControlDispatcher, clock: FakeClock
 ) -> None:
     await dispatcher.dispatch(db_session, message("/start"))
+    await choose_language(db_session, dispatcher)
+    assert (
+        await service.get_pending_input(
+            db_session,
+            account_id=(
+                await db_session.execute(
+                    select(Account.id).where(Account.telegram_user_id == OWNER)
+                )
+            ).scalar_one(),
+            clock=clock,
+        )
+    ) is not None
     clock.advance(hours=2)
 
     account = (
@@ -326,3 +389,5 @@ async def test_no_send_ever_carries_a_business_connection_id(
     for text, mid in [("/help", 20), ("/status", 21), ("/privacy", 22), ("stop", 23)]:
         await dispatcher.dispatch(db_session, message(text, message_id=mid))
     assert all(call["business_connection_id"] is None for call in sender.sends)
+    assert sender.edits  # the language card, edited in place
+    assert all(call["business_connection_id"] is None for call in sender.edits)

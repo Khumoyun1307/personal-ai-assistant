@@ -332,8 +332,7 @@ async def test_bizchat_for_another_accounts_chat_is_refused(migrated_url: str) -
         await connect(env)
         await deliver(env, business_message())
         # The second owner onboards and connects on their own connection id.
-        await deliver(env, private_message(other_owner, "/start"))
-        await deliver(env, private_message(other_owner, "yes"))
+        await onboard(env, other_owner)
         await deliver(env, connection_update(user_id=other_owner, connection_id="synthetic-conn-b"))
         await deliver(env, private_message(other_owner, f"/start bizChat{CONTACT}"))
         shown = env.sender.texts[-1]
@@ -342,7 +341,14 @@ async def test_bizchat_for_another_accounts_chat_is_refused(migrated_url: str) -
 
 async def test_bizchat_before_onboarding_runs_onboarding(env: Env) -> None:
     await deliver(env, private_message(OWNER, f"/start bizChat{CONTACT}"))
-    assert "Before we start" in env.sender.texts[-1]
+    # Onboarding opens with the language card (M03 fix round C4).
+    shown = env.sender.sends[-1]
+    assert "Which language should I use?" in shown["text"]
+    assert all(
+        button.callback_data.startswith("onb_lang:")
+        for row in shown["reply_markup"].inline_keyboard
+        for button in row
+    )
 
 
 def test_incoming_message_shape_is_unchanged() -> None:

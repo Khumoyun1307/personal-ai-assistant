@@ -26,7 +26,7 @@ production checks only with the owner's go-ahead.
 | C3 | Ignore mode stores nothing new; the panel says what a mode change did | `m03fix/c3-ignore` | fixed; draft PR, CI and the owner merge |
 | O1 | Deleted messages are remembered and marked as deleted | `m03fix/o1-deleted` | design approved by the owner; in progress |
 | G1 | Stronger summary model trial | `m03fix/g1-sol-trial` | trial done; the owner decided: stay on `gpt-6-luna` |
-| C4 | Ask the owner's language at onboarding | `m03fix/c4-onboarding-language` | design approved by the owner; in progress |
+| C4 | Ask the owner's language at onboarding | `m03fix/c4-onboarding-language` | fixed; draft PR, CI and the owner merge |
 | C5 | Tone of answers | — | not started |
 | S03.7 items | Prompt, harness and label items | — | not started |
 
@@ -851,7 +851,266 @@ _Pending._
 
 ## C4 — language at onboarding
 
-_Pending._
+**Found (owner checklist, 2026-10-27).** The owner's language stayed unset
+until step 7, so every fixed text fell back to English. FR-ONB-01 and J1
+step 3 say /start collects the preferred language and the time zone, and the
+S01.3 plan listed both. As built, /start only asked for `ai_control` (a
+free-text "yes" question, armed before it was sent), `locale_pref` started
+NULL, the time zone `UTC`, and /settings showed "Language: auto". Owner
+decision 2026-10-27: "Language, then time zone".
+
+**Delivered (branch `m03fix/c4-onboarding-language`).** No migration, no
+prompt change, no model call anywhere in the flow (invariant 9).
+
+- `telegram/control/onboarding_texts.py` (new): the one place for the
+  onboarding texts and the language and time-zone screens, as `Final` tables
+  for en, uz-Latn, uz-Cyrl and ru; the English texts are the M01 texts
+  verbatim (consent wording owner-approved, M02 D58). Also the four options
+  (`uz_latn` → `uz-Latn` "Oʻzbekcha (lotin)", `uz_cyrl` → `uz-Cyrl`
+  "Ўзбекча (кирилл)", `ru` → `ru` "Русский", `en` → `en` "English"), the hint
+  mapping, `language_label` (never "auto") and the time-zone buttons.
+- `handlers.py`: `handle_start` rewritten (below); `send_language_card`,
+  `ask_consent`, `arm_consent_question`, `offer_timezone`;
+  `handle_consent_reply` answers in the owner's language and then offers
+  the time-zone card; `AGREEMENT_WORDS` gains every localised consent word
+  (adds `ҳа`); `IncomingMessage.language_hint`.
+- `panels.py`: presses on `onb_lang`, `onb_tz` and the new `set_lang`
+  card; /settings shows the language's name or "not set" and has a
+  **Language…** button.
+- `inbox_handlers.py`: reads `language_code` from the control `message`'s
+  sender only (dropped unless a string of at most 35 characters).
+- `accounts/preferences.py`: `DEFAULT_TIMEZONE`, `timezone_chosen`,
+  `record_timezone_asked` (audit event `timezone_asked`, content-free),
+  `record_timezone_confirmed` (audit event `timezone_confirmed`, actor
+  owner, content-free; written once by `/settings timezone <zone>` when the
+  zone is the one the account already has, review fix);
+  `service.get_or_create_account` uses `DEFAULT_TIMEZONE`.
+- `cards.py`: `rows_keyboard` (multi-row; `card_keyboard` and
+  `panels.keyboard` use it). `pyproject.toml`: RUF001 per-file ignore for
+  the new texts module (Cyrillic), as for `agent/owner_texts.py`.
+- Docs: ARCHITECTURE §6.7 (onboarding as built, /settings), §10 `accounts`
+  row; TELEGRAM_FEASIBILITY §13 **PQ-11** (`User.language_code`,
+  docs-checked against https://core.telegram.org/bots/api#user, Bot API
+  10.3, not live-verified). Neither owner guide walks through /start step
+  by step, so neither changed. The S01.3 plan item (language and time zone
+  at /start and in /settings) is now delivered.
+
+**The flow.**
+
+1. `/start` with no language: one message, the four questions (one line per
+   language) and a 2×2 card `onb_lang` (24 h). Nothing a plain message could
+   answer is armed; a repeated /start closes the earlier card. The buttons
+   are ordered by the control message's `language_code` (`uz…` → uz-Latn
+   first, or uz-Cyrl when the tag says Cyrl; `ru…` → ru; `en…` → en;
+   missing, malformed or other → uz-Latn, uz-Cyrl, ru, en). The hint is
+   never saved and is logged only as `hint_locale` (`uz-Latn`/`uz-Cyrl`/
+   `ru`/`en`/`none`). A business message's `language_code` is never read.
+2. A tap is claimed by `claim_card` (owner-scoped, single use), saved with
+   `preferences.update` (validation, `preferences_changed` audit row), and
+   after the commit the card is edited to "✅ Language: … change it in
+   /settings". Without `ai_control` the consent question follows in that
+   language; the `onboarding_consent` question is armed in its own short
+   transaction after the commit, only when Telegram took the message (and
+   not if consent was given meanwhile). A failed or uncertain send arms
+   nothing; /start asks again.
+3. `/start` with a language but no consent: the question at once
+   (`handlers.ask_consent`), armed in the inbox transaction right after the
+   send succeeded (a rollback after that leaves it unarmed: fail-closed).
+   With both: "already set up" in that language.
+4. An account set up before C4 (consent, no language): /start shows the M01
+   "You are already set up…" line (English) above the card; a tap saves
+   the language and asks nothing more.
+5. The consent answer accepts `ha`, `ҳа`, `да` besides the M01 words; any
+   other reply declines; commands and stop words keep precedence; forwarded
+   or quoted text never answers. After the answer (granted or declined) the
+   time-zone card `onb_tz` — Toshkent/Tashkent (UTC+5), Moscow (UTC+3), UTC,
+   offsets computed at send time, and "Other: `/settings timezone
+   Area/City`" — is sent only while the zone is `UTC`, no audited time-zone
+   change exists, no `timezone_asked` row (written on delivery) and no
+   `timezone_confirmed` row (the owner typed `/settings timezone UTC` while
+   it was UTC). So it is asked at most once, and never when the owner chose
+   a zone (even UTC). A tap saves through `preferences.update` and is
+   confirmed in the owner's language.
+6. /settings → Language… opens `set_lang` (the same four options in a fixed
+   order, the current one ticked, ◀ Back); a tap saves and shows the panel
+   again.
+
+**Tests (written first; red, then green).**
+
+- `tests/unit/test_onboarding_texts.py` (new): every table has the four
+  locales with the same placeholders; the English texts unchanged; every
+  consent question names the processor; the word each question asks for is
+  an agreement word; the stop word each "done" line names pauses; hint
+  ordering (missing and malformed hints included); the picker; "not set",
+  never "auto"; every callback parses within 64 bytes; time-zone labels.
+- `tests/unit/test_control_language_hint.py` (new): the hint from
+  `from_user`/`from`; none when missing, not a string or too long.
+- `tests/integration/test_onboarding_language.py` (new):
+  `test_start_asks_for_the_language_before_the_consent_question`,
+  `test_a_yes_before_the_consent_question_was_shown_grants_nothing`,
+  `test_choosing_a_language_saves_it_and_asks_consent_in_that_language`
+  (×4: uz-Latn/ha, uz-Cyrl/ҳа, ru/да, en/yes; audit row, in-place edit,
+  question armed with its own message id),
+  `test_the_consent_question_is_not_armed_when_it_was_not_delivered`
+  (×2: no answer, refused), `test_start_does_not_arm_the_question_when_it_was_not_delivered`,
+  `test_the_hint_orders_the_buttons_and_is_never_stored` (×6),
+  `test_the_hint_is_logged_only_as_a_supported_locale`,
+  `test_a_business_messages_language_code_is_never_used`,
+  `test_a_repeated_start_leaves_one_live_picker`,
+  `test_a_double_tap_saves_once_and_asks_once`,
+  `test_an_expired_picker_changes_nothing`,
+  `test_another_owners_picker_cannot_be_pressed`,
+  `test_forwarded_text_never_picks_a_language_or_answers_consent`,
+  `test_an_onboarded_owner_without_a_language_gets_the_picker_on_start`,
+  `test_start_with_a_language_and_consent_says_so_in_that_language`,
+  `test_the_time_zone_card_follows_the_consent_answer` (×2: granted,
+  declined), `test_the_time_zone_is_asked_once`,
+  `test_a_time_zone_the_owner_chose_is_not_asked_again`,
+  `test_the_default_time_zone_set_by_the_owner_counts_as_chosen` (review
+  fix; one `timezone_confirmed` row however often it is repeated),
+  `test_settings_has_a_language_button_that_saves_the_choice`,
+  `test_the_language_screen_goes_back_to_settings`,
+  `test_settings_says_not_set_never_auto`.
+- Reshaped, claims kept and strengthened (named regression suite,
+  `test_control_chat.py`): `test_onboarding_state_lives_in_the_database_not_in_memory`
+  (the card after /start, the question after the tap),
+  `test_the_consent_prompt_names_the_processor` (now in all four languages,
+  and not before the language), `test_a_command_cancels_a_pending_question`,
+  `test_a_pending_question_*`, `test_no_send_ever_carries_a_business_connection_id`
+  (edits too). `test_inbox_control.py` (counts relative, a language tap),
+  `test_visibility.py::test_bizchat_before_onboarding_runs_onboarding`
+  (onboarding opens with the language card),
+  `test_retention_settings.py` (two audit-count assertions account for the
+  onboarding language row), `test_managed_consent_revocation.py::test_answering_the_notice_card_keeps_the_notice_text`
+  (no edit *after* the press).
+- Helpers: `business_env.onboard(env, owner_id=OWNER, language="en")` now
+  does /start, the `en` tap, "yes" and UTC on the time-zone card (`en`
+  keeps every fixed text as when the language was unset);
+  `private_message(..., language_code=)`, `own_card`, `press_own`. The
+  inline second-owner onboardings in ten test files use it (before, a bare
+  "yes" would no longer grant consent and those isolation tests would have
+  lost their premise).
+
+Red first (before any `src/` change): the two new modules' tests failed at
+import (`onboarding_texts` missing); `test_control_language_hint.py` 7
+failed (`IncomingMessage` has no `language_hint`); `test_control_chat.py` 27
+failed (no `onb_lang` card — `NoResultFound`; the first /start message was
+the English consent question, so "OpenAI" was in it);
+`test_inbox_control.py` 2 and `test_connections.py` 16 failed (the onboarding
+helper found no language card).
+
+Green (dev container, own compose project, relevant files only): 122 passed
+(the two new unit files, the new integration file, `test_control_chat.py`,
+`test_inbox_control.py`); 271 passed, 1 skipped (the pre-existing gateway
+skip of the shortcut scan) for `test_connections.py`, `test_callbacks.py`,
+`test_locales.py`, `test_no_aiogram_shortcuts.py`,
+`test_gateway_and_render.py`, `test_log_hygiene.py`,
+`test_retention_settings.py`, `test_managed_consent_revocation.py`,
+`test_conversation_modes.py`, `test_third_party_text.py`; 19 passed (the
+edited second-owner tests, `test_business_fixtures.py`,
+`test_data_deletion.py`); 31 passed (the deep-link test,
+`test_taint_and_consent_edges.py`, `test_third_party_turns.py`,
+`test_policy_update_notice.py`, `test_business_consent.py`). ruff and format
+clean on the 25 changed Python files, `mypy --strict` clean (149 files),
+import contracts 4/4 kept. The rest of the ~30 files that use
+`business_env.onboard` run in CI.
+
+**Texts the owner proofreads (drafts; English unchanged).** All in
+`src/assistant/telegram/control/onboarding_texts.py`, uz-Latn / uz-Cyrl /
+ru:
+
+- the picker question: "Qaysi tilda yozay? Tilni tanlang." / "Қайси тилда
+  ёзай? Тилни танланг." / "На каком языке мне писать? Выберите язык.";
+- language saved: "✅ Til: Oʻzbekcha (lotin). Uni istalgan vaqtda /settings
+  orqali oʻzgartirishingiz mumkin." / "✅ Тил: Ўзбекча (кирилл). Уни исталган
+  вақтда /settings орқали ўзгартиришингиз мумкин." / "✅ Язык: русский. Его
+  можно изменить в любое время в /settings.";
+- **the consent question** (must say exactly what the English says; the
+  consent row records the policy version, not the language shown):
+  "Boshlashdan oldin … <b>OpenAI</b> xizmatiga yuboraman … Rozi boʻlsangiz
+  <b>ha</b> deb yozing …" / "Бошлашдан олдин … <b>ҳа</b> деб ёзинг …" /
+  "Прежде чем начать … в сервис <b>OpenAI</b> … Напишите <b>да</b>, чтобы
+  согласиться …" (full text in the file);
+- consent given: "Tayyor. … Toʻxtatish uchun <b>toʻxta</b> deb yozing." /
+  "Тайёр. … Тўхтатиш учун <b>тўхта</b> деб ёзинг." / "Готово. … Чтобы
+  поставить на паузу, напишите <b>стоп</b>.";
+- consent declined: "Mayli — AI xizmatiga hech narsa yuborilmaydi. …" /
+  "Майли — AI хизматига ҳеч нарса юборилмайди. …" / "Хорошо — сервису ИИ
+  ничего не будет отправляться. …";
+- already set up: "Hammasi sozlangan. Nimalar qila olishimni /help
+  koʻrsatadi." / "Ҳаммаси созланган. …" / "Всё уже настроено. Что я умею —
+  в /help.";
+- the time-zone question and its confirmation, and the city names (Toshkent,
+  Moskva / Тошкент, Москва / Ташкент, Москва).
+
+**Decisions (lead's, recorded).** Language card first, then consent in that
+language, armed on delivery; time-zone card once, after the consent answer
+either way; only onboarding and these screens are localised; no unprompted
+ask outside /start and /settings. Implementation choices: the "already set
+up" line above the picker is the English M01 line (no language is known
+yet); /settings → Language… keeps the four options in a fixed order;
+"asked once" is the `timezone_asked` audit row written on delivery; any
+audited time-zone change, and the `timezone_confirmed` row, count as chosen.
+
+**Open items.**
+
+- Owner: proofread the uz-Latn, uz-Cyrl and ru texts above in the PR
+  (the consent question first).
+- Manual check on the dev bot (client taps are the owner's): a fresh
+  /start shows the card; a tap edits it and the consent question arrives in
+  that language; "ha"/"ҳа"/"да" agrees; the time-zone card follows once;
+  /settings → Language… works. Production is unaffected for the owner (the
+  language is already set); a /start there shows "already set up" in it.
+- PQ-11: what Uzbek Latin and Cyrillic clients send as `language_code` is
+  unknown (only an ordering hint, so nothing depends on it).
+- Not built: a gate that re-sends the card when the owner types instead of
+  tapping. A plain message during the language step is a control turn as
+  before, and the agent answers with its fixed needs-consent notice, which
+  points to /start.
+- Not built: setting the language from /settings during onboarding — typed
+  `/settings language <code>`, or /settings → Language… (`set_lang`) — saves
+  it but does not send the consent question, and the `onb_lang` card stays
+  open; /start or a tap on that card does. Fail-closed: a typed message
+  meanwhile gets the needs-consent notice.
+- Not done (same root cause, diagnosis hypothesis 3): summaries written
+  while the language was unset stay in the chat's language until refreshed;
+  a period-summary cache does not key on the owner's language.
+- Not changed: the agent's settings echo still renders an unset old value as
+  "auto" (`agent/tools/modes.py`); "ха" (Russian х) is not an agreement
+  word (only the lead's list: ha, ҳа, да).
+- The `timezone_asked` and `timezone_confirmed` rows are swept with the
+  audit log after a year, so an owner who never chose a zone and
+  re-onboards after that is asked again.
+- `timezone_confirmed` is written only by the typed `/settings timezone`
+  command; the agent's `update_preferences` tool setting UTC on a UTC
+  account writes nothing. It cannot matter for onboarding: the tool needs
+  `ai_control`, and the time-zone card is offered right when that answer
+  arrives.
+
+**Review.** Two independent reviews of the diff found no must-fix or
+should-fix problems; four nits, all taken. (1) `/settings timezone UTC` on
+an account still at UTC left no record, so the onboarding time-zone card
+still asked for a zone the owner had just set: fixed with the
+`timezone_confirmed` audit row (`preferences.record_timezone_confirmed`,
+from `handlers.apply_setting`), counted by `timezone_chosen`; the new test
+`test_the_default_time_zone_set_by_the_owner_counts_as_chosen` failed first
+(the last message was the time-zone question instead of the consent
+confirmation) and passes now. (2) ARCHITECTURE §6.7 said the `/start` path
+arms the consent question in its own transaction; it arms it in the inbox
+transaction right after the send: reworded (here too). (3) TF §13 PQ-11
+stated "the language of the user's Telegram app" as if documented; the docs
+say only "the user's language": now marked as an unverified assumption, in
+ARCHITECTURE and in the code comments as well. (4) The open item on setting
+the language from /settings during onboarding now names the
+/settings → Language… path too. After the fixes (dev container, relevant
+files only): 323 passed, 1 skipped (the gateway skip) for the new tests,
+`test_control_chat.py`, `test_inbox_control.py`, `test_callbacks.py`,
+`test_locales.py`, `test_no_aiogram_shortcuts.py`,
+`test_gateway_and_render.py`, `test_log_hygiene.py`,
+`test_retention_settings.py`; 45 passed for `test_connections.py` and
+`test_memory_review.py`; 39 passed for `test_memory_tools.py` and
+`test_memory_args.py` (the `update_preferences` tool). ruff and format
+clean, `mypy --strict` clean (149 files), import contracts 4/4 kept.
 
 ## C5 — tone
 

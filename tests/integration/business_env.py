@@ -19,7 +19,12 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from assistant.accounts.models import BusinessConnection, BusinessConnectionEvent, PendingInput
+from assistant.accounts.models import (
+    Account,
+    BusinessConnection,
+    BusinessConnectionEvent,
+    PendingInput,
+)
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.core.routing import Route
 from assistant.db.engine import build_engine, build_session_factory
@@ -170,15 +175,20 @@ def deleted_messages(
     }
 
 
-def private_message(sender_id: int, message_text: str) -> dict[str, Any]:
+def private_message(
+    sender_id: int, message_text: str, *, language_code: str | None = None
+) -> dict[str, Any]:
     update_id = next(_ids)
+    sender: dict[str, Any] = {"id": sender_id, "is_bot": False, "first_name": "Synthetic"}
+    if language_code is not None:
+        sender["language_code"] = language_code
     return {
         "update_id": update_id,
         "message": {
             "message_id": update_id % 100_000,
             "date": T_BASE,
             "chat": {"id": sender_id, "type": "private"},
-            "from": {"id": sender_id, "is_bot": False, "first_name": "Synthetic"},
+            "from": sender,
             "text": message_text,
         },
     }
@@ -353,9 +363,49 @@ async def decline_managed(env: Env) -> None:
     await press(env, "managed_consent", "decline")
 
 
-async def onboard(env: Env) -> None:
-    await deliver(env, private_message(OWNER, "/start"))
-    await deliver(env, private_message(OWNER, "yes"))
+async def own_card(env: Env, kind: str, owner_id: int = OWNER) -> PendingInput | None:
+    """This owner's open card of `kind`, if there is one (fails if several)."""
+    async with env.factory() as session:
+        return (
+            await session.execute(
+                select(PendingInput)
+                .join(Account, Account.id == PendingInput.account_id)
+                .where(Account.telegram_user_id == owner_id)
+                .where(PendingInput.kind == kind)
+                .where(PendingInput.token.is_not(None))
+            )
+        ).scalar_one_or_none()
+
+
+async def press_own(env: Env, kind: str, op: str, owner_id: int = OWNER) -> dict[str, Any]:
+    """Press `op` on this owner's open card of `kind`, as that owner."""
+    card = await own_card(env, kind, owner_id)
+    assert card is not None, f"no open {kind} card"
+    update = callback(
+        f"{kind}:{card.token}:{op}",
+        from_id=owner_id,
+        chat_id=owner_id,
+        message_id=card.prompt_message_id,
+    )
+    await deliver(env, update)
+    return update
+
+
+#: The onboarding cards (M03 fix round C4).
+LANGUAGE_CARD = "onb_lang"
+TIMEZONE_CARD = "onb_tz"
+
+
+async def onboard(env: Env, owner_id: int = OWNER, *, language: str = "en") -> None:
+    """/start, a language on the picker, "yes" to the consent question that
+    follows it, and UTC on the time-zone card (C4): an onboarded owner with
+    no onboarding card left open. `en` keeps every fixed text as it was
+    when the language was unset."""
+    await deliver(env, private_message(owner_id, "/start"))
+    await press_own(env, LANGUAGE_CARD, language, owner_id)
+    await deliver(env, private_message(owner_id, "yes"))
+    if await own_card(env, TIMEZONE_CARD, owner_id) is not None:
+        await press_own(env, TIMEZONE_CARD, "utc", owner_id)
 
 
 async def connect(env: Env, **kwargs: Any) -> None:

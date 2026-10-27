@@ -23,7 +23,7 @@ from tests.integration.business_env import (
     deleted_messages,
     deliver,
     environment,
-    private_message,
+    onboard,
 )
 
 pytestmark = pytest.mark.integration
@@ -155,8 +155,7 @@ async def test_another_accounts_conversation_is_not_found(migrated_url: str) -> 
     other = 7000000002
     async with environment(migrated_url, owner_ids=frozenset({OWNER, other})) as env:
         await connect(env)
-        await deliver(env, private_message(other, "/start"))
-        await deliver(env, private_message(other, "yes"))
+        await onboard(env, other)
         await deliver(env, connection_update(user_id=other, connection_id="synthetic-conn-b"))
         await deliver(
             env,

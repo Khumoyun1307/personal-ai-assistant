@@ -30,6 +30,7 @@ from assistant.observability.logging import get_logger
 from assistant.telegram.control import handlers
 from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.handlers import IncomingMessage
+from assistant.telegram.control.onboarding_texts import MAX_LANGUAGE_HINT_CHARS
 from assistant.telegram.gateway import ControlChat, OutboundGateway
 
 logger = get_logger(__name__)
@@ -208,6 +209,12 @@ class ControlInboxHandlers:
             if forwarded or quoted_text is not None
             else (set(), set(), set())
         )
+        # The owner's Telegram language tag orders the onboarding language card's
+        # buttons (C4). Read here, on the control route only: a business
+        # message's `language_code` is a contact's (§6 invariant 5).
+        hint = sender.get("language_code")
+        if not isinstance(hint, str) or len(hint) > MAX_LANGUAGE_HINT_CHARS:
+            hint = None
         text = payload.get("text")
         if not isinstance(text, str) and forwarded:
             # A forwarded photo or document: its caption is the forwarded text.
@@ -231,6 +238,7 @@ class ControlInboxHandlers:
                 origin_user_ids=frozenset(users),
                 origin_chat_ids=frozenset(chats),
                 origin_names=frozenset(names),
+                language_hint=hint,
             ),
         )
 
