@@ -664,6 +664,11 @@ class Decision:
 
 `decide(ctx) -> Decision` is a pure function composed of named rules. The executor loads a `PolicyContext` inside the same transaction that transitions the action state, from rows locked in the order defined in §9.4.
 
+**As built (M04, S04.1).** The types are `policy/context.py` (F0-interfaces §3): `PolicyContext` carries `phase` (`proposal` | `execution`), `AccountSnapshot` (status, `autonomy_paused`, `managed_consent_ok`), `ConnectionSnapshot` (`exists`, status, `is_enabled`, `can_reply` from the capability tier), `ConversationSnapshot`, `Freshness` (`newest_owner_manual_sent_at` — the latest Telegram date of an `owner_manual` row, tombstones included; `newest_contact_message_id` — the highest ingestion-order id of a contact row; `base_message_sent_at`, set only for proactive drafts; `base_message_present`; `target_is_assistant_sent` for edit/delete only), `IngestionState` (`pending_inbound`, `barrier_passed`), `ActionFacts` (`text_length` in UTF-16 code units, `created_at`, `expires_at`, `shown_through_message_id`, `owner_retry`), `ai_generated`, `sending_enabled`, and `delegation` (always `None` until M06). `Outcome` adds `WAIT`. `actions/policy_loader.py::load_context` builds the context from the caller's locked rows, account-scoped (another account's conversation is `NotInAccountError`); `managed_consent_ok` needs an active `ai_managed` consent that names the processor of the draft route's model.
+
+- **`barrier_passed` is bound to the process run** (P2 decision R1): `system_state['ingestion_barrier'] = {"process_run_id", "caught_up_at"}`, reset by `bootstrap.running_process` before any role starts. It passes only when the stored run id is the caller's own process run id and `caught_up_at` is set; a missing key, another run's key, or no run id (proposals) fail closed.
+- **Outcomes.** Proposal phase: any failed rule ⇒ `DENY` (the action is `blocked` with copy-ready text), otherwise `REQUIRE_APPROVAL`; `ALLOW_AUTO` never arises in P2. Execution phase: `ALLOW_AUTO` means **"may send now"** for every origin (an owner-approved action already carries its approval; Tx A only asks whether sending is still allowed); `WAIT` only when `inbox_drained` is the sole failure; any other failure ⇒ `DENY`. `policy.engine.execution_target(decision)` maps a failed execution decision to the action's next state (§9.4), so the executor never re-implements it. `policy/explanations.py` gives one owner-facing sentence per reason code (FR-ACT-03).
+
 ### 9.3 Rule catalogue
 
 **Send preconditions (required for any send; failure ⇒ DENY with reason):**
@@ -700,6 +705,29 @@ class Decision:
 | `language_gate` | The language and script reported by the deterministic ingestion tagger (§11.2) for the contact's messages and for the draft text agree with `DraftResult.language`, and that language is enabled for autonomy (FR-AUT-13). |
 
 `draft_safe` flags come from the call that read untrusted text. They can only downgrade an action to approval and are never the sole basis for ALLOW_AUTO.
+
+**As built (M04, S04.1; `policy/rules.py`).** Rules run in the order of the S04.1 spec table and report reason codes only:
+
+| Rule | Phases · applies to | Reason codes on failure |
+|---|---|---|
+| `account_active` | both · all | `account_inactive` |
+| `connection_active` | both · all | `no_connection`, `connection_stale`, `connection_disabled`, `no_reply_right` |
+| `conversation_owned` | both · all | `not_owned`, `bot_chat` |
+| `conversation_available` | both · all | `chat_ignored`, `chat_possibly_paused` (passes on an owner retry) |
+| `window_open` | both · all | `window_closed` (24 h − 5 min from the last *contact* message; `core/reply_window.py`) |
+| `no_takeover_since` | both · all | `takeover`. Reference: the base message's Telegram date for a proactive draft; **`created_at` for an owner-requested action** (origin `owner_dictated`, or a `trigger_turn_id`; decision R3 — the owner's request is newer than the owner's own earlier message). Owner-dictated actions have no base message |
+| `not_stale` | execution · all | `source_deleted`, `new_contact_message` |
+| `not_already_executed` | execution · all | `already_claimed` |
+| `not_expired` | execution · all | `max_age` |
+| `inbox_drained` | execution · all | `inbox_pending`, `barrier_pending` (⇒ `WAIT`) |
+| `target_is_assistant_sent` | both · `edit_message`, `delete_own` | `not_assistant_message` |
+| `length_ok` | both · `send_message`, `edit_message` | `empty_text`, `too_long` (1–4096 UTF-16 code units: conservative against Telegram's count) |
+| `consent_valid` | both · AI-generated text | `consent_missing` |
+| `sending_enabled` | **execution only** · all | `sending_disabled` (flag `actions.send`; with it off, proposals still become approval cards and Approve ends `blocked`) |
+| `autonomy_not_paused` | both · origin `delegation_auto` | `autonomy_paused` |
+| `delegation_active` | both · origin `delegation_auto` | `no_delegation` (always fails in P2: there are no delegations) |
+
+A rule that does not apply to the phase or kind is left out of `Decision.checks`. The other autonomy conditions above arrive with M06.
 
 ### 9.4 Action lifecycle and at-most-once execution
 
@@ -748,6 +776,10 @@ Execution protocol (`actions.execute` job on queue `outbound`; no procrastinate 
 **Lock order everywhere:** handlers that change send-relevant state take `FOR UPDATE` on the same account and conversation rows, in the same order, before touching actions. These are inbox takeover and contact-message handling, `/pause`, `/resume`, rights/connection changes and consent revocation. The `/pause` acknowledgement is sent only after its transaction commits. `disclosure_present` is evaluated in Tx A against prior sends in `succeeded` or `delivery_uncertain`; an uncertain send counts as not disclosed.
 
 Telegram offers no idempotency key (TF §4), so this protocol guarantees **at-most-once**: a send is attempted only after a committed claim, and ambiguous attempts are never repeated automatically.
+
+**Proposals (as built, M04 S04.1; `actions/proposals.py::propose`).** Every draft and dictated message goes through `propose`, which never sends, presents a card or defers a job (callers do that after commit). In order: refuse origin `delegation_auto` (`autonomous_not_available`) and kinds other than `send_message` (`kind_not_proposable`) with `ProposalRefused`; return the existing action for the same `(run_id, tool_call_id)`; lock the account `FOR SHARE` and the conversation `FOR UPDATE` (another account's conversation is `NotInAccountError`); return the live card of the same `trigger_turn_id` (a retried owner turn); compute `shown_through_message_id` (the request's, else the newest contact message id) and **the one expiry rule** (decision R7): `expires_at = min(now + approval_max_age, window close − 5 min)`, set once here (`now` when the window is already closed); decide in the proposal phase; insert as `proposed` (`ON CONFLICT (run_id, tool_call_id) DO NOTHING`), storing `draft_flags` apart from `policy_decision` (R8). `REQUIRE_APPROVAL` ⇒ outdate the chat's live card (`superseded`; its audit row names `superseded_by`) and move the new action to `awaiting_approval` with a fresh token. `DENY` ⇒ `blocked` with the reason the execution mapping gives (else `policy_denied`); **a blocked proposal never supersedes a live card**, because a draft that cannot be sent must not destroy one that can.
+
+**Transitions (as built; `actions/lifecycle.py`).** Every single-action change goes through `transition(session, *, account_id, action_id, from_state, to_state, reason, now, expected_version=None, token=None, values={}, details={})`: it raises `IllegalTransitionError` for a pair outside `TRANSITIONS`, runs one conditional `UPDATE … WHERE id AND account_id AND state [AND version] [AND approval_token]`, clears the token unless the new state is `awaiting_approval`, and writes exactly one content-free audit row (`details = {from, to, version, reason}` plus `attempt_id` and any ids or codes the caller adds). The event follows from the pair and reason (decision R15): `proposed → awaiting_approval` `action_proposed`; `→ revising` `action_revision_requested`; `revising → awaiting_approval` `action_edited` with a new version, else `action_revision_cancelled`; `awaiting_approval → approved` `action_approved`; `approved → executing` `action_claimed`; `executing → approved` `action_rate_limited`; `executing →` `succeeded`/`failed`/`delivery_uncertain` `action_succeeded`/`action_failed`/`action_delivery_uncertain`; from `delivery_uncertain` `action_late_result`; `→ outdated` `action_superseded` (reason `superseded`) or `action_outdated`; `→ rejected`/`blocked`/`expired`/`cancelled` `action_rejected`/`action_blocked`/`action_expired`/`action_cancelled`. The autonomy pairs (`proposed → approved`, `approved ↔ scheduled`) have no P2 event and raise. Built on it: `approve` (by token, which rotates per version, and `expires_at > now`; sets `decided_at` and `approved_text_hash` = sha256 of the stored text, computed in the same UPDATE; a card past its expiry is expired instead), `reject`, `start_edit` (voids the token), `set_revision_turn`, `cancel_edit` and `revision_failed` (same version, new token), `apply_new_version` (version + 1, new token, `TOO_LONG`/`EMPTY`/`STALE` write nothing; `expires_at` is never extended, only shortened when the window now closes earlier), and `expire_due` (`awaiting_approval`/`revising`/`approved` past `expires_at` ⇒ `expired` with `window_closed` when the window is closed now, else `max_age`; never `executing`).
 
 ### 9.5 Approval handling
 
