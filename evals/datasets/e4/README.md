@@ -26,7 +26,7 @@ The dataset contains one file:
     "topic": "kurs loyihasi koordinatsiyasi",
     "scope": "faqat ushbu chat",
     "allowed": ["answer_from_knowledge", "ask_for_details", "acknowledge_and_defer"],
-    "knowledge": ["Loyiha loyihasi topshirish muddati juma soat 18:00"]
+    "knowledge": ["Loyiha topshirish muddati juma soat 18:00"]
   },
   "conversation": {
     "owner": {"display_name": "Javlon"},
