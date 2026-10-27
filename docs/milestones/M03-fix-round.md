@@ -24,9 +24,9 @@ production checks only with the owner's go-ahead.
 | C2 | Notes do not save or load, silently; every tool failure logs a line | `m03fix/c2-notes` | fixed; draft PR, CI and the owner merge |
 | C1, P9 | "Who is waiting" misses a contact who asked last; an open request keeps "needs a reply" on | `m03fix/c1-waiting` | fixed; draft PR, CI and the owner merge |
 | C3 | Ignore mode stores nothing new; the panel says what a mode change did | `m03fix/c3-ignore` | fixed; draft PR, CI and the owner merge |
-| O1 | Deleted messages are remembered and marked as deleted | — | design, waiting for the owner |
-| G1 | Stronger summary model trial | `m03fix/g1-sol-trial` | trial run; the owner decides |
-| C4 | Ask the owner's language at onboarding | — | design, waiting for the owner |
+| O1 | Deleted messages are remembered and marked as deleted | `m03fix/o1-deleted` | design approved by the owner; in progress |
+| G1 | Stronger summary model trial | `m03fix/g1-sol-trial` | trial done; the owner decided: stay on `gpt-6-luna` |
+| C4 | Ask the owner's language at onboarding | `m03fix/c4-onboarding-language` | design approved by the owner; in progress |
 | C5 | Tone of answers | — | not started |
 | S03.7 items | Prompt, harness and label items | — | not started |
 
@@ -797,7 +797,53 @@ The uz-Latn, uz-Cyrl and ru wording in `agent/owner_texts.py` are drafts, as bef
 
 ## G1 — stronger summary model
 
-_Pending._
+**Decided by the owner (2026-10-27): summaries stay on `gpt-6-luna`.**
+`LLM_ROUTE_SUMMARIZE_MODEL` stays empty and `LLM_SUMMARIZE_EFFORT` stays
+`low`; no code or configuration changed.
+
+**The trial.** `gpt-6-sol` at the product's effort (low) on the three chats
+of the S03.7 effort trial (`summarize.v7`; judges `fabrication.v2+render.v3+labels.v2`
+and `open_loops.v4`), one chat per run:
+
+```text
+python -m evals run summary --only <chat> --model gpt-6-sol --price gpt-6-sol=2.00:10.00 --budget-usd 0.35 --live
+```
+
+One chat per run because the three-chat worst case was USD 1.0417, above
+what was left of the owner's USD 1 eval approval (USD 0.5657); each run's
+worst case was about USD 0.35 and its hard cap USD 0.35. The harness uses one
+model for the summary and the judges (`evals/summary.py`), so Sol also judged
+these runs. Reports: `docs/evals/2026-10-27-summary-gpt-6-sol-g1-{c36,c28,c15}.{md,json}`.
+
+**Price (verified).** OpenAI's pricing page
+(https://developers.openai.com/api/docs/pricing, read 2026-10-27), standard
+tier per 1M tokens: `gpt-6-luna` USD 0.10 input / 0.01 cached / 0.50 output;
+`gpt-6-sol` USD 2.00 / 0.20 / 10.00; `gpt-6-astra` USD 10.00 / 1.00 / 50.00.
+The S03.4 note's assumed USD 0.30/1.50 for Sol was wrong: Sol is 20× Luna. A
+chat summary costs about USD 0.005–0.01 on Sol against about USD 0.0004 on
+Luna.
+
+| Chat | Luna, effort low (2026-10-26 trial, `-v7-only-low`) | Sol, effort low (this trial) |
+|---|---|---|
+| c36 | Times correct (gathering 18:00, she arrives 18:30); the Luna judge flagged both correct values (H2) and "Nigora promised you: order the cake", which is done (a real small error, D107) | Times correct and the change explained; the superseded 17:00 not stated; recall 2/2; no flag |
+| c28 | Recall missed c28.c2 (slides 5–9) | Recall 3/3; 2 flags, both judge over-flags or small overreach: "due 2026-10-25 17:00" for "book the room for Sunday 5 pm" (right value, "due" is P7), "Laylo promised a run-through" from "so I can do a run-through" |
+| c15 | Recall missed c15.c2 (pick Farhod up) | Pre-screen 2/3, but c15.c2 is in the summary ("you will do it: Farhodni aeroportdan olib kelish … 23:40"); the open-loop judge missed it (H3); no flag |
+| Cost | USD 0.0037 (8 calls) | USD 0.0615 (8 calls: 0.0162 + 0.0240 + 0.0214) |
+
+**Reading.** On these three chats Sol is modestly better (one more open item
+found, no done item listed as open). It does not show that Luna cannot do
+c36: Luna wrote c36's times correctly in this three-chat trial and failed
+them in the four full runs, so c36 is Luna variance. Three chats, a trial and
+never a gate, with Sol as its own judge; the model-choice rule (IMPLEMENTATION_PLAN
+§10.1) needs owner-confirmed items, which wait for the E1 review.
+
+**Spend.** USD 0.0615; the owner's USD 1 eval approval stands at
+**USD 0.4958** (0.4343 before this round).
+
+**Still open.** The c36 error class (a value called "not given" after an
+edit) may recur on Luna; the optional guard from S03.7 G1 (re-ask once when a
+summary says a value is "not given" while a cited message is edited) stays an
+open item.
 
 ## O1 — deleted messages
 
@@ -817,7 +863,23 @@ _Pending._
 
 ## Owner decisions (fix round)
 
-_Pending._
+Answered by the owner on 2026-10-27, to the lead's questions after the
+diagnosis (each with the lead's recommendation shown):
+
+| # | Question | Owner's answer |
+|---|---|---|
+| O1 | The design for remembering deleted messages | **Approved as recommended.** Keep a deleted message's text in the existing content columns, marked deleted (`deleted_at`), for the normal message period (90 days or the owner's setting); no new column, no migration. Label it "deleted in Telegram", never "by the contact" (Telegram does not say who deleted it, TF LV-07). A question or promise whose only message was deleted is shown marked and not counted as waiting; deleted text never reaches M04–M06 drafts or autonomous replies. The owner's own deletions (`/privacy delete`, chat, person, everything) still erase it. Privacy policy **v6** changes the one sentence of v5 that becomes untrue, with the one-time notice every version bump sends; the PRD/TF/ARCHITECTURE wording that excludes the behaviour is amended in the same change (AGENTS §2); prompts `summarize.v8` and `owner_request.v8`; the E1 cases c09/c33 relabelled and 2–3 synthetic deletion cases added; one eval re-run (about USD 0.15) from the existing USD 1 approval. O2 (keeping an edit's previous text) is decided separately. |
+| G1 | Which model writes chat summaries | **Stay on `gpt-6-luna`.** |
+| C4 | How onboarding asks for the language | **Language, then time zone**: four language buttons first, the consent question in that language, then a short time-zone step; a Language button in `/settings`; only onboarding and the language screen are localised now. |
+| C3 | Ignore-mode details | **As recommended:** (1) an edit, made while the chat is ignored, to a message saved earlier keeps the old text (as today; fits O1); (2) a failed (unparseable) update in an ignored chat has its raw copy cleared at once instead of kept up to 7 days; (3) messages saved before the switch stay usable when the owner asks about that chat; only summaries, catch-ups and the waiting list leave the chat out. |
+
+Recorded for the owner (no answer needed): in production a note about a
+contact always shows a confirmation card first, because looking up the
+contact returns a contact-chosen name, which taints the run (invariant 3b);
+Confirm then brings the echo with Undo. The owner guide's steps 8–9 say so
+now. The C2 trigger was not confirmed in production (no production read
+was made); the new tool-failure log line names the stage when the owner
+re-runs steps 8–9.
 
 ## Open items after the fix round
 

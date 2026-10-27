@@ -1,0 +1,267 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-27",
+  "set": "summary",
+  "target": "summary",
+  "dataset": "e1",
+  "mode": "period-uz-Latn",
+  "model": "gpt-6-sol",
+  "live": true,
+  "effort": "low",
+  "complete": false,
+  "trial": true,
+  "stopped": false,
+  "not_evaluated": [],
+  "items": 1,
+  "items_planned": 1,
+  "items_total": 40,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "summarize.v7",
+    "fabrication.v2+render.v3+labels.v2",
+    "open_loops.v4"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "open_loop_recall",
+      "label": "Open question/commitment recall",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.95,
+      "all_items": {
+        "numerator": 3,
+        "denominator": 3,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 103,
+      "failed_items": [],
+      "pending": 0,
+      "note": "3 open loop(s) not matched on `values` (none, or not found literally, e.g. translated): judge pre-screen only, the gate needs the owner's verdict (0 unresolved among the owner-confirmed items)"
+    },
+    {
+      "key": "caveat_presence",
+      "label": "Coverage caveat present whenever gaps exist",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "not evaluable",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 6,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "spurious_caveats",
+      "label": "Caveats for gaps that lost nothing",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 1,
+        "ratio": 0.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "owner_language",
+      "label": "Owner-facing language and script correct",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "fabricated_facts",
+      "label": "Fabricated facts (zero allowed)",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 2,
+        "denominator": 1,
+        "ratio": 2.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "fail",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [
+        "c28#ae8d9fb3",
+        "c28#e7a46390"
+      ],
+      "pending": 2,
+      "note": "2 flagged statement(s) pending owner confirmation"
+    }
+  ],
+  "breakdowns": {
+    "open-loop recall (pre-screen) by variant": {
+      "en": {
+        "numerator": 3,
+        "denominator": 3,
+        "ratio": 1.0
+      }
+    },
+    "owner-language check by variant": {
+      "en": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": "0.35",
+    "spent_usd": "0.023998",
+    "calls": 3,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-sol": {
+        "calls": 3,
+        "input_tokens": 6044,
+        "output_tokens": 1191,
+        "cost_usd": "0.023998",
+        "cost_per_100_items_usd": "2.399800"
+      }
+    }
+  },
+  "notes": [
+    "Caveats come from the product's deterministic renderer over the harness's own synthetic gap rows, not from the model (E-d, E-p): the two caveat metrics are an ungated wiring regression check. Recall and language are measured on the per-chat summary (the summarize output), not on the owner-facing reply."
+  ],
+  "details": [
+    {
+      "id": "c28",
+      "variant": "en",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 4,
+        "decisions_requested": 1,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c28.q2": null,
+        "c28.c1": null,
+        "c28.c2": null
+      },
+      "open_loop_keys": {
+        "c28.q2": "c28.q2#66d83a39",
+        "c28.c1": "c28.c1#66d83a39",
+        "c28.c2": "c28.c2#66d83a39"
+      },
+      "open_loops_judged": {
+        "c28.q2": true,
+        "c28.c1": true,
+        "c28.c2": true
+      },
+      "open_loops_evidence": {
+        "c28.q2": "- Laylo is waiting for your decision: 2026-10-25 17:00 ga o‘quv xonasini band qilish mumkinmi?",
+        "c28.c1": "- Agreed with Laylo: Laylo will do it: Kirish qismi va so‘rov ma’lumotlari uchun 1–4-slaydlarni tayyorlash.",
+        "c28.c2": "- Agreed with Laylo: you will do it: Tahlil va tavsiyalar uchun 5–9-slaydlarni tayyorlash. (due: 2026-10-24 kechqurun)"
+      },
+      "open_loops_unquoted": [],
+      "open_loops_near_quotes": [],
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c28#ae8d9fb3",
+          "reason": "unsupported",
+          "evidence": [
+            "c28.m02"
+          ],
+          "statement": "Laylo promised you: Yakuniy slaydlar bo‘yicha mashq qilish.",
+          "status": "pending_owner"
+        },
+        {
+          "id": "c28#e7a46390",
+          "reason": "unsupported",
+          "evidence": [
+            "c28.m05"
+          ],
+          "statement": "O‘quv xonasini band qilish (due: 2026-10-25 17:00).",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Siz va Laylo taqdimot slaydlarini bo‘lib oldingiz. Taqdimot va yakuniy slaydlar muddati belgilandi; Laylo diagrammalarni yukladi. O‘quv xonasini band qilish va kutubxonaga kirish huquqingiz haqidagi savollar ochiq qoldi.\nKutubxonaga kirish huquqi hali bormi?\nKirish qismi va so‘rov ma’lumotlari uchun 1–4-slaydlarni tayyorlash.\nTahlil va tavsiyalar uchun 5–9-slaydlarni tayyorlash. 2026-10-24 kechqurun\n2026-10-25 17:00 ga o‘quv xonasini band qilish. 2026-10-25 17:00\nYakuniy slaydlar bo‘yicha mashq qilish.\n2026-10-25 17:00 ga o‘quv xonasini band qilish mumkinmi?\nProfessor Usmonov taqdimotni 2026-10-26, dushanba 09:00 ga ko‘chirdi.\nYakuniy slaydlar 2026-10-25, yakshanba 21:00 gacha tayyor bo‘lishi kerak.\nSo‘rovga 126 ta javob kelgan; diagrammalar umumiy papkaga yuklangan.\nProfessor taqdimotga ko‘pi bilan 12 daqiqa ajratgan, undan keyin to‘xtatadi.\nLaylo sizdan o‘quv xonasini band qilish va kutubxonaga kirish huquqingiz bor-yo‘qligini so‘radi.",
+      "summary_labelled": "Overview: Siz va Laylo taqdimot slaydlarini bo‘lib oldingiz. Taqdimot va yakuniy slaydlar muddati belgilandi; Laylo diagrammalarni yukladi. O‘quv xonasini band qilish va kutubxonaga kirish huquqingiz haqidagi savollar ochiq qoldi.\nOpen questions to the owner:\n- Laylo asks you: Kutubxonaga kirish huquqi hali bormi?\nCommitments not yet done:\n- Agreed with Laylo: Laylo will do it: Kirish qismi va so‘rov ma’lumotlari uchun 1–4-slaydlarni tayyorlash.\n- Agreed with Laylo: you will do it: Tahlil va tavsiyalar uchun 5–9-slaydlarni tayyorlash. (due: 2026-10-24 kechqurun)\n- Laylo asks you to (not agreed yet): 2026-10-25 17:00 ga o‘quv xonasini band qilish. (due: 2026-10-25 17:00)\n- Laylo promised you: Yakuniy slaydlar bo‘yicha mashq qilish.\nDecisions requested from the owner:\n- Laylo is waiting for your decision: 2026-10-25 17:00 ga o‘quv xonasini band qilish mumkinmi?\nKey facts:\n- Professor Usmonov taqdimotni 2026-10-26, dushanba 09:00 ga ko‘chirdi.\n- Yakuniy slaydlar 2026-10-25, yakshanba 21:00 gacha tayyor bo‘lishi kerak.\n- So‘rovga 126 ta javob kelgan; diagrammalar umumiy papkaga yuklangan.\n- Professor taqdimotga ko‘pi bilan 12 daqiqa ajratgan, undan keyin to‘xtatadi.\nNeeds a reply from the owner: yes - Laylo sizdan o‘quv xonasini band qilish va kutubxonaga kirish huquqingiz bor-yo‘qligini so‘radi."
+    }
+  ]
+}
