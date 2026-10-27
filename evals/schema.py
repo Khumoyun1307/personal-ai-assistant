@@ -20,12 +20,15 @@ expected caveat.
 from __future__ import annotations
 
 import re
+import sys
 import unicodedata
+from collections import Counter
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Literal, Self, get_args
+from typing import Annotated, Literal, Self, get_args
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 DATASETS = Path(__file__).resolve().parent / "datasets"
 E1_PATH = DATASETS / "e1" / "conversations.jsonl"
@@ -396,6 +399,266 @@ def load_queries(path: Path = RETRIEVAL_PATH) -> list[RetrievalQuery]:
     return [RetrievalQuery.model_validate_json(line) for line in lines if line.strip()]
 
 
+# ------------------------------------------------------------------------ E2 drafts
+#
+# E2 (P2 spec E2 §A.4) is one reply situation per line in
+# `datasets/e2/situations.jsonl`: a point in a synthetic chat where the owner may
+# want a reply, with the expected behaviour as labels. A situation either cuts
+# an existing E1 chat after one of its contact messages (`source`) or brings a
+# new chat of its own (`conversation`) carrying a `canary` — an invented string
+# no other situation's draft may ever contain. Coverage minimums are a test
+# (test_e2_dataset), not a load error, so partial data loads while authoring.
+
+E2_PATH = DATASETS / "e2" / "situations.jsonl"
+
+E2Tag = Literal[
+    "no_reply_needed",  # the last message needs no answer ("ok", "rahmat")
+    "injection",  # contact text tries to instruct the assistant
+    "commitment_bait",  # the contact pushes for a date/price/promise not in context
+    "sensitive",  # health, money trouble, family conflict
+    "decision_needed",  # only the owner can decide
+    "ambiguous",
+    "long_context",
+]
+E2_TAGS: tuple[E2Tag, ...] = get_args(E2Tag)
+
+DraftIntent = Literal[
+    "answer_question",
+    "confirm",
+    "decline",
+    "ask_clarification",
+    "acknowledge",
+    "defer_to_owner",
+    "no_reply_needed",
+]
+DRAFT_INTENTS: tuple[DraftIntent, ...] = get_args(DraftIntent)
+
+MustNotKind = Literal[
+    "commitment",  # a promise the context does not support
+    "date",
+    "amount",
+    "other_conversation",  # anything from another chat
+    "personal_data",
+    "claim_human",
+]
+MUST_NOT_KINDS: tuple[MustNotKind, ...] = get_args(MustNotKind)
+
+ReplyLanguage = Literal["match", "uz-Latn", "uz-Cyrl", "ru", "en"]
+
+_SITUATION_ID = re.compile(r"^s\d{3}$")
+_E2_MESSAGE_ID = re.compile(r"^(s\d{3})\.m\d{2}$")
+
+
+class E2Source(_Strict):
+    """The draft is written right after `cut_after`, a contact message of an
+    existing E1 chat; the chat is shown up to and including it."""
+
+    e1_conversation: str = Field(pattern=_CONVERSATION_ID.pattern)
+    cut_after: str = Field(pattern=_MESSAGE_ID.pattern)
+
+    @model_validator(mode="after")
+    def _cut_in_conversation(self) -> Self:
+        if not self.cut_after.startswith(f"{self.e1_conversation}."):
+            raise ValueError(f"cut_after {self.cut_after} is outside {self.e1_conversation}")
+        return self
+
+
+class E2Message(Message):
+    """E1's message format, with ids `<situation id>.mNN`."""
+
+    id: str = Field(pattern=_E2_MESSAGE_ID.pattern)
+
+
+class E2Conversation(_Strict):
+    """A new synthetic chat; it is shown entirely and ends with the contact."""
+
+    owner: Participant
+    contact: Participant
+    messages: list[E2Message] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> Self:
+        seen: set[str] = set()
+        previous: datetime | None = None
+        for message in self.messages:
+            if message.id in seen:
+                raise ValueError(f"{message.id}: duplicate message id")
+            if message.reply_to is not None and message.reply_to not in seen:
+                raise ValueError(f"{message.id}: reply_to must name an earlier message")
+            if previous is not None and message.sent_at < previous:
+                raise ValueError(f"{message.id}: messages must be in chronological order")
+            seen.add(message.id)
+            previous = message.sent_at
+        last = self.messages[-1]
+        if last.direction != "contact" or last.deleted:
+            raise ValueError(f"{last.id}: a new conversation ends with a contact message")
+        return self
+
+
+class OwnerPrefs(_Strict):
+    """The account's reply settings and reply style notes for this situation."""
+
+    reply_language: ReplyLanguage
+    reply_tone: Literal["neutral", "friendly", "formal"]
+    reply_style: Literal["brief", "detailed"]
+    style_notes: list[str] = Field(default_factory=list, max_length=3)
+
+
+class MustInclude(_Strict):
+    """A fact a good reply carries: a literal (folded) substring of `source`."""
+
+    fact: str = Field(min_length=1)
+    source: str
+
+
+class MustNot(_Strict):
+    kind: MustNotKind
+    #: What the reply must not contain, described for the judge.
+    text: str = Field(min_length=1)
+
+
+class Expected(_Strict):
+    needs_reply: bool
+    intent: DraftIntent
+    must_include: list[MustInclude] = Field(default_factory=list, max_length=3)
+    must_not: list[MustNot] = Field(default_factory=list, max_length=4)
+    #: True only when the context already holds the owner's agreement to what
+    #: the reply would confirm.
+    makes_commitment_ok: bool
+    sensitive_topic: bool
+
+    @model_validator(mode="after")
+    def _intent_matches_need(self) -> Self:
+        if (self.intent == "no_reply_needed") == self.needs_reply:
+            raise ValueError("intent is no_reply_needed exactly when needs_reply is false")
+        return self
+
+
+class E2Situation(_Strict):
+    id: str = Field(pattern=_SITUATION_ID.pattern)
+    variant: Variant
+    source: E2Source | None
+    conversation: E2Conversation | None
+    canary: Annotated[str, Field(min_length=5)] | None
+    owner_prefs: OwnerPrefs
+    contact_notes: list[str] = Field(default_factory=list, max_length=3)
+    expected: Expected
+    tags: list[E2Tag | Tag] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _integrity(self) -> Self:
+        if (self.source is None) == (self.conversation is None):
+            raise ValueError(f"{self.id}: give exactly one of source and conversation")
+        if (self.canary is None) != (self.conversation is None):
+            raise ValueError(f"{self.id}: a new conversation (only) carries a canary")
+        if ("no_reply_needed" in self.tags) == self.expected.needs_reply:
+            raise ValueError(f"{self.id}: tag no_reply_needed exactly when needs_reply is false")
+        if ("sensitive" in self.tags) != self.expected.sensitive_topic:
+            raise ValueError(f"{self.id}: tag sensitive exactly when sensitive_topic is true")
+        if len(set(self.tags)) != len(self.tags):
+            raise ValueError(f"{self.id}: duplicate tags")
+        if self.conversation is not None:
+            self._check_new_conversation(self.conversation)
+        return self
+
+    def _check_new_conversation(self, conversation: E2Conversation) -> None:
+        for message in conversation.messages:
+            match = _E2_MESSAGE_ID.match(message.id)
+            if match is None or match.group(1) != self.id:
+                raise ValueError(f"{message.id}: message ids are '{self.id}.mNN'")
+        check_must_include(self, conversation.messages)
+        canary = fold(self.canary or "")
+        holders = [m.id for m in conversation.messages if canary in fold(m.text or "")]
+        if len(holders) != 1:
+            raise ValueError(f"{self.id}: the canary must appear in exactly one message")
+
+    def shown_messages(self, e1: dict[str, Conversation]) -> list[Message]:
+        """The chat the drafter sees: all of a new conversation, or the E1 chat
+        up to and including `cut_after`."""
+        if self.conversation is not None:
+            return list(self.conversation.messages)
+        assert self.source is not None
+        messages = e1[self.source.e1_conversation].messages
+        cut = next(i for i, m in enumerate(messages) if m.id == self.source.cut_after)
+        return list(messages[: cut + 1])
+
+
+def check_must_include(situation: E2Situation, shown: Sequence[Message]) -> None:
+    """Every `must_include.fact` folds into the text of a message the drafter sees."""
+    by_id = {m.id: m for m in shown}
+    for item in situation.expected.must_include:
+        message = by_id.get(item.source)
+        if message is None:
+            raise ValueError(
+                f"{situation.id}: must_include cites {item.source}, not in the shown chat"
+            )
+        if message.text is None or fold(item.fact) not in fold(message.text):
+            raise ValueError(f"{situation.id}: fact {item.fact!r} is not in {item.source}")
+
+
+def check_e2(situations: Sequence[E2Situation], e1: Sequence[Conversation]) -> None:
+    """Integrity rules that span records or need E1 (raise ValueError)."""
+    ids = [s.id for s in situations]
+    if ids != [f"s{n:03d}" for n in range(1, len(ids) + 1)]:
+        raise ValueError("situation ids must be unique and consecutive from s001, in order")
+    chats = {c.id: c for c in e1}
+    for situation in situations:
+        if situation.source is None:
+            continue
+        chat = chats.get(situation.source.e1_conversation)
+        if chat is None:
+            raise ValueError(f"{situation.id}: unknown E1 chat {situation.source.e1_conversation}")
+        if chat.variant != situation.variant:
+            raise ValueError(f"{situation.id}: variant differs from its E1 chat's ({chat.variant})")
+        cut = {m.id: m for m in chat.messages}.get(situation.source.cut_after)
+        if cut is None or cut.direction != "contact" or cut.deleted:
+            raise ValueError(
+                f"{situation.id}: cut_after {situation.source.cut_after} is not a contact"
+                " message of its E1 chat"
+            )
+        check_must_include(situation, situation.shown_messages(chats))
+    _check_canaries(situations, e1)
+
+
+def _check_canaries(situations: Sequence[E2Situation], e1: Sequence[Conversation]) -> None:
+    """A canary occurs once in all of E2 (its own message) and nowhere in E1,
+    so finding it in any other draft can only mean a leak."""
+    texts: list[str] = [fold(text) for s in situations for text in _strings(s, skip="canary")]
+    texts += [
+        fold(text)
+        for conversation in e1
+        for message in conversation.messages
+        for text in (message.text, message.original_text, message.purged_text)
+        if text is not None
+    ]
+    for situation in situations:
+        if situation.canary is None:
+            continue
+        canary = fold(situation.canary)
+        if sum(text.count(canary) for text in texts) != 1:
+            raise ValueError(f"{situation.id}: canary {situation.canary!r} must occur once in E2")
+
+
+def _strings(value: object, *, skip: str) -> list[str]:
+    """Every string value in a model's JSON form, except the field `skip`."""
+    if isinstance(value, BaseModel):
+        value = value.model_dump(mode="json", exclude={skip})
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v, skip=skip)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v, skip=skip)]
+    return []
+
+
+def load_e2(path: Path = E2_PATH, e1: Sequence[Conversation] | None = None) -> list[E2Situation]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    situations = [E2Situation.model_validate_json(line) for line in lines if line.strip()]
+    check_e2(situations, load_e1() if e1 is None else e1)
+    return situations
+
+
 def script_of(text: str) -> Literal["latin", "cyrillic", "mixed", "none"]:
     """Which script a text is written in (letters only)."""
     latin = cyrillic = 0
@@ -410,11 +673,55 @@ def script_of(text: str) -> Literal["latin", "cyrillic", "mixed", "none"]:
     return "latin" if latin else "cyrillic" if cyrillic else "none"
 
 
+def e2_coverage(situations: Sequence[E2Situation]) -> dict[str, Counter[str]]:
+    """Per variant: situations, new conversations, tags, tones and styles."""
+    coverage: dict[str, Counter[str]] = {}
+    for situation in situations:
+        counts = coverage.setdefault(situation.variant, Counter())
+        counts["situations"] += 1
+        counts["new_conversations"] += situation.conversation is not None
+        counts.update(f"tag:{tag}" for tag in situation.tags)
+        counts[f"tone:{situation.owner_prefs.reply_tone}"] += 1
+        counts[f"style:{situation.owner_prefs.reply_style}"] += 1
+    return coverage
+
+
+def main(argv: list[str]) -> int:
+    """`python -m evals.schema e2 [<path>]`: validate E2 and print its coverage
+    (the coverage minimums themselves are checked by test_e2_dataset)."""
+    if not argv or argv[0] != "e2" or len(argv) > 2:
+        print("usage: python -m evals.schema e2 [<path>]")
+        return 2
+    path = Path(argv[1]) if len(argv) == 2 else E2_PATH
+    situations: list[E2Situation] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            situations.append(E2Situation.model_validate_json(line))
+        except ValidationError as error:
+            print(f"line {number}: {error}")
+            return 1
+    try:
+        check_e2(situations, load_e1())
+    except ValueError as error:
+        print(error)
+        return 1
+    for variant, counts in sorted(e2_coverage(situations).items()):
+        print(variant, ", ".join(f"{key}={value}" for key, value in sorted(counts.items())))
+    print(f"ok: {len(situations)} situations")
+    return 0
+
+
 __all__ = [
     "APOSTROPHES",
     "DATASETS",
+    "DRAFT_INTENTS",
     "E1_PATH",
+    "E2_PATH",
+    "E2_TAGS",
     "INTENTS",
+    "MUST_NOT_KINDS",
     "RETRIEVAL_PATH",
     "TAGS",
     "VARIANTS",
@@ -422,17 +729,37 @@ __all__ = [
     "Conversation",
     "CoverageGap",
     "Decision",
+    "DraftIntent",
+    "E2Conversation",
+    "E2Message",
+    "E2Situation",
+    "E2Source",
+    "E2Tag",
+    "Expected",
     "ExpectedCaveat",
     "KeyFact",
     "Labels",
     "Message",
+    "MustInclude",
+    "MustNot",
+    "MustNotKind",
     "MustNotState",
+    "OwnerPrefs",
     "Participant",
     "PromptInjection",
     "QuestionToOwner",
+    "ReplyLanguage",
     "RetrievalQuery",
+    "check_e2",
+    "check_must_include",
+    "e2_coverage",
     "fold",
     "load_e1",
+    "load_e2",
     "load_queries",
     "script_of",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

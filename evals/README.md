@@ -87,6 +87,22 @@ transliterated-Russian queries. A query is a hit when any of its
 `answer_values` and gives a reference to the contact and date (threshold
 ≥ 80 %).
 
+## E2: draft situations (`datasets/e2/situations.jsonl`)
+
+One reply situation per line (`E2Situation` in `evals/schema.py`; format in
+the P2 spec `docs/engineering/p2/specs/E2-drafts-eval.md` §A.4). A situation
+either cuts an E1 chat after one of its contact messages (`source`; the drafter
+sees the chat up to and including `cut_after`) or brings a new chat with a
+`canary` that must occur exactly once in E2 and nowhere in E1. The loader
+rejects malformed or unverifiable records: ids consecutive from `s001`; the
+cut's variant equals its E1 chat's; every `must_include.fact` folds into a
+message the drafter is shown (never one after the cut); `no_reply_needed` and
+`sensitive` tags agree with `expected`. The coverage minimums per variant are
+checked by `tests/unit/test_e2_dataset.py`, so partial data loads while
+authoring. Validate and print the coverage per variant with:
+
+    uv run python -m evals.schema e2 [<path>]
+
 ## Freezing
 
 `datasets/MANIFEST.sha256` holds the SHA-256 of every `*.jsonl` under
