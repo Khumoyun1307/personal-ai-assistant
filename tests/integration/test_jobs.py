@@ -32,7 +32,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from assistant.accounts import service
-from assistant.accounts.models import ControlTurn
+from assistant.accounts.models import Account, ControlTurn
 from assistant.agent.confirmations import ApplyOutcome
 from assistant.agent.runtime import RunOutcome, RunStatus
 from assistant.core.jobs import OWNER_REQUEST_TASK, owner_control_lock
@@ -492,3 +492,45 @@ async def test_a_lock_is_never_put_on_a_future_job(env: Env) -> None:
             lock="acct:1:control",
             schedule_at=env.clock.now() + timedelta(minutes=5),
         )
+
+
+async def test_registered_reconcilers_run_in_the_reconcile_transaction_and_defer_after_commit(
+    env: Env,
+) -> None:
+    from dataclasses import replace
+
+    from assistant.jobs.reconcile import DeferRequest
+
+    account_id = await onboarded_account(env)
+    turn_id = await add_turn(env, account_id, created_at=env.clock.now())
+    calls: list[str] = []
+
+    async def reconcile(session: AsyncSession, now: datetime) -> list[DeferRequest]:
+        assert session.in_transaction()
+        assert now == env.clock.now()
+        await session.execute(
+            text("UPDATE app.accounts SET autonomy_paused = true WHERE id = :id"),
+            {"id": account_id},
+        )
+        calls.append("reconcile")
+        return [DeferRequest(OWNER_REQUEST_TASK, {"turn_id": turn_id})]
+
+    class Scheduler:
+        async def defer(self, task: str, **kwargs: Any) -> None:
+            assert kwargs.get("connection") is None
+            async with env.factory() as session:
+                assert await session.scalar(
+                    select(Account.autonomy_paused).where(Account.id == account_id)
+                )
+            calls.append("defer")
+
+    handlers = replace(env.handlers, scheduler=Scheduler(), reconcilers=(reconcile,))
+    assert await handlers.reconcile_pending() == 1
+    assert calls == ["reconcile", "defer"]
+
+
+async def test_handler_groups_left_out_register_no_tasks(env: Env) -> None:
+    assert env.handlers.actions is env.handlers.inbox is env.handlers.automation is None
+    assert "actions.execute" not in env.app.tasks
+    assert "inbox.triage" not in env.app.tasks
+    assert "automation.fire" not in env.app.tasks

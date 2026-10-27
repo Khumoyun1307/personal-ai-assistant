@@ -16,7 +16,6 @@ retried forever. Getting this backwards either loses messages or spins.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 
 from aiogram.exceptions import (
     TelegramAPIError,
@@ -32,22 +31,7 @@ from aiogram.exceptions import (
     TelegramUnauthorizedError,
 )
 
-
-class ErrorClass(StrEnum):
-    """How the caller should react. Ordered roughly by severity."""
-
-    OK = "ok"
-    RATE_LIMITED = "rate_limited"
-    WINDOW_CLOSED = "window_closed"
-    PEER_UNAVAILABLE = "peer_unavailable"
-    CONNECTION_INVALID = "connection_invalid"
-    CHAT_UNREACHABLE = "chat_unreachable"
-    FORBIDDEN = "forbidden"
-    CONFLICT = "conflict"
-    BAD_REQUEST = "bad_request"
-    TRANSIENT = "transient"
-    AMBIGUOUS = "ambiguous"
-
+from assistant.core.delivery import ErrorClass as ErrorClass
 
 #: Classes that mean "try again later"; the work stays pending and does not
 #: count as an attempt (§6.2).

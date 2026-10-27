@@ -10,6 +10,8 @@ traffic. No Bot API call is made here (the bootstrap lookup stays in
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +21,7 @@ from assistant.conversations.events import (
     IgnoredUpdate,
     ObservedDeletion,
 )
+from assistant.conversations.listeners import DeletionChange, IngestionListener, MessageChange
 from assistant.core.clock import Clock
 from assistant.core.routing import Disposition, RouteDecision
 from assistant.inbox.models import InboundUpdate
@@ -44,6 +47,7 @@ class BusinessPipeline:
         *,
         bot_id: int,
         summaries: SummaryRefreshTrigger | None = None,
+        listeners: Sequence[IngestionListener] = (),
     ) -> None:
         self._registry = registry
         self._clock = clock
@@ -51,6 +55,7 @@ class BusinessPipeline:
         #: Defers the debounced summary refresh after the commit (S03.2);
         #: None while background refreshes are off (flag `summary.refresh`).
         self._summaries = summaries
+        self._listeners = tuple(listeners)
 
     async def handle(
         self, session: AsyncSession, row: InboundUpdate, decision: RouteDecision
@@ -90,6 +95,15 @@ class BusinessPipeline:
             elif outcome.content_lost_ids and self._summaries is not None:
                 # A covering summary was dropped and must be rebuilt.
                 self._summaries.after_new_content(session, outcome.conversation_id)
+            change = DeletionChange(
+                account_id=account_id,
+                conversation_id=outcome.conversation_id,
+                message_ids=outcome.content_lost_ids,
+                assistant_sent_ids=outcome.assistant_sent_ids,
+                metadata_only=outcome.metadata_only,
+            )
+            for listener in self._listeners:
+                await listener.on_deletion(session, change)
             await service.resolve_ingest_failure(
                 session, account_id=account_id, inbound_update_id=row.id, clock=self._clock
             )
@@ -112,6 +126,20 @@ class BusinessPipeline:
         ):
             # New content: a debounced refresh, deferred after the commit.
             self._summaries.after_new_content(session, result.conversation_id)
+        message_change = MessageChange(
+            account_id=account_id,
+            conversation_id=result.conversation_id,
+            message_id=result.message_id,
+            direction=event.direction,
+            effect=result.effect,
+            is_edit=event.is_edit,
+            metadata_only=result.metadata_only,
+            mode=result.mode,
+            sent_at=event.sent_at,
+            content_changed=result.content_changed,
+        )
+        for listener in self._listeners:
+            await listener.on_message(session, message_change)
         await service.resolve_ingest_failure(
             session, account_id=account_id, inbound_update_id=row.id, clock=self._clock
         )

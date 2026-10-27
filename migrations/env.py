@@ -16,7 +16,9 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # Importing the model modules registers every table on Base.metadata.
 # Without these imports autogenerate would cheerfully propose dropping them.
 import assistant.accounts.models
+import assistant.actions.models
 import assistant.agent.models
+import assistant.automation.models
 import assistant.conversations.models
 import assistant.db.models
 import assistant.inbox.models

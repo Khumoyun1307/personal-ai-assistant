@@ -60,11 +60,16 @@ from assistant.inbox.policy_notice import deliver_policy_update_notices
 from assistant.inbox.watchdog import STALL_AFTER, check_ingestion, poller_heartbeat_at
 from assistant.jobs.app import QUEUE_LLM, QUEUE_SYSTEM, STALLED_WORKER_TIMEOUT
 from assistant.jobs.reconcile import (
+    DeferRequest,
+    Reconciler,
     fail_interrupted_confirmations,
     unapplied_confirmations,
     unqueued_owner_turns,
     unqueued_summary_refreshes,
 )
+from assistant.jobs.tasks_actions import ActionsJobHandlers, register_actions_tasks
+from assistant.jobs.tasks_automation import AutomationJobHandlers, register_automation_tasks
+from assistant.jobs.tasks_inbox import InboxJobHandlers, register_inbox_tasks
 from assistant.memory import summaries
 from assistant.observability import heartbeat
 from assistant.observability.logging import get_logger
@@ -165,6 +170,10 @@ class JobHandlers:
     backup_upload_required: bool = False
     #: Linked from the policy-update notice (AGENTS §16).
     privacy_policy_url: str | None = None
+    actions: ActionsJobHandlers | None = None
+    inbox: InboxJobHandlers | None = None
+    automation: AutomationJobHandlers | None = None
+    reconcilers: tuple[Reconciler, ...] = ()
 
     async def delete_data(
         self,
@@ -289,12 +298,23 @@ class JobHandlers:
                 if self.summaries_enabled
                 else []
             )
+            requests: list[DeferRequest] = []
+            for reconciler in self.reconcilers:
+                requests.extend(await reconciler(uow.session, self.clock.now()))
         # After the commit, without a connection: a queueing-lock conflict
         # inside the transaction would abort it. Scheduled one debounce out,
         # so a chat whose refresh keeps failing is retried at that pace.
         resummarize_at = self.clock.now() + self.summary_debounce
         for conversation_id in stale_summaries:
             await summaries.defer_refresh(self.scheduler, conversation_id, at=resummarize_at)
+        for request in requests:
+            await self.scheduler.defer(
+                request.task,
+                args=request.args,
+                lock=request.lock,
+                queueing_lock=request.queueing_lock,
+                schedule_at=request.schedule_at,
+            )
         if stale_summaries:
             logger.warning("summary_refreshes_redeferred", count=len(stale_summaries))
         if lost:
@@ -310,7 +330,7 @@ class JobHandlers:
                 dedupe_key=f"confirmation:{confirmation_id}:interrupted",
                 tool=html.escape(tool_name),
             )
-        return len(lost) + len(unapplied) + len(interrupted) + len(stale_summaries)
+        return len(lost) + len(unapplied) + len(interrupted) + len(stale_summaries) + len(requests)
 
     async def retention_sweep(self) -> SweepReport:
         report = await sweep_all(
@@ -337,6 +357,14 @@ class JobHandlers:
                 period_summaries=report.period_summaries,
                 forgotten_memories=report.forgotten_memories,
                 rollups_scheduled=report.rollups_scheduled,
+                action_texts=report.action_texts,
+                actions=report.actions,
+                tasks=report.tasks,
+                triage_verdicts=report.triage_verdicts,
+                automations=report.automations,
+                occurrences=report.occurrences,
+                digests=report.digests,
+                notifications=report.notifications,
             )
         return report
 
@@ -359,6 +387,9 @@ def _seconds(value: object) -> int | None:
 
 def register_tasks(app: App, handlers: JobHandlers) -> None:
     """Bind the catalogue to the app. Called once, by bootstrap."""
+    register_actions_tasks(app, handlers.actions)
+    register_inbox_tasks(app, handlers.inbox)
+    register_automation_tasks(app, handlers.automation)
 
     @app.task(name=OWNER_REQUEST_TASK, queue=QUEUE_LLM, retry=OWNER_REQUEST_RETRY)
     async def owner_request(turn_id: int) -> None:

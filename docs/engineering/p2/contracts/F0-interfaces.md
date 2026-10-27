@@ -131,8 +131,9 @@ class Freshness:            newest_owner_manual_sent_at: datetime | None   # max
 @dataclass(frozen=True, slots=True)
 class IngestionState:       pending_inbound: int; barrier_passed: bool
     # barrier_passed (R1): system_state['ingestion_barrier'] holds {"process_run_id", "caught_up_at"}.
-    # bootstrap.running_process (F0) generates process_run_id and commits it with caught_up_at = null
-    # BEFORE any role starts; the poller sets caught_up_at for that run id when a poll returns fewer than
+    # bootstrap.running_process (F0) generates process_run_id and, in a process with the poller role, commits
+    # it with caught_up_at = null right after the poller lock is acquired and BEFORE any role starts (P2-T36:
+    # a process that fails the lock never overwrites the live run's barrier); the poller sets caught_up_at for that run id when a poll returns fewer than
     # `limit` updates (S04.4). Passed <=> stored run id == this process's run id AND caught_up_at is set.
     # A process without the poller role never passes (fail closed).
 @dataclass(frozen=True, slots=True)
@@ -361,8 +362,10 @@ class NotificationRefs:  # ids only
 async def enqueue(session, *, account_id: int, kind: NotificationKind, priority: Priority, dedupe_key: str,
                   refs: NotificationRefs, clock: Clock, alert_class: AlertClass = AlertClass.STANDARD,
                   conversation_id: int | None = None, contact_id: int | None = None,
-                  bypass_quiet_hours: bool = False) -> int | None   # None = deduplicated
+                  bypass_quiet_hours: bool = False,
+                  scheduler: JobScheduler | None = None) -> int | None   # None = deduplicated
 ```
+`scheduler` (P2-T40): when given, `enqueue` defers `notify.deliver` after commit; every production caller passes it (S05.1 effects, S05.4's listener and evaluator, `OwnerAlerts` at CP4). `None` (tests) leaves the row to the notifications reconciler.
 `enqueue` inserts the row (`ON CONFLICT (account_id, dedupe_key) DO NOTHING`) and registers an after-commit defer of `notify.deliver`; the policy decision happens at delivery. Dedupe keys are built from ids and enums only (e.g. `triage:{conversation_id}:{covers_through_message_id}:urgent`).
 
 `inbox/notify.py::AlertKind` gains (F0): `DELIVERY_UNCERTAIN = "delivery_uncertain"`, `CONNECTION_STALE = "connection_stale"` (their texts are added by S04.4). M04 uses `OwnerAlerts.notify_owner` for them. At CP4, S05.2 routes `OwnerAlerts.notify_owner` itself through `notifications` (class `system`); **callers do not change**, dedupe keeps reading the `system_alert` audit rows, and an uncertain outcome counts as delivered (R10, P2-T24; S05.2 §3.5 is the definition).
@@ -399,7 +402,7 @@ Every contact-triggered run follows `agent/summarize.py` exactly: `LLMClient.par
 
 New schemas and builders go in the new modules above, never into `agent/schemas.py` or `agent/context.py` (P2-T16). Prompts are `agent/prompts/<name>.vN.md`, registered in `agent/prompt_registry.py`; a used version is never edited (AGENTS §8).
 
-**Tool plumbing (F0).** So that tool units never edit the registry's types: `ToolServices` (in `agent/tools/registry.py`) gains optional fields `drafter: Drafter | None = None` (S04.2's `agent/drafting.py`, imported under `TYPE_CHECKING`), `approval_cards: ApprovalCardPresenter | None = None`, `actions_config: ActionsConfig | None = None`, `notifications_enabled: bool = False`; `ToolContext` gains `turn_id: int | None = None`, which `OwnerRequestRuntime` sets to the control turn the run answers (a one-line change in `agent/runtime.py`, made by F0). A tool whose service is `None` returns a factual `"error"` ("not available") rather than failing.
+**Tool plumbing (F0).** So that tool units never edit the registry's types: `ToolServices` (in `agent/tools/registry.py`) gains optional fields `drafter: Drafter | None = None` (S04.2's `agent/drafting.py`, imported under `TYPE_CHECKING`), `approval_cards: ApprovalCardPresenter | None = None`, `actions_config: ActionsConfig | None = None`, `notifications_enabled: bool = False`; `ToolContext` gains `turn_id: int | None = None`, which `OwnerRequestRuntime` sets to the control turn the run answers (a one-line change in `agent/runtime.py`, made by F0). `OwnerRequestRuntime` builds `ToolServices` itself, so F0 also gives its constructor matching optional keyword parameters (`drafter=None`, `approval_cards=None`, `actions_config=None`, `notifications_enabled=False`, like the existing `summarizer`) and passes them into `ToolServices`; `bootstrap.py` fills them from the `_wire_m04`/`_wire_m05` blocks. This pass-through is F0's second and last edit of `agent/runtime.py`; units never edit it (P2-T32). A tool whose service is `None` returns a factual `"error"` ("not available") rather than failing.
 
 **Tools** (registered in `agent/tools/registry.py::default_registry`; run type `owner_request`; tier `CONTROL_ONLY`; release flag default off; ARCHITECTURE §8.3 contract; AGENTS §8 test list for each):
 
@@ -421,7 +424,7 @@ New schemas and builders go in the new modules above, never into `agent/schemas.
 
 **Environment settings (F0 adds to `config.py` and `.env.example` with these defaults):** `APPROVAL_MAX_AGE_HOURS=12` (1–24); `DRAFT_DEBOUNCE_SECONDS=20` (5–300); `TRIAGE_DEBOUNCE_SECONDS=20` (5–300); `MONITOR_DEBOUNCE_SECONDS=20` (5–300); `LLM_DRAFT_REPLY_EFFORT=low`, `LLM_TRIAGE_EFFORT=low`, `LLM_EVALUATE_MONITOR_EFFORT=low` (same `Literal` as the existing effort settings; empty sends none); `MARK_UNCERTAIN_AFTER_SECONDS=120` (≥ 120; S04.4 uses `max(this, gateway timeout + max throttle wait + 30 s)`); `CONNECTION_STALE_ALERT_MINUTES=30`.
 
-**`ActionsConfig` (`actions/config.py`, F0; built once in `bootstrap.py`):** `approval_max_age: timedelta`, `draft_debounce: timedelta`, `mark_uncertain_after: timedelta`, `connection_stale_alert_after: timedelta`, `sending_enabled: bool` (flag `actions.send`), `process_run_id: str` (R1), `assist_draft_trigger: Literal["off", "ingestion", "triage"]` = `actions/drafts.py::assist_trigger(flags)`: `"off"` without `assist.drafts`; `"triage"` when `assist.drafts`, `triage.run` and `triage.assist_trigger` are all on; otherwise `"ingestion"`. This is the **single** Assist-trigger switch (P2-O6): the M04 listener defers drafts only on `"ingestion"`, the M05 triage effects only on `"triage"`.
+**`ActionsConfig` (`actions/config.py`, F0; built once in `bootstrap.py`):** `approval_max_age: timedelta`, `draft_debounce: timedelta`, `mark_uncertain_after: timedelta`, `connection_stale_alert_after: timedelta`, `sending_enabled: bool` (flag `actions.send`), `process_run_id: str` (R1), `draft_route_model: str` (the model the `draft_reply` route resolves to through `core/model_routes.py` — `LLM_ROUTE_DRAFT_REPLY_MODEL` or the default; S04.1's loader checks that `ai_managed` names its processor, P2-T33), `assist_draft_trigger: Literal["off", "ingestion", "triage"]` = `actions/drafts.py::assist_trigger(flags)`: `"off"` without `assist.drafts`; `"triage"` when `assist.drafts`, `triage.run` and `triage.assist_trigger` are all on; otherwise `"ingestion"`. This is the **single** Assist-trigger switch (P2-O6): the M04 listener defers drafts only on `"ingestion"`, the M05 triage effects only on `"triage"`.
 
 **Owner preferences (`accounts.settings`, validated in `accounts/preferences.py`; F0 adds keys, validators and defaults — PRD Q-07):** `quiet_hours` (`"HH:MM-HH:MM"` local, or `"off"`; default `"23:00-08:00"`); `urgent_bypass` (bool; default false); `digest_time` (`"HH:MM"` local or `"off"`; default `"21:00"`); `alert_cap_per_hour` (1–30; default 6). Reading an unset key gives the default; an invalid stored value reads as the default (fail safe, M03 D85 pattern). `preferences.update(...)` and `preferences.current(...)` accept and return the new keys (F0), with the existing audit/Undo behaviour.
 
@@ -479,12 +482,12 @@ Other M04 events: `assistant_message_deleted`, `draft_skipped` and `draft_failed
 | `agent/untrusted.py` | Viro (S04.2 adds `Source.DRAFT`); others append `Source` members only | Append only |
 | `telegram/control/panels.py` | Viro (conversation panel: Assist button), Junior (S05.2P: settings sections, priority row) | Separate functions; integrator resolves textual conflicts |
 | `jobs/tasks.py`, `jobs/reconcile.py` | F0 only | Per-domain modules for everything new |
-| `bootstrap.py` | M04 units inside `_wire_m04`, M05 units inside `_wire_m05`; S04.4 also sets the `Bot` session's 20 s request timeout and passes the owner allowlist to the poller (fast lane) | Nothing else outside the blocks |
+| `bootstrap.py` | M04 units inside `_wire_m04`, M05 units inside `_wire_m05` — both hooks receive `llm: LLMClient \| None` (built once, before the hooks, only when the `worker` or `system` role runs; reused for the owner runtime and the summarizer) and `roles: frozenset[str]` (P2-T35); S04.4 also sets the `Bot` session's 20 s request timeout and passes the owner allowlist to the poller (fast lane) | Nothing else outside the blocks |
 | `config.py`, `.env.example` | F0 | New settings via ICR |
 | `accounts/preferences.py` | F0 (M05 keys) | Via ICR |
 | `agent/tools/registry.py` | Each tool's owner adds its import and list entry | Append only |
 | `agent/prompt_registry.py` | Each run owner adds its entry; the `owner_request` entry only by the steward unit (P2-T17) | |
-| `agent/runtime.py`, `agent/tools/executor.py`, `agent/schemas.py`, `agent/context.py` | Nobody without an ICR — except F0's `ToolContext.turn_id` line in `runtime.py` | S03.7 owns their current shape |
+| `agent/runtime.py`, `agent/tools/executor.py`, `agent/schemas.py`, `agent/context.py` | Nobody without an ICR — except F0's `ToolContext.turn_id` line and `ToolServices` pass-through in `runtime.py` (P2-T32) | S03.7 owns their current shape |
 | `agent/tools/summaries.py`, `memory/catch_up.py` | S04.5 (catch-up activity block), S05.1 (attention v2) | Separate functions |
 | `inbox/notify.py` | F0 (AlertKind members), S04.4 (the texts of its two kinds), S05.2 | |
 | `memory/undo.py` | S05.2 (a revert branch for `contact_priority_changed`) | Add a branch; never change existing ones |

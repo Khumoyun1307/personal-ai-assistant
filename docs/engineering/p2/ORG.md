@@ -6,8 +6,8 @@
 
 | Role | Person | Accountable for | Not responsible for |
 |---|---|---|---|
-| **Owner** | the owner | Product decisions, approvals, merges into `main`, production go-aheads, live-window client steps, eval budget, milestone acceptance | Implementation details |
-| **Technical Lead** | TL (Claude session) | Specs and contracts; architecture and safety sign-off on every PR; integration merges into `int/*`; interface change requests; decision log; coordinating owner gates and live windows; daily integration summary; deploys on the owner's go-ahead; P3 plan | Writing feature code (only fixes to its own docs/specs) |
+| **Owner** | the owner | Product decisions, approvals, merging `int/m04` and `int/m05` into `main`, production go-aheads, live-window client steps, eval budget, milestone acceptance | Implementation details |
+| **Technical Lead** | TL (Claude session) | Specs and contracts; architecture and safety sign-off on every PR; merging unit PRs into `int/*` and P2's other PRs (F0, docs, datasets) into `main` (P2-O13); interface change requests; decision log; coordinating owner gates and live windows; daily integration summary; deploys on the owner's go-ahead; P3 plan | Writing feature code (only fixes to its own docs/specs) |
 | **Send-path engineer, schema steward** | Neryn (Claude) | F0, S04.1, S04.4; Alembic revision numbers; content-column/retention/cascade correctness; ARCHITECTURE §6.5, §6.6, §6.8, §9.1–§9.4, §10, §13, §15.6 | M05 features |
 | **Product-flow engineer** | Viro (Codex) | S04.2, S04.3, E2T, S05.4; both `owner_request` prompt bumps (P2-T17); ARCHITECTURE §6.7 approval-card paragraph, §7 drafting rows, §9.5; mentoring Junior on M04 units | Send-path internals (reviews them) |
 | **M05 stream engineer** | Jack (Claude) | S05.1, S05.2, S05.3b, E3T; M05 model comparison; mentoring Junior on M05 units | M04 features |
@@ -22,7 +22,7 @@ R = does the work · A = accountable (merges or signs off) · C = consulted (rev
 
 | Unit | Neryn | Viro | Jack | Junior | Antony | TL | Owner |
 |---|---|---|---|---|---|---|---|
-| F0 | R | C | C | I | C | A | merges `main` |
+| F0 | R | C | C | I | C | A (merges to `main`, P2-O13) | I |
 | S04.1, S04.4 | R | C | I | I | C | A | I |
 | S04.2, S04.3, E2T | C | R | I | I | C | A | I |
 | S04.5 | I | C (mentor) | I | R | C | A | I |
@@ -37,7 +37,7 @@ R = does the work · A = accountable (merges or signs off) · C = consulted (rev
 
 ## 3. Review matrix
 
-Every PR gets **four reviews**: the peer below, Antony (QA), the TL, and — for `main` — the owner's merge. Peers come from a different model family where possible, so the review is not anchored on the author's own reasoning.
+Every PR gets **four reviews**: the peer below, Antony (QA), the TL, and — for an integration branch into `main` — the owner's merge. Peers come from a different model family where possible, so the review is not anchored on the author's own reasoning.
 
 | Author | Peer reviewer | Second reader for safety-critical PRs |
 |---|---|---|

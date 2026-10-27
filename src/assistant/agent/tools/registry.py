@@ -32,6 +32,9 @@ from assistant.core.clock import Clock
 from assistant.llm.port import ToolSpec
 
 if TYPE_CHECKING:
+    from assistant.actions.config import ActionsConfig
+    from assistant.actions.ports import ApprovalCardPresenter
+    from assistant.agent.drafting import Drafter  # type: ignore[import-untyped, unused-ignore]
     from assistant.agent.summarize import Summarizer
 
 
@@ -83,6 +86,10 @@ class ToolServices:
     #: The `summarize` run type (S03.2), for catch-up and attention tools;
     #: None where no summary can be made (those tools then say so).
     summarizer: Summarizer | None = None
+    drafter: Drafter | None = None
+    approval_cards: ApprovalCardPresenter | None = None
+    actions_config: ActionsConfig | None = None
+    notifications_enabled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +154,8 @@ class ToolContext:
     #: all of them (a job re-created by the reconciler; the runtime then asks
     #: the owner to send an emptied question again).
     turn_cutoff: int | None = None
+    #: The owner turn this run answers (retried-turn proposal idempotency).
+    turn_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

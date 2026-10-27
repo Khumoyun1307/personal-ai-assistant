@@ -35,6 +35,62 @@ async def _mark_restored(env: Env) -> None:
         uow.session.add(SystemState(key=KEY_RESTORE_PENDING, value={"file": "synthetic.dump.age"}))
 
 
+async def test_post_restore_cancels_pending_actions_and_marks_executing_uncertain(env: Env) -> None:
+    from assistant.actions.models import Action
+    from tests.integration.test_action_lifecycle_bulk import seed_actions
+
+    account_id, _, ids = await seed_actions(env)
+    report = await post_restore(
+        env.factory, env.clock, backup_taken_at=env.clock.now() - timedelta(hours=1)
+    )
+    assert report.actions_cancelled == 4
+    assert report.actions_uncertain == 1
+    async with env.factory() as session:
+        rows = {row.id: row for row in await session.scalars(select(Action))}
+        for state in ("proposed", "awaiting_approval", "approved", "scheduled"):
+            action = rows[ids[state]]
+            assert action.state == "cancelled"
+            assert action.state_reason == "restored_from_backup"
+            assert action.approval_token is None
+        assert rows[ids["executing"]].state == "delivery_uncertain"
+        assert rows[ids["succeeded"]].state == "succeeded"
+        notice = await session.get(SystemState, KEY_RESTORE_NOTICE)
+        assert notice is not None
+        assert len(notice.value["actions"][str(account_id)]["cancelled"]) == 4
+        assert notice.value["actions"][str(account_id)]["uncertain"][0]["id"] == ids["executing"]
+
+
+async def test_restore_notice_lists_only_its_accounts_action_ids_and_local_times(env: Env) -> None:
+    from tests.integration.test_action_lifecycle_bulk import seed_actions
+
+    account_id, _, ids = await seed_actions(env)
+    other_account, _, other_ids = await seed_actions(env, user_id=7000080002)
+    async with env.factory() as session, session.begin():
+        first = await session.get(Account, account_id)
+        second = await session.get(Account, other_account)
+        assert first is not None
+        assert second is not None
+        first.control_chat_id = 7000080001
+        first.timezone = "America/Phoenix"
+        second.control_chat_id = 7000080002
+        second.timezone = "synthetic-invalid-timezone"
+    await post_restore(env.factory, env.clock, backup_taken_at=env.clock.now() - timedelta(hours=1))
+    channel = FakeChannel()
+    assert await deliver_restore_notice(env.factory, OwnerAlerts(env.factory, channel, env.clock))
+    assert set(channel.recipients) == {account_id, other_account}
+    sent = dict(zip(channel.recipients, channel.sends, strict=True))
+    assert "2026-10-18 05:00 MST" in sent[account_id]
+    assert "2026-10-18 12:00 UTC" in sent[other_account]
+    for owner, own_ids, foreign_ids in (
+        (account_id, ids, other_ids),
+        (other_account, other_ids, ids),
+    ):
+        assert f"#{own_ids['executing']} (" in sent[owner]
+        assert f"#{own_ids['awaiting_approval']} (" in sent[owner]
+        assert all(f"#{action_id} (" not in sent[owner] for action_id in foreign_ids.values())
+        assert "synthetic action text" not in sent[owner]
+
+
 async def test_a_restored_database_refuses_to_run_until_post_restore(env: Env) -> None:
     await _mark_restored(env)
     async with env.factory() as session:

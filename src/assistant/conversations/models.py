@@ -71,6 +71,7 @@ class Contact(Base):
         UniqueConstraint(
             "account_id", "telegram_user_id", name="uq_contacts_account_id_telegram_user_id"
         ),
+        _enum_check("priority", ("vip", "normal", "low"), "priority"),
     )
 
     id: Mapped[IdPk]
@@ -79,6 +80,7 @@ class Contact(Base):
     display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     username: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_bot: Mapped[bool] = mapped_column(nullable=False, server_default=sql_text("false"))
+    priority: Mapped[str] = mapped_column(Text, nullable=False, server_default=sql_text("'normal'"))
     first_seen_at: Mapped[CreatedAt]
     updated_at: Mapped[CreatedAt]
 
@@ -138,6 +140,15 @@ class Conversation(Base):
     pending_ai_since: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    pending_draft_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    pending_triage_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    pending_monitor_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
     #: Newest `sent_at` purged by retention without a summary (§10.4).
     summary_gap_before: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
@@ -173,6 +184,9 @@ class Message(Base):
             "ix_messages_content_sent_at",
             "sent_at",
             postgresql_where=sql_text("text IS NOT NULL OR media IS NOT NULL"),
+        ),
+        Index(
+            "ix_messages_action_id", "action_id", postgresql_where=sql_text("action_id IS NOT NULL")
         ),
         _enum_check("observed_via", MESSAGE_OBSERVED_VIA, "observed_via"),
         CheckConstraint(
@@ -225,6 +239,9 @@ class Message(Base):
     content_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_update_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("app.inbound_updates.id", ondelete="SET NULL"), nullable=True
+    )
+    action_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("app.actions.id", ondelete="SET NULL", use_alter=True), nullable=True
     )
     created_at: Mapped[CreatedAt]
     updated_at: Mapped[CreatedAt]
