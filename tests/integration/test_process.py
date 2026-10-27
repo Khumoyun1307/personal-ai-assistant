@@ -127,3 +127,71 @@ async def test_startup_resets_the_ingestion_barrier_before_any_role_runs(
             assert len(seen) == 1
     finally:
         await engine.dispose()
+
+
+async def test_a_process_that_fails_the_poller_lock_leaves_the_barrier_alone(
+    settings: Settings, migrated_url: str
+) -> None:
+    """P2-T36: a second `assistant run` (or a deploy overlap) must not replace
+    the live process's run id, or every send would wait at the barrier."""
+    from assistant.db.advisory_lock import NAMESPACE_POLLER
+    from assistant.db.engine import build_session_factory
+    from assistant.telegram.ingress.writer import read_state, write_state
+
+    live = {"process_run_id": "live-run", "caught_up_at": "2026-10-27T10:00:00+00:00"}
+    engine = build_engine(migrated_url)
+    factory = build_session_factory(engine)
+    async with factory() as session, session.begin():
+        await write_state(session, "ingestion_barrier", live)
+    holder = AdvisoryLock(engine, NAMESPACE_POLLER, SYNTHETIC_BOT_ID)
+    assert await holder.acquire()
+    try:
+        with pytest.raises(InstanceAlreadyRunningError):
+            async with running_process(settings, frozenset({"poller"})):
+                pass
+        async with factory() as session:
+            assert await read_state(session, "ingestion_barrier") == live
+    finally:
+        await holder.release()
+        await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("roles", "has_llm"),
+    [
+        (frozenset({"inbox"}), False),
+        (frozenset({"worker", "system"}), True),
+    ],
+)
+async def test_the_wire_hooks_get_the_one_client_and_the_roles(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, roles: frozenset[str], has_llm: bool
+) -> None:
+    """P2-T35: model-backed adapters are built inside the wire blocks from the
+    process's single client; poller/inbox-only processes get None."""
+    import assistant.bootstrap as bootstrap
+
+    seen: dict[str, dict[str, Any]] = {}
+    built: list[object] = []
+    real_build = bootstrap.build_llm_client
+
+    def build(*args: Any, **kwargs: Any) -> Any:
+        client = real_build(*args, **kwargs)
+        built.append(client)
+        return client
+
+    def recorder(name: str) -> Any:
+        def hook(wiring: Any, **kwargs: Any) -> None:
+            seen[name] = kwargs
+
+        return hook
+
+    monkeypatch.setattr(bootstrap, "build_llm_client", build)
+    monkeypatch.setattr(bootstrap, "_wire_m04", recorder("m04"))
+    monkeypatch.setattr(bootstrap, "_wire_m05", recorder("m05"))
+    async with running_process(settings, roles):
+        pass
+
+    assert len(built) == (1 if has_llm else 0)
+    for name in ("m04", "m05"):
+        assert seen[name]["roles"] == roles
+        assert seen[name]["llm"] is (built[0] if has_llm else None)
