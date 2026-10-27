@@ -17,7 +17,7 @@ These are the rules most likely to be broken by accident. Repeat them in every b
 - **No real Telegram or real model calls in tests.** Use `tests/fakes/` (AGENTS §11). Live evals only as WORKFLOW §11 says.
 - **Never weaken or delete a regression test** (IMPLEMENTATION_PLAN §10 RG-01…RG-21) or a test guarding an AGENTS §6 invariant. If one fails, the code is wrong until the TL says otherwise.
 - **Never run the full test suite or `just check` locally** (AGENTS §11): CI is the gate.
-- **Never `--no-verify`, never rewrite pushed history, never push to `main` or an `int/*` branch, never merge** (the TL merges into `int/*`; the owner merges into `main`).
+- **Never `--no-verify`, never rewrite pushed history, never push to `main` or an `int/*` branch, never merge** (the TL merges unit PRs and P2's other PRs into `main`; the owner merges `int/m04` and `int/m05` into `main` — P2-O13).
 - **No sends as the owner outside `actions.execute` + policy**; no aiogram shortcuts; no `drop_pending_updates=True`; no tool that sends, edits, deletes or marks read (AGENTS §6, §7, §17).
 - **Subagents** work only inside your unit's file boundaries, in your worktree/clone or in their own worktree branched from yours, each with its **own `COMPOSE_PROJECT_NAME`** (two pytest runs must never share a compose project). They do not push, merge, open PRs or touch the production server. You review every line they produce before it goes into your PR; you are accountable for it.
 
@@ -60,12 +60,12 @@ If something fails, **tell the owner** in your session ("my session cannot reach
 
 | Branch | Created from | PR base | Who merges |
 |---|---|---|---|
-| `p2/f0-foundation` | `main` (after "M03 OK") | `main` | Owner (CP1) |
+| `p2/f0-foundation` | `main` (after "M03 OK") | `main` | TL (CP1, P2-O13) |
 | `int/m04`, `int/m05` | `main` right after F0 merges | `main` (once per milestone) | Owner (CP3, CP5) |
 | `m04/<unit>` | `int/m04` | `int/m04` | TL |
 | `m05/<unit>` | `int/m05` | `int/m05` | TL |
-| `evals/e2-dataset`, `evals/e3-dataset` | `main` | `main` if merged before CP1, otherwise `int/m04` / `int/m05` | Owner / TL |
-| `evals/e4-dataset`, `qa/p2-plan`, `ops/lv08-probe` | `main` | `main` | Owner |
+| `evals/e2-dataset`, `evals/e3-dataset` | `main` | `main` if merged before CP1, otherwise `int/m04` / `int/m05` | TL |
+| `evals/e4-dataset`, `qa/p2-plan`, `ops/lv08-probe` | `main` | `main` | TL (P2-O13) |
 | `qa/m04-scenarios`, `ops/trial-verifier` | `int/m04` | `int/m04` | TL |
 | `qa/m05-scenarios` | `int/m05` | `int/m05` | TL |
 
