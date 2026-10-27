@@ -16,6 +16,7 @@ A **Telegram-native personal AI agent**: one Telegram bot that is both the owner
 | How it is built | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | In what order, with what tests and acceptance criteria | [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) |
 | Milestone reports, eval results | `docs/milestones/`, `docs/evals/` |
+| Phase plans for multi-engineer phases (work units, contracts, specs, handoffs, QA) | `docs/engineering/<phase>/` (P2: [docs/engineering/p2/](docs/engineering/p2/README.md)) |
 
 Precedence when documents disagree: **TELEGRAM_FEASIBILITY (verified facts) > PRD > AGENTS §6 safety invariants > ARCHITECTURE > IMPLEMENTATION_PLAN > code comments**. Follow the higher-ranked document and correct the lower one in the same change. Never resolve a conflict by editing the PRD, a §6 invariant or a TF fact; report it to the owner and wait. Only an owner-executed live test (date, client versions, synthetic payload summary) can mark an LV item or behaviour *Verified* in TF §12.
 
@@ -23,7 +24,7 @@ Never treat these documents as a substitute for the official Telegram Bot API do
 
 ## 3. Process rules
 
-- Before any code change, read the *Milestone status* table in IMPLEMENTATION_PLAN §1.4. Only a milestone marked `approved` or `in progress` may be implemented, slice by slice in the listed order; if none is, only documentation edits are allowed. Change a status only to record the owner's explicit approval given in the conversation (note the date); never self-approve. A milestone becomes `done` only after the owner reviews `docs/milestones/Mxx.md`. Do not start the next milestone, add speculative features, or build infrastructure "for later" without owner approval.
+- Before any code change, read the *Milestone status* table in IMPLEMENTATION_PLAN §1.4. Only a milestone marked `approved` or `in progress` may be implemented, slice by slice in the listed order — or in the order and parallelism of an owner-approved phase plan (`docs/engineering/<phase>/`); if none is, only documentation edits are allowed. Change a status only to record the owner's explicit approval given in the conversation (note the date); never self-approve. A milestone becomes `done` only after the owner reviews `docs/milestones/Mxx.md`. Do not start the next milestone, add speculative features, or build infrastructure "for later" without owner approval.
 - Within an approved milestone, execute routine implementation decisions without asking; surface **consequential** choices (architecture, product behaviour, new external services, data use) to the owner first.
 - Distinguish analysis from decisions: when the owner asks "is X possible/better?", answer with analysis; do not change the plan unless asked.
 - Each slice ends with: tests green, docs updated, acceptance criteria met, manual Telegram checks noted where relevant.
@@ -197,6 +198,7 @@ Every change must preserve these. Each invariant gets a named regression test in
 - Branch per slice (`m01/s01.2-durable-ingestion`); small, focused commits; Conventional Commit style (`feat:`, `fix:`, `test:`, `docs:`, `refactor:`, `chore:`).
 - Never commit secrets, `.env`, `var/`, probe dumps, or database files. Before committing, run the tests relevant to the change (§11); CI runs the full suite. The pre-commit hook (installed by `just hooks`; runs gitleaks and ruff inside the container) must pass; never use `--no-verify`.
 - **Stacked draft PRs (owner decision 2026-10-26).** Each slice gets a draft PR as soon as it is ready for CI; CI is the test gate. Each slice branches from the previous slice, and its PR targets the previous slice's branch (main for the first). The owner merges everything at the end of each milestone, in stack order; after the merges the agent removes the merged slices' worktrees, containers and volumes and updates local `main`.
+- **Integration branches in multi-engineer phases (owner decision 2026-10-26, phase P2).** Each milestone of the phase has an integration branch (`int/m04`, `int/m05`) cut from `main`; each unit's draft PR targets its integration branch; the Technical Lead merges a unit PR into it once CI is green and the peer, QA and TL reviews are done; the owner merges each integration branch into `main` once per milestone. Shared foundation work (P2's F0) goes straight to `main`. Details: `docs/engineering/p2/WORKFLOW.md`.
 - Commit or push only when asked by the owner (or as part of an approved workflow — the per-slice loop above is one).
 
 ## 16. Documentation rules

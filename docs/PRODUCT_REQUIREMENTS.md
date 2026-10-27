@@ -217,7 +217,7 @@ Owner: "Draft a response to Alex, but don't send it until I approve."
 4. **Approve:** the application re-verifies connection, rights, window, takeover, staleness, and duplicate state, then sends. The card updates to **Sent ✓ 18:05** or **Failed — reason**, or **Delivery uncertain — check the chat**.
 5. If Alex writes again or the owner replies manually before approval, the card becomes **Outdated** with a one-tap "Re-draft".
 
-Edge cases: window closes before approval (card offers copy-ready text); rights lack *reply* (card offers copy-ready text and explains how to enable); double-tap on Approve (sent once); the owner deletes the sent message (recorded as owner rejection).
+Edge cases: window closes before approval (card offers copy-ready text); rights lack *reply* (card offers copy-ready text and explains how to enable); double-tap on Approve (sent once); the sent message is deleted in the chat (recorded as a deletion with a note and shown in the activity log, summaries and reports; Telegram does not say who deleted it, TF §12 LV-07 — owner decision 2026-10-26, replacing "recorded as owner rejection").
 
 ### J5 — "I'm studying until 7 PM" delegation (R2)
 

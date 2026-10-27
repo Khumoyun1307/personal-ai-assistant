@@ -1,0 +1,112 @@
+# P2 decisions and interface-change log
+
+*Owner approvals and Technical Lead decisions for phase P2. Engineers follow these; a decision that seems wrong is raised with the TL (ORG §5), never silently changed. New entries are appended; nothing is rewritten.*
+
+## A. Owner approvals (2026-10-26, in conversation with the TL)
+
+The owner approved the TL's P2 proposal in full ("I approve it"):
+
+| ID | Approval |
+|---|---|
+| P2-O1 | **Phase P2 = M04 ∥ M05.** M05 is `approved` (IMPLEMENTATION_PLAN §1.4 row updated with this date). M05 code, like M04 code, starts only after "M03 OK" and after F0 lands its contracts. |
+| P2-O2 | **A fourth engineer, Jack (Claude)** — named by the owner on 2026-10-26 — owns the M05 stream. |
+| P2-O3 | **Integration branches per milestone** (`int/m04`, `int/m05`). Unit PRs target their integration branch; the TL merges reviewed, QA-checked, CI-green unit PRs into it; the owner merges each integration branch into `main`. AGENTS §15 amended accordingly. |
+| P2-O4 | **GitHub as the coordination bus:** one issue per WU, status labels, a PR template with the invariant checklist, handoff notes as PR comments. |
+| P2-O5 | **Pre-start before "M03 OK":** data-only dataset authoring (E2D, E3D), QA docs (QA-P) and scheduling of the LV-08 window — each only when the owner says so. No product code and no tests before "M03 OK". |
+| P2-O6 | **Architecture choices:** F0 lands the whole phase schema (M04 and M05 tables) with the privacy cascade for every new content column; a ports-style ingestion listener replaces parallel edits of the ingestion path; the Assist draft trigger is one switch (ingestion in M04, triage in M05); one steward for the `owner_request` prompt. |
+| P2-O7 | **Live checks** that touch contacts' chats run on Alviro in planned production windows with per-run owner go-aheads (the dev bot cannot connect, M02/M03 docs). |
+| P2-O8 | **Eval budget for P2: USD 2 in total**, every live run preceded by `--estimate-only`. |
+| P2-O9 | **Docs location:** `docs/engineering/p2/`. |
+| P2-O10 | **E2 is authored at the M06 gate size** (≥ 30 situations per language variant) so the owner reviews it once. |
+| P2-O11 | **Language is not a focus now** (owner, 2026-10-26): reply language/tone/style stay owner preferences passed to the model; language checks are informational; native-language reviews of E2/E3 are scheduled by the owner later. |
+| P2-O12 | **Engineers' sessions:** each engineer works in a separate worktree (or clone) and may delegate to their own subagents without TL micromanagement. When the owner controls a Codex session, the owner fixes missing capabilities (Docker, commit, push/`gh`); an engineer whose session lacks one reports it to the owner rather than working around it (WORKFLOW §3). |
+
+## B. Technical Lead decisions (2026-10-26)
+
+Routine technical decisions inside the approved scope (AGENTS §3). Each names where it is specified. Any engineer may challenge one through ORG §5.
+
+| ID | Decision | Why | Where |
+|---|---|---|---|
+| P2-T01 | **Contracts first.** F0 is the only WU that adds Alembic revisions in wave 1: `0013_actions` (M04) and `0014_inbox_intelligence` (M05). Any later schema change in P2 asks Neryn (schema steward) for the next revision number; there is always exactly one Alembic head (a test enforces it). | Parallel streams otherwise create multiple heads and conflicting `down_revision`s | contracts/F0-schema.md |
+| P2-T02 | **Pure reply-window maths moves to `core/reply_window.py`;** `conversations/window.py` delegates to it. | `policy/` may not import anything that imports SQLAlchemy (import-linter `policy-is-pure` checks indirect imports); the window must still be computed in exactly one place (AGENTS §7) | contracts/F0-interfaces.md §3 |
+| P2-T03 | **`ErrorClass` and `SendResult` move to `core/delivery.py`** (re-exported by `telegram/errors.py` and `telegram/gateway.py`, so existing imports keep working). | The `actions` domain must interpret send outcomes without importing the Telegram adapter | F0-interfaces §4 |
+| P2-T04 | **Ingestion listeners.** `BusinessPipeline` calls an ordered list of `IngestionListener`s inside the inbox row's transaction after each stored message or deletion; M04 (actions) and M05 (triage, monitors) each register one. `record_message` keeps steps 1–5 (incl. the takeover pause) unchanged. | Both milestones must react to ingestion; one hook point avoids concurrent edits of the most sensitive path | F0-interfaces §5 |
+| P2-T05 | **Per-domain registration points**: job tasks (`register_tasks` calls per-domain `register_*` functions), reconcilers (`JobHandlers.reconcilers` list), control-chat callback kinds and pending-input kinds (registries passed to `ControlDispatcher`), bootstrap wiring (`_wire_m04`, `_wire_m05` blocks). Existing behaviour unchanged. | De-conflicts the files both milestones extend | F0-interfaces §6–§8 |
+| P2-T06 | **Policy outcome gains `WAIT`** (beside `ALLOW_AUTO`, `REQUIRE_APPROVAL`, `DENY`): only rule `inbox_drained` produces it; the executor re-defers the job in 3 s. | ARCHITECTURE §9.3 says `inbox_drained` is "a wait, not a DENY"; an explicit outcome keeps `decide` pure | F0-interfaces §3; S04.1 |
+| P2-T07 | **Actions carry `approved_text_hash` and `sent_text_hash`** (SHA-256 of the exact string). | Makes "sent text = approved text" (R1 #3, trial criterion) auditable without reading content | F0-schema §2; OPS-trial-verifier |
+| P2-T08 | **Edit → model-assisted revision, literal text kept literal.** After Edit, the owner's next message goes to a revision run; if the run classifies it as a replacement, the application uses the owner's text verbatim (never the model's rewrite); otherwise the run's revised draft becomes the new version. Every new version is shown for approval. | FR-DRF-04 allows both; a misclassification is visible before Approve, so it is not a safety risk | S04.3 |
+| P2-T09 | **`propose_reply` drafts synchronously inside the owner run** (the tool handler calls the drafter, like `summarize_period` calls the summarizer); proactive Assist drafts run in the `replies.draft` job. Both create the action through one proposal service. | One path for proposals; the owner gets the card in the same turn | S04.2 |
+| P2-T10 | **Edit/delete of assistant messages are built only as guarded mechanics for RG-12** (policy rule `target_is_assistant_sent` + gateway refusal); no product feature uses them in P2 (Undo is R3). | RG-12 is assigned to S04.4 by the regression table; nothing more | S04.4 |
+| P2-T11 | **Assist is a per-conversation mode in P2** (panel button and `set_conversation_mode`); the default mode for new chats stays Observe/Ignore. | Least privilege (R-03); the owner opts each chat in | S04.2 |
+| P2-T12 | **Notifications store no content.** `notifications` keeps kind, priority, class, ids (`refs`) and reason codes; alert and digest text is rendered at delivery from domain rows. The latest triage verdict per chat is stored in a new `conversation_triage` table whose `reasons` column is a content column. | Keeps the content-column set small and the deletion cascade simple (§10.1) | F0-schema §3; S05.1; S05.2 |
+| P2-T13 | **Digest v1 is composed deterministically** (no model call): batched alerts, open tasks due, open contact commitments due, auto-closed tasks, attention list, coverage caveats. | Cheaper, testable, no new eval; a model-written digest can come later on evidence | S05.3b |
+| P2-T14 | **Monitor specs come from the `create_monitor` tool's strict arguments** in the owner run, always confirmed by a card (`always_confirm`); no separate `interpret_instruction` run in M05. Semantic conditions use the `evaluate_monitor` run (no tools). | The owner run is the trusted interpreter already; the card shows the validated spec; one model call fewer. `interpret_instruction` remains planned for M06/M07 specs | S05.4 |
+| P2-T15 | **Monitor evaluation is its own debounced job** (`monitors.evaluate`), not folded into triage. | ARCHITECTURE §7.1/S05.4 leaves folding to M05 metering; separate jobs keep S05.1 and S05.4 independent | S05.4 |
+| P2-T16 | **New structured-output schemas and context builders live in new modules** (`agent/draft_*.py`, `agent/triage_*.py`, `agent/monitor_*.py`); `agent/schemas.py` and `agent/context.py` are not extended in P2. | Both were heavily changed by S03.7; new modules avoid conflicts | F0-interfaces §9 |
+| P2-T17 | **`owner_request` prompt stewardship.** At most one `owner_request` version bump per milestone, made in the last unit that needs it (M04: S04.3; M05: S05.4), built on the version active on `main`/the int branch at that moment; each bump re-runs the retrieval agent-mode eval (≈ USD 0.10–0.15, inside P2-O8). Other units put the rule text they need into their PR description for the steward. | Prompt versions are a single sequence (AGENTS §8) | F0-interfaces §9 |
+| P2-T18 | **One fix round per finding set** (owner feedback 2026-10-26): after a review or eval round, anything still open that is not a safety-invariant break goes to the milestone's open items with evidence; the unit finishes. Safety-invariant breaks are always fixed before merge. | Progress over perfection, as in S03.7 | WORKFLOW §6 |
+| P2-T19 | **Tasks are created only by triage in P2** (`created_by = 'agent'`); owner-created tasks and reminders are M07. | Scope | S05.1 |
+| P2-T20 | **`/digest` command** gives the on-demand digest (S05.3 "on-demand digest"). | Simplest owner entry point | S05.3b |
+| P2-T21 | **`sending_enabled` (flag `actions.send`) is checked only at execution.** With sending off, drafts and dictated messages still become normal approval cards (edit, reject, expiry, re-draft work); Approve ends `blocked`/`sending_disabled` with copy-ready text. | Lets the M04 live window test the whole card UX before any real send (QA review) | F0-interfaces §3, §10; S04.1; WORKFLOW §10 |
+| P2-T22 | **A deleted sent message is recorded unattributed** (audit `assistant_message_deleted`), following ARCHITECTURE §6.5 step 6 and TF §12 LV-07 (the deletion payload does not say who deleted, and "delete for me" arrives the same way). PRD J4's edge case "the owner deletes the sent message (recorded as owner rejection)" could not be implemented as written; the owner decided (B3 E2, 2026-10-26) that every deletion is noted and shown in reports and summaries, and PRD J4 was amended accordingly. | TF facts outrank the PRD | S04.2 listener; S04.5 |
+
+### B2. Decisions from the specification review (2026-10-26)
+
+| ID | Decision | Why | Where |
+|---|---|---|---|
+| P2-T23 | **`/pause` in P2 stops autonomous sending only.** It cancels pending `delegation_auto` actions and blocks that origin at Tx A; existing owner approvals stay valid, and drafts stay drafts (PRD J9, §12.2 #1 read together). | No delegations exist in P2; an approved owner send is already the owner's explicit decision | S04.4 |
+| P2-T24 | **A system alert whose delivery is uncertain counts as delivered and is never resent** (now for every system alert, as `policy_notice` already does). Closes the M02 follow-up "once-ever alerts resend after an uncertain outcome". | Invariant 6 spirit: an ambiguous send is never repeated | S05.2 §3.5 |
+| P2-T25 | **Notification delivery claims the row as `uncertain` (reason `claimed`) before sending**; a successful send moves it to `sent`, a definite failure back to `queued` (bounded). No separate `sending` state. | A crash after the claim can never cause a resend, with no extra sweep | S05.2 §3.2 |
+| P2-T26 | **Tool plumbing and the Assist switch are part of F0:** optional `ToolServices` fields, `ToolContext.turn_id`, `ActionsConfig.assist_draft_trigger` with `actions/drafts.py::assist_trigger` (off / ingestion / triage). | Both streams need them; no unit edits the other's types | F0-interfaces §9, §10 |
+| P2-T27 | **`TriageResult.open_questions` is structured** (`text`, `source_message_id`, `is_decision`) instead of `list[str]`; **monitors support the actions `alert` and `alert_with_summary` only** in M05; `ScheduleRule` carries `dtstart_local`. | Dedupe of question tasks needs a source id; other monitor actions belong to M07 | S05.1, S05.4, S05.3b |
+| P2-T28 | **The LV-08 reopen check does not need the server's poller stopped**: no `getUpdates` is made from the laptop; the gated probe mode only sends/types. | Simpler window, nothing lost on the server | OPS-LV08 |
+
+### B2b. Resolutions of the independent specification review (2026-10-26)
+
+| ID | Resolution | Where |
+|---|---|---|
+| R1 | **Ingestion barrier bound to the process run** (blocking finding). `bootstrap.running_process` generates `process_run_id` (uuid4) and, **before any role starts**, commits `system_state['ingestion_barrier'] = {"process_run_id": id, "caught_up_at": null}`. The poller sets `caught_up_at` (for that run id) when a poll returns fewer than `limit` updates. `barrier_passed` ⇔ stored `process_run_id` equals the executor's own process run id **and** `caught_up_at` is set. A process without the poller role never passes (fail closed; R4 changes this). | F0 (process run id + reset), S04.1, S04.4 |
+| R2 | **Tainted runs never pass draft guidance** (blocking finding, invariant 4). In a tainted owner run `propose_reply` ignores `guidance` (result says `guidance_ignored: tainted_run`); untainted guidance — the owner's own words — is passed as an owner instruction for this draft, wrapped with `Provenance.OWNER_CONTROL`. Owner confirmation requested (B3 E3). | S04.2 |
+| R3 | **`no_takeover_since` reference time:** proactive Assist drafts compare against the base message's Telegram date; owner-requested actions (`origin = owner_dictated`, or `trigger_turn_id` set) compare against `created_at` — the owner's request is newer than their own earlier manual message. Owner-dictated actions have `base_message_id = NULL`. | S04.1, S04.2 |
+| R4 | **Transitions:** `executing → expired` (a `WINDOW_CLOSED` send result) and `proposed → cancelled` join `TRANSITIONS`; ARCHITECTURE §9.4's diagram is updated (S04.4). Late results for `delivery_uncertain` map only to `succeeded` (OK) or `failed` (any definite failure, including 429 and window closed); `ambiguous` keeps it uncertain. | F0-interfaces §2, S04.4 |
+| R5 | **Policy may import `assistant.actions.states`**, which must stay pure (stdlib only; `actions/__init__.py` empty); F0 adds an import-linter contract `actions-states-is-pure` (forbids `sqlalchemy`, `assistant.db`). | F0-interfaces §3, F0 |
+| R6 | **State sets test:** `LIVE_CARD ⊂ PENDING`, `PENDING ∩ TERMINAL = ∅`, and every state is in `PENDING ∪ TERMINAL ∪ {executing, delivery_uncertain}`. Action rows are deleted after 1 year when terminal **or `delivery_uncertain`**. | F0, F0-schema §5 |
+| R7 | **S04.3 uses S04.1's transition functions** (`approve`, `reject`, `start_edit`, `cancel_edit`, `apply_new_version`, `revision_failed`, `expire_due`) — no own `UPDATE`s on `actions.state`. **One expiry rule:** `expires_at` is set at proposal; a new version never extends it and only shortens it when the window now closes earlier; `expire_due` gives `window_closed` when the window is closed now, else `max_age`. Too long/empty revisions follow `apply_new_version` (`TOO_LONG`/`EMPTY`, stays `revising`, the owner is told). | S04.1, S04.3, F0-schema §2 |
+| R8 | **New `actions` columns in 0013:** `draft_flags jsonb NULL` (non-content: `needs_reply`, `confidence`, `sensitive_topic`, `makes_commitment`, `should_escalate`, `uses_only_permitted_information`, `language`) with `ProposalRequest.draft_flags`; `revision_turn_id bigint NULL` (FK `control_turns` SET NULL) for the pending revision. | F0-schema §2, F0-interfaces §8.1 |
+| R9 | **Monitor alerts:** `bypass_quiet_hours` is honoured for `high` and `urgent`; `MONITOR_MATCH` is exempt from contact-priority lowering. | S05.2, S05.4 |
+| R10 | **System-alert dedupe keeps reading the `system_alert` audit rows** (1-year retention), not `notifications` (30 days); uncertain counts as sent (P2-T24). At CP4 the callers do not change: `OwnerAlerts.notify_owner` routes through `notifications` internally (S05.2 §3.5 is the definition). | S05.2, F0-interfaces §8.3, Jack handoff |
+| R11 | **`delete_everything` deletes every automation except kind `digest`** (owner-authored monitor text is content). | F0-schema §6 |
+| R12 | **Ownership fixes:** `actions/drafts.py` `request_draft` = Viro; ARCHITECTURE §6.7 (approval-card paragraph) and §9.5 = Viro, §9.1–§9.4 = Neryn; §8.2 M05 rows = Jack except monitor rows (Viro); the mode → Ignore call site is S04.2's (`conversations/modes.py`), not S04.4's; `/help` lines: S04.5 and S05.3b each add one line in `handlers.py` (allowed exception); no `setMyCommands`; S04.4 adds its two alert texts to `inbox/notify.py`. | F0-interfaces §12, handoffs, specs |
+| R13 | **S04.5 may edit** `tests/unit/test_tool_registry.py` (the managed-tool set) and remove the strict-xfail markers of the scenarios it turns green (`tests/scenarios/test_m04_j10_activity.py`); every unit may remove the markers of scenarios it makes pass (WORKFLOW §5). | S04.5, WORKFLOW |
+| R14 | **F0 adds `contact_id` and `contact_priority` to `ConversationPanel`** (`conversations/visibility.py`) so S05.2P can render the priority row. | F0 |
+| R15 | **Audit event per transition** (F0-interfaces §11 table); adds `action_rate_limited`, `connection_marked_stale`, `automation_invalid`; the claim writes `action_claimed {from, to, version, reason, attempt_id}`. | F0-interfaces §11, S04.1, S04.4, OPS-TV |
+| R16 | **Listeners may register after-commit control-chat card updates** (`ApprovalCardPresenter.sync_after_commit`) besides job defers; never a business-chat call, never a model call. | F0-interfaces §5 |
+| R17 | **Minor alignments:** `system.expire_monitors` runs hourly; `ntf` op `op` (Open chat) is in the kinds table; `DraftReason` gains `OWNER_REQUEST`, `EVAL` (not job arguments); S05.1 calls `request_draft`; `replies.draft` clears `pending_draft_at` on every non-consent check failure; CP2 needs RG-05/06/12/18/19/20 (RG-04 at CP3); with sending off, Approve answers "Approved — sending is off" and the card shows copy-ready text; the M04 live checklist does edit → approve → sent on one action; "Open chat" buttons are on alerts and on digest items — buttons on model-written attention/catch-up replies are an open item for later (they need runtime support). | various |
+
+### B3. Owner decisions raised 2026-10-26
+
+| ID | Question | Owner answer / status |
+|---|---|---|
+| E1 | **AGENTS §9 wording for the LV-08 probe.** AGENTS §9 says `--prod-token` refuses everything but `me` and `getfile`; OPS-LV08 needs a narrowly gated mode (`connection`, `typing`, `send` to one allow-listed chat, owner go-ahead per run, never `getUpdates`). | **Decided (owner, 2026-10-26): yes, the narrow mode may be added**, and the owner will do the check 24 h later **only if the test is necessary and justifies the cost**. TL assessment: not needed for M04 safety — the product already assumes the conservative rule (only a contact message reopens the window), so the result could only *relax* it (let the assistant send in a chat where the owner wrote within 24 h but the contact did not). **OPS-LV08 is therefore deferred:** it runs only if the M04 trial shows the owner often hitting "window closed" right after writing in a chat themselves. The AGENTS §9 wording change lands with the OPS-LV08 PR if and when it runs. |
+| E2 | **PRD J4 "the owner deletes the sent message (recorded as owner rejection)"** — Telegram's deletion update does not say who deleted (TF §12 LV-07). | **Decided (owner, 2026-10-26): every deletion is noted with a note and included in every kind of report and summary**, as M03 already does for catch-ups (M03 D86; catch-up caveats count deleted messages). P2: a sent reply later deleted in the chat appears with its deletion time in `/activity`, `get_activity` and the catch-up's assistant-activity block (S04.5); the digest lists deletions per chat and owner data deletions (S05.3b §3.4 5a); never "by whom". PRD J4 amended. |
+| E3 | **Owner guidance for a draft** ("draft a reply to Alex — I can't come Friday, offer Monday"): ARCHITECTURE §7.3's isolation list had no "owner guidance" input. | **Decided (owner, 2026-10-26): A — allow it.** The owner's own words (untainted runs only, R2) shape the draft's content. Guidance is never an approval, an edit of a live card or a permission to send: approval is only the card's Approve button, edits only the card's Edit flow, and every send passes the Tx A policy check (S04.2, S04.3, S04.4). ARCHITECTURE §7.3 gains the input in S04.2's PR. |
+| E4 | **The fourth engineer** (owner of the M05 stream so M05 runs beside M04). | **Decided (owner, 2026-10-26): Jack, a Claude engineer** (P2-O2). |
+| E5 | **GitHub CLI (`gh`) in each engineer's session** (WORKFLOW §3.2, §8). | **Owner, 2026-10-26: all engineers can use `gh`.** Each engineer still runs the capability check in their first session and reports anything missing to the owner. |
+
+**Status recorded 2026-10-26 (owner):** M03's CI is running; the owner will merge M03, mark it OK and done, and then authorise the start of this plan. **No pre-start work is authorised yet** (no dataset authoring, no QA-P, no LV-08 scheduling). Product code starts only after "M03 OK" and the owner's go-ahead.
+
+## C. Interface-change log
+
+*Append one row per approved interface change request after CP1 (ORG §5). Format: date · requester · contract section · change · affected WUs · TL decision.*
+
+| Date | Requester | Contract | Change | Affected | Decision |
+|---|---|---|---|---|---|
+| — | — | — | — | — | — |
+
+## D. Safety sign-offs
+
+*CP2 and CP3/CP5 sign-offs are recorded here by the TL: date, int-branch commit, what was reviewed, open items.*
+
+| Date | Checkpoint | Commit | Reviewed | Result |
+|---|---|---|---|---|
+| — | — | — | — | — |
