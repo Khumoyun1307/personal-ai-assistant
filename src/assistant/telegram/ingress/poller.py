@@ -80,12 +80,14 @@ class Poller:
         *,
         timeout: int = 50,
         limit: int = 100,
+        process_run_id: str | None = None,
     ) -> None:
         self._source = source
         self._session_factory = session_factory
         self._clock = clock
         self._timeout = timeout
         self._limit = limit
+        self.process_run_id = process_run_id
         self.state = PollerState()
         self._bot_id: int | None = None
         self._last_poll_ok_before: datetime | None = None

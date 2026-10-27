@@ -36,6 +36,26 @@ from tests.integration.business_env import (
 pytestmark = pytest.mark.integration
 
 
+async def test_the_conversation_panel_carries_the_contact_priority(env: Env) -> None:
+    from assistant.conversations.models import Contact
+    from assistant.conversations.visibility import conversation_panel
+
+    await connect(env)
+    await deliver(env, business_message())
+    account = await _account(env)
+    async with env.factory() as session, session.begin():
+        contact = await session.scalar(select(Contact).where(Contact.account_id == account.id))
+        assert contact is not None
+        contact.priority = "vip"
+        await session.flush()
+        panel = await conversation_panel(
+            session, account_id=account.id, business_chat_id=CONTACT, now=env.clock.now()
+        )
+        assert panel is not None
+        assert panel.contact_id == contact.id
+        assert panel.contact_priority == "vip"
+
+
 async def _account(env: Env) -> Account:
     async with env.factory() as session:
         return (

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Protocol
 
 JobArgs = Mapping[str, int | str]
@@ -32,6 +33,23 @@ REFRESH_SUMMARY_TASK = "memory.refresh_summary"
 #: lock, so it never interleaves with an owner run or an applied
 #: confirmation (M03 D83). Args: account_id, scope, subject_id, card_id.
 DELETE_DATA_TASK = "privacy.delete_data"
+
+DRAFT_TASK = "replies.draft"
+REVISE_TASK = "replies.revise"
+EXECUTE_TASK = "actions.execute"
+TRIAGE_TASK = "inbox.triage"
+NOTIFY_TASK = "notify.deliver"
+FIRE_TASK = "automation.fire"
+DIGEST_TASK = "digest.build"
+MONITOR_TASK = "monitors.evaluate"
+
+
+class DraftReason(StrEnum):
+    ASSIST_INGESTION = "assist_ingestion"
+    TRIAGE_NEEDS_REPLY = "triage_needs_reply"
+    REDRAFT = "redraft"
+    OWNER_REQUEST = "owner_request"
+    EVAL = "eval"
 
 
 class JobScheduler(Protocol):
@@ -57,3 +75,31 @@ def owner_control_lock(account_id: int) -> str:
 def summary_queueing_lock(conversation_id: int) -> str:
     """At most one queued summary refresh per conversation (ARCHITECTURE §12.2)."""
     return f"sum:{conversation_id}"
+
+
+def draft_queueing_lock(conversation_id: int) -> str:
+    return f"draft:{conversation_id}"
+
+
+def revise_queueing_lock(action_id: int) -> str:
+    return f"revise:{action_id}"
+
+
+def triage_queueing_lock(conversation_id: int) -> str:
+    return f"triage:{conversation_id}"
+
+
+def monitor_queueing_lock(conversation_id: int) -> str:
+    return f"mon:{conversation_id}"
+
+
+def notification_queueing_lock(notification_id: int) -> str:
+    return f"notify:{notification_id}"
+
+
+def occurrence_queueing_lock(automation_id: int, occurrence_at: int) -> str:
+    return f"auto:{automation_id}:{occurrence_at}"
+
+
+def digest_queueing_lock(account_id: int, period_end: int) -> str:
+    return f"digest:{account_id}:{period_end}"

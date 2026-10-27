@@ -33,6 +33,15 @@ forbidden_modules =
     sqlalchemy
     assistant.db
 
+[importlinter:contract:actions-states-is-pure]
+name = Action states remain safe for pure policy imports
+type = forbidden
+source_modules =
+    assistant.actions.states
+forbidden_modules =
+    sqlalchemy
+    assistant.db
+
 [importlinter:contract:agent-uses-ports]
 name = agent uses the LLMClient and JobScheduler ports, not adapters
 type = forbidden
