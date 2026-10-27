@@ -103,6 +103,7 @@ Routine technical decisions inside the approved scope (AGENTS §3). Each names w
 |---|---|---|---|
 | P2-T29 | **Every issue carries an `eng:<name>` label** (`eng:neryn`, `eng:viro`, `eng:jack`, `eng:junior`, `eng:antony`, `eng:tl`); engineers find their units with `gh issue list --label eng:<you>` and their reviews with the `needs-review:<you>` / `needs-qa` labels. | Every session uses the same GitHub account, so assignees and `review-requested:@me` cannot tell engineers apart | WORKFLOW §8 |
 | P2-T30 | **No CI trigger on pushes to `int/*`.** Before merging a unit, the TL checks that the PR's latest CI run tested a merge with the **current** int head; if the int branch moved since, the TL closes and reopens the PR (GitHub then tests a fresh merge with the base) and merges only when that run is green. | A push trigger would also rebuild both arm64 images on every integration merge; reopening tests the real combination without touching the author's branch | WORKFLOW §7.1 |
+| P2-T31 | **Units started before CP1** (S04.2 part a, S05.1 run part, S05.2 policy function, S05.3a, and the datasets) may open a **draft PR against `main` to get CI**, titled `[retarget to int/m0x]`; the TL retargets it when the int branches are cut, and it is never merged into `main`. F0 is the only P2 unit PR that is meant for `main`. | Sessions without Docker (WORKFLOW §3.2) otherwise have no test run before CP1 | WORKFLOW §4 |
 
 ## C. Interface-change log
 

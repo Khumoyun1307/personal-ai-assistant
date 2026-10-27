@@ -70,7 +70,7 @@ If something fails, **tell the owner** in your session ("my session cannot reach
 | `qa/m05-scenarios` | `int/m05` | `int/m05` | TL |
 
 - **Depending on an unmerged unit:** branch from that unit's branch and set your PR base to it; after it merges into the int branch, rebase onto the int branch and retarget your PR. Never merge someone else's branch into yours.
-- **Units started before CP1** (S04.2 part a, S05.1 run part, S05.3a): branch from `main`; at CP1 rebase onto the int branch and open the PR against it.
+- **Units started before CP1** (S04.2 part a, S05.1 run part, S05.2 policy function, S05.3a, the datasets): branch from `main`; at CP1 rebase onto the int branch and open the PR against it. To get CI before CP1, open a **draft PR against `main`** titled `[retarget to int/m0x]`; the TL retargets it at CP1 and it is never merged into `main` (P2-T31).
 - **Draft PR as soon as the unit is ready for CI**, with the template (§4.1). Mark it ready for review when the Definition of Done is met. Push to keep CI running; avoid pushing every few minutes (each push costs a full CI run: lint, three parallel test shards, the deploy-script checks and the amd64/arm64 image builds).
 - **Commits:** small, Conventional Commits (`feat:`, `fix:`, `test:`, `docs:`, `refactor:`, `chore:`), message via `git commit -F <file>` when it has more than one line, ending with your tool's attribution line if it uses one. Never commit `.env`, `var/`, dumps or real data.
 
