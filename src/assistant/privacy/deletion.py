@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.core.clock import Clock
+from assistant.core.errors import NotInAccountError
 from assistant.inbox.models import InboundUpdate
 from assistant.memory import items
 from assistant.memory.summaries import delete_account_summaries, delete_conversation_summaries
@@ -776,11 +777,11 @@ async def delete_conversation_data(
     transaction: its messages, summaries, raw updates and notes about the
     chat, the answers that drew on it, the contact's names (known only from
     the chat). The owner's notes about the person (contact scope) stay;
-    `delete_contact_data` takes those too (M03 D79). LookupError: not this
+    `delete_contact_data` takes those too (M03 D79). NotInAccountError: not this
     account's conversation."""
     chats = await _lock_chats(session, account_id, Conversation.id == conversation_id)
     if not chats:
-        raise LookupError("conversation not found in this account")
+        raise NotInAccountError("conversation not found in this account")
     report = await _purge_chats(
         session,
         account_id,
@@ -817,7 +818,7 @@ async def delete_contact_data(
     """Everything stored about one person: all their chats (as
     `delete_conversation_data`), the owner's notes about them, held calls
     naming them, their names. The contact row stays, content-free (ids, bot
-    flag), and so do their chats' modes (M03 D79). LookupError: not this
+    flag), and so do their chats' modes (M03 D79). NotInAccountError: not this
     account's contact."""
     found = (
         await session.execute(
@@ -827,7 +828,7 @@ async def delete_contact_data(
         )
     ).scalar_one_or_none()
     if found is None:
-        raise LookupError("contact not found in this account")
+        raise NotInAccountError("contact not found in this account")
     chats = await _lock_chats(session, account_id, Conversation.contact_id == contact_id)
     report = await _purge_chats(
         session,
@@ -907,7 +908,7 @@ async def delete_everything(
     # compatible with ingestion's foreign-key share), then its conversations.
     account = await session.get(Account, account_id, with_for_update={"key_share": True})
     if account is None:
-        raise LookupError("unknown account")
+        raise NotInAccountError("unknown account")
     await _lock_chats(session, account_id, true())
     payloads = _rows(
         await session.execute(

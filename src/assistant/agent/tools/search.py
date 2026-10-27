@@ -23,6 +23,7 @@ from assistant.accounts.models import Account
 from assistant.agent.citations import CitableMessage
 from assistant.agent.tools.common import (
     DIRECTION_LABELS,
+    ArgumentRuleError,
     OptionalId,
     account_coverage,
     day_range,
@@ -42,6 +43,7 @@ from assistant.agent.tools.registry import (
     ToolRefs,
 )
 from assistant.conversations.models import Contact
+from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.memory.retrieval import MAX_LIMIT, MAX_QUERIES, SearchFilters, search_messages
 
@@ -63,17 +65,17 @@ WIDENED_EMPTY_NOTE = (
 def _queries(value: list[str]) -> list[str]:
     cleaned = [query.strip() for query in value if query.strip()]
     if not cleaned:
-        raise ValueError("give at least one non-empty query")
+        raise ArgumentRuleError("give at least one non-empty query")
     if len(cleaned) > MAX_QUERIES:
-        raise ValueError(f"at most {MAX_QUERIES} query variants")
+        raise ArgumentRuleError(f"at most {MAX_QUERIES} query variants")
     if any(len(query) > 200 for query in cleaned):
-        raise ValueError("a query is at most 200 characters")
+        raise ArgumentRuleError("a query is at most 200 characters")
     return cleaned
 
 
 def _limit(value: int | None) -> int | None:
     if value is not None and not 1 <= value <= MAX_LIMIT:
-        raise ValueError(f"limit must be between 1 and {MAX_LIMIT}")
+        raise ArgumentRuleError(f"limit must be between 1 and {MAX_LIMIT}")
     return value
 
 
@@ -112,7 +114,7 @@ class SearchMessagesArgs(BaseModel):
     def _range(self) -> Self:
         since, until = parse_local_date(self.since), parse_local_date(self.until)
         if since and until and since > until:
-            raise ValueError("since is after until")
+            raise ArgumentRuleError("since is after until")
         return self
 
 
@@ -122,7 +124,7 @@ async def search_messages_tool(ctx: ToolContext, args: SearchMessagesArgs) -> To
         session = uow.session
         account = await session.get(Account, ctx.account_id)
         if account is None:
-            raise LookupError("account")
+            raise NotInAccountError("account")
         await require_contacts(session, ctx.account_id, one(args.contact_id))
         await require_conversations(session, ctx.account_id, one(args.conversation_id))
         start, end = day_range(

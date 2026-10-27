@@ -28,7 +28,7 @@ Land, in one PR, everything that both milestones build on, so that M04 and M05 c
 12. **Ingestion barrier reset (R1):** `bootstrap.running_process` generates `process_run_id` (uuid4) and commits `system_state['ingestion_barrier'] = {"process_run_id": <id>, "caught_up_at": null}` **before any role starts**; the id is passed to the poller and to `ActionsConfig`/the policy loader. (Setting `caught_up_at` is S04.4's poller change; reading it is S04.1's.) Test `test_startup_resets_the_ingestion_barrier_before_any_role_runs`.
 13. **Pure states (R5):** `actions/states.py` and `actions/__init__.py` import only the standard library; add the import-linter contract `actions-states-is-pure` (source `assistant.actions.states`; forbidden `sqlalchemy`, `assistant.db`).
 14. **Panel facts for M05 (R14):** `conversations/visibility.py::ConversationPanel` gains `contact_id` and `contact_priority`, filled by `conversation_panel(...)`; test `test_the_conversation_panel_carries_the_contact_priority`.
-15. Optional hygiene from the handoff: `privacy/requests.py` raises a dedicated `SubjectNotFound` instead of catching `LookupError` broadly (M03 follow-up 5).
+15. ~~Optional hygiene from the handoff: a dedicated `SubjectNotFound` in `privacy/requests.py` (M03 follow-up 5).~~ **Done by the M03 fix round C2:** `core/errors.py::NotInAccountError` is the one "not found" error (ARCHITECTURE §8.3) and `privacy/requests.py` catches only it; nothing to build here.
 
 **Out:** policy rules and `decide` (S04.1); the poller setting `caught_up_at` (S04.4); `propose` logic (S04.1); executor, gateway business methods (S04.4); any job body; any prompt; any tool; any UI; any owner-facing text beyond `StateReason` explanations.
 

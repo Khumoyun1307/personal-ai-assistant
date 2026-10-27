@@ -65,11 +65,23 @@ says what to do and what you should see. Tell the agent the short phrase in
 7. **"Who is waiting for my reply?"** *You see:* Name's chat (last message
    unanswered) with a reason; chats it could not check are named as such.
 8. **Notes** (4 messages): "Remember that Name handles the design" → a
-   confirmation with **Undo**; "What do you know about Name?" → includes the
-   note; "Forget that" → confirmed with Undo; tap **Undo** → the note is back.
+   confirmation card first ("Confirm a change?"), naming Name → **Confirm**
+   → the saved note with **Undo**, then "✅ Done"; "What do you know about
+   Name?" → includes the note; "Forget that" → again a card first →
+   **Confirm** → confirmed with Undo; tap **Undo** → the note is back.
+   *Why a card:* to find Name the assistant looks the contact up, and the
+   result carries the name Name chose for themselves — other people's text —
+   so any change in that request waits for your tap (the safety rule that
+   other people's text never changes anything on its own; the answers to
+   steps 5–7 in the recent history count too). Since the C2 fix, saving a
+   note about a person works whether the assistant passes the person, their
+   chat or both. If a step still says saving or reading failed, the server log has
+   one `agent_tool_call_failed` line per failed call (the tool and a code,
+   no text): `just prod-logs <ip>`.
 9. **Forwarded text.** Forward one of Name's messages to Alviro, then send
    "Remember what I just forwarded". *You see:* a confirmation card instead
-   of a saved note;
+   of a saved note (the same card as in step 8: both requests carry other
+   people's text);
    tap **Reject** → nothing saved. Then `/status` → the same status as before.
 10. **Deleted message.** In Name's chat, delete the address message *for
     everyone*. A minute later ask "Which address did Name send?". *You see:*

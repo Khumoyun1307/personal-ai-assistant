@@ -166,6 +166,12 @@ class ToolOutcome:
     #: citations in the reply (S03.7 B3, `agent/citations.py`). Read from the
     #: database by the tool; never persisted, never sent to the model.
     citable: Mapping[int, CitableMessage] = field(default_factory=dict)
+    #: For the executor's one log line when a call does not end `ok` (§8.3):
+    #: a fixed code (`not_found`, `hold:args_too_large`, …) and content-free
+    #: extras (real field names, pydantic error types, an exception type).
+    #: Never sent to the model, never persisted.
+    log_code: str | None = None
+    log_detail: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def is_error(self) -> bool:
@@ -193,7 +199,7 @@ async def _chat_access_off(_ctx: ToolContext, _args: Any) -> ToolOutcome:
 
 
 #: For a confirmation card: what a held call's ids refer to, in plain text
-#: for the owner (the note's words, the chat's contact name). LookupError
+#: for the owner (the note's words, the chat's contact name). `NotInAccountError`
 #: for an id that is not the account's. Owner-facing only, never sent to a
 #: model (S03.3 safety review S1).
 ToolDescriber = Callable[[AsyncSession, int, Mapping[str, Any]], Awaitable[str | None]]

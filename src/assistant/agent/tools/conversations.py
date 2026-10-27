@@ -25,6 +25,8 @@ from assistant.agent.locales import supported_locale
 from assistant.agent.tools.common import (
     COVERAGE_RULE,
     DIRECTION_LABELS,
+    ONE_TARGET_RULE,
+    ArgumentRuleError,
     OptionalId,
     decode_cursor,
     encode_cursor,
@@ -45,6 +47,7 @@ from assistant.agent.tools.registry import (
 )
 from assistant.conversations import read
 from assistant.conversations.models import Conversation
+from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.memory import summaries
 
@@ -57,7 +60,7 @@ MESSAGE_LIMIT = 1500
 def _bounded(low: int, high: int) -> AfterValidator:
     def check(value: int | None) -> int | None:
         if value is not None and not low <= value <= high:
-            raise ValueError(f"must be between {low} and {high}")
+            raise ArgumentRuleError(f"must be between {low} and {high}")
         return value
 
     return AfterValidator(check)
@@ -69,7 +72,7 @@ def _text(max_length: int) -> AfterValidator:
             return None
         stripped = value.strip()
         if not stripped or len(stripped) > max_length:
-            raise ValueError(f"must be 1-{max_length} characters")
+            raise ArgumentRuleError(f"must be 1-{max_length} characters")
         return stripped
 
     return AfterValidator(check)
@@ -98,7 +101,7 @@ def _row(row: read.ConversationRow, timezone: str) -> dict[str, object]:
 async def _account(ctx: ToolContext, session: AsyncSession) -> Account:
     account = await session.get(Account, ctx.account_id)
     if account is None:
-        raise LookupError("account")
+        raise NotInAccountError("account")
     return account
 
 
@@ -187,7 +190,7 @@ class GetConversationArgs(BaseModel):
     @model_validator(mode="after")
     def _exactly_one_target(self) -> Self:
         if (self.conversation_id is None) == (self.contact_id is None):
-            raise ValueError("give exactly one of conversation_id or contact_id")
+            raise ArgumentRuleError(ONE_TARGET_RULE)
         return self
 
 
@@ -204,7 +207,7 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
                 session, ctx.account_id, contact_ids=(args.contact_id,), limit=1
             )
             if not rows:
-                raise LookupError("no conversation with this contact")
+                raise NotInAccountError("no conversation with this contact")
             conversation_id = rows[0].conversation_id
         page = await read.conversation_page(
             session,

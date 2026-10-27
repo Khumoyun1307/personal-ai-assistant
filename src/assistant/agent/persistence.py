@@ -23,6 +23,7 @@ from assistant.accounts.models import ControlTurn
 from assistant.accounts.service import ConsentState, active_consent
 from assistant.agent.models import AgentRun, AgentRunStep, LlmCall
 from assistant.core.clock import Clock
+from assistant.core.errors import NotInAccountError
 from assistant.db.repository import AccountScopedRepository
 from assistant.db.uow import transaction
 from assistant.llm.metering import estimate_cost
@@ -71,7 +72,7 @@ class AgentRunRepository(AccountScopedRepository[AgentRun]):
     ) -> AgentRunStep:
         """Append a content-free step. The run must belong to this account."""
         if await self.get(run_id) is None:
-            raise LookupError("run not found in this account")
+            raise NotInAccountError("run not found in this account")
         next_seq = (
             await self.session.execute(
                 select(func.coalesce(func.max(AgentRunStep.seq), 0) + 1).where(

@@ -45,6 +45,7 @@ from assistant.agent.locales import supported_locale
 from assistant.agent.summarize import PeriodOutcome, RefreshOutcome, SummaryStatus
 from assistant.agent.tools.common import (
     COVERAGE_RULE,
+    ArgumentRuleError,
     OptionalId,
     account_coverage,
     local_time,
@@ -65,6 +66,7 @@ from assistant.agent.tools.registry import (
     ToolRefs,
 )
 from assistant.conversations.models import Conversation
+from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.memory import catch_up, summaries
 from assistant.memory.summaries import StoreResult
@@ -138,7 +140,7 @@ def _moment(value: str | None) -> str | None:
 def _bounded(low: int, high: int) -> AfterValidator:
     def check(value: int | None) -> int | None:
         if value is not None and not low <= value <= high:
-            raise ValueError(f"must be between {low} and {high}")
+            raise ArgumentRuleError(f"must be between {low} and {high}")
         return value
 
     return AfterValidator(check)
@@ -174,9 +176,11 @@ class SummarizePeriodArgs(BaseModel):
     def _shape(self) -> Self:
         since, until = parse_local_moment(self.since), parse_local_moment(self.until)
         if since is not None and until is not None and since >= until:
-            raise ValueError("since must be before until")
+            raise ArgumentRuleError("since must be before until")
         if self.contact_id is not None and self.conversation_id is not None:
-            raise ValueError("give at most one of contact_id or conversation_id")
+            raise ArgumentRuleError(
+                "give at most one of contact_id or conversation_id; set the other to null"
+            )
         return self
 
 
@@ -197,7 +201,7 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
         session = uow.session
         account = await session.get(Account, ctx.account_id)
         if account is None:
-            raise LookupError("account")
+            raise NotInAccountError("account")
         tz = account.timezone
         since = parse_local_moment(args.since)
         until = parse_local_moment(args.until)
@@ -411,7 +415,7 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         session = uow.session
         account = await session.get(Account, ctx.account_id)
         if account is None:
-            raise LookupError("account")
+            raise NotInAccountError("account")
         candidates = await catch_up.unanswered(
             session, ctx.account_id, since=now - timedelta(days=days), limit=args.limit or 10
         )

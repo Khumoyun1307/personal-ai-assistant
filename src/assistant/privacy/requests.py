@@ -49,6 +49,7 @@ from assistant.accounts import callbacks, service
 from assistant.accounts.models import Account, AuditLogEntry, PendingInput
 from assistant.core.channel import Button, ControlChannel, Delivery
 from assistant.core.clock import Clock
+from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.observability.logging import get_logger
 from assistant.privacy import deletion
@@ -256,7 +257,10 @@ class RequestedDeletions:
                 report: DeletionReport | None = await self._delete(
                     session, account_id, scope, subject_id, request, turn_cutoff
                 )
-            except LookupError:
+            except NotInAccountError:
+                # Not (or no longer) this account's chat or contact. Any other
+                # error, a KeyError bug too, takes the failure path (M03
+                # follow-up 5).
                 report = None
             attempt.committing = True
         return ("deleted" if report is not None else "not_found"), report

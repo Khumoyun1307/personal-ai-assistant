@@ -3,7 +3,10 @@
 - **Argument validation** that the JSON schema does not express. Constraints
   are checked in Pydantic validators rather than as schema keywords, so the
   strict tool schema stays within what OpenAI strict mode accepts; dates are
-  `YYYY-MM-DD` strings in the owner's timezone, validated here.
+  `YYYY-MM-DD` strings in the owner's timezone, validated here. Our rules
+  raise `ArgumentRuleError`, whose fixed text the model is shown (§8.3).
+- **Account checks**: an id that is not this account's raises
+  `NotInAccountError`, which the executor answers "not found".
 - **Untrusted rendering**: every contact-authored string and contact-chosen
   name goes through `agent/untrusted.py` (§6 invariant 3b), including the
   owner's own messages in business chats.
@@ -34,6 +37,7 @@ from assistant.agent.schemas import cited_ids
 from assistant.agent.untrusted import Source, wrap
 from assistant.conversations import coverage
 from assistant.conversations.models import Contact, Conversation
+from assistant.core.errors import NotInAccountError
 from assistant.memory import summaries
 
 DIRECTION_LABELS = {
@@ -64,6 +68,17 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _MOMENT = re.compile(r"^(\d{4}-\d{2}-\d{2})(?: (\d{2}):(\d{2}))?$")
 
 
+class ArgumentRuleError(ValueError):
+    """One of our argument rules, in our own fixed words: the executor shows
+    the text to the model so it can correct the call (§8.3). Never put the
+    input in the text; any other `ValueError` is reported by field only."""
+
+
+#: The chat tools that take one chat either way (get_conversation, the mode
+#: and deletion tools).
+ONE_TARGET_RULE = "give exactly one of conversation_id or contact_id; set the other to null"
+
+
 def parse_local_moment(value: str | None) -> datetime | None:
     """`YYYY-MM-DD HH:MM` (or `YYYY-MM-DD` = midnight) as a naive local time,
     within `MIN_DATE`..`MAX_DATE`, or None. Raises ValueError otherwise."""
@@ -71,7 +86,7 @@ def parse_local_moment(value: str | None) -> datetime | None:
         return None
     match = _MOMENT.fullmatch(value)
     if match is None:
-        raise ValueError("times must be 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD'")
+        raise ArgumentRuleError("times must be 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD'")
     day = parse_local_date(match.group(1))
     assert day is not None
     hour, minute = int(match.group(2) or 0), int(match.group(3) or 0)
@@ -90,17 +105,17 @@ def parse_local_date(value: str | None) -> date | None:
     if value is None:
         return None
     if len(value) != 10:
-        raise ValueError("dates must be YYYY-MM-DD")
+        raise ArgumentRuleError("dates must be YYYY-MM-DD")
     parsed = date.fromisoformat(value)
     if not MIN_DATE <= parsed <= MAX_DATE:
-        raise ValueError(f"dates must be between {MIN_DATE} and {MAX_DATE}")
+        raise ArgumentRuleError(f"dates must be between {MIN_DATE} and {MAX_DATE}")
     return parsed
 
 
 def check_id(value: int | None) -> int | None:
     """An id argument: None, or 1..2^63-1 (0 is not "no filter")."""
     if value is not None and not 1 <= value <= MAX_ID:
-        raise ValueError("ids are positive 64-bit integers")
+        raise ArgumentRuleError("ids are positive 64-bit integers")
     return value
 
 
@@ -128,7 +143,7 @@ def decode_cursor(value: str | None) -> tuple[datetime, int] | None:
         return None
     match = _CURSOR.fullmatch(value)
     if match is None:
-        raise ValueError("cursor must be a next_cursor value returned earlier")
+        raise ArgumentRuleError("cursor must be a next_cursor value returned earlier")
     message_id = int(match.group(2))
     check_id(message_id)
     return _EPOCH + timedelta(microseconds=int(match.group(1))), message_id
@@ -262,7 +277,7 @@ def _omitted(value: object) -> dict[str, Any]:
 
 
 async def require_contacts(session: AsyncSession, account_id: int, ids: Sequence[int]) -> None:
-    """Every id must be a contact of this account (§8.3 step 2); else LookupError."""
+    """Every id must be a contact of this account (§8.3 step 2); else NotInAccountError."""
     if not ids:
         return
     found = (
@@ -274,7 +289,7 @@ async def require_contacts(session: AsyncSession, account_id: int, ids: Sequence
         )
     ).scalar_one()
     if int(found) != len(set(ids)):
-        raise LookupError("contact not found in this account")
+        raise NotInAccountError("contact not found in this account")
 
 
 async def require_conversations(session: AsyncSession, account_id: int, ids: Sequence[int]) -> None:
@@ -289,7 +304,7 @@ async def require_conversations(session: AsyncSession, account_id: int, ids: Seq
         )
     ).scalar_one()
     if int(found) != len(set(ids)):
-        raise LookupError("conversation not found in this account")
+        raise NotInAccountError("conversation not found in this account")
 
 
 async def account_coverage(session: AsyncSession, account_id: int, timezone: str) -> dict[str, Any]:
