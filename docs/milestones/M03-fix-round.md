@@ -17,18 +17,23 @@ open items below instead of another round; a real safety-invariant break is
 always fixed. No agent reads real chat content or `var/`; deploys and
 production checks only with the owner's go-ahead.
 
+**The owner ended the round on 2026-10-27** after C2, C1 (with P9), C3, G1
+and C4, all merged (#35, #40) and deployed the same day. O1 was dropped and
+not built; C5 and the S03.7 items were not done and stay open items. The
+round's last step made CI fast again (*CI speed* below).
+
 ## Status
 
 | Item | What | Branch | State |
 |---|---|---|---|
-| C2 | Notes do not save or load, silently; every tool failure logs a line | `m03fix/c2-notes` | fixed; draft PR, CI and the owner merge |
-| C1, P9 | "Who is waiting" misses a contact who asked last; an open request keeps "needs a reply" on | `m03fix/c1-waiting` | fixed; draft PR, CI and the owner merge |
-| C3 | Ignore mode stores nothing new; the panel says what a mode change did | `m03fix/c3-ignore` | fixed; draft PR, CI and the owner merge |
-| O1 | Deleted messages are remembered and marked as deleted | `m03fix/o1-deleted` | design approved by the owner; in progress |
-| G1 | Stronger summary model trial | `m03fix/g1-sol-trial` | trial done; the owner decided: stay on `gpt-6-luna` |
-| C4 | Ask the owner's language at onboarding | `m03fix/c4-onboarding-language` | fixed; draft PR, CI and the owner merge |
-| C5 | Tone of answers | — | not started |
-| S03.7 items | Prompt, harness and label items | — | not started |
+| C2 | Notes do not save or load, silently; every tool failure logs a line | `m03fix/c2-notes` | fixed; merged (#35), deployed 2026-10-27 |
+| C1, P9 | "Who is waiting" misses a contact who asked last; an open request keeps "needs a reply" on | `m03fix/c1-waiting` | fixed; merged (#36 → #40), deployed 2026-10-27 |
+| C3 | Ignore mode stores nothing new; the panel says what a mode change did | `m03fix/c3-ignore` | fixed; merged (#37 → #40), deployed 2026-10-27 |
+| G1 | Stronger summary model trial | `m03fix/g1-sol-trial` | trial done; the owner decided: stay on `gpt-6-luna` (#38 → #40) |
+| C4 | Ask the owner's language at onboarding | `m03fix/c4-onboarding-language` | fixed; merged (#39 → #40), deployed 2026-10-27 |
+| CI | Tests waited a real second per extra control-chat message; CI in three parallel jobs | `ci/split-tests-3` | the round's last step |
+| C5 | Tone of answers | — | not done; open item |
+| S03.7 items | Prompt, harness and label items | — | not done; open items |
 
 ## C2 — notes fail silently
 
@@ -859,10 +864,6 @@ edit) may recur on Luna; the optional guard from S03.7 G1 (re-ask once when a
 summary says a value is "not given" while a cited message is edited) stays an
 open item.
 
-## O1 — deleted messages
-
-_Pending._
-
 ## C4 — language at onboarding
 
 **Found (owner checklist, 2026-10-27).** The owner's language stayed unset
@@ -1126,13 +1127,46 @@ files only): 323 passed, 1 skipped (the gateway skip) for the new tests,
 `test_memory_args.py` (the `update_preferences` tool). ruff and format
 clean, `mypy --strict` clean (149 files), import contracts 4/4 kept.
 
+## CI speed (the last step)
+
+**Cause.** The gateway keeps about one message per second per chat (TF §5)
+and waited with a real `asyncio.sleep`, while tests run on a `FakeClock` that
+never moves by itself. So every control-chat message after the first in a
+test waited one full real second (against AGENTS §11, no sleeps for timing).
+C4's onboarding sends about three more control messages before almost every
+integration test, which doubled CI to about 40 minutes (from about 20; the
+same 43-test file: 118 s before C4, 223 s with it).
+
+**What changed.**
+
+- `OutboundGateway` takes the sleep it waits with (`sleep=`, default
+  `asyncio.sleep`), so production is unchanged; tests pass
+  `tests/fakes/clock.py::FakeSleep`, which records the wait asked for and
+  returns at once. Every test-built gateway uses it. The same 43-test file
+  now takes 40 s.
+- The throttle has its first test:
+  `tests/unit/test_gateway_and_render.py::test_sends_to_one_chat_are_spaced_by_the_injected_sleep`
+  (a second send to the same chat waits 1.0 s; the first send, another
+  chat's send and a send after the gap do not). Red first: `TypeError`,
+  no `sleep` argument.
+- CI (owner, 2026-10-27: three jobs): `lint` (ruff, format, mypy,
+  import-linter, pip-audit) once; `tests` as three parallel jobs, each with
+  its own PostgreSQL and its own content-free database-log check (RG-10),
+  files split by `tools/ci/split_tests.py` (weighted by test count, a
+  database test counting as ten; deterministic); `check` passes only when
+  `lint` and all three test jobs passed.
+  `tests/unit/test_ci_split.py` checks that every test file runs in exactly
+  one job.
+
 ## C5 — tone
 
-_Pending._
+Not done: the owner ended the round. It stays an open item (owner checklist
+C5 in [M03.md](M03.md)).
 
 ## S03.7 prompt, harness and label items
 
-_Pending._
+Not done: the owner ended the round. They stay in [M03.md](M03.md), *Open
+items from S03.7*, with one answer recorded below (S5).
 
 ## Owner decisions (fix round)
 
@@ -1141,10 +1175,11 @@ diagnosis (each with the lead's recommendation shown):
 
 | # | Question | Owner's answer |
 |---|---|---|
-| O1 | The design for remembering deleted messages | **Approved as recommended.** Keep a deleted message's text in the existing content columns, marked deleted (`deleted_at`), for the normal message period (90 days or the owner's setting); no new column, no migration. Label it "deleted in Telegram", never "by the contact" (Telegram does not say who deleted it, TF LV-07). A question or promise whose only message was deleted is shown marked and not counted as waiting; deleted text never reaches M04–M06 drafts or autonomous replies. The owner's own deletions (`/privacy delete`, chat, person, everything) still erase it. Privacy policy **v6** changes the one sentence of v5 that becomes untrue, with the one-time notice every version bump sends; the PRD/TF/ARCHITECTURE wording that excludes the behaviour is amended in the same change (AGENTS §2); prompts `summarize.v8` and `owner_request.v8`; the E1 cases c09/c33 relabelled and 2–3 synthetic deletion cases added; one eval re-run (about USD 0.15) from the existing USD 1 approval. O2 (keeping an edit's previous text) is decided separately. |
+| O1 | The design for remembering deleted messages | Approved, then **dropped by the owner the same day; not built.** A message deleted in Telegram is still erased, as in M03. |
 | G1 | Which model writes chat summaries | **Stay on `gpt-6-luna`.** |
 | C4 | How onboarding asks for the language | **Language, then time zone**: four language buttons first, the consent question in that language, then a short time-zone step; a Language button in `/settings`; only onboarding and the language screen are localised now. |
 | C3 | Ignore-mode details | **As recommended:** (1) an edit, made while the chat is ignored, to a message saved earlier keeps the old text (as today; fits O1); (2) a failed (unparseable) update in an ignored chat has its raw copy cleared at once instead of kept up to 7 days; (3) messages saved before the switch stay usable when the owner asks about that chat; only summaries, catch-ups and the waiting list leave the chat out. |
+| S5 | An address or a place name the contact wrote in another script: copy it as written, or write it in the owner's script? | **Both:** the owner's script first, the contact's original in brackets, e.g. "22-uy, 15-xonadon (дом 22, кв. 15)"; names transliterated letter by letter, never translated. For the next prompt version; not built in this round. |
 
 Recorded for the owner (no answer needed): in production a note about a
 contact always shows a confirmation card first, because looking up the
@@ -1156,4 +1191,13 @@ re-runs steps 8–9.
 
 ## Open items after the fix round
 
-_Pending._
+- **For the owner on Alviro** (after the 2026-10-27 deploy): checklist step 7
+  (who is waiting), steps 8–9 (notes: a note about a person shows a card
+  first; a failure now leaves an `agent_tool_call_failed` line naming its
+  stage, so the C2 trigger can be read), step 11 (the Ignore panel), and
+  `/settings` → Language….
+- **Proofreading:** the uz-Latn, uz-Cyrl and ru drafts of C1 (`MAY_BE_WAITING`,
+  `STILL_OPEN`), C3 (the mode texts) and C4 (`onboarding_texts.py`, the
+  consent question first).
+- **Not done:** C5 (tone) and the S03.7 prompt, harness and label items
+  (M03.md), plus the open items listed in each section above.

@@ -15,7 +15,7 @@ import pytest
 
 from assistant.telegram.control.handlers import IncomingMessage
 from assistant.telegram.control.inbox_handlers import ControlInboxHandlers
-from tests.fakes.clock import FakeClock
+from tests.fakes.clock import FakeClock, FakeSleep
 from tests.fakes.sender import FakeTelegramSender
 
 
@@ -35,7 +35,7 @@ async def hint_of(sender: dict[str, Any], *, key: str = "from_user") -> str | No
     dispatcher = RecordingDispatcher()
     handlers = ControlInboxHandlers(
         dispatcher,  # type: ignore[arg-type]
-        OutboundGateway(FakeTelegramSender(), clock),
+        OutboundGateway(FakeTelegramSender(), clock, sleep=FakeSleep()),
         RefusalLimiter(clock),
     )
     payload = {

@@ -23,7 +23,7 @@ from assistant.db.uow import run_after_commit
 from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.handlers import IncomingMessage
 from assistant.telegram.gateway import OutboundGateway
-from tests.fakes.clock import FakeClock
+from tests.fakes.clock import FakeClock, FakeSleep
 from tests.fakes.sender import FakeTelegramSender
 
 pytestmark = pytest.mark.integration
@@ -44,7 +44,7 @@ def sender() -> FakeTelegramSender:
 
 @pytest.fixture
 def dispatcher(sender: FakeTelegramSender, clock: FakeClock) -> ControlDispatcher:
-    return ControlDispatcher(OutboundGateway(sender, clock), clock)
+    return ControlDispatcher(OutboundGateway(sender, clock, sleep=FakeSleep()), clock)
 
 
 def message(text: str, *, message_id: int = 1) -> IncomingMessage:

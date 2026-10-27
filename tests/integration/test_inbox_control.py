@@ -41,7 +41,7 @@ from assistant.telegram.control.inbox_handlers import (
 from assistant.telegram.gateway import OutboundGateway
 from assistant.telegram.ingress.writer import write_batch
 from assistant.telegram.routing import route_update
-from tests.fakes.clock import FakeClock
+from tests.fakes.clock import FakeClock, FakeSleep
 from tests.fakes.sender import FakeTelegramSender
 
 pytestmark = pytest.mark.integration
@@ -65,7 +65,7 @@ async def setup(
     factory = build_session_factory(engine)
     clock = FakeClock(datetime.now(UTC))
     sender = FakeTelegramSender()
-    gateway = OutboundGateway(sender, clock)
+    gateway = OutboundGateway(sender, clock, sleep=FakeSleep())
     app = build_app(migrated_url)
 
     @app.task(name="agent.owner_request", queue="llm")

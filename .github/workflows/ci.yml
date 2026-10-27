@@ -1,6 +1,6 @@
 # Runs on every push to main and every pull request of
 # github.com/Khumoyun1307/personal-ai-assistant (ARCHITECTURE §16). The local
-# Definition-of-Done gate (`just check`) mirrors the `check` job; the deploy
+# Definition-of-Done gate (`just check`) mirrors the `lint` and `tests` jobs; the deploy
 # jobs mirror `just smoke-backup` and the arm64 builds for the Oracle A1 host.
 name: CI
 
@@ -34,8 +34,44 @@ env:
   TEST_DATABASE_URL: postgresql+psycopg://postgres:ci-local-password@localhost:5432/assistant_test
 
 jobs:
-  check:
+  # Lint, types, layer contracts and the dependency audit: once, no database.
+  lint:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check --output-format=github .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Types
+        run: uv run mypy src evals
+
+      - name: Layer contracts
+        run: uv run lint-imports
+
+      - name: Dependency audit
+        run: uv run pip-audit
+
+  # The full test suite in three parallel jobs, each with its own PostgreSQL
+  # (owner, 2026-10-27). `tools/ci/split_tests.py` gives each job its files;
+  # tests/unit/test_ci_split.py checks that every file runs exactly once.
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     services:
       db:
         image: pgvector/pgvector:pg18
@@ -75,20 +111,8 @@ jobs:
             -c "ALTER SYSTEM SET log_statement = 'none';" \
             -c "SELECT pg_reload_conf();"
 
-      - name: Lint
-        run: uv run ruff check --output-format=github .
-
-      - name: Format check
-        run: uv run ruff format --check .
-
-      - name: Types
-        run: uv run mypy src evals
-
-      - name: Layer contracts
-        run: uv run lint-imports
-
-      - name: Tests
-        run: uv run pytest
+      - name: Tests (shard ${{ matrix.shard }} of 3)
+        run: uv run pytest $(uv run python tools/ci/split_tests.py --shards 3 --index ${{ matrix.shard }})
 
       # RG-10 on the database side: the test suite writes canary strings into
       # content columns and injects constraint violations; none of it may
@@ -102,8 +126,16 @@ jobs:
           fi
           echo "db log: $(wc -l < db.log) lines, no canary"
 
-      - name: Dependency audit
-        run: uv run pip-audit
+  # One result for the whole gate (the name `check` is what PRs show).
+  check:
+    if: always()
+    needs: [lint, tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Lint and every test shard passed
+        run: |
+          test "${{ needs.lint.result }}" = success
+          test "${{ needs.tests.result }}" = success
 
   # Deployment scripts and the backup path of deploy/compose.prod.yml (S02.6).
   deploy-scripts:

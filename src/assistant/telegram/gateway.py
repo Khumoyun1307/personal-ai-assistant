@@ -25,6 +25,7 @@ type exists so the shape is right; calling it raises.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -39,6 +40,10 @@ logger = get_logger(__name__)
 
 #: Telegram tolerates about one message per second per chat (TF §5).
 MIN_SECONDS_BETWEEN_SENDS = 1.0
+
+#: How the throttle waits: `asyncio.sleep` in production; tests inject one
+#: that returns at once, since their clock never moves by itself (AGENTS §11).
+Sleep = Callable[[float], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,9 +133,12 @@ class BusinessSendNotAvailableError(RuntimeError):
 class OutboundGateway:
     """The single egress point."""
 
-    def __init__(self, sender: TelegramSender, clock: Clock) -> None:
+    def __init__(
+        self, sender: TelegramSender, clock: Clock, *, sleep: Sleep = asyncio.sleep
+    ) -> None:
         self._sender = sender
         self._clock = clock
+        self._sleep = sleep
         self._last_send_at: dict[int, float] = {}
         self._locks: dict[int, asyncio.Lock] = {}
 
@@ -143,7 +151,7 @@ class OutboundGateway:
             if previous is not None:
                 wait = MIN_SECONDS_BETWEEN_SENDS - (now - previous)
                 if wait > 0:
-                    await asyncio.sleep(wait)
+                    await self._sleep(wait)
                     now = self._clock.now().timestamp()
             self._last_send_at[chat_id] = now
 
