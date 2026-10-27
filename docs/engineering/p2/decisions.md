@@ -122,7 +122,7 @@ Routine technical decisions inside the approved scope (AGENTS §3). Each names w
 
 | Date | Requester | Contract | Change | Affected | Decision |
 |---|---|---|---|---|---|
-| — | — | — | — | — | — |
+| 2026-10-27 | Neryn (S04.1, #89) | F0-interfaces §12 (`core/*` F0 only) | **ICR-1:** `core/delivery.py` gains `MAX_TEXT_LENGTH = 4096` (Bot API `sendMessage` limit); `telegram/render.py`'s `MAX_MESSAGE_CHARS` reuses it | S04.1 (`length_ok`), S04.3/S04.4 (length checks) | Approved by the TL: AGENTS §7 says a Telegram limit is defined in one place, and `policy` cannot import `telegram`. Additive; lands in #89 |
 
 ## D. Safety sign-offs
 
