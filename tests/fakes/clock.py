@@ -25,3 +25,16 @@ class FakeClock:
         if moment.tzinfo is None:
             raise ValueError("FakeClock needs an aware datetime")
         self._now = moment.astimezone(UTC)
+
+
+class FakeSleep:
+    """A sleep that records the wait asked for and returns at once.
+
+    The FakeClock never moves by itself, so a real `asyncio.sleep` behind a
+    rate limit waits its full length on every call (AGENTS §11)."""
+
+    def __init__(self) -> None:
+        self.waits: list[float] = []
+
+    async def __call__(self, seconds: float) -> None:
+        self.waits.append(seconds)

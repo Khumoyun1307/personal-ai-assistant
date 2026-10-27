@@ -22,7 +22,7 @@ from assistant.telegram.render import (
     sanitize,
     split_message,
 )
-from tests.fakes.clock import FakeClock
+from tests.fakes.clock import FakeClock, FakeSleep
 from tests.fakes.sender import FakeTelegramSender, network_error, telegram_error
 
 CONTROL = ControlChat(account_id=1, chat_id=584113992)
@@ -35,7 +35,29 @@ def sender() -> FakeTelegramSender:
 
 @pytest.fixture
 def gateway(sender: FakeTelegramSender) -> OutboundGateway:
-    return OutboundGateway(sender, FakeClock())
+    return OutboundGateway(sender, FakeClock(), sleep=FakeSleep())
+
+
+async def test_sends_to_one_chat_are_spaced_by_the_injected_sleep(
+    sender: FakeTelegramSender,
+) -> None:
+    """About one message per second per chat (TF §5), waited through the
+    injected sleep: the first send and another chat's send never wait."""
+    clock = FakeClock()
+    sleep = FakeSleep()
+    gateway = OutboundGateway(sender, clock, sleep=sleep)
+    other = ControlChat(account_id=2, chat_id=584113993)
+
+    await gateway.send_text(CONTROL, "first")
+    await gateway.send_text(other, "another chat")
+    assert sleep.waits == []
+
+    await gateway.send_text(CONTROL, "second")
+    assert sleep.waits == [1.0]
+
+    clock.advance(seconds=5)
+    await gateway.send_text(CONTROL, "later")
+    assert sleep.waits == [1.0]
 
 
 # ------------------------------------------------------------------ renderer

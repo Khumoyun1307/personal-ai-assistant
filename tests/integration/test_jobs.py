@@ -46,7 +46,7 @@ from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.handlers import IncomingMessage
 from assistant.telegram.gateway import OutboundGateway
 from tests.fakes.channel import FakeChannel
-from tests.fakes.clock import FakeClock
+from tests.fakes.clock import FakeClock, FakeSleep
 from tests.fakes.deletions import RecordingDeleter
 from tests.fakes.sender import FakeTelegramSender
 from tests.fakes.summaries import RecordingRefresher
@@ -209,7 +209,9 @@ async def add_turn(env: Env, account_id: int, *, created_at: datetime | None = N
 async def test_a_free_text_turn_and_its_job_commit_together(env: Env) -> None:
     account_id = await onboarded_account(env)
     dispatcher = ControlDispatcher(
-        OutboundGateway(FakeTelegramSender(), env.clock), env.clock, env.scheduler
+        OutboundGateway(FakeTelegramSender(), env.clock, sleep=FakeSleep()),
+        env.clock,
+        env.scheduler,
     )
     message = IncomingMessage(
         account_id=0, chat_id=OWNER, telegram_message_id=5, text="Synthetic question", from_id=OWNER
@@ -229,7 +231,9 @@ async def test_a_free_text_turn_and_its_job_commit_together(env: Env) -> None:
 async def test_a_rolled_back_turn_leaves_no_job(env: Env) -> None:
     await onboarded_account(env)
     dispatcher = ControlDispatcher(
-        OutboundGateway(FakeTelegramSender(), env.clock), env.clock, env.scheduler
+        OutboundGateway(FakeTelegramSender(), env.clock, sleep=FakeSleep()),
+        env.clock,
+        env.scheduler,
     )
     message = IncomingMessage(
         account_id=0, chat_id=OWNER, telegram_message_id=5, text="Synthetic question", from_id=OWNER

@@ -1142,7 +1142,7 @@ A restore rewinds the database by up to 24 h. Actions sent after the dump come b
 
 Mandatory regression tests: see IMPLEMENTATION_PLAN §10 (single list).
 
-CI (GitHub Actions): ruff, mypy, import-linter, pip-audit, unit + integration + contract + scenario tests with a Postgres service container; from S02.6 also shellcheck on the deploy scripts, builds of the app and backup images for linux/amd64 and linux/arm64, and the backup smoke test (dump → decrypt → restore into a scratch database).
+CI (GitHub Actions): ruff, mypy, import-linter and pip-audit in one job; unit + integration + contract + scenario tests in three parallel jobs, each with its own Postgres service container and its content-free database-log check (files split by `tools/ci/split_tests.py`; M03 fix round, 2026-10-27); a `check` job passes only when all of them passed; from S02.6 also shellcheck on the deploy scripts, builds of the app and backup images for linux/amd64 and linux/arm64, and the backup smoke test (dump → decrypt → restore into a scratch database).
 
 ---
 
