@@ -15,14 +15,16 @@ from __future__ import annotations
 import html
 import re
 
+from assistant.core.delivery import MAX_TEXT_LENGTH
+
 #: Telegram's supported HTML tags. Anything else is escaped, not stripped, so
 #: the owner still sees what the text actually said.
 ALLOWED_TAGS: frozenset[str] = frozenset(
     {"b", "strong", "i", "em", "u", "s", "code", "pre", "a", "blockquote", "tg-spoiler"}
 )
 
-#: Telegram's hard limit for a text message.
-MAX_MESSAGE_CHARS = 4096
+#: Telegram's hard limit for a text message (defined once in core.delivery).
+MAX_MESSAGE_CHARS = MAX_TEXT_LENGTH
 
 #: Leave room for a continuation marker without risking the limit.
 _SPLIT_BUDGET = MAX_MESSAGE_CHARS - 64
