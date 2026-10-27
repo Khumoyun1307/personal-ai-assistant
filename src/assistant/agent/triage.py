@@ -27,7 +27,7 @@ from it (S05.2 §3.9).
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -153,6 +153,12 @@ class ValidationCounts:
     questions_unshown: int = 0
     questions_misattributed: int = 0
     foreign_task_ids: int = 0
+    #: `existing_task_id`s naming an open task of another kind or side.
+    mismatched_task_ids: int = 0
+
+
+#: The task kind a commitment of each side may update.
+_COMMITMENT_KINDS = {"owner": tasks.OWNER_COMMITMENT, "contact": tasks.CONTACT_COMMITMENT}
 
 
 def _side(direction: str | None) -> str | None:
@@ -167,21 +173,23 @@ def validate_triage(
     verdict: SanitizedTriage,
     *,
     directions: Mapping[int, str],
-    open_task_ids: Collection[int],
+    open_tasks: Mapping[int, str],
 ) -> tuple[SanitizedTriage, ValidationCounts]:
     """`verdict` checked against the messages shown (id → direction, from
-    classification) and this conversation's open task ids (S05.1 §3.4).
+    classification) and this conversation's open tasks (id → kind; S05.1 §3.4).
 
     - An item citing a message that was not shown is dropped.
     - A commitment of P must cite a message of P's side, a question one of the
       contact's; otherwise it is **dropped** (TL decision: a task on the wrong
       side is worse than none). An automatic message supports neither.
     - Task ids that are not this conversation's open tasks are removed —
-      never an error, never another chat's task.
+      never an error, never another chat's task. A commitment's
+      `existing_task_id` must also name a commitment task of its own side,
+      or a contact's promise could retitle the owner's task (Viro on #79).
     Flags, urgency and the category are kept as given."""
-    open_ids = frozenset(open_task_ids)
+    open_ids = frozenset(open_tasks)
     unshown = misattributed = 0
-    foreign = 0
+    foreign = mismatched = 0
     commitments = []
     for item in verdict.commitments:
         direction = directions.get(item.source_message_id)
@@ -191,8 +199,12 @@ def validate_triage(
         if _side(direction) != item.by:
             misattributed += 1
             continue
-        if item.existing_task_id is not None and item.existing_task_id not in open_ids:
+        existing = item.existing_task_id
+        if existing is not None and existing not in open_ids:
             foreign += 1
+            item = replace(item, existing_task_id=None)
+        elif existing is not None and open_tasks[existing] != _COMMITMENT_KINDS[item.by]:
+            mismatched += 1
             item = replace(item, existing_task_id=None)
         commitments.append(item)
     q_unshown = q_misattributed = 0
@@ -222,6 +234,7 @@ def validate_triage(
         questions_unshown=q_unshown,
         questions_misattributed=q_misattributed,
         foreign_task_ids=foreign,
+        mismatched_task_ids=mismatched,
     )
 
 
@@ -320,10 +333,12 @@ class Triager:
                 conversation_id,
                 covers_through=state.covers_through_message_id,
             )
-            contact_wrote = any(m.direction == "contact" for m in source.burst)
-            if source.through is None or not (contact_wrote or state.open_tasks):
-                # Nothing a verdict could say: no new message, or only the
-                # owner wrote and there is no open task they could answer.
+            sides = {_side(m.direction) for m in source.burst}
+            owner_answered = "owner" in sides and bool(state.open_tasks)
+            if source.through is None or not ("contact" in sides or owner_answered):
+                # Nothing a verdict could say: no new message; or only the
+                # owner wrote and no open task could be answered; or only an
+                # automatic away/greeting message, which answers nothing.
                 await self._store.settle(
                     session, account_id=account_id, conversation_id=conversation_id
                 )
@@ -359,7 +374,7 @@ class Triager:
             checked, counts = validate_triage(
                 sanitized,
                 directions=source.directions(),
-                open_task_ids=[task.task_id for task in state.open_tasks],
+                open_tasks={task.task_id: task.kind for task in state.open_tasks},
             )
             verdict = TriageVerdict(
                 account_id=account_id,
@@ -403,6 +418,7 @@ class Triager:
             questions_unshown=counts.questions_unshown,
             questions_misattributed=counts.questions_misattributed,
             foreign_task_ids=counts.foreign_task_ids,
+            mismatched_task_ids=counts.mismatched_task_ids,
             items_capped=sanitized.capped,
             items_empty=sanitized.empty,
             result=result.value,

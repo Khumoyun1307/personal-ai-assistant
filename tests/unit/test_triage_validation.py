@@ -65,7 +65,7 @@ def test_a_commitment_citing_the_other_side_is_dropped() -> None:
             ]
         ),
         directions=DIRECTIONS,
-        open_task_ids=(),
+        open_tasks={},
     )
     assert [(c.by, c.source_message_id) for c in checked.commitments] == [
         ("owner", 10),
@@ -80,7 +80,7 @@ def test_a_question_must_cite_a_contact_message() -> None:
     checked, counts = validate_triage(
         verdict(open_questions=[question(10), question(12), question(11, is_decision=True)]),
         directions=DIRECTIONS,
-        open_task_ids=(),
+        open_tasks={},
     )
     assert [(q.source_message_id, q.is_decision) for q in checked.open_questions] == [(11, True)]
     assert counts.questions_misattributed == 2
@@ -95,7 +95,7 @@ def test_automatic_messages_support_no_commitment_or_question() -> None:
             open_questions=[question(13)],
         ),
         directions=DIRECTIONS,
-        open_task_ids=(),
+        open_tasks={},
     )
     assert checked.commitments == ()
     assert checked.open_questions == ()
@@ -111,11 +111,30 @@ def test_unknown_or_foreign_task_ids_are_removed() -> None:
             resolved_task_ids=[7, 8, 99, 1000],
         ),
         directions=DIRECTIONS,
-        open_task_ids=(7, 8),
+        open_tasks={7: "contact_commitment", 8: "open_question"},
     )
     assert [c.existing_task_id for c in checked.commitments] == [7, None]
     assert checked.resolved_task_ids == (7, 8)
     assert counts.foreign_task_ids == 3
+
+
+def test_an_existing_task_of_the_other_side_is_never_updated() -> None:
+    """Viro on #79: a contact commitment naming the owner's open task must not
+    retitle it (§3.5 step 4); the id is removed, the commitment kept as new."""
+    checked, counts = validate_triage(
+        verdict(
+            commitments=[
+                commitment("contact", 11, existing=7),  # 7 is the owner's
+                commitment("owner", 10, existing=8),  # 8 is a question
+                commitment("owner", 12, existing=7),  # the right side
+            ]
+        ),
+        directions=DIRECTIONS,
+        open_tasks={7: "owner_commitment", 8: "open_question"},
+    )
+    assert [c.existing_task_id for c in checked.commitments] == [None, None, 7]
+    assert counts.mismatched_task_ids == 2
+    assert counts.foreign_task_ids == 0
 
 
 def test_ids_not_shown_are_dropped() -> None:
@@ -125,7 +144,7 @@ def test_ids_not_shown_are_dropped() -> None:
             open_questions=[question(556), question(14)],
         ),
         directions=DIRECTIONS,
-        open_task_ids=(),
+        open_tasks={},
     )
     assert [c.source_message_id for c in checked.commitments] == [11]
     assert [q.source_message_id for q in checked.open_questions] == [14]
@@ -139,6 +158,6 @@ def test_flags_and_the_suspicious_category_are_kept_as_given() -> None:
         urgency="urgent",
         escalation_category="suspicious",
     )
-    checked, _ = validate_triage(given, directions=DIRECTIONS, open_task_ids=())
+    checked, _ = validate_triage(given, directions=DIRECTIONS, open_tasks={})
     assert (checked.needs_reply, checked.requests_decision) == (False, True)
     assert (checked.urgency, checked.escalation_category) == ("urgent", "suspicious")

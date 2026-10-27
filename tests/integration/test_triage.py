@@ -283,6 +283,36 @@ async def test_without_managed_consent_no_triage_call_is_made(tenv: Env) -> None
     assert store.verdicts == []
 
 
+async def test_consent_revoked_during_the_run_stops_the_next_call(tenv: Env) -> None:
+    """RG-08 / invariant 9 (Antony on #79): `ai_managed` is revoked while the
+    first call is in flight; the truncation retry is refused by the consent
+    gate before it reaches the provider, nothing is stored, and the run
+    closes as failed/`consent_missing`."""
+    a, _ = await seed(tenv)
+    fake = FakeLLM()
+
+    async def revoke_then_truncate(request: LLMRequest) -> StopReason:
+        async with tenv.factory() as session, session.begin():
+            await session.execute(
+                text(
+                    "UPDATE app.consents SET revoked_at = :t "
+                    "WHERE kind = 'ai_managed' AND revoked_at IS NULL"
+                ),
+                {"t": tenv.clock.now()},
+            )
+        return StopReason.MAX_TOKENS
+
+    fake.parsed = [revoke_then_truncate, echo]
+    store = RecordingStore()
+    outcome = await triager(tenv, fake, store).triage(a)
+
+    assert outcome.status is TriageStatus.NO_CONSENT
+    assert len(triage_requests(fake)) == 1  # the retry never reached the provider
+    assert store.verdicts == []
+    (run,) = await triage_runs(tenv)
+    assert (run.status, run.error_class) == ("failed", "consent_missing")
+
+
 async def test_a_triage_route_whose_processor_is_not_named_in_consent_sends_nothing(
     tenv: Env,
 ) -> None:
@@ -384,7 +414,7 @@ async def test_an_owner_answer_is_triaged_when_a_task_is_open(tenv: Env) -> None
     """ARCHITECTURE §6.5 step 4: the owner's manual answer is checked against
     the chat's open tasks, which are listed with their ids, titles wrapped."""
     a, _ = await seed(tenv)
-    first, newest = await message_ids(tenv, a)
+    _, newest = await message_ids(tenv, a)
     await deliver(
         tenv,
         business_message(
@@ -413,7 +443,40 @@ async def test_an_owner_answer_is_triaged_when_a_task_is_open(tenv: Env) -> None
     assert "YOU: " in burst_text(triage_requests(fake)[0])
     # 78 is not an open task of this chat: removed before the store.
     assert store.verdicts[0].resolved_task_ids == (77,)
-    assert first
+
+
+async def test_an_automatic_message_alone_makes_no_call_even_with_open_tasks(
+    tenv: Env,
+) -> None:
+    """An away/greeting message answers nothing (Viro on #79): only a manual
+    owner message, or one the assistant sent, can resolve a task."""
+    a, _ = await seed(tenv)
+    _, newest = await message_ids(tenv, a)
+    await deliver(
+        tenv,
+        business_message(
+            message_id=13,
+            from_id=OWNER,
+            message_text="SYNTH-A away message",
+            date=ts(10),
+            extra={"is_from_offline": True},
+        ),
+    )
+    task = TaskView(
+        task_id=77,
+        conversation_id=a,
+        kind="open_question",
+        title="Juma kuni uchrashuv?",
+        due_at=None,
+        status="open",
+        source_message_ids=(newest,),
+        created_at=AT,
+    )
+    store = RecordingStore(covers={a: newest}, open_tasks={a: (task,)})
+    fake = FakeLLM()
+    assert (await triager(tenv, fake, store).triage(a)).status is TriageStatus.UP_TO_DATE
+    assert fake.requests == []
+    assert store.settled == [a]
 
 
 async def test_a_first_triage_reads_only_the_last_day(tenv: Env) -> None:
@@ -435,12 +498,52 @@ async def test_a_first_triage_reads_only_the_last_day(tenv: Env) -> None:
     assert store.verdicts[0].burst_message_ids == (newest,)
 
 
+async def test_more_new_messages_than_a_call_reads_are_said_and_never_called_triaged(
+    tenv: Env,
+) -> None:
+    """Viro on #79: with more than 60 new messages, the 60 newest are the
+    burst, the header counts the rest, and the earlier block holds only
+    messages the verdict covers — never the left-out new ones under an
+    "already triaged" label."""
+    a, _ = await seed(tenv)
+    covered = await message_ids(tenv, a)
+    async with tenv.factory() as session, session.begin():
+        account = await session.scalar(
+            text("SELECT account_id FROM app.conversations WHERE id = :c"), {"c": a}
+        )
+        for i in range(65):
+            await session.execute(
+                text(
+                    "INSERT INTO app.messages (account_id, conversation_id, direction, "
+                    "sent_at, content_type, text) VALUES (:a, :c, 'contact', :t, 'text', :x)"
+                ),
+                {"a": account, "c": a, "t": AT + timedelta(minutes=10 + i), "x": f"SYNTH-A n{i}"},
+            )
+    *_, newest = await message_ids(tenv, a)
+    store = RecordingStore(covers={a: max(covered)})
+    fake = FakeLLM()
+    fake.parsed = [echo]
+    await triager(tenv, fake, store).triage(a)
+
+    (request,) = triage_requests(fake)
+    burst = burst_text(request)
+    assert burst.startswith("New messages to triage: (5 older new messages are not shown")
+    assert burst.count("[msg:") == 60
+    left_out = (await message_ids(tenv, a))[len(covered) : len(covered) + 5]
+    body = everything(request)
+    assert all(f"[msg:{i}]" not in body for i in left_out)
+    assert all(f"[msg:{i}]" in body for i in covered)  # the earlier, triaged ones
+    assert store.verdicts[0].covers_through_message_id == newest
+
+
 # ============================================================ validation
 async def test_a_misattributed_commitment_never_reaches_the_store(tenv: Env) -> None:
     """A "promise of the owner" citing the contact's message is dropped, and a
     task id of no open task is removed (S05.1 §3.4)."""
     a, _ = await seed(tenv)
     first, second = await message_ids(tenv, a)
+    async with tenv.factory() as session, session.begin():
+        await session.execute(text("UPDATE app.accounts SET timezone = 'Asia/Tashkent'"))
     fake = FakeLLM()
     fake.parsed = [
         verdict(
@@ -470,9 +573,8 @@ async def test_a_misattributed_commitment_never_reaches_the_store(tenv: Env) -> 
         ("contact_commitment", first, None),
         ("decision", second, None),
     ]
-    # Owner-local (the onboarding default timezone) into UTC.
-    assert stored.tasks[0].due_at is not None
-    assert stored.tasks[0].due_at.tzinfo is not None
+    # 10:00 in Tashkent (UTC+5) is 05:00 UTC.
+    assert stored.tasks[0].due_at == datetime(2026, 10, 19, 5, 0, tzinfo=UTC)
 
 
 async def test_a_refused_or_invalid_triage_stores_nothing(tenv: Env) -> None:
