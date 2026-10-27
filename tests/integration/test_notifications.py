@@ -19,6 +19,7 @@ Synthetic text only; FakeChannel stands in for the control chat (AGENTS §11).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -26,21 +27,40 @@ from typing import Any
 import pytest
 from sqlalchemy import func, select, text
 
-from assistant.conversations.models import Message
+from assistant.accounts.callbacks import encode, parse
+from assistant.accounts.service import create_card
+from assistant.conversations.models import Conversation, Message
 from assistant.core.jobs import NOTIFY_TASK
 from assistant.db.uow import transaction
 from assistant.inbox.models import ConversationTriage, Notification
 from assistant.inbox.notification_types import NotificationKind, NotificationRefs, Priority
 from assistant.inbox.notifications import (
+    NTF_CARD,
     NotificationDelivery,
     enqueue,
     mark_digested,
     notifications_batched_since,
 )
 from assistant.jobs.reconcile_inbox import notification_reconciler
+from assistant.telegram.control.alerts import handle_ntf_press
+from assistant.telegram.control.routes import ControlRoutes
 from tests.fakes.channel import FakeChannel
-from tests.integration.business_env import Env
-from tests.integration.p2_factories import seed_account, seed_conversation, seed_triage
+from tests.integration.business_env import (
+    CONTACT,
+    Env,
+    business_message,
+    callback,
+    connect,
+    deliver,
+    environment,
+    grant_managed,
+)
+from tests.integration.p2_factories import (
+    seed_account,
+    seed_conversation,
+    seed_notification,
+    seed_triage,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -503,3 +523,88 @@ async def test_alert_texts_carry_no_message_text(env: Env) -> None:
     async with env.factory() as session:
         stored = (await session.execute(select(Notification))).scalars().all()
     assert all(CANARY not in str(n.refs) and CANARY not in n.dedupe_key for n in stored)
+
+
+# ============================================================ buttons (`ntf`)
+@pytest.fixture
+async def routed(migrated_url: str) -> AsyncIterator[Env]:
+    """The environment with the `ntf` callback kind routed, as `_wire_m05` does."""
+    async with environment(
+        migrated_url, routes=ControlRoutes(callbacks={NTF_CARD: handle_ntf_press})
+    ) as built:
+        yield built
+
+
+async def owner_chat(env: Env) -> Chat:
+    """The owner's real business chat with Kamola, triaged."""
+    await connect(env)
+    await grant_managed(env)
+    await deliver(
+        env,
+        business_message(message_id=11, message_text="SYNTH Narx?", first_name="Kamola"),
+    )
+    async with env.factory() as session, session.begin():
+        conversation = await session.scalar(
+            select(Conversation).where(Conversation.business_chat_id == CONTACT)
+        )
+        assert conversation is not None
+        await seed_triage(
+            session,
+            account_id=conversation.account_id,
+            conversation_id=conversation.id,
+            requests_decision=True,
+            urgency="urgent",
+            escalation_category="urgent_decision",
+        )
+        return Chat(conversation.account_id, conversation.id, conversation.contact_id)
+
+
+async def delivered_card(env: Env) -> tuple[int, dict[str, str]]:
+    """Deliver one urgent alert; its id and its buttons' callback data by op."""
+    env.clock.set(DAY)
+    where = await owner_chat(env)
+    notification = await add(env, where)
+    assert notification is not None
+    channel = FakeChannel()
+    assert (await delivery(env, channel).deliver(notification)).status == "sent"
+    (buttons,) = channel.buttons
+    assert [b.label for b in buttons] == ["Open chat", "Useful", "Not useful"]
+    return notification, {parse(b.callback_data).op: b.callback_data for b in buttons}
+
+
+async def test_feedback_buttons_record_and_answer(routed: Env) -> None:
+    notification, buttons = await delivered_card(routed)
+    await deliver(routed, callback(buttons["nu"]))
+    assert (await row(routed, notification)).feedback == "not_useful"
+    await deliver(routed, callback(buttons["us"]))  # the card stays: the last press wins
+    assert (await row(routed, notification)).feedback == "useful"
+    assert [a["text"] for a in routed.sender.answered_callbacks][-2:] == [
+        "Noted — fewer alerts like this",
+        "Noted",
+    ]
+
+
+async def test_open_chat_shows_the_panel_only_for_the_owners_chat(routed: Env) -> None:
+    """RG-21 style: a press resolves only this owner's card; another
+    account's token is "no longer active" and shows nothing of its chat."""
+    _, buttons = await delivered_card(routed)
+    before = len(routed.sender.texts)
+    await deliver(routed, callback(buttons["op"]))
+    assert len(routed.sender.texts) == before + 1
+    assert "Kamola" in routed.sender.texts[-1]
+
+    async with routed.factory() as session, session.begin():
+        other = await seed_account(session)
+        chat = await seed_conversation(session, account_id=other.id)
+        foreign = await seed_notification(
+            session, account_id=other.id, conversation_id=chat.id, status="sent"
+        )
+        card = await create_card(
+            session, account_id=other.id, kind=NTF_CARD, clock=routed.clock, ref_id=foreign.id
+        )
+        assert card.token is not None
+        token = card.token
+    sent = len(routed.sender.texts)
+    await deliver(routed, callback(encode(NTF_CARD, token, "op")))
+    assert len(routed.sender.texts) == sent
+    assert routed.sender.answered_callbacks[-1]["text"] == "This button is no longer active."

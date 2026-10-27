@@ -31,9 +31,11 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import preferences
-from assistant.accounts.models import Account
+from assistant.accounts.callbacks import encode
+from assistant.accounts.models import Account, PendingInput
+from assistant.accounts.service import create_card
 from assistant.conversations.models import Contact
-from assistant.core.channel import ControlChannel
+from assistant.core.channel import Button, ControlChannel
 from assistant.core.clock import Clock
 from assistant.core.jobs import NOTIFY_TASK, JobScheduler, notification_queueing_lock
 from assistant.db.uow import after_commit, transaction
@@ -67,6 +69,18 @@ _CAP_WINDOW = timedelta(hours=1)
 _SUSPICIOUS_WINDOW = timedelta(hours=24)
 #: `reason_code` of a definite failure; `not_delivered:<n>` while retrying.
 _NOT_DELIVERED = "not_delivered"
+
+#: The alert card (F0-interfaces §7): `pending_inputs` kind, `ref_id` = the
+#: notification. Its buttons are not single-use: the owner may change the
+#: feedback, so a press looks the card up instead of claiming it.
+NTF_CARD = "ntf"
+OP_OPEN_CHAT = "op"
+OP_USEFUL = "us"
+OP_NOT_USEFUL = "nu"
+NTF_BUTTONS = (("Open chat", OP_OPEN_CHAT), ("Useful", OP_USEFUL), ("Not useful", OP_NOT_USEFUL))
+#: Long enough to answer an evening's alerts the next day; the rows go
+#: with the notifications' own 30 days anyway.
+NTF_CARD_TTL = timedelta(days=7)
 
 
 def _refs_json(refs: NotificationRefs) -> dict[str, Any]:
@@ -249,15 +263,19 @@ class NotificationDelivery:
             notification.status = "uncertain"
             notification.reason_code = "claimed"
             notification.updated_at = now
+            card_id, buttons = await self._card(session, notification, rendered)
             account_id, chat_id, kind = account.id, account.control_chat_id, notification.kind
 
-        sent = await self._channel.send(account_id=account_id, chat_id=chat_id, text=rendered.text)
+        sent = await self._channel.send(
+            account_id=account_id, chat_id=chat_id, text=rendered.text, buttons=buttons
+        )
         result = await self._record(
             notification_id,
             ok=sent.ok,
             uncertain=sent.uncertain,
             message_id=sent.message_id,
             attempt=attempt,
+            card_id=card_id,
         )
         logger.info(
             "notification_delivered",
@@ -277,9 +295,17 @@ class NotificationDelivery:
         uncertain: bool,
         message_id: int | None,
         attempt: int,
+        card_id: int | None,
     ) -> DeliveryResult:
         now = self._clock.now()
         async with transaction(self._session_factory) as uow:
+            card = None if card_id is None else await uow.session.get(PendingInput, card_id)
+            if card is not None:
+                if ok:
+                    card.prompt_message_id = message_id
+                elif not uncertain:
+                    # Definitely not on screen: the next attempt makes its own.
+                    await uow.session.delete(card)
             notification = await uow.session.get(Notification, notification_id)
             if notification is None:  # its chat's data was deleted meanwhile
                 return DeliveryResult("sent" if ok else "uncertain", "row_deleted")
@@ -312,6 +338,26 @@ class NotificationDelivery:
         notification.reason_code = reason
         notification.updated_at = now
         return DeliveryResult(status, reason)
+
+    async def _card(
+        self, session: AsyncSession, notification: Notification, rendered: RenderedAlert
+    ) -> tuple[int | None, tuple[Button, ...]]:
+        """A standard alert about a chat is a card: Open chat, Useful, Not
+        useful (S05.2 §3.2). Created in the claim transaction."""
+        if notification.alert_class != AlertClass.STANDARD or rendered.conversation_id is None:
+            return None, ()
+        card = await create_card(
+            session,
+            account_id=notification.account_id,
+            kind=NTF_CARD,
+            clock=self._clock,
+            ref_id=notification.id,
+            ttl=NTF_CARD_TTL,
+        )
+        token = card.token or ""
+        return card.id, tuple(
+            Button(label, encode(NTF_CARD, token, op)) for label, op in NTF_BUTTONS
+        )
 
     async def _render(
         self, session: AsyncSession, notification: Notification, account: Account
