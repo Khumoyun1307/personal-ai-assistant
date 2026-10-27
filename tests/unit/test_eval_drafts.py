@@ -117,6 +117,21 @@ def test_needs_reply_disagreement_is_reported() -> None:
     assert breakdowns["needs_reply agreement by variant"]["en"] == Measure(1, 2)
 
 
+# ---------------------------------------------------------------- language
+def test_a_short_draft_in_the_right_script_is_undetermined_not_a_wrong_language() -> None:
+    # Too few function words to name a language: the script still decides the
+    # obvious miss, and an undecided draft is left out of the ratio (P2-O11).
+    uz = _new("s001")
+    uz["owner_prefs"]["reply_language"] = "uz-Latn"
+    situation = E2Situation.model_validate_json(json.dumps(uz))
+
+    short = check_draft(situation, draft(text="Rahmat, oldim!"), context=CONTEXT, candidates={})
+    cyrillic = check_draft(situation, draft(text="Раҳмат, олдим!"), context=CONTEXT, candidates={})
+
+    assert (short.language.detected, short.language.ok) == (None, None)
+    assert cyrillic.language.ok is False
+
+
 # ---------------------------------------------------------------- ratings
 def test_ratings_are_keyed_by_the_draft_they_rated(tmp_path: Path) -> None:
     first = rating_key("s001", "Yes, it came at 18:00.")

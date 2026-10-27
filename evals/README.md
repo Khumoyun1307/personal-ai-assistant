@@ -136,7 +136,8 @@ Deterministic checks per draft (pure functions, reported per variant):
   `sensitive_topic` agreement.
 - Language and script against `owner_prefs.reply_language` (`match` reads the
   contact's last message, else the situation's variant; a mixed one is listed as not
-  determined): informational only (P2-O11).
+  determined; so is a draft too short to name its language whose script is right; a
+  wrong script is always a miss): informational only (P2-O11).
 
 The judge pre-screen (rubric `draft_intent.v1`, one call per draft with text) names
 the draft's intent, which `must_include` facts it conveys (a fact found literally

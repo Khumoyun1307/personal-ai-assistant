@@ -85,7 +85,13 @@ from evals.agent_mode import OUTAGE_ERRORS, value_key
 from evals.assets import load_asset
 from evals.budget import BudgetExceededError
 from evals.corpus import OWNER_TIMEZONE, row_values, scratch_database, unload_corpus
-from evals.metrics import OwnerLanguage, check_language, detect_language, ratio_metric
+from evals.metrics import (
+    SCRIPT_SHARE_MIN,
+    OwnerLanguage,
+    check_language,
+    detect_language,
+    ratio_metric,
+)
 from evals.review import ACCEPTABLE_RATINGS, RATINGS, ReviewLedger, rating_key
 from evals.schema import (
     Conversation,
@@ -337,7 +343,12 @@ def check_draft(
         language = LanguageCheck(target, None)
     else:
         verdict = check_language(text, target)
-        language = LanguageCheck(target, verdict.ok, verdict.detected, verdict.script_share)
+        # M03's check fails on doubt, which suits summaries; a short draft often
+        # has too few function words to name a language, so then only a wrong
+        # script is a miss and the rest is undetermined (P2-O11, informational).
+        undetermined = verdict.detected is None and verdict.script_share >= SCRIPT_SHARE_MIN
+        ok = None if undetermined else verdict.ok
+        language = LanguageCheck(target, ok, verdict.detected, verdict.script_share)
     return DraftChecks(
         needs_reply_agrees=result.needs_reply == expected.needs_reply,
         length_ok=(1 <= len(text) <= MAX_DRAFT_CHARS) if expected.needs_reply else None,
@@ -806,6 +817,15 @@ def draft_metrics(
     undetermined = [r.situation_id for r, c in checked if c.language.target is None and r.text]
     if undetermined:
         notes.append("reply language not determined (match, mixed): " + ", ".join(undetermined))
+    unnamed = [
+        r.situation_id
+        for r, c in checked
+        if c.language.target is not None and c.language.ok is None and r.text
+    ]
+    if unnamed:
+        notes.append(
+            "reply language not determined (too short to name; script right): " + ", ".join(unnamed)
+        )
     if rated.unrated:
         unrated_ids = [key.split("#", 1)[0] for key in rated.unrated]
         notes.append(
