@@ -136,8 +136,16 @@ class TriageStore(Protocol):
         self, session: AsyncSession, verdict: TriageVerdict, *, now: datetime
     ) -> ApplyResult: ...
 
-    async def settle(self, session: AsyncSession, *, account_id: int, conversation_id: int) -> None:
-        """Nothing to triage: clear the chat's triage flag."""
+    async def settle(
+        self,
+        session: AsyncSession,
+        *,
+        account_id: int,
+        conversation_id: int,
+        through: int | None,
+    ) -> None:
+        """Nothing to triage up to message `through`: clear the chat's triage
+        flag unless a message arrived after it (then the flag moves to it)."""
         ...
 
 
@@ -339,8 +347,14 @@ class Triager:
                 # Nothing a verdict could say: no new message; or only the
                 # owner wrote and no open task could be answered; or only an
                 # automatic away/greeting message, which answers nothing.
+                # "As of" what was read: a message committed after the read
+                # keeps the flag (Viro on #79).
+                read_through = source.through or state.covers_through_message_id
                 await self._store.settle(
-                    session, account_id=account_id, conversation_id=conversation_id
+                    session,
+                    account_id=account_id,
+                    conversation_id=conversation_id,
+                    through=read_through,
                 )
                 return TriageOutcome(TriageStatus.UP_TO_DATE, account_id)
             previous = await summaries.rolling_summary(session, account_id, conversation_id)
