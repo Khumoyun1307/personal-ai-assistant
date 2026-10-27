@@ -61,6 +61,7 @@ MEMORY_FLAGS = frozenset(
         "tool.list_memories",
         "tool.update_preferences",
         "tool.set_conversation_mode",
+        "tool.set_contact_priority",
     }
 )
 
@@ -91,14 +92,9 @@ PRODUCTION_LINE = (
     "tool.list_conversations,tool.summarize_period,tool.get_attention_list,summary.refresh,"
     "tool.remember,tool.forget,tool.list_memories,tool.set_conversation_mode,"
     "tool.update_preferences,tool.delete_conversation_data,tool.delete_contact_data,"
-    "tool.delete_everything"
+    "tool.delete_everything,tool.set_contact_priority"
 )
 PRODUCTION_FLAGS = frozenset(PRODUCTION_LINE.split(","))
-#: P2 tools that are registered but not yet enabled in production (all P2
-#: flags default off, WORKFLOW §10). A flag leaves this set, and joins the
-#: production line above, in the change that records the owner enabling it.
-#: The tests that compare the registry with production subtract it.
-NOT_YET_IN_PRODUCTION = frozenset({"tool.set_contact_priority"})
 
 
 class SetNoteArgs(BaseModel):
