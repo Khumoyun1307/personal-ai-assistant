@@ -221,7 +221,8 @@ async def _lock_conversation_update(
     ).one_or_none()
     if row is None:
         raise NotInAccountError("conversation not found")
-    return row.last_contact_msg_at
+    anchor: datetime | None = row.last_contact_msg_at
+    return anchor
 
 
 async def _live_for_turn(session: AsyncSession, request: ProposalRequest) -> Action | None:
