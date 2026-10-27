@@ -346,13 +346,11 @@ def test_schemas_satisfy_openai_strict_mode() -> None:
 
 def test_the_production_flags_line_is_every_registered_tool_plus_the_refresh() -> None:
     """The tests that mirror production (M03 fix round C2) use the verbatim
-    production flags line: it must offer every tool the product has (except
-    P2 tools not enabled yet), and it must agree with the agent-mode eval's copy."""
+    production flags line: it must offer every tool the product has, and it
+    must agree with the agent-mode eval's copy."""
     from evals.agent_mode import PRODUCTION_FLAGS as EVAL_FLAGS
 
-    from tests.integration.agent_env import NOT_YET_IN_PRODUCTION, PRODUCTION_FLAGS
+    from tests.integration.agent_env import PRODUCTION_FLAGS
 
-    registered = every_flag(default_registry())
-    assert registered >= NOT_YET_IN_PRODUCTION
-    assert (registered - NOT_YET_IN_PRODUCTION) | {"summary.refresh"} == PRODUCTION_FLAGS
+    assert every_flag(default_registry()) | {"summary.refresh"} == PRODUCTION_FLAGS
     assert PRODUCTION_FLAGS == EVAL_FLAGS
