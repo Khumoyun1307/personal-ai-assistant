@@ -810,7 +810,7 @@ async def assistant_activity(
             Message.deleted_at.is_not(None),
         )
         del_rows = (await session.execute(del_stmt)).scalars().all()
-        deleted_msg_action_ids = set(del_rows)
+        deleted_msg_action_ids = {r for r in del_rows if r is not None}
 
     grouped: dict[tuple[int, int], dict[str, int]] = {}
     for action_id, conv_id, contact_id, state in rows:
