@@ -160,7 +160,8 @@ def request(chat: Chat, **fields: Any) -> ProposalRequest:
         "kind": ActionKind.SEND_MESSAGE,
         "text": DRAFT_TEXT,
         "base_message_id": chat.contact_message_id or None,
-        "shown_through_message_id": None,
+        # A draft has seen the chat through its base, as S04.2's do.
+        "shown_through_message_id": chat.contact_message_id or None,
         "run_id": None,
         "tool_call_id": None,
         "trigger_turn_id": None,

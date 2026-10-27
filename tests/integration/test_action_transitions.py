@@ -371,6 +371,7 @@ async def test_each_transition_writes_its_mapped_event(
     chat, action_id = await seeded(env, from_state)
     reason = StateReason.SUPERSEDED if to_state is ActionState.OUTDATED else None
     values = {"attempt_id": "attempt-1"} if from_state is ActionState.EXECUTING else {}
+    token = "synthetic-token" if from_state is ActionState.AWAITING_APPROVAL else None
 
     async with env.factory() as session, session.begin():
         if expected is None:
@@ -393,6 +394,7 @@ async def test_each_transition_writes_its_mapped_event(
             to_state=to_state,
             reason=reason,
             now=env.clock.now(),
+            token=token,
             values=values,
         )
 
@@ -407,6 +409,26 @@ async def test_each_transition_writes_its_mapped_event(
     assert row.state == to_state.value
     if to_state is not ActionState.AWAITING_APPROVAL:
         assert row.approval_token is None
+
+
+async def test_only_the_cards_token_can_approve_it(env: Env) -> None:
+    chat, action_id = await seeded(env, ActionState.AWAITING_APPROVAL)
+
+    async with env.factory() as session, session.begin():
+        with pytest.raises(IllegalTransitionError):
+            await transition(
+                session,
+                account_id=chat.account_id,
+                action_id=action_id,
+                from_state=ActionState.AWAITING_APPROVAL,
+                to_state=ActionState.APPROVED,
+                reason=None,
+                now=env.clock.now(),
+            )
+
+    row = await action(env, action_id)
+    assert row.state == "awaiting_approval"
+    assert await audit(env, action_id) == []
 
 
 async def test_reject_is_terminal(env: Env) -> None:

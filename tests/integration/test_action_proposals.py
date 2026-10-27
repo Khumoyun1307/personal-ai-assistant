@@ -213,6 +213,8 @@ async def test_with_sending_off_a_proposal_still_becomes_an_awaiting_card(env: E
         ({"origin": ActionOrigin.DELEGATION_AUTO}, "autonomous_not_available"),
         ({"kind": ActionKind.EDIT_MESSAGE}, "kind_not_proposable"),
         ({"kind": ActionKind.DELETE_OWN}, "kind_not_proposable"),
+        # A proactive draft without a base would have no takeover reference.
+        ({"base_message_id": None}, "base_required"),
     ],
 )
 async def test_propose_refuses_delegation_auto_in_p2(
@@ -250,6 +252,30 @@ async def test_a_dictated_message_after_the_owners_own_manual_reply_is_a_normal_
     assert (await action(env, dictated.action_id)).base_message_id is None
     assert proactive.state is ActionState.BLOCKED
     assert (await action(env, proactive.action_id)).state_reason == "takeover"
+
+
+async def test_only_dictated_text_is_marked_fresh_through_the_newest_contact_message(
+    env: Env,
+) -> None:
+    chat = await new_chat(env)
+    _, turn_id = await run_and_turn(env, chat)
+
+    draft = await propose_in(env, request(chat, shown_through_message_id=None))
+    dictated = await propose_in(
+        env,
+        request(
+            chat,
+            origin=ActionOrigin.OWNER_DICTATED,
+            trigger_turn_id=turn_id,
+            shown_through_message_id=None,
+        ),
+    )
+
+    # A draft is fresh only through what it saw: `not_stale` fails it closed.
+    assert (await action(env, draft.action_id)).shown_through_message_id is None
+    assert (await action(env, dictated.action_id)).shown_through_message_id == (
+        chat.contact_message_id
+    )
 
 
 async def test_propose_stores_draft_flags_outside_the_policy_decision(env: Env) -> None:

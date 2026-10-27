@@ -169,8 +169,14 @@ class ActionMachine(RuleBasedStateMachine):
                     Message.direction == "contact",
                 )
             )
-            fields: dict[str, Any] = {"text": self.next_text(), "base_message_id": newest}
+            fields: dict[str, Any] = {
+                "text": self.next_text(),
+                "base_message_id": newest,
+                "shown_through_message_id": newest,
+            }
             if dictated:
+                # The owner's words are fresh through "now": `propose` fills it in.
+                fields["shown_through_message_id"] = None
                 fields["origin"] = ActionOrigin.OWNER_DICTATED
                 fields["trigger_turn_id"] = await seed_turn(session, self.c.account_id)
             result = await propose(

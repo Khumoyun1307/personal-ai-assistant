@@ -245,11 +245,20 @@ async def transition(
     Conditional on the account, the state and (when given) the version and
     approval token; returns whether it applied. Clears the token unless the
     new state is `awaiting_approval`. Raises `IllegalTransitionError` for a
-    pair outside `TRANSITIONS`. `details` adds ids or codes to the audit row
-    (never content); the event name is chosen here, never by the caller.
+    pair outside `TRANSITIONS` and for an approval without a token. `details`
+    adds ids or codes to the audit row (never content); the event name is
+    chosen here, never by the caller.
     """
     if (from_state, to_state) not in TRANSITIONS:
         raise IllegalTransitionError(f"{from_state} -> {to_state} is not a transition")
+    if (
+        from_state is ActionState.AWAITING_APPROVAL
+        and to_state is ActionState.APPROVED
+        and token is None
+    ):
+        # Only the owner's press approves a card (invariant 1); `approve` passes
+        # its token. Tx B's 429 return (`executing → approved`) is not a decision.
+        raise IllegalTransitionError("an approval needs the card's token")
     if reserved := _PRIMITIVE_COLUMNS & values.keys():
         raise IllegalTransitionError(f"values may not set {sorted(reserved)}")
     event = _event(from_state, to_state, reason=reason, new_version="version" in values)

@@ -77,6 +77,14 @@ async def propose(
         raise ProposalRefused("autonomous_not_available")  # no delegations in P2
     if request.kind is not ActionKind.SEND_MESSAGE:
         raise ProposalRefused("kind_not_proposable")  # edit/delete: RG-12 mechanics only
+    if (
+        request.origin is ActionOrigin.AGENT_PROPOSAL
+        and request.trigger_turn_id is None
+        and request.base_message_id is None
+    ):
+        # A proactive draft's takeover reference is its base message's date;
+        # without one, an owner reply sent before the draft would not count.
+        raise ProposalRefused("base_required")
     if (existing := await _by_call(session, request)) is not None:
         return _reused(existing)
     await _lock_account_share(session, request.account_id)
@@ -86,7 +94,9 @@ async def propose(
         return _reused(live)
 
     shown_through = request.shown_through_message_id
-    if shown_through is None:
+    # Only the owner's own words are fresh through "now". An AI draft is fresh
+    # through what it saw; without that id `not_stale` fails closed.
+    if shown_through is None and request.origin is ActionOrigin.OWNER_DICTATED:
         shown_through = await _newest_contact_id(session, request)
     expires_at = _expiry(now, anchor, config.approval_max_age)
     facts = ActionFacts(
