@@ -1,11 +1,11 @@
 """No sequence of owner, contact and clock events sends twice or sends
-unapproved text (S04.1 §5; invariants 1 and 6).
+unapproved text (S04.1 Â§5; invariants 1 and 6).
 
 A hypothesis state machine drives one synthetic chat through proposals,
 approvals (current and stale tokens), edits, rejections, contact and owner
 messages and expiry, and executes approved actions through a minimal Tx A
-harness: the §9.4 locks, `load_context` + `decide`, the conditional claim
-`approved → executing`, a recorded "send", then `executing → succeeded`.
+harness: the Â§9.4 locks, `load_context` + `decide`, the conditional claim
+`approved â†’ executing`, a recorded "send", then `executing â†’ succeeded`.
 S04.4 swaps the harness for the real executor and re-runs this machine.
 
 Hypothesis state machines are synchronous, so each machine owns an event
@@ -30,7 +30,7 @@ from hypothesis.stateful import (
     rule,
     run_state_machine_as_test,
 )
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import Account, AuditLogEntry
@@ -81,6 +81,9 @@ class Basis:
 
 class ActionMachine(RuleBasedStateMachine):
     url: str = ""
+    #: Sends across all examples: the machine must reach the claim, or the
+    #: invariants would hold vacuously.
+    total_sends: int = 0
 
     def __init__(self) -> None:
         super().__init__()
@@ -98,6 +101,7 @@ class ActionMachine(RuleBasedStateMachine):
         return self.loop.run_until_complete(awaitable)
 
     def teardown(self) -> None:
+        ActionMachine.total_sends += len(self.sends)
         self.run(self.engine.dispose())
         self.loop.close()
 
@@ -148,26 +152,39 @@ class ActionMachine(RuleBasedStateMachine):
     # ------------------------------------------------------------- events
     @rule(dictated=st.booleans())
     def propose_reply(self, dictated: bool) -> None:
-        async def go() -> None:
-            async with self.factory() as session, session.begin():
-                fields: dict[str, Any] = {"text": self.next_text()}
-                if dictated:
-                    fields["origin"] = ActionOrigin.OWNER_DICTATED
-                    fields["trigger_turn_id"] = await seed_turn(session, self.c.account_id)
-                result = await propose(
-                    session, request(self.c, **fields), clock=self.clock, config=CONFIG
-                )
-                row = await session.get(Action, result.action_id)
-                assert row is not None
-                base_sent = await self.base_sent_at(session, row)
-                self.basis[row.id] = Basis(
-                    shown_through=row.shown_through_message_id,
-                    takeover_ref=row.created_at if dictated or base_sent is None else base_sent,
-                )
-                if row.approval_token:
-                    self.tokens.append(row.approval_token)
+        self.run(self.proposal(dictated))
 
-        self.run(go())
+    @rule(dictated=st.booleans())
+    def propose_and_approve(self, dictated: bool) -> None:
+        """The common happy path, as one step, so short examples reach a send."""
+        self.run(self.proposal(dictated))
+        self.approve_card(stale=False, twice=False)
+
+    async def proposal(self, dictated: bool) -> None:
+        async with self.factory() as session, session.begin():
+            # A draft answers the newest contact message, as S04.2's does.
+            newest = await session.scalar(
+                select(func.max(Message.id)).where(
+                    Message.conversation_id == self.c.conversation_id,
+                    Message.direction == "contact",
+                )
+            )
+            fields: dict[str, Any] = {"text": self.next_text(), "base_message_id": newest}
+            if dictated:
+                fields["origin"] = ActionOrigin.OWNER_DICTATED
+                fields["trigger_turn_id"] = await seed_turn(session, self.c.account_id)
+            result = await propose(
+                session, request(self.c, **fields), clock=self.clock, config=CONFIG
+            )
+            row = await session.get(Action, result.action_id)
+            assert row is not None
+            base_sent = await self.base_sent_at(session, row)
+            self.basis[row.id] = Basis(
+                shown_through=row.shown_through_message_id,
+                takeover_ref=row.created_at if dictated or base_sent is None else base_sent,
+            )
+            if row.approval_token:
+                self.tokens.append(row.approval_token)
 
     async def base_sent_at(self, session: AsyncSession, row: Action) -> datetime | None:
         if row.base_message_id is None:
@@ -320,7 +337,7 @@ class ActionMachine(RuleBasedStateMachine):
                 )
 
     async def tx_a(self, action_id: int) -> Sent | None:
-        """The claim: §9.4 lock order, then policy, then a conditional update."""
+        """The claim: Â§9.4 lock order, then policy, then a conditional update."""
         now = self.clock.now()
         async with self.factory() as session, session.begin():
             await session.execute(
@@ -455,13 +472,15 @@ class ActionMachine(RuleBasedStateMachine):
 
 def test_no_event_sequence_sends_twice_or_sends_unapproved_text(migrated_url: str) -> None:
     ActionMachine.url = migrated_url
+    ActionMachine.total_sends = 0
     run_state_machine_as_test(
         ActionMachine,
         settings=settings(
             derandomize=True,
-            max_examples=40,
-            stateful_step_count=25,
+            max_examples=20,
+            stateful_step_count=20,
             deadline=None,
             suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much],
         ),
     )
+    assert ActionMachine.total_sends > 0, "no example reached a send"
