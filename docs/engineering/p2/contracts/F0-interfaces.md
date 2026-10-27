@@ -490,8 +490,8 @@ Other M04 events: `assistant_message_deleted`, `draft_skipped` and `draft_failed
 | `memory/undo.py` | S05.2 (a revert branch for `contact_priority_changed`) | Add a branch; never change existing ones |
 | `observability/status.py` | S04.4 (actions block), S05.2 (notifications block) | Separate blocks |
 | `evals/datasets/**`, `MANIFEST.sha256` | Junior (E2D/E3D/E4D) | Manifest regenerated on rebase (WORKFLOW §9) |
-| `evals/*.py` | Viro (E2T), Eng4 (E3T) | New modules `evals/drafts.py`, `evals/triage.py` |
-| `docs/ARCHITECTURE.md` | Neryn: §6.5, §6.6, §6.8, §9.1–§9.4, §10, §12.2 (M04 rows), §13, §15.6; Viro: §6.7 (approval-card "as built" paragraph), §7.1 `draft_reply`, §7.3, §7.5 `DraftResult`, §8.2 M04 tools, §9.5; Eng4: §7.1 `triage`, §7.5 `TriageResult`, §8.2 M05 rows (`get_attention_list` v2, `set_contact_priority`), §10.3 M05 rows, §12.2 (M05 rows), §12.4, §17; Viro (S05.4): monitor rows in §7 and §8.2; Junior: §8.2 `get_activity` row via mentor | Each unit edits only its sections, in its own PR |
+| `evals/*.py` | Viro (E2T), Jack (E3T) | New modules `evals/drafts.py`, `evals/triage.py` |
+| `docs/ARCHITECTURE.md` | Neryn: §6.5, §6.6, §6.8, §9.1–§9.4, §10, §12.2 (M04 rows), §13, §15.6; Viro: §6.7 (approval-card "as built" paragraph), §7.1 `draft_reply`, §7.3, §7.5 `DraftResult`, §8.2 M04 tools, §9.5; Jack: §7.1 `triage`, §7.5 `TriageResult`, §8.2 M05 rows (`get_attention_list` v2, `set_contact_priority`), §10.3 M05 rows, §12.2 (M05 rows), §12.4, §17; Viro (S05.4): monitor rows in §7 and §8.2; Junior: §8.2 `get_activity` row via mentor | Each unit edits only its sections, in its own PR |
 | `docs/IMPLEMENTATION_PLAN.md` | §10 RG rows: Antony; everything else: TL | §1.4 statuses only with the owner's approval |
 | `docs/milestones/M04.md`, `M05.md`, `docs/engineering/p2/**` | TL | Engineers put report text in their PR description |
 | `AGENTS.md` | TL, with the owner's agreement | |

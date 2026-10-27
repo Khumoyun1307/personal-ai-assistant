@@ -34,7 +34,7 @@ You build the part of M04 where a mistake costs the most: the foundation every u
 
 ## 5. Reviews you owe
 
-Peer review: Viro's S04.2, S04.3; Eng4's S05.2, S05.3b. Technical read: Antony's QA-S4 scenario tests (do they encode the spec correctly?), OPS-TV, OPS-RT. Turnaround: start within your next session.
+Peer review: Viro's S04.2, S04.3; Jack's S05.2, S05.3b. Technical read: Antony's QA-S4 scenario tests (do they encode the spec correctly?), OPS-TV, OPS-RT. Turnaround: start within your next session.
 
 ## 6. Every session
 

@@ -10,13 +10,13 @@ You own the plan, the contracts and the integration; engineers own implementatio
 
 | CP | Your actions |
 |---|---|
-| **CP0** | Docs PR (`docs/p2-engineering-handoff`) merged by the owner. Create labels, one issue per WU, the `P2 integration` issue and one `owner-gate` issue per owner item (WORKFLOW §8). Ask the owner to confirm each engineer's session passed the capability check (WORKFLOW §3.2). Confirm Eng4's model with the owner and record it in `decisions.md` §A. |
-| **Pre-start** | Only with the owner's word: tell Junior to start E2D/E3D, Antony QA-P and OPS-LV08 scheduling. No product code or tests. |
-| **D0 ("M03 OK")** | Confirm S03.7 is on `main` and deployed. Tell Neryn to start F0; Viro (S04.2 a), Eng4 (S05.1 run part, S05.2 policy fn) and Junior (S05.3a) start from `main`. |
+| **CP0** | Docs PR (`docs/p2-engineering-handoff`) merged by the owner. Create labels, one issue per WU, the `P2 integration` issue and one `owner-gate` issue per owner item (WORKFLOW §8). Ask the owner to confirm each engineer's session passed the capability check (WORKFLOW §3.2). |
+| **Pre-start** | Only with the owner's word: tell Junior to start E2D/E3D and Antony QA-P (OPS-LV08 is deferred, decisions B3 E1). No product code or tests. |
+| **D0 ("M03 OK")** | Confirm S03.7 is on `main` and deployed. Tell Neryn to start F0; Viro (S04.2 a), Jack (S05.1 run part, S05.2 policy fn) and Junior (S05.3a) start from `main`. |
 | **CP1** | Review F0 for contract fidelity (both contract docs line by line). After the owner merges it: create `int/m04` and `int/m05` from `main` and push them; announce "contracts frozen; ICRs from now". |
 | **CP2** | With Antony and Viro: review the merged send path in `int/m04` against ARCHITECTURE §9.4 and the RG tests; record the sign-off in `decisions.md` §D. |
 | **CP3** | Open `int/m04` → `main`; after the owner merges, deploy on the owner's go-ahead (`just deploy <ip>`); flags off; follow the enable order (WORKFLOW §10); run the server side of the live windows with Antony; restore test (OPS-RT); start the trial. |
-| **CP4** | Ask Eng4 to merge `main` into `int/m05` (via a PR you merge) and migrate the M04 alert callers; check the canary merge is clean. |
+| **CP4** | Ask Jack to merge `main` into `int/m05` (via a PR you merge) and migrate the M04 alert callers; check the canary merge is clean. |
 | **CP5** | As CP3 for `int/m05`; keep `triage.assist_trigger` off until the M04 trial ends. |
 | **CP6** | Write `docs/milestones/M04.md` and `M05.md` from the PR descriptions, live-window evidence, eval reports and open items; ask the owner to review; write the P3 (M06 ∥ M07) proposal. |
 
@@ -25,7 +25,7 @@ You own the plan, the contracts and the integration; engineers own implementatio
 1. Read new PRs, review requests (`needs-review:tl`), ICRs, blocked issues.
 2. Review PRs: contract fidelity, layering, invariants, the spec's tests present and meaningful, docs sections, PR template complete. Request changes with **blocking/non-blocking** labels (WORKFLOW §6.3).
 3. Merge ready PRs into `int/*` (WORKFLOW §7.1); post each merge on the integration issue.
-4. Post the daily summary on the integration issue (ORG §7 metrics; owner gates due; next priorities per person).
+4. Post the daily summary on the integration issue (ORG §7 metrics; owner gates due; next priorities per person), ending with **"Nudges for the owner"** — the exact one-line messages the owner should send to each engineer next (ORG §4.1).
 5. Escalate owner items in the owner's conversation with a "Needs you" list (only what truly needs the owner).
 
 ## 4. Merging (needs the owner's permission rule or local merges)

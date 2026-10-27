@@ -1,9 +1,9 @@
-# E3 — Triage evaluation: synthetic dataset (§A, Junior) and eval target with model comparison (§B, Eng4)
+# E3 — Triage evaluation: synthetic dataset (§A, Junior) and eval target with model comparison (§B, Jack)
 
 | | |
 |---|---|
-| **§A E3D** | Owner Junior · Mentor/peer review Eng4 · QA Antony · Size M (split into ≤ 1.5-day batches) · Pre-start allowed (data only, owner's OK) · Branch `evals/e3-dataset` → PR to `main` before CP1, otherwise `int/m05` |
-| **§B E3T** | Owner Eng4 · Peer review Antony · Size S · Depends on S05.1's `Triager` and E3D · Branch `m05/e3-target` → PR to `int/m05` |
+| **§A E3D** | Owner Junior · Mentor/peer review Jack · QA Antony · Size M (split into ≤ 1.5-day batches) · Pre-start allowed (data only, owner's OK) · Branch `evals/e3-dataset` → PR to `main` before CP1, otherwise `int/m05` |
+| **§B E3T** | Owner Jack · Peer review Antony · Size S · Depends on S05.1's `Triager` and E3D · Branch `m05/e3-target` → PR to `int/m05` |
 | **Normative inputs** | IMPLEMENTATION_PLAN §7 "Evaluation" and §10.1 (E3: ≥ 150 bursts, ≥ 40 urgent/decision positives; synthetic only; owner-confirmed gate; model-choice rule), PRD §21 R2 #5, AGENTS §8 (synthetic only, never real chats), WORKFLOW §9 and §11, decisions P2-O8 (USD 2 phase cap), P2-O11 (language informational), `evals/README.md`, `evals/schema.py` (E1 conventions to mirror), [S05.1](S05.1-triage.md) §3.1/§3.5 (what the product outputs and how it maps to alerts), [S05.4](S05.4-monitors.md) §3.5 (`evaluate_monitor`) |
 
 ---
@@ -23,7 +23,7 @@ Hand-write (with model help if you like) a synthetic set of message bursts, each
 
 ### Forbidden
 
-Everything else, explicitly: any `.py` file (the schema models are Eng4's, §B), `evals/datasets/e1/**`, `evals/datasets/retrieval/**`, `migrations/`, `src/assistant/policy/`, `src/assistant/actions/`, `src/assistant/telegram/` (incl. `gateway.py`, `dispatcher.py`), prompts and everything under `src/assistant/agent/` (`runtime.py`, `tools/executor.py`, `schemas.py`, `context.py`), consent code, `src/assistant/privacy/`, `src/assistant/config.py`, `src/assistant/jobs/`, `.env*`, `var/`. **Never** copy, paraphrase or derive anything from real chats, real people, real phone numbers, addresses, companies or accounts — every name and fact is invented (AGENTS §8, ADR-16). Never run a live eval.
+Everything else, explicitly: any `.py` file (the schema models are Jack's, §B), `evals/datasets/e1/**`, `evals/datasets/retrieval/**`, `migrations/`, `src/assistant/policy/`, `src/assistant/actions/`, `src/assistant/telegram/` (incl. `gateway.py`, `dispatcher.py`), prompts and everything under `src/assistant/agent/` (`runtime.py`, `tools/executor.py`, `schemas.py`, `context.py`), consent code, `src/assistant/privacy/`, `src/assistant/config.py`, `src/assistant/jobs/`, `.env*`, `var/`. **Never** copy, paraphrase or derive anything from real chats, real people, real phone numbers, addresses, companies or accounts — every name and fact is invented (AGENTS §8, ADR-16). Never run a live eval.
 
 ### Layout — `bursts.jsonl` (one JSON object per line, UTF-8, no trailing commas)
 
@@ -86,12 +86,12 @@ Rules (the schema in §B will enforce them; follow them now):
 ### Step-by-step
 
 1. Branch from `main` (pre-start) — only after the owner's OK for pre-start data work. **Check:** `git status` shows a clean branch.
-2. Write 10 bursts covering every label kind; ask Eng4 for a quick look on the E3D issue before writing more. **Check:** Eng4 replied.
+2. Write 10 bursts covering every label kind; ask Jack for a quick look on the E3D issue before writing more. **Check:** Jack replied.
 3. Write the rest in batches of ~30, keeping a running count per variant and per label in `README.md`. **Check:** counts in README match the file (`(Get-Content evals/datasets/e3/bursts.jsonl | Measure-Object -Line).Lines`).
 4. Validate every line is JSON: `docker compose -f compose.dev.yml run --rm app python -c "import json,sys; [json.loads(l) for l in open('evals/datasets/e3/bursts.jsonl', encoding='utf-8')]"` (same for `monitor_cases.jsonl`). **Check:** no error.
 5. Self-review against the rules above (the `alert` rule, sides, ids, every task in one list). **Check:** README lists the self-review done.
 6. When §B's schema exists on your base branch, run its loader test (`just test tests/unit/test_e3_dataset.py`) and fix what it reports — one round.
-7. Rebase on the current base, regenerate the manifest, commit (`feat(evals): E3 synthetic triage set v1 (E3D)`), push, PR, labels `needs-review:eng4`, `needs-qa`, `needs-review:tl`.
+7. Rebase on the current base, regenerate the manifest, commit (`feat(evals): E3 synthetic triage set v1 (E3D)`), push, PR, labels `needs-review:jack`, `needs-qa`, `needs-review:tl`.
 
 ### Acceptance checklist
 
@@ -101,7 +101,7 @@ Rules (the schema in §B will enforce them; follow them now):
 - [ ] Only the allowed files changed; the manifest regenerated in the data commit.
 - [ ] The native-language review is the owner's, later (P2-O11); the PR says so.
 
-### When to stop and ask (E3D issue, `status:blocked`, mention Eng4)
+### When to stop and ask (E3D issue, `status:blocked`, mention Jack)
 
 - A situation does not fit the labels (e.g. a burst that is both FYI and a decision) — ask, do not invent a new label.
 - The schema loader in §B disagrees with this layout.
@@ -109,7 +109,7 @@ Rules (the schema in §B will enforce them; follow them now):
 
 ---
 
-## §B — E3T: the triage eval target and the model comparison (Eng4)
+## §B — E3T: the triage eval target and the model comparison (Jack)
 
 ### Goal
 

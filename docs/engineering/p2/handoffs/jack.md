@@ -1,6 +1,6 @@
-# Handoff — Eng4 (M05 stream engineer)
+# Handoff — Jack (M05 stream engineer)
 
-*Start here. "Eng4" is a placeholder until the owner names you. You are an independent engineer in your own session; you organise your own subagents. This page tells you what to build, in what order, what you own and what you must never touch.*
+*Start here. You are Jack (Claude), an independent engineer in your own session; you organise your own subagents. This page tells you what to build, in what order, what you own and what you must never touch.*
 
 ## 1. Your role
 
@@ -38,8 +38,8 @@ Peer review: Viro's S05.4. Independent read of F0's privacy cascade and M05 sche
 
 ## 6. Every session
 
-1. In your directory: `$env:COMPOSE_PROJECT_NAME = 'eng4'` (subagents `eng4-2`, …).
-2. Check `needs-review:eng4`, your issues, the TL's daily summary.
+1. In your directory: `$env:COMPOSE_PROJECT_NAME = 'jack'` (subagents `jack-2`, …).
+2. Check `needs-review:jack`, your issues, the TL's daily summary.
 3. Continue your current unit; push for CI at coherent steps; keep the PR description current.
 4. End with a comment on your unit's issue: done, next, blocked.
 

@@ -25,7 +25,7 @@
 | **Technical Lead (TL)** | Specs, contracts, decisions, architecture & safety sign-off, integration merges, owner-gate coordination | [handoffs/tech-lead.md](handoffs/tech-lead.md) |
 | **Neryn** (Claude) | Send-path engineer, schema steward | F0, S04.1, S04.4 — [handoffs/neryn.md](handoffs/neryn.md) |
 | **Viro** (Codex) | Product-flow engineer | S04.2, S04.3, E2 target, S05.4 — [handoffs/viro.md](handoffs/viro.md) |
-| **Eng4** (model of the owner's choice) | M05 stream engineer | S05.1, S05.2, S05.3b, E3 target — [handoffs/engineer-4.md](handoffs/engineer-4.md) |
+| **Jack** (Claude) | M05 stream engineer | S05.1, S05.2, S05.3b, E3 target — [handoffs/jack.md](handoffs/jack.md) |
 | **Junior** (Gemini) | Junior engineer (bounded units, mentored) | E2/E3/E4 data, S05.3a, S04.5, S05.2P — [handoffs/junior.md](handoffs/junior.md) |
 | **Antony** (Codex) | QA engineer | Test plan, regression matrix, scenario tests, PR QA review, live checklists, ops tests — [handoffs/antony.md](handoffs/antony.md) |
 
@@ -37,7 +37,7 @@ Every piece of work is a **work unit (WU)** with one owner, one spec, one branch
 
 | WU | Title | Owner | Peer reviewer | Size | Depends on | Branch → PR base | Spec |
 |---|---|---|---|---|---|---|---|
-| **F0** | Foundation: phase schema, privacy cascade, contracts, hot-file refactor | Neryn | Viro + Eng4 | M | "M03 OK" | `p2/f0-foundation` → `main` | [specs/F0-foundation.md](specs/F0-foundation.md) |
+| **F0** | Foundation: phase schema, privacy cascade, contracts, hot-file refactor | Neryn | Viro + Jack | M | "M03 OK" | `p2/f0-foundation` → `main` | [specs/F0-foundation.md](specs/F0-foundation.md) |
 | S04.1 | Actions core and policy engine | Neryn | Viro | M | F0 | `m04/s04.1-actions-policy` → `int/m04` | [specs/S04.1-actions-and-policy.md](specs/S04.1-actions-and-policy.md) |
 | S04.2 | Drafting (draft run, propose tools, Assist trigger, outdating) | Viro | Neryn | M | a: "M03 OK"; b: F0 + S04.1 proposal service | `m04/s04.2-drafting` → `int/m04` | [specs/S04.2-drafting.md](specs/S04.2-drafting.md) |
 | S04.3 | Approval UX (cards, edit loop, expiry, copy-ready) | Viro | Neryn | M | S04.1, S04.2 | `m04/s04.3-approval-ux` → `int/m04` | [specs/S04.3-approval-ux.md](specs/S04.3-approval-ux.md) |
@@ -45,18 +45,18 @@ Every piece of work is a **work unit (WU)** with one owner, one spec, one branch
 | S04.5 | Activity log + assistant activity in catch-up | Junior | Viro (mentor) | S | F0 (S04.1 for real states) | `m04/s04.5-activity-log` → `int/m04` | [specs/S04.5-activity-log.md](specs/S04.5-activity-log.md) |
 | E2D | E2 synthetic draft dataset (data only) | Junior | Viro (mentor) | M | — (*pre-start allowed*) | `evals/e2-dataset` → `int/m04` (or `main` before CP1) | [specs/E2-drafts-eval.md](specs/E2-drafts-eval.md) §A |
 | E2T | E2 draft eval target | Viro | Antony | S | S04.2 draft run, E2D | `m04/e2-target` → `int/m04` | [specs/E2-drafts-eval.md](specs/E2-drafts-eval.md) §B |
-| S05.1 | Triage pipeline, tasks, attention v2 | Eng4 | Viro | M | F0 (run part: "M03 OK") | `m05/s05.1-triage` → `int/m05` | [specs/S05.1-triage.md](specs/S05.1-triage.md) |
-| S05.2 | Notification policy and delivery | Eng4 | Neryn | M | F0 | `m05/s05.2-notifications` → `int/m05` | [specs/S05.2-notifications.md](specs/S05.2-notifications.md) |
-| S05.2P | M05 settings panels and contact priority UI | Junior | Eng4 (mentor) | S | F0, S05.2 settings keys | `m05/s05.2p-settings-panels` → `int/m05` | [specs/S05.2P-settings-panels.md](specs/S05.2P-settings-panels.md) |
-| S05.3a | Schedule maths (pure, DST/timezones) | Junior | Eng4 (mentor) | S | "M03 OK" | `m05/s05.3a-schedule-math` → `int/m05` | [specs/S05.3a-schedule-math.md](specs/S05.3a-schedule-math.md) |
-| S05.3b | Automations core and daily digest | Eng4 | Neryn | M | F0, S05.3a, S05.2 | `m05/s05.3b-automations-digests` → `int/m05` | [specs/S05.3b-automations-and-digests.md](specs/S05.3b-automations-and-digests.md) |
-| S05.4 | Monitors | Viro | Eng4 | M | F0, S05.2 | `m05/s05.4-monitors` → `int/m05` | [specs/S05.4-monitors.md](specs/S05.4-monitors.md) |
-| E3D | E3 synthetic triage dataset (data only) | Junior | Eng4 (mentor) | M | — (*pre-start allowed*) | `evals/e3-dataset` → `int/m05` (or `main` before CP1) | [specs/E3-triage-eval.md](specs/E3-triage-eval.md) §A |
-| E3T | E3 triage eval target + model comparison | Eng4 | Antony | S | S05.1 run, E3D | `m05/e3-target` → `int/m05` | [specs/E3-triage-eval.md](specs/E3-triage-eval.md) §B |
+| S05.1 | Triage pipeline, tasks, attention v2 | Jack | Viro | M | F0 (run part: "M03 OK") | `m05/s05.1-triage` → `int/m05` | [specs/S05.1-triage.md](specs/S05.1-triage.md) |
+| S05.2 | Notification policy and delivery | Jack | Neryn | M | F0 | `m05/s05.2-notifications` → `int/m05` | [specs/S05.2-notifications.md](specs/S05.2-notifications.md) |
+| S05.2P | M05 settings panels and contact priority UI | Junior | Jack (mentor) | S | F0, S05.2 settings keys | `m05/s05.2p-settings-panels` → `int/m05` | [specs/S05.2P-settings-panels.md](specs/S05.2P-settings-panels.md) |
+| S05.3a | Schedule maths (pure, DST/timezones) | Junior | Jack (mentor) | S | "M03 OK" | `m05/s05.3a-schedule-math` → `int/m05` | [specs/S05.3a-schedule-math.md](specs/S05.3a-schedule-math.md) |
+| S05.3b | Automations core and daily digest | Jack | Neryn | M | F0, S05.3a, S05.2 | `m05/s05.3b-automations-digests` → `int/m05` | [specs/S05.3b-automations-and-digests.md](specs/S05.3b-automations-and-digests.md) |
+| S05.4 | Monitors | Viro | Jack | M | F0, S05.2 | `m05/s05.4-monitors` → `int/m05` | [specs/S05.4-monitors.md](specs/S05.4-monitors.md) |
+| E3D | E3 synthetic triage dataset (data only) | Junior | Jack (mentor) | M | — (*pre-start allowed*) | `evals/e3-dataset` → `int/m05` (or `main` before CP1) | [specs/E3-triage-eval.md](specs/E3-triage-eval.md) §A |
+| E3T | E3 triage eval target + model comparison | Jack | Antony | S | S05.1 run, E3D | `m05/e3-target` → `int/m05` | [specs/E3-triage-eval.md](specs/E3-triage-eval.md) §B |
 | E4D | E4 adversarial dataset (data only, M06 prep, optional) | Junior | Viro | M | — | `evals/e4-dataset` → `main` | [specs/E4-adversarial-data.md](specs/E4-adversarial-data.md) |
 | QA-P | QA plan, regression matrix, live checklists (docs) | Antony | TL | S | — (*pre-start allowed*) | `qa/p2-plan` → `main` | [qa/](qa/) |
 | QA-S4 | M04 acceptance scenario tests | Antony | Neryn + Viro | M | F0 | `qa/m04-scenarios` → `int/m04` | [qa/test-plan.md](qa/test-plan.md) §4 |
-| QA-S5 | M05 acceptance scenario tests | Antony | Eng4 | M | F0 | `qa/m05-scenarios` → `int/m05` | [qa/test-plan.md](qa/test-plan.md) §5 |
+| QA-S5 | M05 acceptance scenario tests | Antony | Jack | M | F0 | `qa/m05-scenarios` → `int/m05` | [qa/test-plan.md](qa/test-plan.md) §5 |
 | OPS-LV08 | LV-08 reopen half (live, Alviro window) — **deferred, runs only if needed** (decisions B3 E1) | Antony + owner | TL | S | M04 trial shows a need; owner go-ahead | `ops/lv08-probe` → `main` | [specs/OPS-LV08-reopen.md](specs/OPS-LV08-reopen.md) |
 | OPS-TV | Trial verifier (content-free send audit) | Antony | Neryn | S | S04.4 | `ops/trial-verifier` → `int/m04` | [specs/OPS-trial-verifier.md](specs/OPS-trial-verifier.md) |
 | OPS-RT | Restore test before R1 exit | Antony + TL | Neryn | S | S04.4; run at CP3 | `ops/restore-test-p2` → `int/m04` | [specs/OPS-restore-test.md](specs/OPS-restore-test.md) |
@@ -68,13 +68,13 @@ pre-start (only with the owner's OK; data/docs only, no product code or tests):
     E2D, E3D (Junior) · QA-P (Antony)            — not authorised yet (owner, 2026-10-26)
 ──── "M03 OK" (S03.7 merged and deployed) ────────────────────────────────────────────
 Wave 1  F0 (Neryn)                 ← critical path
-        S04.2 part a: draft run (Viro)       S05.1 run part + S05.2 policy fn (Eng4)
+        S04.2 part a: draft run (Viro)       S05.1 run part + S05.2 policy fn (Jack)
         S05.3a schedule maths (Junior)       QA-S4/QA-S5 skeletons (Antony; after F0 types exist)
 ──── CP1: F0 merged into main; int/m04 and int/m05 cut from main; contracts frozen ────
 Wave 2  M04: S04.1 (Neryn) → S04.4 (Neryn)          ← critical path
              S04.2 part b (Viro) → S04.3 (Viro) → E2T (Viro)
              S04.5 (Junior)
-        M05: S05.2 → S05.1 rest → S05.3b (Eng4; order inside at Eng4's discretion)
+        M05: S05.2 → S05.1 rest → S05.3b (Jack; order inside at Jack's discretion)
              S05.4 (Viro, after S04.3 and S05.2)     S05.2P (Junior)
 ──── CP2: send-path safety review (S04.1 + S04.4 core in int/m04) ────
 ──── CP3: int/m04 → main (owner), deploy flags off, live window, 7-day trial, restore test ────
@@ -92,10 +92,10 @@ Wave 2  M04: S04.1 (Neryn) → S04.4 (Neryn)          ← critical path
 | CP | What | Who | Exit criteria |
 |---|---|---|---|
 | CP0 | Phase kickoff | TL, owner | This package merged to `main`; GitHub labels and one issue per WU created (WORKFLOW §8); engineers' worktrees/clones set up |
-| CP1 | Foundation merged | Neryn, TL, owner | F0 PR green in CI, reviewed (Viro, Eng4, Antony, TL), merged to `main` by the owner; `int/m04` and `int/m05` created from that `main`; contracts frozen — later changes only through an interface change request (ORG §5) |
+| CP1 | Foundation merged | Neryn, TL, owner | F0 PR green in CI, reviewed (Viro, Jack, Antony, TL), merged to `main` by the owner; `int/m04` and `int/m05` created from that `main`; contracts frozen — later changes only through an interface change request (ORG §5) |
 | CP2 | Send-path safety review | TL, Antony, Viro | S04.1 merged into `int/m04`; S04.4's Tx A/Tx B protocol, run-bound ingestion barrier and `mark_uncertain` merged; RG-05/06/12/18/19/20 tests green in CI (RG-04 is checked at CP3 with S04.3); TL safety sign-off recorded in `decisions.md` |
 | CP3 | M04 to production | owner, TL, Antony | RG-04 and every M04 scenario green; `int/m04` → `main` PR green and merged by the owner; deployed with every new flag **off**; flags enabled in order (WORKFLOW §10); M04 live checklist passed in a production window; restore test passed; trial starts |
-| CP4 | M05 catches up | Eng4, TL | `int/m05` merged `main` (with M04); S05.2 has moved M04's alert callers (`delivery_uncertain`, connection stale) onto notifications; all M05 tests green |
+| CP4 | M05 catches up | Jack, TL | `int/m05` merged `main` (with M04); S05.2 has moved M04's alert callers (`delivery_uncertain`, connection stale) onto notifications; all M05 tests green |
 | CP5 | M05 to production | owner, TL, Antony | `int/m05` → `main` merged by the owner; deployed flags off; enabled in order; friends' scripted session (NFR-05) and monitor checks done; 5 digest days counted; E3 run done (gate result after owner label confirmation) |
 | CP6 | Close | TL, owner | `docs/milestones/M04.md` and `M05.md` complete; owner reviews → `done`; P3 proposal delivered |
 

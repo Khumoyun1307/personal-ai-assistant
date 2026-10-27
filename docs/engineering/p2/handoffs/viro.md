@@ -35,7 +35,7 @@ You build what the owner sees and touches in M04: the reply drafter and the prop
 
 ## 5. Reviews you owe
 
-Peer review: Neryn's F0, S04.1, S04.4 (read the send path adversarially: could anything send twice, send stale text, or send without the Tx A check?); Eng4's S05.1. Mentor review (strict): Junior's S04.5, E2D, E4D.
+Peer review: Neryn's F0, S04.1, S04.4 (read the send path adversarially: could anything send twice, send stale text, or send without the Tx A check?); Jack's S05.1. Mentor review (strict): Junior's S04.5, E2D, E4D.
 
 ## 6. Every session
 

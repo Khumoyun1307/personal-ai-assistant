@@ -37,7 +37,7 @@ git clone https://github.com/Khumoyun1307/personal-ai-assistant ..\alviro-<you>
 cd ..\alviro-<you>; git switch -c <branch> origin/<base>
 
 # In your directory, every session, before any just/docker command:
-$env:COMPOSE_PROJECT_NAME = '<you>'        # neryn | viro | eng4 | junior | antony (subagents: <you>-2, <you>-3 …)
+$env:COMPOSE_PROJECT_NAME = '<you>'        # neryn | viro | jack | junior | antony (subagents: <you>-2, <you>-3 …)
 just setup                                  # first time: placeholder .env from .env.example, image, dependencies
 just hooks                                  # pre-commit hook (gitleaks + ruff in the container)
 ```
@@ -155,7 +155,7 @@ After a review or an eval round, the author fixes the blocking findings in **one
 gh label create "wu" --color 5319e7; gh label create "status:ready" --color 0e8a16; gh label create "status:in-progress" --color fbca04
 gh label create "status:blocked" --color b60205; gh label create "status:in-review" --color 1d76db; gh label create "status:done" --color 0e8a16
 gh label create "stream:m04" --color c5def5; gh label create "stream:m05" --color bfdadc; gh label create "stream:evals" --color d4c5f9; gh label create "stream:qa" --color f9d0c4; gh label create "stream:ops" --color fef2c0
-gh label create "needs-review:neryn"; gh label create "needs-review:viro"; gh label create "needs-review:eng4"; gh label create "needs-review:junior"; gh label create "needs-review:tl"; gh label create "needs-qa"
+gh label create "needs-review:neryn"; gh label create "needs-review:viro"; gh label create "needs-review:jack"; gh label create "needs-review:junior"; gh label create "needs-review:tl"; gh label create "needs-qa"
 gh label create "icr" --color d93f0b; gh label create "owner-gate" --color b60205
 ```
 **Issues:** one per WU (title `"<WU>: <title>"`, body = link to the spec and the dependency list, labels `wu`, stream, status), one `P2 integration` issue (TL posts merges, checkpoints and the daily summary), one issue per owner gate (`owner-gate`). The TL creates them at CP0 from the README index.

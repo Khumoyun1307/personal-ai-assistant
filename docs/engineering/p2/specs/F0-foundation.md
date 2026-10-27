@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Owner** | Neryn · **Peer review** Viro (code), Eng4 (privacy cascade, M05 schema) · **QA** Antony · **Sign-off** TL · **Merge** owner (to `main`) |
+| **Owner** | Neryn · **Peer review** Viro (code), Jack (privacy cascade, M05 schema) · **QA** Antony · **Sign-off** TL · **Merge** owner (to `main`) |
 | **Size** | M · **Critical path** yes — every other unit builds on it |
 | **Branch** | `p2/f0-foundation` from `main` after "M03 OK" → PR to `main` |
 | **Normative inputs** | [contracts/F0-schema.md](../contracts/F0-schema.md), [contracts/F0-interfaces.md](../contracts/F0-interfaces.md), [decisions.md](../decisions.md) P2-T01…T05, T12, T16 |
@@ -85,5 +85,5 @@ ARCHITECTURE: §5.1 module map (new modules), §6.5 (listener hook after step 7,
 ## 7. Risks
 
 - **Behaviour drift in the refactors** (dispatcher, pipeline, reconcile): keep existing branches untouched and let the existing tests prove it.
-- **Deletion-cascade gaps:** the canary scan over every content column is the guard; Eng4 reviews it independently.
+- **Deletion-cascade gaps:** the canary scan over every content column is the guard; Jack reviews it independently.
 - **Time:** F0 is on everyone's critical path. If it grows beyond ~2 days, split the PR into F0a (schema, models, privacy, core moves) and F0b (registries, settings, fakes) and tell the TL; F0a unblocks the most.

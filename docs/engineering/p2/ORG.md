@@ -10,7 +10,7 @@
 | **Technical Lead** | TL (Claude session) | Specs and contracts; architecture and safety sign-off on every PR; integration merges into `int/*`; interface change requests; decision log; coordinating owner gates and live windows; daily integration summary; deploys on the owner's go-ahead; P3 plan | Writing feature code (only fixes to its own docs/specs) |
 | **Send-path engineer, schema steward** | Neryn (Claude) | F0, S04.1, S04.4; Alembic revision numbers; content-column/retention/cascade correctness; ARCHITECTURE §6.5, §6.6, §6.8, §9.1–§9.4, §10, §13, §15.6 | M05 features |
 | **Product-flow engineer** | Viro (Codex) | S04.2, S04.3, E2T, S05.4; both `owner_request` prompt bumps (P2-T17); ARCHITECTURE §6.7 approval-card paragraph, §7 drafting rows, §9.5; mentoring Junior on M04 units | Send-path internals (reviews them) |
-| **M05 stream engineer** | Eng4 (owner's choice of model) | S05.1, S05.2, S05.3b, E3T; M05 model comparison; mentoring Junior on M05 units | M04 features |
+| **M05 stream engineer** | Jack (Claude) | S05.1, S05.2, S05.3b, E3T; M05 model comparison; mentoring Junior on M05 units | M04 features |
 | **Junior engineer** | Junior (Gemini) | E2D, E3D, E4D, S05.3a, S04.5, S05.2P — each exactly as specified | Anything outside the unit's file list (see handoffs/junior.md) |
 | **QA engineer** | Antony (Codex) | Test plan, regression matrix, independent acceptance scenarios (QA-S4/QA-S5), QA review of every PR, live checklists and verification queries, OPS-LV08, OPS-TV, OPS-RT, eval run operations and pre-reviews, release verification | Feature code (QA writes tests and ops tooling only) |
 
@@ -20,7 +20,7 @@ The TL may be resumed in a new session from [handoffs/tech-lead.md](handoffs/tec
 
 R = does the work · A = accountable (merges or signs off) · C = consulted (reviews) · I = informed.
 
-| Unit | Neryn | Viro | Eng4 | Junior | Antony | TL | Owner |
+| Unit | Neryn | Viro | Jack | Junior | Antony | TL | Owner |
 |---|---|---|---|---|---|---|---|
 | F0 | R | C | C | I | C | A | merges `main` |
 | S04.1, S04.4 | R | C | I | I | C | A | I |
@@ -41,10 +41,10 @@ Every PR gets **four reviews**: the peer below, Antony (QA), the TL, and — for
 
 | Author | Peer reviewer | Second reader for safety-critical PRs |
 |---|---|---|
-| Neryn (F0, S04.1, S04.4) | Viro | Eng4 reads F0's privacy cascade; Antony runs the race tests |
-| Viro (S04.2, S04.3, E2T, S05.4) | Neryn (S04.x), Eng4 (S05.4) | — |
-| Eng4 (S05.1, S05.2, S05.3b, E3T) | Viro (S05.1), Neryn (S05.2, S05.3b) | — |
-| Junior (all) | Mentor: Viro (S04.5, E2D, E4D), Eng4 (S05.3a, S05.2P, E3D) | — |
+| Neryn (F0, S04.1, S04.4) | Viro | Jack reads F0's privacy cascade; Antony runs the race tests |
+| Viro (S04.2, S04.3, E2T, S05.4) | Neryn (S04.x), Jack (S05.4) | — |
+| Jack (S05.1, S05.2, S05.3b, E3T) | Viro (S05.1), Neryn (S05.2, S05.3b) | — |
+| Junior (all) | Mentor: Viro (S04.5, E2D, E4D), Jack (S05.3a, S05.2P, E3D) | — |
 | Antony (QA-S4/S5, OPS) | The feature owner whose behaviour the tests encode | — |
 
 Review turnaround target: start within the reviewer's next session; a review that cannot start within a day is flagged on the integration issue.
@@ -56,6 +56,20 @@ Review turnaround target: start within the reviewer's next session; a review tha
 - **Daily integration summary** (TL, on the integration issue): merges, checkpoint status, blockers, owner gates due, next priorities per person. Engineers read it at session start.
 - **Questions to another engineer:** a comment on their unit's issue or PR, mentioning their label (`needs-review:<name>` for reviews). The owner relays only when an engineer's session is not running.
 - **Owner relay is the exception.** Each handoff tells the engineer what to do at the start of every session, so "continue" is enough for the owner to say most of the time.
+
+### 4.1 How it works day to day (the owner's view)
+
+Sessions do not run all the time, so someone has to start each one: that is the owner's only relay job, and it is a one-line nudge. **Everything else — what was done, what needs review, findings, decisions — is written on GitHub**, where every engineer and the TL read it. No temporary handoff files: a file on a branch is invisible to others until merged, goes stale, and conflicts; a PR or issue comment is visible at once, linked to the code and kept.
+
+Example loop:
+1. **Owner → Neryn:** "Start F0" (later: "continue").
+2. **Neryn** builds, pushes, opens the PR (template filled), labels it `needs-review:viro`, `needs-qa`, `needs-review:tl`, and comments on the F0 issue: *done / next / needs reviews*.
+3. **Owner → Viro:** "do your reviews". Viro's session-start routine finds PRs labelled `needs-review:viro` and posts a GitHub review (findings marked blocking or non-blocking).
+4. **Owner → Antony:** "do your QA reviews" — same, for `needs-qa`.
+5. **Owner → TL:** "check the integration" (or "Neryn finished F0" — no content needed). The TL reads the PR and its reviews, reviews it, merges it into `int/*` (or asks the owner to merge F0 into `main`), and posts the **daily summary** on the `P2 integration` issue.
+6. The daily summary ends with **"Nudges for the owner"**: the exact one-liners to send next ("Tell Viro: review #34", "Tell Junior: start S04.5"). The owner forwards those; each engineer reads the summary at session start and continues.
+
+If an engineer's session cannot reach GitHub for a while, the engineer ends the session with the same *done / next / needs* note as text; the owner pastes it into the TL session, and the TL posts it on the issue.
 
 ## 5. Interface changes, disagreements, escalation
 
@@ -73,7 +87,7 @@ Review turnaround target: start within the reviewer's next session; a review tha
 ## 6. Mentoring Junior
 
 - Junior's units are small (≤ about 1.5 days), each with an explicit allowed-file list, a forbidden list, named failing-first tests and an acceptance checklist ([handoffs/junior.md](handoffs/junior.md)).
-- The mentor (Viro for M04 units, Eng4 for M05 units) reviews spec adherence strictly: any file outside the allowed list, any new dependency, any change to a contract, prompt, policy, gateway, migration, consent or privacy code is a blocking finding.
+- The mentor (Viro for M04 units, Jack for M05 units) reviews spec adherence strictly: any file outside the allowed list, any new dependency, any change to a contract, prompt, policy, gateway, migration, consent or privacy code is a blocking finding.
 - Junior asks on the issue when a spec is unclear rather than guessing; the mentor answers within their next session; the TL resolves anything the mentor cannot.
 - If a Junior unit needs more than one fix round for non-safety findings, the mentor finishes it and records what was hard for the next spec.
 

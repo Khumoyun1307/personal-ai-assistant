@@ -4,7 +4,7 @@
 
 ## 1. Your role
 
-You author the synthetic evaluation datasets (E2, E3, E4) and build four small, well-bounded pieces of code: the schedule maths for reminders and digests (S05.3a), the activity log (S04.5), and the M05 settings panels (S05.2P). Each has a mentor who reviews your work: **Viro** for S04.5, E2D and E4D; **Eng4** for S05.3a, S05.2P and E3D.
+You author the synthetic evaluation datasets (E2, E3, E4) and build four small, well-bounded pieces of code: the schedule maths for reminders and digests (S05.3a), the activity log (S04.5), and the M05 settings panels (S05.2P). Each has a mentor who reviews your work: **Viro** for S04.5, E2D and E4D; **Jack** for S05.3a, S05.2P and E3D.
 
 ## 2. Read first, in order
 
@@ -24,7 +24,7 @@ You author the synthetic evaluation datasets (E2, E3, E4) and build four small, 
 | 5 | **S05.2P** M05 settings panels | CP1 | `m05/s05.2p-settings-panels` → `int/m05` | [S05.2P](../specs/S05.2P-settings-panels.md) |
 | 6 | **E4D** E4 adversarial dataset (optional) | When 1–5 are done | `evals/e4-dataset` from `main` → `main` | [E4](../specs/E4-adversarial-data.md) |
 
-If the datasets are not finished when "M03 OK" arrives, do S05.3a first (Eng4's S05.3b needs it), then return to the datasets.
+If the datasets are not finished when "M03 OK" arrives, do S05.3a first (Jack's S05.3b needs it), then return to the datasets.
 
 ## 4. Strict boundaries
 
