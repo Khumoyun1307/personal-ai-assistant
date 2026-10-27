@@ -436,6 +436,7 @@ class TriageRepository:
             and conversation.mode == "assist"
             and verdict.needs_reply
             and verdict.escalation_category != "suspicious"
+            and await _contact_wrote(session, account_id, verdict.burst_message_ids)
         ):
             await self._draft_requester(session, account_id, conversation_id)
         await _settle_flag(session, conversation, verdict.covers_through_message_id)
@@ -497,6 +498,23 @@ class TriageRepository:
 
 
 EVENT_TRIAGE_COMPLETED = "triage_completed"
+
+
+async def _contact_wrote(
+    session: AsyncSession, account_id: int, burst_message_ids: Collection[int]
+) -> bool:
+    """Owner messages never trigger drafts (RG-01): a burst of only the
+    owner's own answer is triaged for task closure, never drafted for."""
+    if not burst_message_ids:
+        return False
+    found = await session.scalar(
+        select(Message.id)
+        .where(Message.account_id == account_id)
+        .where(Message.id.in_(burst_message_ids))
+        .where(Message.direction == "contact")
+        .limit(1)
+    )
+    return found is not None
 
 
 async def _settle_flag(
