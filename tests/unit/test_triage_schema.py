@@ -100,6 +100,19 @@ def test_due_and_deadline_parse_in_the_owner_timezone_or_become_null() -> None:
     )
     for unparseable in ("tomorrow", "Friday 17:00", "2026-13-01", "2026-11-03 25:00", "", "  "):
         assert parse_owner_local(unparseable, tashkent) is None, unparseable
+    # Contact-supplied edge years overflow the conversion: None, never a crash
+    # (a crash would re-run a paid call from the reconciler; Viro on #79).
+    assert parse_owner_local("0001-01-01 00:00", tashkent) is None
+    assert parse_owner_local("9999-12-31 23:00", "America/Los_Angeles") is None
+    assert parse_owner_local("9999-12-31", "America/Los_Angeles") is None
+    # DST: a time in the spring gap reads with the offset before the change; a
+    # time in the autumn fold is its first occurrence.
+    assert parse_owner_local("2026-03-29 02:30", "Europe/Berlin") == datetime(
+        2026, 3, 29, 1, 30, tzinfo=UTC
+    )
+    assert parse_owner_local("2026-10-25 02:30", "Europe/Berlin") == datetime(
+        2026, 10, 25, 0, 30, tzinfo=UTC
+    )
     assert parse_owner_local(None, tashkent) is None
     # An unknown zone reads as UTC rather than failing.
     assert parse_owner_local("2026-11-03 18:00", "Nowhere/City") == datetime(

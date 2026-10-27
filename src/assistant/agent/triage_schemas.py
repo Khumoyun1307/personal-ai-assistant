@@ -161,7 +161,9 @@ class SanitizedTriage:
 def parse_owner_local(value: str | None, timezone: str) -> datetime | None:
     """An owner-local 'YYYY-MM-DD HH:MM' (or a bare date: the end of that
     day) as a UTC instant; None for anything else — relative words, other
-    formats and impossible dates are never guessed at."""
+    formats, impossible dates, and years at the edge of the calendar whose
+    conversion overflows. The text comes from contact messages: it may never
+    crash the run (a crash would re-run a paid call from the reconciler)."""
     if value is None:
         return None
     stripped = value.strip()
@@ -174,12 +176,19 @@ def parse_owner_local(value: str | None, timezone: str) -> datetime | None:
             local = datetime.strptime(stripped, pattern).replace(tzinfo=zone)
         except ValueError:
             continue
-        return local.astimezone(UTC)
+        return _utc(local)
     try:
         day = datetime.strptime(stripped, "%Y-%m-%d").replace(tzinfo=zone).date()
     except ValueError:
         return None
-    return datetime.combine(day, _END_OF_DAY, tzinfo=zone).astimezone(UTC)
+    return _utc(datetime.combine(day, _END_OF_DAY, tzinfo=zone))
+
+
+def _utc(local: datetime) -> datetime | None:
+    try:
+        return local.astimezone(UTC)
+    except OverflowError:
+        return None
 
 
 def trim(text: str, limit: int = MAX_TEXT) -> str:

@@ -33,6 +33,8 @@ EVENT_ALERT = "system_alert"
 
 
 class AlertKind(StrEnum):
+    DELIVERY_UNCERTAIN = "delivery_uncertain"
+    CONNECTION_STALE = "connection_stale"
     INGESTION_STALL = "ingestion_stall"
     DEAD_LETTER = "dead_letter"
     BUDGET_THRESHOLD = "budget_threshold"
@@ -84,6 +86,7 @@ ALERT_TEXT: dict[AlertKind, str] = {
         "decided after that is undone: autonomy is paused, open approvals were cancelled, "
         "and messages from the gap may be missing (it is recorded as a coverage gap). "
         "Please check /status and re-apply any settings, consent or pause you changed since."
+        "{actions}"
     ),
     AlertKind.CONFIRMATION_INTERRUPTED: (
         "⚠️ A change you confirmed (<code>{tool}</code>) was interrupted while it was being "
@@ -140,6 +143,8 @@ class OwnerAlerts:
                 return AlertResult(False, "duplicate")
             chat_id = account.control_chat_id
 
+        if kind is AlertKind.RESTORE_NOTICE:
+            values.setdefault("actions", "")
         delivery = await self._channel.send(
             account_id=account_id,
             chat_id=chat_id,

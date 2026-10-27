@@ -19,9 +19,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Protocol
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from assistant.accounts.models import Account
 from assistant.core.clock import Clock
 from assistant.db.models import SystemState
 from assistant.db.uow import transaction
@@ -139,11 +142,56 @@ async def deliver_restore_notice(
         if pending is None:
             return False
         value = dict(pending.value)
-    sent = await alerts.notify_all_owners(
-        AlertKind.RESTORE_NOTICE,
-        dedupe_key=f"restore:{value.get('at', '')}",
-        backup_taken_at=str(value.get("backup_taken_at", "unknown")),
-    )
+        accounts = (
+            await uow.session.execute(
+                select(Account.id, Account.timezone).where(
+                    Account.control_chat_id.is_not(None),
+                    Account.status != "deleted",
+                )
+            )
+        ).all()
+    sent = 0
+    action_notices = value.get("actions", {})
+    for account_id, timezone in accounts:
+        try:
+            zone = ZoneInfo(timezone)
+        except ZoneInfoNotFoundError, ValueError, KeyError:
+            zone = ZoneInfo("UTC")
+        account_actions = (
+            action_notices.get(str(account_id), {}) if isinstance(action_notices, dict) else {}
+        )
+        parts = []
+        for kind, label in (
+            ("cancelled", "Cancelled actions"),
+            ("uncertain", "Delivery uncertain"),
+        ):
+            rows = account_actions.get(kind, []) if isinstance(account_actions, dict) else []
+            entries = []
+            if isinstance(rows, list):
+                for row in rows:
+                    if not isinstance(row, dict) or not isinstance(row.get("id"), int):
+                        continue
+                    created_at = row.get("created_at")
+                    if not isinstance(created_at, str):
+                        continue
+                    try:
+                        local = datetime.fromisoformat(created_at).astimezone(zone)
+                    except ValueError:
+                        continue
+                    entries.append(f"#{row['id']} ({local:%Y-%m-%d %H:%M %Z})")
+            if isinstance(account_actions, dict) and kind in account_actions:
+                parts.append(
+                    f"{label}: {len(entries)}" + (" — " + "; ".join(entries) if entries else "")
+                )
+        outcome = await alerts.notify_owner(
+            account_id,
+            AlertKind.RESTORE_NOTICE,
+            dedupe_key=f"restore:{value.get('at', '')}",
+            backup_taken_at=str(value.get("backup_taken_at", "unknown")),
+            actions="\n" + "\n".join(parts) if parts else "",
+            buttons=(),
+        )
+        sent += int(outcome.sent)
     if sent > 0:
         async with transaction(session_factory) as uow:
             pending = await _notice(uow.session)

@@ -48,6 +48,43 @@ from tests.fakes.llm import FakeLLM, stop_response, text_response, tool_response
 
 pytestmark = pytest.mark.integration
 
+
+async def test_tool_context_carries_the_answered_turn_id(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assistant.agent.tools.registry import ToolContext
+
+    seen: list[ToolContext] = []
+
+    def record_context(**kwargs: Any) -> ToolContext:
+        context = ToolContext(**kwargs)
+        seen.append(context)
+        return context
+
+    monkeypatch.setattr(rt, "ToolContext", record_context)
+    turn_id = await owner_turn(factory, clock)
+    drafter, presenter, config = object(), object(), object()
+    await build(
+        factory,
+        clock,
+        FakeLLM(text_response("Synthetic answer.")),
+        FakeChannel(),
+        phase_services={
+            "drafter": drafter,
+            "approval_cards": presenter,
+            "actions_config": config,
+            "notifications_enabled": True,
+        },
+    ).run(turn_id)
+    assert len(seen) == 1
+    assert seen[0].turn_id == turn_id
+    services = seen[0].services
+    assert services.drafter is drafter
+    assert services.approval_cards is presenter
+    assert services.actions_config is config
+    assert services.notifications_enabled is True
+
+
 OWNER = 7000000001
 CHAT = 7000000001
 STATUS_FLAG = frozenset({"tool.get_status"})
@@ -126,6 +163,7 @@ def build(
     llm = ConsentGatedLLMClient(
         MeteredLLMClient(fake, DbCallRecorder(factory, clock)), DbConsentReader(factory)
     )
+    phase_services = config.pop("phase_services", {})
     settings: dict[str, Any] = {"model": "gpt-6-luna"}
     settings.update(config)
     return OwnerRequestRuntime(
@@ -135,6 +173,7 @@ def build(
         registry=default_registry(),
         clock=clock,
         config=AgentConfig(**settings),
+        **phase_services,
     )
 
 

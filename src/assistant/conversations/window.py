@@ -13,15 +13,12 @@ lives.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from assistant.conversations.models import Conversation
-
-REPLY_WINDOW = timedelta(hours=24)
-#: Sends stop this long before the computed close, because the local clock
-#: and Telegram's disagree by seconds and the penalty for being late is a
-#: failed send the owner has to redo by hand.
-SAFETY_MARGIN = timedelta(minutes=5)
+from assistant.core import reply_window
+from assistant.core.reply_window import REPLY_WINDOW as REPLY_WINDOW
+from assistant.core.reply_window import SAFETY_MARGIN as SAFETY_MARGIN
 
 
 def window_anchor(conversation: Conversation) -> datetime | None:
@@ -30,10 +27,8 @@ def window_anchor(conversation: Conversation) -> datetime | None:
 
 
 def window_closes_at(conversation: Conversation) -> datetime | None:
-    anchor = window_anchor(conversation)
-    return None if anchor is None else anchor + REPLY_WINDOW
+    return reply_window.closes_at(window_anchor(conversation))
 
 
 def window_open(conversation: Conversation, now: datetime) -> bool:
-    closes_at = window_closes_at(conversation)
-    return closes_at is not None and now < closes_at - SAFETY_MARGIN
+    return reply_window.is_open(window_anchor(conversation), now)

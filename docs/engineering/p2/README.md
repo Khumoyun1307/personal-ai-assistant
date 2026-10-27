@@ -2,7 +2,7 @@
 
 *Engineering plan for the phase after M03. Owner-approved 2026-10-26 (see [decisions.md](decisions.md)). Written by the Technical Lead. This folder is the **single entry point** for every engineer in P2: start here, then read your handoff in [handoffs/](handoffs/).*
 
-**Status:** specifications complete; **no implementation has started**. Product code (including tests) starts only after the owner says **"M03 OK"** (AGENTS §3, [M03-handoff.md](../../milestones/M03-handoff.md)). Before that, only the data-only and docs-only work marked *pre-start* below may run, and only when the owner says so.
+**Status (2026-10-27):** **P2 has started.** The owner said "M03 OK" on 2026-10-27 and gave every engineer the go-ahead the same day (D0 = 2026-10-27; [decisions.md](decisions.md) B4). CP0 is done: labels, one GitHub issue per work unit (#44–#66), the `P2 integration` issue (#43) and the owner-gate issues. Wave 1 is running; the datasets (E2D, E3D) and QA-P are authorised with the go-ahead and run as ordinary units.
 
 ---
 
@@ -26,7 +26,7 @@
 | **Neryn** (Claude) | Send-path engineer, schema steward | F0, S04.1, S04.4 — [handoffs/neryn.md](handoffs/neryn.md) |
 | **Viro** (Codex) | Product-flow engineer | S04.2, S04.3, E2 target, S05.4 — [handoffs/viro.md](handoffs/viro.md) |
 | **Jack** (Claude) | M05 stream engineer | S05.1, S05.2, S05.3b, E3 target — [handoffs/jack.md](handoffs/jack.md) |
-| **Junior** (Gemini) | Junior engineer (bounded units, mentored) | E2/E3/E4 data, S05.3a, S04.5, S05.2P — [handoffs/junior.md](handoffs/junior.md) |
+| **Junior** (Gemini, in Antigravity) | Junior engineer (bounded units, mentored) | E2/E3/E4 data, S05.3a, S04.5, S05.2P — [handoffs/junior.md](handoffs/junior.md) |
 | **Antony** (Codex) | QA engineer | Test plan, regression matrix, scenario tests, PR QA review, live checklists, ops tests — [handoffs/antony.md](handoffs/antony.md) |
 
 Roles, review matrix and communication rules: [ORG.md](ORG.md). Git, worktrees, PRs, CI, integration, deploy: [WORKFLOW.md](WORKFLOW.md). Engineers organise their own internal subagents freely within their unit's boundaries; the only constraints are the safety rules in WORKFLOW §2.
@@ -65,7 +65,7 @@ Every piece of work is a **work unit (WU)** with one owner, one spec, one branch
 
 ```
 pre-start (only with the owner's OK; data/docs only, no product code or tests):
-    E2D, E3D (Junior) · QA-P (Antony)            — not authorised yet (owner, 2026-10-26)
+    E2D, E3D (Junior) · QA-P (Antony)            — authorised with the go-ahead (owner, 2026-10-27)
 ──── "M03 OK" (S03.7 merged and deployed) ────────────────────────────────────────────
 Wave 1  F0 (Neryn)                 ← critical path
         S04.2 part a: draft run (Viro)       S05.1 run part + S05.2 policy fn (Jack)
@@ -92,7 +92,7 @@ Wave 2  M04: S04.1 (Neryn) → S04.4 (Neryn)          ← critical path
 | CP | What | Who | Exit criteria |
 |---|---|---|---|
 | CP0 | Phase kickoff | TL, owner | This package merged to `main`; GitHub labels and one issue per WU created (WORKFLOW §8); engineers' worktrees/clones set up |
-| CP1 | Foundation merged | Neryn, TL, owner | F0 PR green in CI, reviewed (Viro, Jack, Antony, TL), merged to `main` by the owner; `int/m04` and `int/m05` created from that `main`; contracts frozen — later changes only through an interface change request (ORG §5) |
+| CP1 | Foundation merged | Neryn, TL, owner | F0 PR green in CI, reviewed (Viro, Jack, Antony, TL), merged to `main` by the TL (P2-O13); `int/m04` and `int/m05` created from that `main`; contracts frozen — later changes only through an interface change request (ORG §5) |
 | CP2 | Send-path safety review | TL, Antony, Viro | S04.1 merged into `int/m04`; S04.4's Tx A/Tx B protocol, run-bound ingestion barrier and `mark_uncertain` merged; RG-05/06/12/18/19/20 tests green in CI (RG-04 is checked at CP3 with S04.3); TL safety sign-off recorded in `decisions.md` |
 | CP3 | M04 to production | owner, TL, Antony | RG-04 and every M04 scenario green; `int/m04` → `main` PR green and merged by the owner; deployed with every new flag **off**; flags enabled in order (WORKFLOW §10); M04 live checklist passed in a production window; restore test passed; trial starts |
 | CP4 | M05 catches up | Jack, TL | `int/m05` merged `main` (with M04); S05.2 has moved M04's alert callers (`delivery_uncertain`, connection stale) onto notifications; all M05 tests green |
@@ -105,11 +105,11 @@ Wave 2  M04: S04.1 (Neryn) → S04.4 (Neryn)          ← critical path
 
 | When | Item | Why it cannot be automated |
 |---|---|---|
-| CP0 | Merge this docs PR; confirm `gh` works in the Codex/Gemini sessions and which Gemini tool Junior runs in | Owner merges `main`; session setup is the owner's |
+| CP0 | Fix anything an engineer's capability check reports missing (Junior runs in Antigravity, owner 2026-10-27) | Session setup is the owner's |
 | Before D0 | Say "M03 OK" | Gate (AGENTS §3) |
 | Pre-start (optional) | Go-ahead for E2D/E3D authoring and QA-P (not given yet; the owner authorises the plan's start after marking M03 done) | Owner's call |
 | OPS-LV08 (only if needed) | Deferred (decisions B3 E1): if the M04 trial shows a need, client taps 24 h apart in a closed chat and a per-run go-ahead for Alviro | Needs the owner's Telegram accounts and the production token |
-| CP1, CP3, CP5 | Merge F0, `int/m04`, `int/m05` into `main` | Only the owner merges `main` |
+| CP3, CP5 | Merge `int/m04`, `int/m05` into `main` | An integration branch's PR into `main` is the owner's (AGENTS §15); the TL merges everything else, F0 included (P2-O13) |
 | CP3, CP5 | Be present in the live windows (Alviro); enable flags or approve the TL doing it | Production bot; real accounts |
 | CP3–CP6 | 7-day daily use; daily look at `/activity` | Owner's own use |
 | M05 | Brief two friends; they send scripted messages | Real people |

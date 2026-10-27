@@ -17,7 +17,7 @@ These are the rules most likely to be broken by accident. Repeat them in every b
 - **No real Telegram or real model calls in tests.** Use `tests/fakes/` (AGENTS §11). Live evals only as WORKFLOW §11 says.
 - **Never weaken or delete a regression test** (IMPLEMENTATION_PLAN §10 RG-01…RG-21) or a test guarding an AGENTS §6 invariant. If one fails, the code is wrong until the TL says otherwise.
 - **Never run the full test suite or `just check` locally** (AGENTS §11): CI is the gate.
-- **Never `--no-verify`, never rewrite pushed history, never push to `main` or an `int/*` branch, never merge** (the TL merges into `int/*`; the owner merges into `main`).
+- **Never `--no-verify`, never rewrite pushed history, never push to `main` or an `int/*` branch, never merge** (the TL merges unit PRs and P2's other PRs into `main`; the owner merges `int/m04` and `int/m05` into `main` — P2-O13).
 - **No sends as the owner outside `actions.execute` + policy**; no aiogram shortcuts; no `drop_pending_updates=True`; no tool that sends, edits, deletes or marks read (AGENTS §6, §7, §17).
 - **Subagents** work only inside your unit's file boundaries, in your worktree/clone or in their own worktree branched from yours, each with its **own `COMPOSE_PROJECT_NAME`** (two pytest runs must never share a compose project). They do not push, merge, open PRs or touch the production server. You review every line they produce before it goes into your PR; you are accountable for it.
 
@@ -60,18 +60,18 @@ If something fails, **tell the owner** in your session ("my session cannot reach
 
 | Branch | Created from | PR base | Who merges |
 |---|---|---|---|
-| `p2/f0-foundation` | `main` (after "M03 OK") | `main` | Owner (CP1) |
+| `p2/f0-foundation` | `main` (after "M03 OK") | `main` | TL (CP1, P2-O13) |
 | `int/m04`, `int/m05` | `main` right after F0 merges | `main` (once per milestone) | Owner (CP3, CP5) |
 | `m04/<unit>` | `int/m04` | `int/m04` | TL |
 | `m05/<unit>` | `int/m05` | `int/m05` | TL |
-| `evals/e2-dataset`, `evals/e3-dataset` | `main` | `main` if merged before CP1, otherwise `int/m04` / `int/m05` | Owner / TL |
-| `evals/e4-dataset`, `qa/p2-plan`, `ops/lv08-probe` | `main` | `main` | Owner |
+| `evals/e2-dataset`, `evals/e3-dataset` | `main` | `main` if merged before CP1, otherwise `int/m04` / `int/m05` | TL |
+| `evals/e4-dataset`, `qa/p2-plan`, `ops/lv08-probe` | `main` | `main` | TL (P2-O13) |
 | `qa/m04-scenarios`, `ops/trial-verifier` | `int/m04` | `int/m04` | TL |
 | `qa/m05-scenarios` | `int/m05` | `int/m05` | TL |
 
 - **Depending on an unmerged unit:** branch from that unit's branch and set your PR base to it; after it merges into the int branch, rebase onto the int branch and retarget your PR. Never merge someone else's branch into yours.
-- **Units started before CP1** (S04.2 part a, S05.1 run part, S05.3a): branch from `main`; at CP1 rebase onto the int branch and open the PR against it.
-- **Draft PR as soon as the unit is ready for CI**, with the template (§4.1). Mark it ready for review when the Definition of Done is met. Push to keep CI running; avoid pushing every few minutes (each push costs a full CI run, ~15 minutes of Actions time).
+- **Units started before CP1** (S04.2 part a, S05.1 run part, S05.2 policy function, S05.3a, the datasets): branch from `main`; at CP1 rebase onto the int branch and open the PR against it. To get CI before CP1, open a **draft PR against `main`** titled `[retarget to int/m0x]`; the TL retargets it at CP1 and it is never merged into `main` (P2-T31).
+- **Draft PR as soon as the unit is ready for CI**, with the template (§4.1). Mark it ready for review when the Definition of Done is met. Push to keep CI running; avoid pushing every few minutes (each push costs a full CI run: lint, three parallel test shards, the deploy-script checks and the amd64/arm64 image builds).
 - **Commits:** small, Conventional Commits (`feat:`, `fix:`, `test:`, `docs:`, `refactor:`, `chore:`), message via `git commit -F <file>` when it has more than one line, ending with your tool's attribution line if it uses one. Never commit `.env`, `var/`, dumps or real data.
 
 ### 4.1 Pull request template (`.github/pull_request_template.md`)
@@ -142,7 +142,7 @@ After a review or an eval round, the author fixes the blocking findings in **one
 
 ## 7. Integration (TL)
 
-1. **Merge into `int/*`** when: CI green on the PR's head; peer, QA and TL reviews approved; no blocking findings open; the PR is rebased on the current int branch (or merges cleanly). Merge with a merge commit (keeps the unit's history); never squash a unit with migrations.
+1. **Merge into `int/*`** when: CI green on the PR's head; peer, QA and TL reviews approved; no blocking findings open; the PR is rebased on the current int branch (or merges cleanly); the PR's latest CI run tested a merge with the **current** int head — if the int branch moved since, the TL closes and reopens the PR so GitHub tests a fresh merge, and waits for green (P2-T30). Merge with a merge commit (keeps the unit's history); never squash a unit with migrations.
 2. **After each merge into `int/*`:** the TL posts the merge on the integration issue; open PRs targeting that branch rebase when their author next pushes.
 3. **Conflict canary at each checkpoint:** the TL does a local trial merge of `int/m04` and `int/m05` (no push), and of each int branch with `main`; conflicts are resolved in the owning unit's next PR, never in the canary.
 4. **Int → `main`** (CP3, CP5): the TL opens the PR, CI runs the full suite, Antony runs the milestone's checklist items that need a merged build, the owner merges.
@@ -157,12 +157,13 @@ gh label create "status:blocked" --color b60205; gh label create "status:in-revi
 gh label create "stream:m04" --color c5def5; gh label create "stream:m05" --color bfdadc; gh label create "stream:evals" --color d4c5f9; gh label create "stream:qa" --color f9d0c4; gh label create "stream:ops" --color fef2c0
 gh label create "needs-review:neryn"; gh label create "needs-review:viro"; gh label create "needs-review:jack"; gh label create "needs-review:junior"; gh label create "needs-review:tl"; gh label create "needs-qa"
 gh label create "icr" --color d93f0b; gh label create "owner-gate" --color b60205
+gh label create "eng:neryn"; gh label create "eng:viro"; gh label create "eng:jack"; gh label create "eng:junior"; gh label create "eng:antony"; gh label create "eng:tl"
 ```
-**Issues:** one per WU (title `"<WU>: <title>"`, body = link to the spec and the dependency list, labels `wu`, stream, status), one `P2 integration` issue (TL posts merges, checkpoints and the daily summary), one issue per owner gate (`owner-gate`). The TL creates them at CP0 from the README index.
+**Issues:** one per WU (title `"<WU>: <title>"`, body = link to the spec and the dependency list, labels `wu`, `eng:<owner>` (P2-T29), stream, status), one `P2 integration` issue (TL posts merges, checkpoints and the daily summary), one issue per owner gate (`owner-gate`). The TL creates them at CP0 from the README index.
 
 **Status flow:** `status:ready` → `status:in-progress` (assignee starts) → `status:in-review` (PR ready) → `status:done` (merged into its base). `status:blocked` with a comment naming the blocker and who must act.
 
-**Every session starts with:** `gh pr list --search "review-requested:@me"` or the `needs-review:<you>` label; your issues; the integration issue's last summary. Every session ends with a comment on your issue: what is done, what is next, anything blocked.
+**Every session starts with:** `gh pr list --label "needs-review:<you>"` (Antony: `--label needs-qa`) — not `review-requested:@me`, which cannot tell engineers apart on the shared account; your issues (`gh issue list --label "eng:<you>"`); the integration issue's (#43) last summary. Every session ends with a comment on your issue: what is done, what is next, anything blocked.
 
 ## 9. Datasets (E2D, E3D, E4D)
 

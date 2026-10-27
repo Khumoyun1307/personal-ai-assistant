@@ -10,7 +10,7 @@ and shaped like aiogram's JSON dump (`from_user`, integer dates).
 from __future__ import annotations
 
 import functools
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -25,6 +25,7 @@ from assistant.accounts.models import (
     BusinessConnectionEvent,
     PendingInput,
 )
+from assistant.conversations.listeners import IngestionListener
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.core.routing import Route
 from assistant.db.engine import build_engine, build_session_factory
@@ -38,6 +39,7 @@ from assistant.telegram.business import BusinessPipeline
 from assistant.telegram.connections import ConnectionRegistry
 from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.inbox_handlers import ControlInboxHandlers, RefusalLimiter
+from assistant.telegram.control.routes import ControlRoutes
 from assistant.telegram.gateway import OutboundGateway
 from assistant.telegram.ingress.writer import write_batch
 from assistant.telegram.routing import route_update
@@ -202,6 +204,8 @@ async def environment(
     owner_ids: frozenset[int] = frozenset({OWNER}),
     bot_id: int = BOT_ID,
     summaries: bool = False,
+    listeners: Sequence[IngestionListener] = (),
+    routes: ControlRoutes | None = None,
 ) -> AsyncIterator[Env]:
     """The production wiring over a clean database, for one test.
 
@@ -243,8 +247,10 @@ async def environment(
     lookup = FakeLookup()
     registry = ConnectionRegistry(factory, clock, lookup, scheduler, owner_ids=owners)
     trigger = SummaryRefreshTrigger(scheduler, clock) if summaries else None
-    pipeline = BusinessPipeline(registry, clock, bot_id=bot_id, summaries=trigger)
-    dispatcher = ControlDispatcher(gateway, clock, scheduler)
+    pipeline = BusinessPipeline(
+        registry, clock, bot_id=bot_id, summaries=trigger, listeners=listeners
+    )
+    dispatcher = ControlDispatcher(gateway, clock, scheduler, routes=routes)
     control = ControlInboxHandlers(dispatcher, gateway, RefusalLimiter(clock))
     processor = InboxProcessor(
         factory,

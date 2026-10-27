@@ -32,6 +32,7 @@ from typing import Any, Protocol
 from aiogram import Bot
 
 from assistant.core.clock import Clock
+from assistant.core.delivery import SendResult as SendResult
 from assistant.observability.logging import get_logger
 from assistant.telegram.errors import ClassifiedError, ErrorClass, classify_exception
 from assistant.telegram.render import render_control_message
@@ -63,29 +64,6 @@ class BusinessChat:
 
 
 Target = ControlChat | BusinessChat
-
-
-@dataclass(frozen=True, slots=True)
-class SendResult:
-    """The outcome of one send. `ok` is the only success."""
-
-    error_class: ErrorClass
-    message_id: int | None = None
-    error_code: str | None = None
-    retry_after: int | None = None
-
-    @property
-    def ok(self) -> bool:
-        return self.error_class is ErrorClass.OK
-
-    @property
-    def delivery_uncertain(self) -> bool:
-        """Unknown outcome. Never retry; surface it (§6 invariants 6, 11).
-
-        Every gateway call is a write, so TRANSIENT — no answer from Telegram,
-        or a 5xx — means the effect may have happened.
-        """
-        return self.error_class in (ErrorClass.AMBIGUOUS, ErrorClass.TRANSIENT)
 
 
 class TelegramSender(Protocol):

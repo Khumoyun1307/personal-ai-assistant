@@ -11,12 +11,31 @@ Lives in the jobs adapter because it reads procrastinate's own table.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.core.jobs import APPLY_CONFIRMATION_TASK, OWNER_REQUEST_TASK, REFRESH_SUMMARY_TASK
+from assistant.core.jobs import (
+    APPLY_CONFIRMATION_TASK,
+    OWNER_REQUEST_TASK,
+    REFRESH_SUMMARY_TASK,
+    JobArgs,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class DeferRequest:
+    task: str
+    args: JobArgs
+    queueing_lock: str | None = None
+    lock: str | None = None
+    schedule_at: datetime | None = None
+
+
+Reconciler = Callable[[AsyncSession, datetime], Awaitable[list[DeferRequest]]]
 
 #: Do not race a job that is being deferred right now.
 GRACE = timedelta(seconds=30)

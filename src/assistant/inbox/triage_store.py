@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.conversations.models import Message
@@ -139,10 +139,14 @@ async def burst_source(
     covers_through: int | None,
 ) -> TriageSource:
     """The burst after `covers_through` and the messages before it (§3.2).
-    Account-scoped; one conversation; retained messages only."""
-    newer = select(Message).where(*retained(account_id, conversation_id))
+    Account-scoped; one conversation; retained messages only.
+
+    "Earlier" messages are never new ones: when more than `BURST_LIMIT`
+    arrived, the left-out new messages are counted in `omitted`, not shown
+    as context (they were never triaged)."""
+    is_new: ColumnElement[bool]
     if covers_through is not None:
-        newer = newer.where(Message.id > covers_through)
+        is_new = Message.id > covers_through
     else:
         newest = (
             await session.execute(
@@ -151,7 +155,8 @@ async def burst_source(
         ).scalar_one_or_none()
         if newest is None:
             return TriageSource(earlier=(), burst=())
-        newer = newer.where(Message.sent_at >= newest - FIRST_BURST_WINDOW)
+        is_new = Message.sent_at >= newest - FIRST_BURST_WINDOW
+    newer = select(Message).where(*retained(account_id, conversation_id)).where(is_new)
     rows = list(
         (await session.execute(newer.order_by(Message.id.desc()).limit(BURST_LIMIT + 1)))
         .scalars()
@@ -172,6 +177,7 @@ async def burst_source(
         select(Message)
         .where(*retained(account_id, conversation_id))
         .where(Message.id < burst[0].message_id)
+        .where(not_(is_new))
         .order_by(Message.id.desc())
         .limit(EARLIER_LIMIT)
     )
