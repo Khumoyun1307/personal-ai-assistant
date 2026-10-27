@@ -182,6 +182,7 @@ async def test_the_blocked_stub_returns_no_message_data_and_makes_no_db_read_of_
         "list_conversations",
         "summarize_period",
         "get_attention_list",
+        "get_activity",
     }
     assert managed <= set(stubs)
     for name in managed:
@@ -352,5 +353,7 @@ def test_the_production_flags_line_is_every_registered_tool_plus_the_refresh() -
 
     from tests.integration.agent_env import PRODUCTION_FLAGS
 
-    assert every_flag(default_registry()) | {"summary.refresh"} == PRODUCTION_FLAGS
+    assert (every_flag(default_registry()) - {"tool.get_activity"}) | {
+        "summary.refresh"
+    } == PRODUCTION_FLAGS
     assert PRODUCTION_FLAGS == EVAL_FLAGS

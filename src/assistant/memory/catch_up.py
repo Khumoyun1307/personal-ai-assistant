@@ -37,6 +37,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry, BusinessConnection, BusinessConnectionEvent
+from assistant.actions.models import Action
+from assistant.actions.states import ActionState
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.conversations.read import not_stored_while_ignored
 
@@ -745,3 +747,119 @@ async def waiting_questions(
         if conversation_id not in found and has_question(text):
             found[int(conversation_id)] = WaitingQuestion(int(message_id), sent_at, str(text))
     return found
+
+
+# ------------------------------------------------------------ assistant activity
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityCount:
+    conversation_id: int
+    contact_id: int
+    sent: int
+    awaiting: int
+    not_sent: int
+    problems: int
+    deleted_after_send: int
+
+
+async def assistant_activity(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    start: datetime,
+    end: datetime,
+    conversation_ids: Sequence[int] | None = None,
+) -> list[ActivityCount]:
+    """Summary of assistant activity in [start, end) grouped by conversation."""
+    if conversation_ids is not None and not conversation_ids:
+        return []
+
+    entry_time = func.coalesce(Action.executed_at, Action.decided_at, Action.created_at)
+
+    stmt = (
+        select(
+            Action.id,
+            Action.conversation_id,
+            Conversation.contact_id,
+            Action.state,
+        )
+        .join(
+            Conversation,
+            (Conversation.id == Action.conversation_id) & (Conversation.account_id == account_id),
+        )
+        .where(Action.account_id == account_id)
+        .where(entry_time >= start)
+        .where(entry_time < end)
+    )
+    if conversation_ids is not None:
+        stmt = stmt.where(Action.conversation_id.in_(list(conversation_ids)))
+
+    stmt = stmt.order_by(Action.conversation_id.asc(), Action.id.asc())
+    rows = (await session.execute(stmt)).all()
+    if not rows:
+        return []
+
+    sent_action_ids = [r[0] for r in rows if r[3] == ActionState.SUCCEEDED.value]
+    deleted_msg_action_ids: set[int] = set()
+    if sent_action_ids:
+        del_stmt = select(Message.action_id).where(
+            Message.account_id == account_id,
+            Message.action_id.in_(sent_action_ids),
+            Message.direction == "assistant_sent",
+            Message.deleted_at.is_not(None),
+        )
+        del_rows = (await session.execute(del_stmt)).scalars().all()
+        deleted_msg_action_ids = set(del_rows)
+
+    grouped: dict[tuple[int, int], dict[str, int]] = {}
+    for action_id, conv_id, contact_id, state in rows:
+        key = (conv_id, contact_id)
+        if key not in grouped:
+            grouped[key] = {
+                "sent": 0,
+                "awaiting": 0,
+                "not_sent": 0,
+                "problems": 0,
+                "deleted_after_send": 0,
+            }
+        counts = grouped[key]
+        if state == ActionState.SUCCEEDED.value:
+            counts["sent"] += 1
+            if action_id in deleted_msg_action_ids:
+                counts["deleted_after_send"] += 1
+        elif state in (
+            ActionState.PROPOSED.value,
+            ActionState.AWAITING_APPROVAL.value,
+            ActionState.REVISING.value,
+            ActionState.APPROVED.value,
+            ActionState.SCHEDULED.value,
+            ActionState.EXECUTING.value,
+        ):
+            counts["awaiting"] += 1
+        elif state in (
+            ActionState.REJECTED.value,
+            ActionState.OUTDATED.value,
+            ActionState.EXPIRED.value,
+            ActionState.CANCELLED.value,
+        ):
+            counts["not_sent"] += 1
+        elif state in (
+            ActionState.DELIVERY_UNCERTAIN.value,
+            ActionState.FAILED.value,
+            ActionState.BLOCKED.value,
+        ):
+            counts["problems"] += 1
+
+    return [
+        ActivityCount(
+            conversation_id=conv_id,
+            contact_id=contact_id,
+            sent=counts["sent"],
+            awaiting=counts["awaiting"],
+            not_sent=counts["not_sent"],
+            problems=counts["problems"],
+            deleted_after_send=counts["deleted_after_send"],
+        )
+        for (conv_id, contact_id), counts in grouped.items()
+    ]

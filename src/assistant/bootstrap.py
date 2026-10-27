@@ -11,7 +11,7 @@ import contextlib
 import functools
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -55,6 +55,7 @@ from assistant.privacy.requests import RequestedDeletions
 from assistant.process import InboxRole, PollerRole, WorkerRole, worker_heartbeat_probe
 from assistant.telegram.business import BusinessPipeline
 from assistant.telegram.connections import AiogramConnectionLookup, ConnectionRegistry
+from assistant.telegram.control.activity import handle_activity
 from assistant.telegram.control.agent_channel import GatewayControlChannel
 from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.inbox_handlers import ControlInboxHandlers, RefusalLimiter
@@ -237,6 +238,10 @@ def _wire_m04(
         process_run_id=process_run_id,
         assist_draft_trigger=assist_trigger(settings.feature_flags),
         draft_route_model=settings.model_routes.model_for("draft_reply"),
+    )
+    wiring.routes = replace(
+        wiring.routes,
+        commands={**wiring.routes.commands, "activity": handle_activity},
     )
 
 

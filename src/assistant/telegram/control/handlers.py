@@ -139,6 +139,7 @@ HELP_TEXT = (
     "/start — set up or re-run onboarding\n"
     "/help — this message\n"
     "/status — what I can see: connection, rights, coverage, gaps, consent\n"
+    "/activity — what I sent or drafted today\n"
     "/settings — language, timezone, chat modes, replies, how long things are kept, "
     "deleting data\n"
     "/privacy — what I store, who sees it, and how to delete it "
