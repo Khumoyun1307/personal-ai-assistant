@@ -557,6 +557,12 @@ class Burst(_Strict):
                 raise ValueError(f"{task.id}: task ids are unique '{self.id}.tN'")
             if task.source not in ids:
                 raise ValueError(f"{task.id}: cites unknown message {task.source}")
+            side = "owner" if task.kind == "owner_commitment" else "contact"
+            if self.message(task.source).direction != side:
+                raise ValueError(
+                    f"{task.id}: a {task.kind} task cites a {side} message (the product's "
+                    "side rule, S05.1 §3.4)"
+                )
             _require_utc(task.due, "due")
             seen.add(task.id)
         listed = [*self.labels.resolved_tasks, *self.labels.unresolved_tasks]

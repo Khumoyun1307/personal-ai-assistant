@@ -193,6 +193,22 @@ def test_every_open_task_is_in_exactly_one_resolution_list() -> None:
             parse_burst(with_labels(resolved_tasks=resolved, unresolved_tasks=unresolved))
 
 
+def test_open_task_sources_are_from_the_side_the_task_belongs_to() -> None:
+    """The product never creates a task citing the other side (S05.1 §3.4), so
+    neither may the dataset: a contact commitment cites the contact's promise,
+    an owner commitment the owner's, a question or decision the contact."""
+    for kind, source in (
+        ("contact_commitment", "b001.h01"),  # the owner's message
+        ("owner_commitment", "b001.h02"),  # the contact's message
+        ("open_question", "b001.h01"),
+        ("decision", "b001.h01"),
+    ):
+        data = record()
+        data["open_tasks"][0] = {**data["open_tasks"][0], "kind": kind, "source": source}
+        with pytest.raises(ValidationError, match="task"):
+            parse_burst(data)
+
+
 def test_commitment_sources_are_from_the_committing_side() -> None:
     owner_promise_cites_contact = with_labels(
         commitments=[{"id": "b001.c1", "by": "owner", "source": "b001.m01", "values": []}]
