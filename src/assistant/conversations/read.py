@@ -96,12 +96,17 @@ class DirectoryEntry:
 
 
 def saved_message() -> ColumnElement[bool]:
-    """A message whose content is stored now. Observe always writes the
-    content hash; a deletion or the retention purge clears it and sets
-    `deleted_at` / `purged_at`."""
+    """A message whose content is stored now: the exact complement of
+    `not_stored_while_ignored` among the rows that are neither deleted nor
+    expired (a deletion or the retention purge sets `deleted_at` /
+    `purged_at`)."""
     return and_(
         Message.direction.is_not(None),
-        Message.content_hash.is_not(None),
+        or_(
+            Message.content_hash.is_not(None),
+            Message.text.is_not(None),
+            Message.media.is_not(None),
+        ),
         Message.deleted_at.is_(None),
         Message.purged_at.is_(None),
     )
@@ -109,11 +114,16 @@ def saved_message() -> ColumnElement[bool]:
 
 def not_stored_while_ignored() -> ColumnElement[bool]:
     """A message that arrived while its chat was in Ignore: the row is
-    metadata only (§6.5). Every other row without a content hash is marked —
-    deleted or expired — or is a deletion tombstone, which has no direction."""
+    metadata only (§6.5). Observe always writes the content hash; every other
+    row without one is marked — deleted or expired — or is a deletion
+    tombstone, which has no direction. A row holding text or media is never
+    one, whatever its hash (rows written outside ingestion, such as the eval
+    corpus, may have none)."""
     return and_(
         Message.direction.is_not(None),
         Message.content_hash.is_(None),
+        Message.text.is_(None),
+        Message.media.is_(None),
         Message.deleted_at.is_(None),
         Message.purged_at.is_(None),
     )
