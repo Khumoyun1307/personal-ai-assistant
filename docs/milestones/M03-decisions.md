@@ -1,9 +1,10 @@
 # M03 — decisions waiting for your confirmation
 
-*For the owner. Written 2026-10-26 at the M03 close-out. Every decision the
-agents made while building M03 that is still marked "pending owner
-confirmation" in [M03.md](M03.md) (D60–D76, D78–D94 and E-a…E-y; D77 is a
-test-suite choice and not listed), in plain words, with a recommendation.
+*For the owner. Written 2026-10-26 at the M03 close-out; S03.7's decisions
+(D95–D114, E-z…E-al) added the same day at the end of the page. Every
+decision the agents made while building M03 that is still marked "pending
+owner confirmation" in [M03.md](M03.md) (D60–D76, D78–D94 and E-a…E-y; D77 is
+a test-suite choice and not listed), in plain words, with a recommendation.
 The full reasoning is in M03.md under the same number.*
 
 **How to answer:** reply **"confirmed"** to accept every recommendation, or
@@ -15,7 +16,7 @@ the code already behaves as described.
 
 | # | The choice | Recommendation |
 |---|---|---|
-| **E-x** | **Which summary prompt is live.** `summarize.v4` has been active since PR #25 merged (deployed 2026-10-26). It writes every summary in *your* language and script, whatever the chat's (eval: Cyrillic chats 0/8 → 8/8, all chats 31/40 → 40/40). Side effects: a contact's name may appear in your script ("Нодира" → "Nodira"), and what people wrote is retold ("she asked…") instead of quoted. The AI pre-screen for invented facts flagged 24 statements (v2: 15); about 16 look supported by the messages, none is confirmed yet, and the judge's input changed between the runs. The alternative is `v2` (a one-line change back): names and quotes kept as written, but Cyrillic chats summarized in Cyrillic. | **Keep v4.** The language fix is what the eval demanded; your E1 review of the 24 flags decides whether a v5 prompt is needed. |
+| **E-x** | **Which summary prompt is live.** `summarize.v4` has been active since PR #25 merged (deployed 2026-10-26). It writes every summary in *your* language and script, whatever the chat's (eval: Cyrillic chats 0/8 → 8/8, all chats 31/40 → 40/40). Side effects: a contact's name may appear in your script ("Нодира" → "Nodira"), and what people wrote is retold ("she asked…") instead of quoted. The AI pre-screen for invented facts flagged 24 statements (v2: 15); about 16 look supported by the messages, none is confirmed yet, and the judge's input changed between the runs. The alternative is `v2` (a one-line change back): names and quotes kept as written, but Cyrillic chats summarized in Cyrillic. | **Keep v4.** The language fix is what the eval demanded; your E1 review of the 24 flags decides whether a v5 prompt is needed. *Superseded by S03.7: merging it makes `summarize.v7` active (D99, D108, D114, below); v4 stays as a rollback.* |
 | **E-k** | **How much of the test set you must confirm before a quality gate can pass.** Now: every item (38 search queries, 40 conversations, ~4 h of Uzbek review). A smaller confirmed subset would be faster but would be a deliberate change to the plan, and a pass would say less. | **Keep the whole set.** |
 | **E-p** | **Whether "the final answer relays every coverage warning" must be measured before M03 closes.** The eval checks that the warnings are produced (they come from code), not that the model's final reply repeats them. A separate agent-level eval would cost a new paid run. | **Accept for M03**; the catch-up step of the owner guide checks it by eye. Revisit if a warning is ever missing. |
 | **E-c** | **How many summaries the AI judge did *not* flag you spot-check** for invented facts. A summary the judge passed counts as clean unless you say otherwise. | **Spot-check 5** at random during the E1 review. |
@@ -109,3 +110,64 @@ the code already behaves as described.
 | E-v | The language check no longer splits Uzbek words at apostrophes (`to‘lov` is not English "to"). | Keep |
 | E-w | The judges read times in your time zone; the open-question judge quotes the summary line it relied on. | Keep |
 | E-y | Search ignores words like "is"/"the" only when the question is clearly in that language, and no longer cuts names (Aziza stays Aziza). | Keep |
+
+## Robust attribution and search (S03.7)
+
+Added 2026-10-26 with the S03.7 PR. The summary round 3 decisions were first
+numbered D-sum-1…3 and E-ag(sum), E-ah(sum); they are D112–D114, E-ak and
+E-al here and in M03.md. E-ac and E-ad were never used.
+
+### The ones that are real choices
+
+| # | The choice | Recommendation |
+|---|---|---|
+| **G1** | **A stronger setting for summaries.** The summary of c36 says the new gathering time "is not given" although the edited message gives it; it has been wrong in all four prompt rounds, and alone it keeps the "no invented facts" gate from passing. Four prompt rounds have not fixed it at effort low. The next step is a cheap trial (about a cent each) at effort medium, then with a more capable model for the summary route only (`gpt-6-sol`), recording quality and cost per AGENTS §8. | **Your decision. Run the trial** before relying on summaries; keep Luna at low for every other route. |
+| **D97** | **The summary model sees the contact's name once**, wrapped as untrusted, and each line is labelled YOU / CONTACT by code. This reverses the earlier "no contact names in the summary context" rule. | **Keep.** The overview needs a name; a fixed label cannot be spoofed by a contact who calls themselves "You". |
+| **P9** | **Should an open request keep "needs a reply" on?** Today a thank-you at the end turns it off even if a request is still open (c30). | Your call; if yes, the next prompt version (or code) keeps it on. |
+| **S5** | **Addresses in answers:** copy them as the message writes them ("дом 22, кв. 15"), or write the whole answer in your script ("22-uy, 15-xonadon")? The two v7 rules conflict here. | Copy addresses and numbers as written; the rest in your script. |
+
+### Summaries (who said what)
+
+| # | What it means for you | Recommendation |
+|---|---|---|
+| D95 | Who asked, promised or agreed is stored as data, not written by the model; the sentence you read ("Aziza asks you…") comes from fixed wording. | Keep |
+| D96 | Code checks each item against who actually wrote the messages it cites: a "promise" backed only by the other person's message becomes "asks you to (not agreed yet)"; your automatic away/greeting messages never count as a promise; messages the assistant sent for you count as yours. Also applied to summaries already stored. | Keep |
+| D98 | The *who* wording exists in English, Uzbek (Latin and Cyrillic) and Russian; you read it in your language. | Keep; **please proofread the uz/ru wording** (`agent/attribution.py`) |
+| D99 | `summarize.v5` (you approved it becoming active with the plan); cached catch-ups are no longer served from an older prompt or model. | Keep (now v7, below) |
+| D105 | The contact's name appears in your script (Cyrillic names transliterated for a Latin-script owner). | Keep |
+| D106 | The summary sees when a message was edited and that its text is the current one; a later correction replaces an earlier value. | Keep |
+| D107 | Something you already answered, accepted or that is done is not listed as open; an agreed split of work is one promise per person. | Keep |
+| D108 | Anything a person says they will do is listed as a promise with who does it, never as a plain fact (`summarize.v6`). | Keep |
+| D112 | Times are written in 24-hour form ("Sunday 5 pm" → "yakshanba 17:00"), so 5 pm can never read as 5 in the morning. | Keep |
+| D113 | What a third person (not you, not the contact) will do is kept as a fact naming them ("Farhod will send the flight number"). | Keep |
+| D114 | `summarize.v7` is active; the text a message had before an edit is never shown, so "I changed the time" refers to the edited text. | Keep (G1 decides whether it also needs a stronger setting) |
+| (lead) | Effort for summaries stays **low**: in a three-chat trial, medium did worse (c28 failed). Lead decision under your delegation, 2026-10-26. | Done (revisit with G1) |
+
+### Search and answers
+
+| # | What it means for you | Recommendation |
+|---|---|---|
+| D100 | If a search in one person's chat finds nothing, it searches all your chats and says the result is from another chat. | Keep |
+| D101 | Russian word forms meet in search ("квартира" finds "квартиру"). | Keep |
+| D102 | Sources in answers are checked: each "(name, time)" comes from the database, and a source the model made up is removed with a short note. | Keep; proofread the note (`agent/owner_texts.py`) |
+| D103 | `owner_request.v6` (you approved it becoming active with the plan). | Keep (now v7) |
+| D104 | Without AI for your connected chats, a chat question gets "I can't read your chats…" and the `/privacy managed` card, instead of a blind answer; nothing from the chats is sent. The RG-08 safety test now checks exactly that — **accepted under your delegation (2026-10-26)**. | Keep |
+| D109 | A bare name, number, address or phrase is treated as a search of your chats; a name that is not a contact is searched for inside chats; an empty search in one chat is followed by reading that chat; values are copied as written; the whole answer is in your language and script (`owner_request.v7`). **You decided this behaviour (2026-10-26).** | Done; proofread the wording |
+| D110 | After you tap "Not now" on the chat-access card, it is not offered again for 24 hours (the one-line notice still appears). **Delegated by you to the lead (2026-10-26).** | Done |
+| D111 | The agent is told your language with its script spelled out ("Uzbek written in Latin letters"). | Keep |
+
+### Evaluation harness (S03.7)
+
+| # | What it means for you | Recommendation |
+|---|---|---|
+| E-z | The search eval uses the product's own widening, not a copy of it. | Keep |
+| E-aa | "Agent mode" runs the real assistant on each test question: a hit means a target message was in the top 5 of any search; a correct answer needs a checked source pointing at a target and every expected value. | Keep |
+| E-ab | An agent-mode run starts on its expected cost (from a one-question trial × 1.5) under the hard spending cap. **Approved by you, 2026-10-26.** | Done |
+| E-ae | The judges know that "you" in a summary means you, and see edit times. | Keep |
+| E-af | The open-question judge's quote is checked by code; a quote not in the summary does not count. | Keep |
+| E-ag | A provider outage is retried twice; a question that never gets through is "not evaluated" and the run is incomplete, never a pass. | Keep |
+| E-ah | The eval records every tool the assistant used and every message it saw. | Keep |
+| E-ai | Amounts and times are compared as values ("3:15 a.m." = "03:15"; "1 500 000" = "1 million 500 ming"). | Keep |
+| E-aj | Every test chat gets a coverage start, as real chats do. | Keep |
+| E-ak | A judge quote with a one-letter slip but the same numbers counts (and is listed for you). | Keep |
+| E-al | `--only c36,c28,c15` runs a cheap trial on chosen chats; never a gate. | Keep |

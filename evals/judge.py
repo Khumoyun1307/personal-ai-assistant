@@ -18,8 +18,12 @@ budget guard meters it. Tests use `FakeLLM`; nothing here talks to a provider.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
+from difflib import SequenceMatcher
+from enum import StrEnum
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -39,12 +43,23 @@ from evals.review import FindingStatus, ReviewLedger, finding_id
 from evals.schema import Commitment, Conversation, QuestionToOwner
 from evals.targets import Measure, MetricResult
 
-RUBRIC_ID = "fabrication.v1"
+#: v2 (S03.7 A2): "you" in the summary is the owner (3 of the 11 over-flags of the
+#: summarize.v5 run were correct "You promised ..." lines); an edited message's
+#: text is its current one. v1 stays: earlier reports name it.
+RUBRIC_ID = "fabrication.v2"
+#: The version of the summary text the judges read (`evals.summary.labelled_text`).
+#: v1: "promised by the owner/contact" from the summary's fields; v2 (S03.7): who
+#: asked, promised or agreed in the product's own English wording
+#: (`agent/attribution.py`), with the contact's name.
+LABELS_VERSION = "labels.v2"
 #: The fabrication judge as a report names it: the rubric plus the version of the
 #: conversation rendering it reads (`evals.render.RENDER_VERSION`), so runs whose
-#: judge read UTC times are told apart from runs whose judge read local ones.
-FABRICATION_LABEL = f"{RUBRIC_ID}+{RENDER_VERSION}"
-LOOPS_RUBRIC_ID = "open_loops.v3"
+#: judge read UTC times are told apart from runs whose judge read local ones, plus
+#: the version of the summary text it reads (`LABELS_VERSION`).
+FABRICATION_LABEL = f"{RUBRIC_ID}+{RENDER_VERSION}+{LABELS_VERSION}"
+#: v4 (S03.7 A2): "you" in the summary is the owner; a quote that is not in the
+#: summary is no evidence (and `evidence_in_summary` checks it in code).
+LOOPS_RUBRIC_ID = "open_loops.v4"
 MAX_OUTPUT_TOKENS = 3000
 TIMEOUT_SECONDS = 120.0
 #: Fabrication threshold (S03.4): none.
@@ -184,6 +199,92 @@ class LoopVerdicts(BaseModel):
     items: list[LoopVerdict]
 
 
+@dataclass(frozen=True, slots=True)
+class CheckedLoopVerdict:
+    """A loop judge's verdict after its quote was checked against the summary."""
+
+    #: What the judge quoted, as it wrote it (kept for the owner's review).
+    evidence: str
+    #: The pre-screen verdict: the judge said surfaced AND its quote is in the summary.
+    surfaced: bool
+    #: What the judge said.
+    judge_surfaced: bool
+    #: Whether every quoted line occurs in the summary (exactly, or as a near quote).
+    quoted: bool
+    #: Whether a quoted line counted only as a near quote (`QuoteMatch.NEAR`): listed
+    #: for the owner apart from exact quotes.
+    near: bool = False
+
+
+#: Apostrophe forms a quote may swap (the Uzbek o‘/g‘ is written several ways).
+_APOSTROPHES = str.maketrans(dict.fromkeys("‘’ʻʼ`´", "'"))  # noqa: RUF001
+#: Where a quote may join pieces of the summary: lines, an ellipsis, a slash or bar.
+_QUOTE_BREAKS = re.compile(r"\n|\.\.\.|…| / | \| ")
+#: Bullets, quote marks and spaces a quote may add around a piece.
+_QUOTE_EDGES = " \t-•*\"'“”«»"
+
+
+def _fold(text: str) -> str:
+    folded = unicodedata.normalize("NFC", text).translate(_APOSTROPHES).casefold()
+    return " ".join(folded.split())
+
+
+class QuoteMatch(StrEnum):
+    """How a loop judge's quote matches the summary it judged."""
+
+    #: Every piece occurs in the summary.
+    EXACT = "exact"
+    #: Every piece occurs or is a near copy of one summary line (`NEAR_QUOTE_RATIO`).
+    NEAR = "near"
+    #: Empty, or a piece is in no summary line: no evidence.
+    NONE = "none"
+
+
+#: How similar a quoted line must be to a summary line to count as a copy of it
+#: (S03.7 round 3, E-af). In the summarize.v6 run the judge copied four lines with a
+#: slip (a Latin letter swapped for a Cyrillic one, a dropped "(not agreed yet)"):
+#: 0.925-0.973 similar; the line it invented in the v5 run is 0.55 similar to its
+#: closest one.
+NEAR_QUOTE_RATIO = 0.90
+_NUMBERS = re.compile(r"\d+")
+
+
+def _near_line(piece: str, lines: Sequence[str]) -> bool:
+    """A piece is a near copy of a line: at least `NEAR_QUOTE_RATIO` similar
+    (difflib, on the folded text) and with exactly the line's numbers, so a copy
+    with another time or amount never counts."""
+    numbers = _NUMBERS.findall(piece)
+    return any(
+        _NUMBERS.findall(line) == numbers
+        and SequenceMatcher(None, piece, line, autojunk=False).ratio() >= NEAR_QUOTE_RATIO
+        for line in lines
+    )
+
+
+def quote_match(evidence: str, summary: str) -> QuoteMatch:
+    """How a loop judge's quote matches the summary it judged (S03.7 A2: in the
+    summarize.v5 run it once quoted a line the summary does not have). Every piece
+    of the quote — split at line breaks and ellipses — must occur in the summary,
+    ignoring case, spacing, bullets and apostrophe forms (`EXACT`), or be a near
+    copy of one of its lines (`NEAR`, round 3). An empty quote is none."""
+    haystack = _fold(summary)
+    pieces = [_fold(piece).strip(_QUOTE_EDGES) for piece in _QUOTE_BREAKS.split(evidence)]
+    pieces = [piece for piece in pieces if piece]
+    if not pieces:
+        return QuoteMatch.NONE
+    missing = [piece for piece in pieces if piece not in haystack]
+    if not missing:
+        return QuoteMatch.EXACT
+    lines = [_fold(line).strip(_QUOTE_EDGES) for line in summary.splitlines()]
+    lines = [line for line in lines if line]
+    return QuoteMatch.NEAR if all(_near_line(p, lines) for p in missing) else QuoteMatch.NONE
+
+
+def evidence_in_summary(evidence: str, summary: str) -> bool:
+    """Whether a loop judge's quote is in the summary, exactly or as a near copy."""
+    return quote_match(evidence, summary) is not QuoteMatch.NONE
+
+
 class LLMOpenLoopJudge:
     """Pre-screens the open loops string matching could not decide: those with no
     `values`, and (E-s) those whose `values` were not found literally, e.g.
@@ -192,7 +293,9 @@ class LLMOpenLoopJudge:
     It sees the summary and, for each loop, a one-line description with the
     loop's key values and the chat messages the loop cites (never the rest of the
     conversation); it quotes the summary line that surfaces the loop (or nothing)
-    before it answers (v3). Its verdicts feed `recall_metric(..., judged=...)`,
+    before it answers (v3), and a "surfaced" whose quote is not in the summary
+    counts as not surfaced (S03.7 A2; a near copy of a summary line counts, round 3,
+    and is marked `near`). Its verdicts feed `recall_metric(..., judged=...)`,
     which counts them in the pre-screen only: the gate needs the owner's verdict
     (`ReviewLedger.coverage`). A judge failure returns no verdicts, so those loops
     stay *missed*.
@@ -223,8 +326,11 @@ class LLMOpenLoopJudge:
         conversation: Conversation,
         output: SummaryOutput,
         loop_ids: Collection[str] | None = None,
-    ) -> dict[str, LoopVerdict]:
-        """`judge` with the evidence the judge quoted."""
+    ) -> dict[str, CheckedLoopVerdict]:
+        """`judge` with the evidence the judge quoted. A verdict whose quote is not
+        in the summary (`quote_match`, an empty quote included) is not surfaced: a
+        quote that does not occur is no evidence (S03.7 A2). A near copy of a summary
+        line counts and is marked `near` (round 3)."""
         pending = [
             loop
             for loop in open_loops(conversation)
@@ -256,7 +362,20 @@ class LLMOpenLoopJudge:
         if response.stop_reason is not StopReason.COMPLETED or response.parsed is None:
             return {}
         asked = {loop.id for loop in pending}
-        return {v.id: v for v in response.parsed.items if v.id in asked}
+        checked: dict[str, CheckedLoopVerdict] = {}
+        for verdict in response.parsed.items:
+            if verdict.id not in asked:
+                continue
+            match = quote_match(verdict.evidence, output.text)
+            quoted = match is not QuoteMatch.NONE
+            checked[verdict.id] = CheckedLoopVerdict(
+                evidence=verdict.evidence,
+                surfaced=verdict.surfaced and quoted,
+                judge_surfaced=verdict.surfaced,
+                quoted=quoted,
+                near=match is QuoteMatch.NEAR,
+            )
+        return checked
 
 
 def _item_block(conversation: Conversation, loop: QuestionToOwner | Commitment) -> str:

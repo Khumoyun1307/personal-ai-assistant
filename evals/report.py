@@ -51,7 +51,7 @@ def _safe(label: str) -> str:
 
 
 def stem_for(meta: RunMeta, *, trial: bool = False) -> str:
-    """A trial (`--limit`) run never takes a full run's name."""
+    """A trial (`--limit`, `--only`) run never takes a full run's name."""
     stem = f"{meta.run_date.isoformat()}-{_safe(meta.set_name)}-{_safe(meta.model_label)}"
     return f"{stem}-trial" if trial else stem
 
@@ -130,6 +130,7 @@ def to_json(meta: RunMeta, result: TargetResult, ledger: CallLedger) -> dict[str
         "complete": result.complete,
         "trial": result.trial,
         "stopped": result.stopped,
+        "not_evaluated": list(result.not_evaluated),
         "items": items,
         "items_planned": result.items_planned,
         "items_total": result.items_total,
@@ -183,11 +184,19 @@ def render_markdown(meta: RunMeta, result: TargetResult, ledger: CallLedger) -> 
             "(budget cap); no gate can pass.",
             "",
         ]
+    if result.not_evaluated:
+        lines += [
+            "> **INCOMPLETE RUN.** "
+            f"{len(result.not_evaluated)} item(s) could not be evaluated (the provider stayed "
+            "unavailable through the retries): " + ", ".join(result.not_evaluated) + ". They are "
+            "neither hits nor misses; no gate can pass.",
+            "",
+        ]
     if result.trial:
         lines += [
             "> **TRIAL RUN.** "
             f"Only {result.items_planned} of the set's {result.items_total} items were "
-            "selected (`--limit`); a trial is never a gate.",
+            "selected (`--limit` or `--only`); a trial is never a gate.",
             "",
         ]
     lines += [

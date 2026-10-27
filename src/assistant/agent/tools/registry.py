@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import IntEnum, StrEnum
 from typing import TYPE_CHECKING, Any
@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from assistant.agent.citations import CitableMessage
 from assistant.core.channel import ControlChannel
 from assistant.core.clock import Clock
 from assistant.llm.port import ToolSpec
@@ -161,6 +162,10 @@ class ToolOutcome:
     #: run (invariant 3b). Defaults to `contains_managed`.
     untrusted: bool | None = None
     refs: ToolRefs = field(default_factory=ToolRefs)
+    #: The messages this result shows, by `message_id`, for verified
+    #: citations in the reply (S03.7 B3, `agent/citations.py`). Read from the
+    #: database by the tool; never persisted, never sent to the model.
+    citable: Mapping[int, CitableMessage] = field(default_factory=dict)
 
     @property
     def is_error(self) -> bool:
@@ -172,6 +177,21 @@ class ToolOutcome:
 
 
 ToolHandler = Callable[[ToolContext, Any], Awaitable[ToolOutcome]]
+
+#: A chat-reading tool offered while `ai_managed` is off (S03.7 B5, D104):
+#: the status its blocked stub returns, and the fixed reason the model gets.
+CHAT_ACCESS_OFF = "chat_access_off"
+CHAT_ACCESS_OFF_REASON = (
+    "AI for the owner's connected chats is off, so their messages cannot be read. "
+    "Nothing was searched or read. Do not guess what the chats say."
+)
+
+
+async def _chat_access_off(_ctx: ToolContext, _args: Any) -> ToolOutcome:
+    """The blocked stub's handler: reads nothing, returns no message data."""
+    return ToolOutcome(CHAT_ACCESS_OFF, {"reason": CHAT_ACCESS_OFF_REASON})
+
+
 #: For a confirmation card: what a held call's ids refer to, in plain text
 #: for the owner (the note's words, the chat's contact name). LookupError
 #: for an id that is not the account's. Owner-facing only, never sent to a
@@ -258,22 +278,39 @@ class ToolRegistry:
         tier: CapabilityTier,
         enabled_flags: frozenset[str],
         managed_consent: bool,
+        stub_managed_tools: bool = False,
     ) -> dict[str, ToolDefinition]:
         """The tools this run may see and call, by name.
 
         Contact-triggered run types get nothing. A tool that returns managed
-        content is omitted unless `ai_managed` is active (ARCHITECTURE §14.3).
+        content is omitted unless `ai_managed` is active (ARCHITECTURE §14.3)
+        — or, with `stub_managed_tools`, offered under its own name and schema
+        as a blocked stub that reads nothing and returns `chat_access_off`
+        (S03.7 B5): the model learns the chats are off instead of answering
+        blind. Release flags, run types and tiers filter stubs the same way.
         """
         if run_type not in TOOL_RUN_TYPES:
             return {}
-        return {
-            tool.name: tool
-            for tool in self._tools.values()
-            if run_type in tool.allowed_run_types
-            and tier >= tool.min_tier
-            and tool.release_flag in enabled_flags
-            and (managed_consent or not tool.returns_managed)
-        }
+        offered: dict[str, ToolDefinition] = {}
+        for tool in self._tools.values():
+            if not (
+                run_type in tool.allowed_run_types
+                and tier >= tool.min_tier
+                and tool.release_flag in enabled_flags
+            ):
+                continue
+            if managed_consent or not tool.returns_managed:
+                offered[tool.name] = tool
+            elif stub_managed_tools:
+                offered[tool.name] = blocked_stub(tool)
+        return offered
+
+
+def blocked_stub(tool: ToolDefinition) -> ToolDefinition:
+    """`tool` with nothing behind it: same name, description and argument
+    schema (the model sees the tool it would see with consent), a handler
+    that opens no session, and no managed content (§6 invariant 9)."""
+    return replace(tool, handler=_chat_access_off, returns_managed=False, describe=None)
 
 
 def default_registry() -> ToolRegistry:

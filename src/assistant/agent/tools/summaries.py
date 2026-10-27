@@ -40,6 +40,8 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 from sqlalchemy import select
 
 from assistant.accounts.models import Account
+from assistant.agent.attribution import ATTRIBUTION_RULE, check_attribution
+from assistant.agent.locales import supported_locale
 from assistant.agent.summarize import PeriodOutcome, RefreshOutcome, SummaryStatus
 from assistant.agent.tools.common import (
     COVERAGE_RULE,
@@ -52,6 +54,7 @@ from assistant.agent.tools.common import (
     parse_local_moment,
     require_contacts,
     require_conversations,
+    summary_authors,
     summary_view,
 )
 from assistant.agent.tools.registry import (
@@ -275,6 +278,16 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
         return run
 
     outcomes = await _bounded_gather([job(item.conversation_id) for item in chosen])
+    # Who wrote what each summary cites, for the read-time attribution check
+    # (S03.7): each chat's own messages only.
+    authors: dict[int, dict[int, str]] = {}
+    async with transaction(services.session_factory) as uow:
+        for item, outcome in zip(chosen, outcomes, strict=True):
+            if outcome.summary is not None:
+                authors[item.conversation_id] = await summary_authors(
+                    uow.session, ctx.account_id, item.conversation_id, outcome.summary
+                )
+    locale = supported_locale(account.locale_pref)
 
     entries: list[dict[str, Any]] = []
     not_summarized: list[dict[str, Any]] = []
@@ -298,12 +311,18 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
                 reason = _FAILED_REASONS.get(outcome.status, outcome.status.value)
             not_summarized.append({**base, "reason": reason})
             continue
+        checked, _ = check_attribution(outcome.summary, authors[item.conversation_id])
         entry = {
             **base,
             "importance": catch_up.importance(
-                outcome.summary, awaiting_owner_reply=item.awaiting_owner_reply
+                checked, awaiting_owner_reply=item.awaiting_owner_reply
             ),
-            "summary": summary_view(outcome.summary),
+            "summary": summary_view(
+                checked,
+                contact_name=summaries.preferred_name(item.display_name, item.username),
+                locale=locale,
+                authors=authors[item.conversation_id],
+            ),
         }
         if outcome.summarized_count < outcome.message_count:
             entry["summary_covers"] = (
@@ -452,8 +471,15 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             ).scalars()
         }
         coverage = await account_coverage(session, ctx.account_id, account.timezone)
+        authors = {
+            conversation_id: await summary_authors(
+                session, ctx.account_id, conversation_id, stored.summary
+            )
+            for conversation_id, stored in rolling.items()
+        }
 
     tz = account.timezone
+    locale = supported_locale(account.locale_pref)
     entries: list[dict[str, Any]] = []
     for candidate in candidates:
         stored = rolling.get(candidate.conversation_id)
@@ -477,7 +503,12 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             ),
         }
         if checked and stored is not None:
-            view = summary_view(stored.summary)
+            view = summary_view(
+                stored.summary,
+                contact_name=summaries.preferred_name(candidate.display_name, candidate.username),
+                locale=locale,
+                authors=authors[candidate.conversation_id],
+            )
             entry.update(
                 {
                     "needs_reply": view["needs_reply"],
@@ -485,6 +516,12 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
                     "reason": view["needs_reply_reason"],
                     "open_questions_to_owner": view["open_questions_to_owner"],
                     "decisions_requested": view["decisions_requested"],
+                    # What the contact asked the owner to do, not yet agreed (S03.7).
+                    "requests_to_owner": [
+                        item
+                        for item in view["commitments"]
+                        if item["by"] == "owner" and item["status"] == "requested"
+                    ],
                 }
             )
         entries.append(entry)
@@ -498,11 +535,13 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             "assistant answered since. needs_reply is a model judgement from the chat's "
             "summary; not_checked means it could not be checked now; "
             "a check ending in _during_summary means the chat changed while it was being "
-            "checked — relay its notice."
+            "checked — relay its notice. requests_to_owner: what the contact asked the "
+            "owner to do that the owner has not agreed to."
         ),
         "window_days": days,
         "timezone": tz,
         "coverage": coverage,
+        "attribution_rule": ATTRIBUTION_RULE,
     }
     if not entries:
         data["note"] = "No stored chat is waiting for the owner's reply in this window."

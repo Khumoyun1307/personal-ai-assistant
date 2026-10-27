@@ -1,0 +1,2177 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-26",
+  "set": "summary",
+  "target": "summary",
+  "dataset": "e1",
+  "mode": "period-uz-Latn",
+  "model": "gpt-6-luna",
+  "live": true,
+  "effort": "low",
+  "complete": true,
+  "trial": false,
+  "stopped": false,
+  "items": 40,
+  "items_planned": 40,
+  "items_total": 40,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "summarize.v5",
+    "fabrication.v1+render.v2+labels.v2",
+    "open_loops.v3"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "open_loop_recall",
+      "label": "Open question/commitment recall",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.95,
+      "all_items": {
+        "numerator": 92,
+        "denominator": 103,
+        "ratio": 0.8932038834951457
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "fail",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 103,
+      "failed_items": [
+        "c01.c3",
+        "c05.c4",
+        "c10.c1",
+        "c21.c1",
+        "c23.c1",
+        "c28.c1",
+        "c29.c2",
+        "c38.c1",
+        "c39.c1",
+        "c40.q1",
+        "c40.c1"
+      ],
+      "pending": 0,
+      "note": "66 open loop(s) not matched on `values` (none, or not found literally, e.g. translated): judge pre-screen only, the gate needs the owner's verdict (0 unresolved among the owner-confirmed items)"
+    },
+    {
+      "key": "caveat_presence",
+      "label": "Coverage caveat present whenever gaps exist",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 6,
+        "denominator": 6,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 6,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "spurious_caveats",
+      "label": "Caveats for gaps that lost nothing",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 40,
+        "ratio": 0.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "owner_language",
+      "label": "Owner-facing language and script correct",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 38,
+        "denominator": 40,
+        "ratio": 0.95
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "fail",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [
+        "c04",
+        "c17"
+      ],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "fabricated_facts",
+      "label": "Fabricated facts (zero allowed)",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 14,
+        "denominator": 40,
+        "ratio": 0.35
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "fail",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [
+        "c15#b143ae20",
+        "c16#b4de164c",
+        "c16#7688ce4f",
+        "c22#2f487f9a",
+        "c23#0f3b9aeb",
+        "c26#2ea85372",
+        "c27#91ae4cb4",
+        "c28#8a24e97d",
+        "c28#f756ab3c",
+        "c28#ba586a90",
+        "c31#6f295b69",
+        "c33#a8688b4a",
+        "c37#250caa18",
+        "c38#e33586d1"
+      ],
+      "pending": 14,
+      "note": "14 flagged statement(s) pending owner confirmation"
+    }
+  ],
+  "breakdowns": {
+    "open-loop recall (pre-screen) by variant": {
+      "en": {
+        "numerator": 17,
+        "denominator": 19,
+        "ratio": 0.8947368421052632
+      },
+      "ru": {
+        "numerator": 16,
+        "denominator": 18,
+        "ratio": 0.8888888888888888
+      },
+      "uz-Cyrl": {
+        "numerator": 20,
+        "denominator": 20,
+        "ratio": 1.0
+      },
+      "uz-Latn": {
+        "numerator": 21,
+        "denominator": 23,
+        "ratio": 0.9130434782608695
+      },
+      "uz-ru-mix": {
+        "numerator": 18,
+        "denominator": 23,
+        "ratio": 0.782608695652174
+      }
+    },
+    "owner-language check by variant": {
+      "en": {
+        "numerator": 8,
+        "denominator": 8,
+        "ratio": 1.0
+      },
+      "ru": {
+        "numerator": 8,
+        "denominator": 8,
+        "ratio": 1.0
+      },
+      "uz-Cyrl": {
+        "numerator": 6,
+        "denominator": 8,
+        "ratio": 0.75
+      },
+      "uz-Latn": {
+        "numerator": 8,
+        "denominator": 8,
+        "ratio": 1.0
+      },
+      "uz-ru-mix": {
+        "numerator": 8,
+        "denominator": 8,
+        "ratio": 1.0
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.0463010",
+    "calls": 116,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 116,
+        "input_tokens": 205585,
+        "output_tokens": 51485,
+        "cost_usd": "0.0463010",
+        "cost_per_100_items_usd": "0.115752500"
+      }
+    }
+  },
+  "notes": [
+    "Caveats come from the product's deterministic renderer over the harness's own synthetic gap rows, not from the model (E-d, E-p): the two caveat metrics are an ungated wiring regression check. Recall and language are measured on the per-chat summary (the summarize output), not on the owner-facing reply."
+  ],
+  "details": [
+    {
+      "id": "c01",
+      "variant": "uz-Latn",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 2,
+        "commitments": 3,
+        "decisions_requested": 1,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c01.q2": true,
+        "c01.q3": null,
+        "c01.c1": true,
+        "c01.c2": true,
+        "c01.c3": null
+      },
+      "open_loop_keys": {
+        "c01.q3": "c01.q3#1238893c",
+        "c01.c3": "c01.c3#1238893c"
+      },
+      "open_loops_judged": {
+        "c01.q3": true,
+        "c01.c3": false
+      },
+      "open_loops_evidence": {
+        "c01.q3": "- Dilnoza asks you: Nodira opalar ham keladimi va ularga kim qo‘ng‘iroq qiladi?",
+        "c01.c3": "- Dilnoza asks you (not agreed yet): Sovg‘a uchun 300 ming so‘mni naqd berish (due: 2026-10-17)\n- Sovg‘a uchun katta ro‘mol va chiroyli choynak to‘plami olish rejalashtirilgan."
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Dilnoza oyisining tug‘ilgan kunini «Gulzor» kafesida tashkil qilgan. Siz tort olib kelish va buvini olib kelishni aytgansiz; menyu tanlovi va Nodira opalarga kim qo‘ng‘iroq qilishi hali aniqlanmagan.\nNodira opalar ham keladimi va ularga kim qo‘ng‘iroq qiladi?\nSovg‘a uchun har kimdan 300 ming so‘mdan yig‘ishga rozilik bormi?\nShokoladli tortni buyurtma qilib olib kelish\nBuvini uyidan soat 18:00 da olib ketish\nSovg‘a uchun 300 ming so‘mni naqd berish 2026-10-17\nMenyu uchun osh yoki shashlikni tanlash\n«Gulzor» kafesida 17-oktabr soat 19:00 ga 12 kishilik joy band qilingan.\nKafe 600 ming so‘m oldindan to‘lov so‘ragan va to‘lov amalga oshirilgan.\nMenyu 15-oktabr soat 12:00 gacha tasdiqlanishi kerak.\nSovg‘a uchun katta ro‘mol va chiroyli choynak to‘plami olish rejalashtirilgan.\nDilnoza menyu tanlovini kutmoqda; Nodira opalarga kim qo‘ng‘iroq qilishi ham javobsiz.",
+      "summary_labelled": "Overview: Dilnoza oyisining tug‘ilgan kunini «Gulzor» kafesida tashkil qilgan. Siz tort olib kelish va buvini olib kelishni aytgansiz; menyu tanlovi va Nodira opalarga kim qo‘ng‘iroq qilishi hali aniqlanmagan.\nOpen questions to the owner:\n- Dilnoza asks you: Nodira opalar ham keladimi va ularga kim qo‘ng‘iroq qiladi?\n- Dilnoza asks you: Sovg‘a uchun har kimdan 300 ming so‘mdan yig‘ishga rozilik bormi?\nCommitments not yet done:\n- You promised Dilnoza: Shokoladli tortni buyurtma qilib olib kelish\n- You promised Dilnoza: Buvini uyidan soat 18:00 da olib ketish\n- Dilnoza asks you to (not agreed yet): Sovg‘a uchun 300 ming so‘mni naqd berish (due: 2026-10-17)\nDecisions requested from the owner:\n- Dilnoza is waiting for your decision: Menyu uchun osh yoki shashlikni tanlash\nKey facts:\n- «Gulzor» kafesida 17-oktabr soat 19:00 ga 12 kishilik joy band qilingan.\n- Kafe 600 ming so‘m oldindan to‘lov so‘ragan va to‘lov amalga oshirilgan.\n- Menyu 15-oktabr soat 12:00 gacha tasdiqlanishi kerak.\n- Sovg‘a uchun katta ro‘mol va chiroyli choynak to‘plami olish rejalashtirilgan.\nNeeds a reply from the owner: yes - Dilnoza menyu tanlovini kutmoqda; Nodira opalarga kim qo‘ng‘iroq qilishi ham javobsiz."
+    },
+    {
+      "id": "c02",
+      "variant": "uz-Latn",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 4,
+        "decisions_requested": 1,
+        "key_facts": 5
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c02.q1": true,
+        "c02.c1": null,
+        "c02.c2": true
+      },
+      "open_loop_keys": {
+        "c02.c1": "c02.c1#a09fba3c"
+      },
+      "open_loops_judged": {
+        "c02.c1": true
+      },
+      "open_loops_evidence": {
+        "c02.c1": "- Malika (ustoz) promised you: Kitobni topib berish"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Malika (ustoz) Akmalning ingliz tili darslari jadvali va shartlarini bildirdi. Birinchi dars bo‘lib o‘tdi, uyga vazifa berildi. 15-oktabrdagi darsni 16-oktabr soat 17:00 ga ko‘chirish masalasi javobsiz qolgan.\n15-oktabrdagi darsni 16-oktabr soat 17:00 ga ko‘chirish mumkinmi?\nKitobni topib berish\nOy boshida 1 million 200 ming so‘m to‘lash oy boshida\nKitob uchun 85 ming so‘mni alohida to‘lash\nAkmalga daftar va ruchka olib kelish\n15-oktabrdagi darsni 16-oktabr soat 17:00 ga ko‘chirish\nDarslar seshanba va payshanba kunlari kechki payt; har biri 1,5 soat, oyiga 8 ta dars.\nBir dars narxi 150 ming so‘m; oyiga jami 1 million 200 ming so‘m.\nDarslar Yunusobod 11-kvartal, 7-uy, 21-xonadonda, «Sevinch» supermarketi orqasida bo‘ladi.\nBirinchi dars 13-oktabr soat 16:30 da bo‘ldi.\nAkmalga uyga vazifa sifatida 20 ta yangi so‘z yodlash berildi.\nMalika (ustoz) sizdan darsni boshqa kunga ko‘chirish mumkinligini so‘radi va javobingizni kutdi.",
+      "summary_labelled": "Overview: Malika (ustoz) Akmalning ingliz tili darslari jadvali va shartlarini bildirdi. Birinchi dars bo‘lib o‘tdi, uyga vazifa berildi. 15-oktabrdagi darsni 16-oktabr soat 17:00 ga ko‘chirish masalasi javobsiz qolgan.\nOpen questions to the owner:\n- Malika (ustoz) asks you: 15-oktabrdagi darsni 16-oktabr soat 17:00 ga ko‘chirish mumkinmi?\nCommitments not yet done:\n- Malika (ustoz) promised you: Kitobni topib berish\n- Malika (ustoz) asks you to (not agreed yet): Oy boshida 1 million 200 ming so‘m to‘lash (due: oy boshida)\n- Malika (ustoz) asks you to (not agreed yet): Kitob uchun 85 ming so‘mni alohida to‘lash\n- Malika (ustoz) asks you to (not agreed yet): Akmalga daftar va ruchka olib kelish\nDecisions requested from the owner:\n- Malika (ustoz) is waiting for your decision: 15-oktabrdagi darsni 16-oktabr soat 17:00 ga ko‘chirish\nKey facts:\n- Darslar seshanba va payshanba kunlari kechki payt; har biri 1,5 soat, oyiga 8 ta dars.\n- Bir dars narxi 150 ming so‘m; oyiga jami 1 million 200 ming so‘m.\n- Darslar Yunusobod 11-kvartal, 7-uy, 21-xonadonda, «Sevinch» supermarketi orqasida bo‘ladi.\n- Birinchi dars 13-oktabr soat 16:30 da bo‘ldi.\n- Akmalga uyga vazifa sifatida 20 ta yangi so‘z yodlash berildi.\nNeeds a reply from the owner: yes - Malika (ustoz) sizdan darsni boshqa kunga ko‘chirish mumkinligini so‘radi va javobingizni kutdi."
+    },
+    {
+      "id": "c03",
+      "variant": "uz-Cyrl",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 2,
+        "commitments": 1,
+        "decisions_requested": 1,
+        "key_facts": 7
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c03.q2": null
+      },
+      "open_loop_keys": {
+        "c03.q2": "c03.q2#2310700b"
+      },
+      "open_loops_judged": {
+        "c03.q2": true
+      },
+      "open_loops_evidence": {
+        "c03.q2": "- Рустам амаки asks you: Shanba yoki yakshanba tomni ko‘rishga qachon kelasiz?"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 0.978,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Рустам амаки qishloqdagi uyning tomi oqayotgani va ta’miri uchun mablag‘ kerakligini aytdi. Siz 2 million so‘m yubordingiz; pul yetkazilgani tasdiqlandi. Tomni ko‘rishga borish va eski shiferni sotish masalalari ochiq qolgan.\nShanba yoki yakshanba tomni ko‘rishga qachon kelasiz?\nEski shiferni 300 ming so‘mga sotish mumkinmi?\nTomni ko‘rishga borish shanba yoki yakshanba\nEski shiferni 300 ming so‘mga sotish\nQishloqdagi uyning tomi oqib, yomg‘irda oshxonaga suv tushgan.\nUsta Hamid tomni to‘liq yangilash, шифер va ish haqi bilan jami 6 million so‘m bo‘lishini aytgan.\n4 million so‘m topilgan.\nUsta 14-oktabr, chorshanba kuni ish boshlashini va uch kunda tugatishini aytgan.\n2 million so‘m Dilshod orqali yuborilgan va 9-oktabrda to‘liq yetkazilgan.\nEski shiferni Shavkat 300 ming so‘mga olmoqchi.\nAmma ham yordam berishini aytgan.\nSo‘nggi xabar pul yetkazilgani uchun rahmat aytadi; javob talab qilmaydi.",
+      "summary_labelled": "Overview: Рустам амаки qishloqdagi uyning tomi oqayotgani va ta’miri uchun mablag‘ kerakligini aytdi. Siz 2 million so‘m yubordingiz; pul yetkazilgani tasdiqlandi. Tomni ko‘rishga borish va eski shiferni sotish masalalari ochiq qolgan.\nOpen questions to the owner:\n- Рустам амаки asks you: Shanba yoki yakshanba tomni ko‘rishga qachon kelasiz?\n- Рустам амаки asks you: Eski shiferni 300 ming so‘mga sotish mumkinmi?\nCommitments not yet done:\n- Рустам амаки asks you to (not agreed yet): Tomni ko‘rishga borish (due: shanba yoki yakshanba)\nDecisions requested from the owner:\n- Рустам амаки is waiting for your decision: Eski shiferni 300 ming so‘mga sotish\nKey facts:\n- Qishloqdagi uyning tomi oqib, yomg‘irda oshxonaga suv tushgan.\n- Usta Hamid tomni to‘liq yangilash, шифер va ish haqi bilan jami 6 million so‘m bo‘lishini aytgan.\n- 4 million so‘m topilgan.\n- Usta 14-oktabr, chorshanba kuni ish boshlashini va uch kunda tugatishini aytgan.\n- 2 million so‘m Dilshod orqali yuborilgan va 9-oktabrda to‘liq yetkazilgan.\n- Eski shiferni Shavkat 300 ming so‘mga olmoqchi.\n- Amma ham yordam berishini aytgan.\nNeeds a reply from the owner: no - So‘nggi xabar pul yetkazilgani uchun rahmat aytadi; javob talab qilmaydi."
+    },
+    {
+      "id": "c04",
+      "variant": "uz-Cyrl",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 3,
+        "decisions_requested": 0,
+        "key_facts": 5
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c04.q1": true,
+        "c04.c1": true,
+        "c04.c2": null
+      },
+      "open_loop_keys": {
+        "c04.c2": "c04.c2#af768790"
+      },
+      "open_loops_judged": {
+        "c04.c2": true
+      },
+      "open_loops_evidence": {
+        "c04.c2": "You promised Мавлуда хола: Стулларни маҳалладан суриштириш ва натижасини айтиш (due: 2026-10-10 кечқурун)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": false,
+      "language_detected": "uz",
+      "script_share": 0.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Мавлуда хола Сардорбекнинг тўйи ҳақида маълумот берди ва сиздан бир нечта ёрдамни сўради. Сиз стуллар бўйича суриштириб, кечқурун хабар беришингизни айтдингиз; бу масала ҳали очиқ.\n20 та стул масаласи нима бўлди?\nСтулларни маҳалладан суриштириш ва натижасини айтиш 2026-10-10 кечқурун\nОнасига 5-ноябр куни келиб сомса ёпишга ёрдам беришини айтиш 5-ноябр\nДилнозага эри келин томонни машинада олиб келишини айтиш\nСардорбекнинг тўйи 7-ноябр, шанба куни белгиланган; ош эрталаб соат 7 да, тўй кечқурун 18:00 да.\nТўйхона «Олтин водий», Сергели, Гулбахор кўчаси 12; таклифнома кейин берилади.\nОшга эртароқ келиб хизматда туриш сўралган; сиз ошга соат 6:00 да боришингизни айтгансиз.\n20 та стул кераклиги айтилган.\nДилнозанинг эри келин томонни машинада олиб келишга келишилгани айтилган.\nМавлуда хола стуллар масаласи бўйича натижани сўраган, жавоб берилмаган.",
+      "summary_labelled": "Overview: Мавлуда хола Сардорбекнинг тўйи ҳақида маълумот берди ва сиздан бир нечта ёрдамни сўради. Сиз стуллар бўйича суриштириб, кечқурун хабар беришингизни айтдингиз; бу масала ҳали очиқ.\nOpen questions to the owner:\n- Мавлуда хола asks you: 20 та стул масаласи нима бўлди?\nCommitments not yet done:\n- You promised Мавлуда хола: Стулларни маҳалладан суриштириш ва натижасини айтиш (due: 2026-10-10 кечқурун)\n- Мавлуда хола asks you to (not agreed yet): Онасига 5-ноябр куни келиб сомса ёпишга ёрдам беришини айтиш (due: 5-ноябр)\n- Мавлуда хола asks you to (not agreed yet): Дилнозага эри келин томонни машинада олиб келишини айтиш\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Сардорбекнинг тўйи 7-ноябр, шанба куни белгиланган; ош эрталаб соат 7 да, тўй кечқурун 18:00 да.\n- Тўйхона «Олтин водий», Сергели, Гулбахор кўчаси 12; таклифнома кейин берилади.\n- Ошга эртароқ келиб хизматда туриш сўралган; сиз ошга соат 6:00 да боришингизни айтгансиз.\n- 20 та стул кераклиги айтилган.\n- Дилнозанинг эри келин томонни машинада олиб келишга келишилгани айтилган.\nNeeds a reply from the owner: yes - Мавлуда хола стуллар масаласи бўйича натижани сўраган, жавоб берилмаган."
+    },
+    {
+      "id": "c05",
+      "variant": "uz-ru-mix",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 6,
+        "decisions_requested": 1,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c05.q3": true,
+        "c05.c1": true,
+        "c05.c2": true,
+        "c05.c3": null,
+        "c05.c4": null
+      },
+      "open_loop_keys": {
+        "c05.c3": "c05.c3#0af7c12d",
+        "c05.c4": "c05.c4#0af7c12d"
+      },
+      "open_loops_judged": {
+        "c05.c3": true,
+        "c05.c4": false
+      },
+      "open_loops_evidence": {
+        "c05.c3": "Siz va’dangizni bajarmadingiz: Palatk a olib kelish",
+        "c05.c4": "Timur asks you to (not agreed yet): Pulni Timur kartasiga o‘tkazish (due: 2026-10-23)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Timur Zominga shanba kuni borishni taklif qildi, safar va xarajatlar muhokama qilindi. Siz borishingizni, ovqatni olib kelishingizni va palatkani olib kelishingizni aytdingiz.\nShanba kuni ertalab Zominga borish 2026-10-24\nOvqatni olish\nJuma kuni Chorsudan 5 kg go‘sht olish 2026-10-23\n2 kg tovuq olish\nPalatk a olib kelish\nPulni Timur kartasiga o‘tkazish 2026-10-23\nJasurni safarga qo‘shish\nShanba kuni soat 06:00 da Chilonzor metrosi oldida yig‘ilish rejalashtirilgan.\nMashina Cobalt bo‘lib, 2 kunga ijarasi 900 ming turadi.\nDacha 2 kechaga 1 million 500 mingga band qilingan; 4 kishiga bo‘linsa, har biriga 600 mingdan to‘g‘ri keladi.\nJasur qo‘shilsa, har bir kishiga 480 mingdan to‘g‘ri keladi; u yakshanba kechqurun qaytishi kerak.\nTimur Jasurni safarga qo‘shish mumkinmi, deb so‘radi.",
+      "summary_labelled": "Overview: Timur Zominga shanba kuni borishni taklif qildi, safar va xarajatlar muhokama qilindi. Siz borishingizni, ovqatni olib kelishingizni va palatkani olib kelishingizni aytdingiz.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- You promised Timur: Shanba kuni ertalab Zominga borish (due: 2026-10-24)\n- You promised Timur: Ovqatni olish\n- You promised Timur: Juma kuni Chorsudan 5 kg go‘sht olish (due: 2026-10-23)\n- Timur asks you to (not agreed yet): 2 kg tovuq olish\n- You promised Timur: Palatk a olib kelish\n- Timur asks you to (not agreed yet): Pulni Timur kartasiga o‘tkazish (due: 2026-10-23)\nDecisions requested from the owner:\n- Timur is waiting for your decision: Jasurni safarga qo‘shish\nKey facts:\n- Shanba kuni soat 06:00 da Chilonzor metrosi oldida yig‘ilish rejalashtirilgan.\n- Mashina Cobalt bo‘lib, 2 kunga ijarasi 900 ming turadi.\n- Dacha 2 kechaga 1 million 500 mingga band qilingan; 4 kishiga bo‘linsa, har biriga 600 mingdan to‘g‘ri keladi.\n- Jasur qo‘shilsa, har bir kishiga 480 mingdan to‘g‘ri keladi; u yakshanba kechqurun qaytishi kerak.\nNeeds a reply from the owner: yes - Timur Jasurni safarga qo‘shish mumkinmi, deb so‘radi."
+    },
+    {
+      "id": "c06",
+      "variant": "uz-ru-mix",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 2,
+        "decisions_requested": 1,
+        "key_facts": 6
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c06.c1": null,
+        "c06.c2": null
+      },
+      "open_loop_keys": {
+        "c06.c1": "c06.c1#d6d4876f",
+        "c06.c2": "c06.c2#d6d4876f"
+      },
+      "open_loops_judged": {
+        "c06.c1": true,
+        "c06.c2": true
+      },
+      "open_loops_evidence": {
+        "c06.c1": "You promised Anvar (hamkasb): Oylik hisobotni tugatish (due: 2026-10-16)",
+        "c06.c2": "You promised Anvar (hamkasb): Rahbar bilan gaplashib, Anvarga yozish (due: 2026-10-15)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Anvar (hamkasb) «Navbahor» loyihasini sizga topshirdi. Uchrashuv, hisobot va mijoz so‘ragan chegirma masalasi muhokama qilindi; fayllar umumiy papkaga ko‘chirildi.\nOylik hisobotni tugatish 2026-10-16\nRahbar bilan gaplashib, Anvarga yozish 2026-10-15\nMijoz so‘ragan 10% chegirmaga javob\n«Navbahor» loyihasi topshirildi; ta’til 2 haftaga ertadan boshlanadi.\nMijoz bilan uchrashuv 19-oktabr, dushanba kuni soat 10:00 da; prezentatsiya umumiy papkada tayyor.\nMijoz vakili Shahlo Karimova, telefon +998 90 000 00 12.\nHisobotning 80% tayyor; qolgan qismi xarajatlar jadvali. Cheklar buxgalteriyada, Zulfiya opada.\nMijoz 10% chegirma so‘ragan; javob dushanbagacha berilishi kerak.\nFayllar umumiy papkaga ko‘chirildi; papka nomi «Navbahor_topshirish».\nAnvarning so‘nggi xabari fayllar ko‘chirilgani haqidagi ma’lumot va xayrlashuvdan iborat.",
+      "summary_labelled": "Overview: Anvar (hamkasb) «Navbahor» loyihasini sizga topshirdi. Uchrashuv, hisobot va mijoz so‘ragan chegirma masalasi muhokama qilindi; fayllar umumiy papkaga ko‘chirildi.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- You promised Anvar (hamkasb): Oylik hisobotni tugatish (due: 2026-10-16)\n- You promised Anvar (hamkasb): Rahbar bilan gaplashib, Anvarga yozish (due: 2026-10-15)\nDecisions requested from the owner:\n- Anvar (hamkasb) is waiting for your decision: Mijoz so‘ragan 10% chegirmaga javob\nKey facts:\n- «Navbahor» loyihasi topshirildi; ta’til 2 haftaga ertadan boshlanadi.\n- Mijoz bilan uchrashuv 19-oktabr, dushanba kuni soat 10:00 da; prezentatsiya umumiy papkada tayyor.\n- Mijoz vakili Shahlo Karimova, telefon +998 90 000 00 12.\n- Hisobotning 80% tayyor; qolgan qismi xarajatlar jadvali. Cheklar buxgalteriyada, Zulfiya opada.\n- Mijoz 10% chegirma so‘ragan; javob dushanbagacha berilishi kerak.\n- Fayllar umumiy papkaga ko‘chirildi; papka nomi «Navbahor_topshirish».\nNeeds a reply from the owner: no - Anvarning so‘nggi xabari fayllar ko‘chirilgani haqidagi ma’lumot va xayrlashuvdan iborat."
+    },
+    {
+      "id": "c07",
+      "variant": "ru",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 3,
+        "decisions_requested": 1,
+        "key_facts": 6
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c07.q2": null,
+        "c07.c1": null,
+        "c07.c2": null,
+        "c07.c3": null
+      },
+      "open_loop_keys": {
+        "c07.q2": "c07.q2#d2496c79",
+        "c07.c1": "c07.c1#d2496c79",
+        "c07.c2": "c07.c2#d2496c79",
+        "c07.c3": "c07.c3#d2496c79"
+      },
+      "open_loops_judged": {
+        "c07.q2": true,
+        "c07.c1": true,
+        "c07.c2": true,
+        "c07.c3": true
+      },
+      "open_loops_evidence": {
+        "c07.q2": "- Ольга Петровна asks you: Oktyabr uchun ijara to‘lovi o‘tkazildimi?",
+        "c07.c1": "- You promised Ольга Петровна: Oktyabr ijara to‘lovini o‘tkazish. (due: juma kunigacha)",
+        "c07.c2": "- Agreed with Ольга Петровна: you will do it: Kalitni 12-xonadondagi Натальяга qoldirish.",
+        "c07.c3": "- You promised Ольга Петровна: Ijara shartnomasini uzaytirish haqida javob berish. (due: oy oxirigacha)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 0.923,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Ольга Петровна oktyabr ijara to‘lovi, oshxonadagi kranni almashtirish va ijara shartnomasini uzaytirish masalasini yozdi. Siz to‘lovni juma kunigacha o‘tkazishingizni va shartnomani uzaytirish haqida oy oxirigacha javob berishingizni aytdingiz. Santexnik ishni bajardi, xarajatni Ольга Петровна to‘ladi; u oktyabr to‘lovi kelib tushmaganini bildirdi.\nOktyabr uchun ijara to‘lovi o‘tkazildimi?\nOktyabr ijara to‘lovini o‘tkazish. juma kunigacha\nKalitni 12-xonadondagi Натальяга qoldirish.\nIjara shartnomasini uzaytirish haqida javob berish. oy oxirigacha\nShartnomani keyingi yilga uzaytirish yoki uzaytirmaslik.\nOktyabr ijara haqi 4 500 000 so‘m; to‘lov 10-oktabrgacha, o‘tkazma yoki naqd pul bilan.\nSantexnik 8-oktabr kuni 11:00 dan 13:00 gacha oshxonadagi kranni almashtirishi rejalashtirilgan edi.\nSantexnik kranni almashtirdi; 350 000 so‘mlik hisobni Ольга Петровна o‘zi to‘ladi va bu summani ayirib tashlash kerak emasligini aytdi.\nShartnoma 30-noyabrda tugaydi; uzaytirish bo‘yicha javob 1-noyabrgacha kerak.\nDekabrdan ijara haqi 5 000 000 so‘m bo‘ladi.\nОльга Петровна oktyabr ijara to‘lovi hali kelib tushmaganini bildirdi.\nОльга Петровна oktyabr to‘lovi o‘tkazilgan-o‘tkazilmaganini so‘radi.",
+      "summary_labelled": "Overview: Ольга Петровна oktyabr ijara to‘lovi, oshxonadagi kranni almashtirish va ijara shartnomasini uzaytirish masalasini yozdi. Siz to‘lovni juma kunigacha o‘tkazishingizni va shartnomani uzaytirish haqida oy oxirigacha javob berishingizni aytdingiz. Santexnik ishni bajardi, xarajatni Ольга Петровна to‘ladi; u oktyabr to‘lovi kelib tushmaganini bildirdi.\nOpen questions to the owner:\n- Ольга Петровна asks you: Oktyabr uchun ijara to‘lovi o‘tkazildimi?\nCommitments not yet done:\n- You promised Ольга Петровна: Oktyabr ijara to‘lovini o‘tkazish. (due: juma kunigacha)\n- Agreed with Ольга Петровна: you will do it: Kalitni 12-xonadondagi Натальяга qoldirish.\n- You promised Ольга Петровна: Ijara shartnomasini uzaytirish haqida javob berish. (due: oy oxirigacha)\nDecisions requested from the owner:\n- Ольга Петровна is waiting for your decision: Shartnomani keyingi yilga uzaytirish yoki uzaytirmaslik.\nKey facts:\n- Oktyabr ijara haqi 4 500 000 so‘m; to‘lov 10-oktabrgacha, o‘tkazma yoki naqd pul bilan.\n- Santexnik 8-oktabr kuni 11:00 dan 13:00 gacha oshxonadagi kranni almashtirishi rejalashtirilgan edi.\n- Santexnik kranni almashtirdi; 350 000 so‘mlik hisobni Ольга Петровна o‘zi to‘ladi va bu summani ayirib tashlash kerak emasligini aytdi.\n- Shartnoma 30-noyabrda tugaydi; uzaytirish bo‘yicha javob 1-noyabrgacha kerak.\n- Dekabrdan ijara haqi 5 000 000 so‘m bo‘ladi.\n- Ольга Петровна oktyabr ijara to‘lovi hali kelib tushmaganini bildirdi.\nNeeds a reply from the owner: yes - Ольга Петровна oktyabr to‘lovi o‘tkazilgan-o‘tkazilmaganini so‘radi."
+    },
+    {
+      "id": "c08",
+      "variant": "ru",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 3,
+        "commitments": 3,
+        "decisions_requested": 0,
+        "key_facts": 3
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c08.q2": true,
+        "c08.q3": null,
+        "c08.q4": null,
+        "c08.c1": null
+      },
+      "open_loop_keys": {
+        "c08.q3": "c08.q3#8fea6425",
+        "c08.q4": "c08.q4#8fea6425",
+        "c08.c1": "c08.c1#8fea6425"
+      },
+      "open_loops_judged": {
+        "c08.q3": true,
+        "c08.q4": true,
+        "c08.c1": true
+      },
+      "open_loops_evidence": {
+        "c08.q3": "- Ирина asks you: Asal shisha bankada bo‘ladimi?\n- Ирина asks you to (not agreed yet): Asalni shisha bankada berish",
+        "c08.q4": "- Ирина asks you: Buyurtma ertaga ham kuchdami?\nNeeds a reply from the owner: yes - Irina buyurtma ertaga ham kuchdaligini so‘rab, javob kutmoqda.",
+        "c08.c1": "- Agreed with Ирина: you will do it: 2 kg quritilgan o‘rik va 1 kg asalni Yunusobod, 14-kvartal, 22-uy, 15-xonadonga yetkazish (due: 2026-10-14 18:00–20:00)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Siz va Irina quritilgan o‘rik hamda asal buyurtmasi va yetkazib berish vaqtini kelishdingiz. Irinaning 14-oktabr kuni buyurtma hali ham kuchdaligini tasdiqlashingiz kerak.\nKuryerda 500 000 so‘mdan qaytim bo‘ladimi?\nAsal shisha bankada bo‘ladimi?\nBuyurtma ertaga ham kuchdami?\n2 kg quritilgan o‘rik va 1 kg asalni Yunusobod, 14-kvartal, 22-uy, 15-xonadonga yetkazish 2026-10-14 18:00–20:00\nYetkazishdan 15 daqiqa oldin +998 90 000 00 31 raqamiga qo‘ng‘iroq qilish\nAsalni shisha bankada berish\nQuritilgan o‘rikning narxi 1 kg uchun 120 000 so‘m, tog‘ asalining narxi 1 kg uchun 150 000 so‘m; shahar bo‘ylab yetkazish 25 000 so‘m, jami 415 000 so‘m.\nYetkazish manzili: Yunusobod, 14-kvartal, 22-uy, 15-xonadon; 3-qavat, domofon 15.\nTo‘lov naqd pul bilan bo‘ladi.\nIrina buyurtma ertaga ham kuchdaligini so‘rab, javob kutmoqda.",
+      "summary_labelled": "Overview: Siz va Irina quritilgan o‘rik hamda asal buyurtmasi va yetkazib berish vaqtini kelishdingiz. Irinaning 14-oktabr kuni buyurtma hali ham kuchdaligini tasdiqlashingiz kerak.\nOpen questions to the owner:\n- Ирина asks you: Kuryerda 500 000 so‘mdan qaytim bo‘ladimi?\n- Ирина asks you: Asal shisha bankada bo‘ladimi?\n- Ирина asks you: Buyurtma ertaga ham kuchdami?\nCommitments not yet done:\n- Agreed with Ирина: you will do it: 2 kg quritilgan o‘rik va 1 kg asalni Yunusobod, 14-kvartal, 22-uy, 15-xonadonga yetkazish (due: 2026-10-14 18:00–20:00)\n- Ирина asks you to (not agreed yet): Yetkazishdan 15 daqiqa oldin +998 90 000 00 31 raqamiga qo‘ng‘iroq qilish\n- Ирина asks you to (not agreed yet): Asalni shisha bankada berish\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Quritilgan o‘rikning narxi 1 kg uchun 120 000 so‘m, tog‘ asalining narxi 1 kg uchun 150 000 so‘m; shahar bo‘ylab yetkazish 25 000 so‘m, jami 415 000 so‘m.\n- Yetkazish manzili: Yunusobod, 14-kvartal, 22-uy, 15-xonadon; 3-qavat, domofon 15.\n- To‘lov naqd pul bilan bo‘ladi.\nNeeds a reply from the owner: yes - Irina buyurtma ertaga ham kuchdaligini so‘rab, javob kutmoqda."
+    },
+    {
+      "id": "c09",
+      "variant": "uz-Latn",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 2,
+        "commitments": 1,
+        "decisions_requested": 0,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c09.q1": null,
+        "c09.q2": null,
+        "c09.c1": null
+      },
+      "open_loop_keys": {
+        "c09.q1": "c09.q1#ff443fa9",
+        "c09.q2": "c09.q2#ff443fa9",
+        "c09.c1": "c09.c1#ff443fa9"
+      },
+      "open_loops_judged": {
+        "c09.q1": true,
+        "c09.q2": true,
+        "c09.c1": true
+      },
+      "open_loops_evidence": {
+        "c09.q1": "- Kamola asks you: To‘lovni naqd berish kerakmi yoki kartaga o‘tkazish mumkinmi?",
+        "c09.q2": "- Kamola asks you: Yong‘oq chaqilganmi yoki po‘chog‘i bilanmi?",
+        "c09.c1": "- You promised Kamola: 1 kg o‘rik va 2 kg yong‘oqni yetkazib berish. (due: 2026-10-21 soat 14:00 dan 17:00 gacha)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 1,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Kamola quritilgan o‘rik va yong‘oq buyurtma qildi. Siz yetkazib berish shartlari va narxni aytdingiz; manzil hamda telefon raqami berildi.\nTo‘lovni naqd berish kerakmi yoki kartaga o‘tkazish mumkinmi?\nYong‘oq chaqilganmi yoki po‘chog‘i bilanmi?\n1 kg o‘rik va 2 kg yong‘oqni yetkazib berish. 2026-10-21 soat 14:00 dan 17:00 gacha\nO‘rik 1 kg uchun 110 ming so‘m, yong‘oq 1 kg uchun 140 ming so‘m; jami 390 ming so‘m, yetkazib berish bepul.\nYetkazib berish manzili: Mirzo Ulug‘bek tumani, Qorasuv-3 mavzesi, 17-uy, 45-xonadon; mo‘ljal — 64-maktab yonida.\nTo‘g‘ri telefon raqami: +998 90 000 00 47.\nUyda 13:00 dan keyin bo‘ladi; undan oldin kelmaslik so‘ralgan.\nKamola to‘lov usuli va yong‘oq po‘chog‘i bor-yo‘qligi haqida javob kutyapti.",
+      "summary_labelled": "Overview: Kamola quritilgan o‘rik va yong‘oq buyurtma qildi. Siz yetkazib berish shartlari va narxni aytdingiz; manzil hamda telefon raqami berildi.\nOpen questions to the owner:\n- Kamola asks you: To‘lovni naqd berish kerakmi yoki kartaga o‘tkazish mumkinmi?\n- Kamola asks you: Yong‘oq chaqilganmi yoki po‘chog‘i bilanmi?\nCommitments not yet done:\n- You promised Kamola: 1 kg o‘rik va 2 kg yong‘oqni yetkazib berish. (due: 2026-10-21 soat 14:00 dan 17:00 gacha)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- O‘rik 1 kg uchun 110 ming so‘m, yong‘oq 1 kg uchun 140 ming so‘m; jami 390 ming so‘m, yetkazib berish bepul.\n- Yetkazib berish manzili: Mirzo Ulug‘bek tumani, Qorasuv-3 mavzesi, 17-uy, 45-xonadon; mo‘ljal — 64-maktab yonida.\n- To‘g‘ri telefon raqami: +998 90 000 00 47.\n- Uyda 13:00 dan keyin bo‘ladi; undan oldin kelmaslik so‘ralgan.\nNeeds a reply from the owner: yes - Kamola to‘lov usuli va yong‘oq po‘chog‘i bor-yo‘qligi haqida javob kutyapti."
+    },
+    {
+      "id": "c10",
+      "variant": "uz-Latn",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 4,
+        "decisions_requested": 0,
+        "key_facts": 2
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c10.q2": null,
+        "c10.c1": null,
+        "c10.c2": null
+      },
+      "open_loop_keys": {
+        "c10.q2": "c10.q2#91e74d7f",
+        "c10.c1": "c10.c1#91e74d7f",
+        "c10.c2": "c10.c2#91e74d7f"
+      },
+      "open_loops_judged": {
+        "c10.q2": true,
+        "c10.c1": false,
+        "c10.c2": true
+      },
+      "open_loops_evidence": {
+        "c10.q2": "- Sherzod asks you: Drelingizni bir kunga berib tura olasizmi?",
+        "c10.c1": "- You promised Sherzod: Futbol maydoni uchun 40 ming to‘lash (due: 2026-10-18)",
+        "c10.c2": "- Agreed with Sherzod: you will do it: O‘tgan oy olingan 500 mingni qaytarish (due: 2026-10-28)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Siz Sherzod bilan futbolga borish va avvalgi qarzni qaytarish haqida kelishdingiz. Sherzod drelingizni bir kunga so‘radi, ammo bu masala hali hal bo‘lmadi.\nDrelingizni bir kunga berib tura olasizmi?\nFutbolga borish 2026-10-18, soat 9:00\nFutbol maydoni uchun 40 ming to‘lash 2026-10-18\nO‘tgan oy olingan 500 mingni qaytarish 2026-10-28\nDrelingizni bir kunga berib turish 2026-10-17\nFutbol Tinçlik stadionida bo‘ladi; maydon ijarasi 400 ming, 10 kishiga bo‘linganda har bir kishiga 40 mingdan to‘g‘ri keladi.\nDrelingizni olish uchun Sherzodning o‘g‘li 2026-10-17 kuni ertalab soat 10 lar atrofida borishi aytilgan.\nSherzod drelingiz masalasi bo‘yicha javob kutmoqda.",
+      "summary_labelled": "Overview: Siz Sherzod bilan futbolga borish va avvalgi qarzni qaytarish haqida kelishdingiz. Sherzod drelingizni bir kunga so‘radi, ammo bu masala hali hal bo‘lmadi.\nOpen questions to the owner:\n- Sherzod asks you: Drelingizni bir kunga berib tura olasizmi?\nCommitments not yet done:\n- Agreed with Sherzod: you will do it: Futbolga borish (due: 2026-10-18, soat 9:00)\n- You promised Sherzod: Futbol maydoni uchun 40 ming to‘lash (due: 2026-10-18)\n- Agreed with Sherzod: you will do it: O‘tgan oy olingan 500 mingni qaytarish (due: 2026-10-28)\n- Sherzod asks you to (not agreed yet): Drelingizni bir kunga berib turish (due: 2026-10-17)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Futbol Tinçlik stadionida bo‘ladi; maydon ijarasi 400 ming, 10 kishiga bo‘linganda har bir kishiga 40 mingdan to‘g‘ri keladi.\n- Drelingizni olish uchun Sherzodning o‘g‘li 2026-10-17 kuni ertalab soat 10 lar atrofida borishi aytilgan.\nNeeds a reply from the owner: yes - Sherzod drelingiz masalasi bo‘yicha javob kutmoqda."
+    },
+    {
+      "id": "c11",
+      "variant": "uz-Latn",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 3,
+        "decisions_requested": 1,
+        "key_facts": 3
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c11.q2": true,
+        "c11.c1": true,
+        "c11.c2": true
+      },
+      "open_loop_keys": {},
+      "open_loops_judged": {},
+      "open_loops_evidence": {},
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Siz Nilufar opa (rahbar) bilan choraklik reja bo‘yicha uchrashuv vaqtini kelishdingiz. Uchrashuvga tayyorlab olib boriladigan materiallar va stajyorning kompyuter so‘rovini kim imzolashi masalasi muhokama qilindi.\nUchrashuvga borish 2026-10-22\nSentyabr oyidagi savdo raqamlarini olib kelish 2026-10-22\nJadvalni 3 nusxada chop etib kelish 2026-10-22\nYangi stajyorning kompyuter so‘rovini kim imzolashi: sizmi yoki Nilufar opa (rahbar)mi?\nChoraklik reja bo‘yicha uchrashuv 22-oktabr, payshanba kuni soat 14:30 da, ofisning 3-qavatidagi kichik majlislar zalida belgilangan.\nJavlon ham qatnashadi va marketing rejasini taqdim etadi.\nYangi stajyorning kompyuter so‘rovini bugun soat 18:00 gacha ta’minot bo‘limiga topshirish kerak.\nImzolash bo‘yicha qaroringiz kutilmoqda; so‘rov bugun soat 18:00 gacha topshirilishi kerak.",
+      "summary_labelled": "Overview: Siz Nilufar opa (rahbar) bilan choraklik reja bo‘yicha uchrashuv vaqtini kelishdingiz. Uchrashuvga tayyorlab olib boriladigan materiallar va stajyorning kompyuter so‘rovini kim imzolashi masalasi muhokama qilindi.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- You promised Nilufar opa (rahbar): Uchrashuvga borish (due: 2026-10-22)\n- Nilufar opa (rahbar) asks you to (not agreed yet): Sentyabr oyidagi savdo raqamlarini olib kelish (due: 2026-10-22)\n- Nilufar opa (rahbar) asks you to (not agreed yet): Jadvalni 3 nusxada chop etib kelish (due: 2026-10-22)\nDecisions requested from the owner:\n- Nilufar opa (rahbar) is waiting for your decision: Yangi stajyorning kompyuter so‘rovini kim imzolashi: sizmi yoki Nilufar opa (rahbar)mi?\nKey facts:\n- Choraklik reja bo‘yicha uchrashuv 22-oktabr, payshanba kuni soat 14:30 da, ofisning 3-qavatidagi kichik majlislar zalida belgilangan.\n- Javlon ham qatnashadi va marketing rejasini taqdim etadi.\n- Yangi stajyorning kompyuter so‘rovini bugun soat 18:00 gacha ta’minot bo‘limiga topshirish kerak.\nNeeds a reply from the owner: yes - Imzolash bo‘yicha qaroringiz kutilmoqda; so‘rov bugun soat 18:00 gacha topshirilishi kerak."
+    },
+    {
+      "id": "c12",
+      "variant": "uz-Latn",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 2,
+        "commitments": 3,
+        "decisions_requested": 0,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c12.q1": null,
+        "c12.q2": null
+      },
+      "open_loop_keys": {
+        "c12.q1": "c12.q1#62d94b80",
+        "c12.q2": "c12.q2#62d94b80"
+      },
+      "open_loops_judged": {
+        "c12.q1": true,
+        "c12.q2": true
+      },
+      "open_loops_evidence": {
+        "c12.q1": "- Sanjar asks you: Sovg‘a sifatida chiroyli qadoqlab berish mumkinmi?",
+        "c12.q2": "- Sanjar asks you: Qadoqlash bilan birga umumiy narx qancha?\n- Sanjar asks you to (not agreed yet): Hisob-faktura taqdim etish\n- To‘lov kompaniya hisobidan o‘tkaziladi."
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Sanjar korporativ tadbir uchun asal buyurtirmoqchi: 10 ta 500 grammlik banka kerak. Siz tog‘ asalining 1 kg narxini 150 ming so‘m deb aytdingiz; qadoqlash va yakuniy narx hali aniqlashtirilmagan.\nSovg‘a sifatida chiroyli qadoqlab berish mumkinmi?\nQadoqlash bilan birga umumiy narx qancha?\n10 ta 500 grammlik bankani sovg‘a sifatida chiroyli qadoqlash\n50% chegirma berilganini tasdiqlash\nHisob-faktura taqdim etish\nTog‘ asalining 1 kg narxi 150 ming so‘m.\n10 ta 500 grammlik banka kerak.\nTadbir 30-oktabrda; buyurtma 29-oktabrgacha tayyor bo‘lishi kerak.\nTo‘lov kompaniya hisobidan o‘tkaziladi.\nSizdan qadoqlash imkoniyati va umumiy narx haqida javob kutilmoqda.",
+      "summary_labelled": "Overview: Sanjar korporativ tadbir uchun asal buyurtirmoqchi: 10 ta 500 grammlik banka kerak. Siz tog‘ asalining 1 kg narxini 150 ming so‘m deb aytdingiz; qadoqlash va yakuniy narx hali aniqlashtirilmagan.\nOpen questions to the owner:\n- Sanjar asks you: Sovg‘a sifatida chiroyli qadoqlab berish mumkinmi?\n- Sanjar asks you: Qadoqlash bilan birga umumiy narx qancha?\nCommitments not yet done:\n- Sanjar asks you to (not agreed yet): 10 ta 500 grammlik bankani sovg‘a sifatida chiroyli qadoqlash\n- Sanjar asks you to (not agreed yet): 50% chegirma berilganini tasdiqlash\n- Sanjar asks you to (not agreed yet): Hisob-faktura taqdim etish\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Tog‘ asalining 1 kg narxi 150 ming so‘m.\n- 10 ta 500 grammlik banka kerak.\n- Tadbir 30-oktabrda; buyurtma 29-oktabrgacha tayyor bo‘lishi kerak.\n- To‘lov kompaniya hisobidan o‘tkaziladi.\nNeeds a reply from the owner: yes - Sizdan qadoqlash imkoniyati va umumiy narx haqida javob kutilmoqda."
+    },
+    {
+      "id": "c13",
+      "variant": "uz-Latn",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 2,
+        "decisions_requested": 1,
+        "key_facts": 2
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c13.q1": true,
+        "c13.c1": null
+      },
+      "open_loop_keys": {
+        "c13.c1": "c13.c1#44fbc51b"
+      },
+      "open_loops_judged": {
+        "c13.c1": true
+      },
+      "open_loops_evidence": {
+        "c13.c1": "Siz xarajatning yarmini berishga rozi bo‘lgansiz;"
+      },
+      "caveats_expected": 1,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [
+        "c13.g1"
+      ],
+      "caveat_pre_connection": false,
+      "caveat_lines": 1,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 0.986,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Jahongir mashinani ta’mirlatgan: xodovoyni almashtirish va ehtiyot qismlar 2 million 300 ming so‘m bo‘lgan. Siz xarajatning yarmini berishga rozi bo‘lgansiz; mashina tayyor bo‘lib, Jahongir uni olib ketgan.\n1 million 150 ming so‘mni dushanba kuni ustaga berish yoki Jahongirga o‘tkazish kerakmi?\nTa’mirlash xarajatining yarmini to‘lash\n1 million 150 ming so‘mni dushanba kuni ustaga berish yoki Jahongirga o‘tkazish dushanba\n1 million 150 ming so‘mni ustaga berish yoki Jahongirga o‘tkazish\nXodovoyni almashtirish va ehtiyot qismlar 2 million 300 ming so‘m turadi.\nMashina tayyor bo‘lib, Jahongir uni olib ketgan; usta 3 oy kafolat bergan.\nJahongir 1 million 150 ming so‘mni qanday to‘lashыгizni асуган.",
+      "summary_labelled": "Overview: Jahongir mashinani ta’mirlatgan: xodovoyni almashtirish va ehtiyot qismlar 2 million 300 ming so‘m bo‘lgan. Siz xarajatning yarmini berishga rozi bo‘lgansiz; mashina tayyor bo‘lib, Jahongir uni olib ketgan.\nOpen questions to the owner:\n- Jahongir (ukam) asks you: 1 million 150 ming so‘mni dushanba kuni ustaga berish yoki Jahongirga o‘tkazish kerakmi?\nCommitments not yet done:\n- You promised Jahongir (ukam): Ta’mirlash xarajatining yarmini to‘lash\n- Jahongir (ukam) asks you to (not agreed yet): 1 million 150 ming so‘mni dushanba kuni ustaga berish yoki Jahongirga o‘tkazish (due: dushanba)\nDecisions requested from the owner:\n- Jahongir (ukam) is waiting for your decision: 1 million 150 ming so‘mni ustaga berish yoki Jahongirga o‘tkazish\nKey facts:\n- Xodovoyni almashtirish va ehtiyot qismlar 2 million 300 ming so‘m turadi.\n- Mashina tayyor bo‘lib, Jahongir uni olib ketgan; usta 3 oy kafolat bergan.\nNeeds a reply from the owner: yes - Jahongir 1 million 150 ming so‘mni qanday to‘lashыгizni асуган."
+    },
+    {
+      "id": "c14",
+      "variant": "uz-Latn",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 2,
+        "decisions_requested": 1,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c14.q1": null,
+        "c14.c1": true
+      },
+      "open_loop_keys": {
+        "c14.q1": "c14.q1#1b1d310b"
+      },
+      "open_loops_judged": {
+        "c14.q1": true
+      },
+      "open_loops_evidence": {
+        "c14.q1": "- Gulnora opa (qo'shni) asks you: 22-oktabr kuni uyda kim bo‘lishini aytish.\n- Gulnora opa (qo'shni) is waiting for your decision: 22-oktabr kuni uyda kim bo‘lishini bildirish.\n- Needs a reply from the owner: yes - Gulnora opa 22-oktabr kuni uyda kim bo‘lishini aytishingizni so‘radi."
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Gulnora opa yo‘lak ta’miri uchun yig‘im, hovlidagi majlis va 22-oktabrdagi suv hisoblagichlari tekshiruvi haqida yozdi. Siz pulni seshanba kuni kechqurun olib chiqishingizni aytdingiz va majlisga borishga harakat qilishingizni bildirdingiz.\n22-oktabr kuni uyda kim bo‘lishini aytish.\nPulni olib chiqish. 2026-10-20 kechqurun\n22-oktabr kuni suv hisoblagichlarini tekshirish uchun uyda kimdir bo‘lishini ta’minlash. 2026-10-22\n22-oktabr kuni uyda kim bo‘lishini bildirish.\nYo‘lak ta’miri uchun har bir xonadondan 120 ming so‘m yig‘ilmoqda; pulni chorshanbagacha Gulnora opaga yoki shirkat raisi Ahmad akaga berish mumkin.\nHovlida shanba kuni soat 10:00 da majlis bo‘lib, imzo yig‘iladi.\nSuv hisoblagichlarini tekshirish uchun usta 22-oktabr kuni keladi.\nMajlisga borishga harakat qilish bildirildi.\nGulnora opa 22-oktabr kuni uyda kim bo‘lishini aytishingizni so‘radi.",
+      "summary_labelled": "Overview: Gulnora opa yo‘lak ta’miri uchun yig‘im, hovlidagi majlis va 22-oktabrdagi suv hisoblagichlari tekshiruvi haqida yozdi. Siz pulni seshanba kuni kechqurun olib chiqishingizni aytdingiz va majlisga borishga harakat qilishingizni bildirdingiz.\nOpen questions to the owner:\n- Gulnora opa (qo'shni) asks you: 22-oktabr kuni uyda kim bo‘lishini aytish.\nCommitments not yet done:\n- You promised Gulnora opa (qo'shni): Pulni olib chiqish. (due: 2026-10-20 kechqurun)\n- Gulnora opa (qo'shni) asks you to (not agreed yet): 22-oktabr kuni suv hisoblagichlarini tekshirish uchun uyda kimdir bo‘lishini ta’minlash. (due: 2026-10-22)\nDecisions requested from the owner:\n- Gulnora opa (qo'shni) is waiting for your decision: 22-oktabr kuni uyda kim bo‘lishini bildirish.\nKey facts:\n- Yo‘lak ta’miri uchun har bir xonadondan 120 ming so‘m yig‘ilmoqda; pulni chorshanbagacha Gulnora opaga yoki shirkat raisi Ahmad akaga berish mumkin.\n- Hovlida shanba kuni soat 10:00 da majlis bo‘lib, imzo yig‘iladi.\n- Suv hisoblagichlarini tekshirish uchun usta 22-oktabr kuni keladi.\n- Majlisga borishga harakat qilish bildirildi.\nNeeds a reply from the owner: yes - Gulnora opa 22-oktabr kuni uyda kim bo‘lishini aytishingizni so‘radi."
+    },
+    {
+      "id": "c15",
+      "variant": "uz-Cyrl",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 4,
+        "decisions_requested": 1,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c15.c1": true,
+        "c15.c2": null,
+        "c15.c3": null
+      },
+      "open_loop_keys": {
+        "c15.c2": "c15.c2#3c9c20c6",
+        "c15.c3": "c15.c3#3c9c20c6"
+      },
+      "open_loops_judged": {
+        "c15.c2": true,
+        "c15.c3": true
+      },
+      "open_loops_evidence": {
+        "c15.c2": "- You promised Ойим: Farhod akangizni aeroportdan olib kelish (due: 2026-10-20, kechasi 23:40 da qo‘nadi)",
+        "c15.c3": "- Farhod akangiz reys raqamini sizga o‘zi yuboradi."
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c15#b143ae20",
+          "reason": "unsupported",
+          "evidence": [
+            "c15.m02"
+          ],
+          "statement": "Yakshanba kuni O‘yimnikida oila davrasida osh bo‘ladi.",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Siz O‘yim bilan yakshanbadagi osh uchun mahsulot olib borish va Farhod akangizni aeroportdan kutib olishni kelishdingiz. O‘yim to‘y sovg‘asi uchun pul ajratishni so‘radi va sovg‘a turini tanlashingizni kutmoqda.\nNonushtani unutmaslik\nYakshanbadagi osh uchun ikki qop un va o‘n kilogramm guruch olib borish 2026-10-18\nFarhod akangizni aeroportdan olib kelish 2026-10-20, kechasi 23:40 da qo‘nadi\nTo‘y sovg‘asi uchun 500 ming ajratib qo‘yish\nTo‘y sovg‘asi pul bo‘ladimi yoki biror buyum bo‘ladimi\nYakshanba kuni O‘yimnikida oila davrasida osh bo‘ladi.\nFarhod akangiz seshanba kuni Moskvadan uchib keladi; samolyot kechasi 23:40 da qo‘nadi.\nFarhod akangiz reys raqamini sizga o‘zi yuboradi.\nQo‘shni Zuhra opaning qizining to‘yi 1-noyabrda bo‘ladi.\nO‘yim sovg‘a uchun pulmi yoki buyummi, tanlashingizni so‘radi.",
+      "summary_labelled": "Overview: Siz O‘yim bilan yakshanbadagi osh uchun mahsulot olib borish va Farhod akangizni aeroportdan kutib olishni kelishdingiz. O‘yim to‘y sovg‘asi uchun pul ajratishni so‘radi va sovg‘a turini tanlashingizni kutmoqda.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- Ойим asks you to (not agreed yet): Nonushtani unutmaslik\n- Agreed with Ойим: you will do it: Yakshanbadagi osh uchun ikki qop un va o‘n kilogramm guruch olib borish (due: 2026-10-18)\n- You promised Ойим: Farhod akangizni aeroportdan olib kelish (due: 2026-10-20, kechasi 23:40 da qo‘nadi)\n- Ойим asks you to (not agreed yet): To‘y sovg‘asi uchun 500 ming ajratib qo‘yish\nDecisions requested from the owner:\n- Ойим is waiting for your decision: To‘y sovg‘asi pul bo‘ladimi yoki biror buyum bo‘ladimi\nKey facts:\n- Yakshanba kuni O‘yimnikida oila davrasida osh bo‘ladi.\n- Farhod akangiz seshanba kuni Moskvadan uchib keladi; samolyot kechasi 23:40 da qo‘nadi.\n- Farhod akangiz reys raqamini sizga o‘zi yuboradi.\n- Qo‘shni Zuhra opaning qizining to‘yi 1-noyabrda bo‘ladi.\nNeeds a reply from the owner: yes - O‘yim sovg‘a uchun pulmi yoki buyummi, tanlashingizni so‘radi."
+    },
+    {
+      "id": "c16",
+      "variant": "uz-Cyrl",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 3,
+        "decisions_requested": 0,
+        "key_facts": 5
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c16.c2": null
+      },
+      "open_loop_keys": {
+        "c16.c2": "c16.c2#57203aaf"
+      },
+      "open_loops_judged": {
+        "c16.c2": true
+      },
+      "open_loops_evidence": {
+        "c16.c2": "- You promised Абдулла ака (омбор): Ombor eshigi oldidagi qutilarni olib qo‘yish (due: 2026-10-08 kechqurun)\n- You promised Абдулла ака (омбор): O‘t o‘chirgichni tekshirish"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c16#b4de164c",
+          "reason": "unsupported",
+          "evidence": [
+            "c16.m07"
+          ],
+          "statement": "Commitments not yet done: You promised Абдулла ака (омбор) to remove the boxes by 2026-10-08 evening.",
+          "status": "pending_owner"
+        },
+        {
+          "id": "c16#7688ce4f",
+          "reason": "unsupported",
+          "evidence": [
+            "c16.m07"
+          ],
+          "statement": "Commitments not yet done: You promised Абдулла ака (омбор) to check the fire extinguisher.",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Abdulla aka (ombor) oktabr oyi ombor ijarasi va elektr to‘lovi haqida yozdi; to‘lov kelib tushgan. Shuningdek, yong‘in xavfsizligi tekshiruvi oldidan bajariladigan ishlarni eslatdi.\nOmbor eshigi oldidagi qutilarni olib qo‘yish 2026-10-08 kechqurun\nO‘t o‘chirgichni tekshirish\nAgar o‘t o‘chirgichning muddati o‘tgan bo‘lsa, yangisini olish\nOktabr oyi ijarasi 3 million so‘m, elektr to‘lovi 380 ming so‘m; jami 3 million 380 ming so‘m.\nTo‘lov 7-oktabrgacha o‘tkazilishi so‘ralgan, karta raqami o‘zgarmagan.\n3 million 380 ming so‘m to‘lov kelib tushgan.\nYong‘in xavfsizligi tekshiruvi 9-oktabr, juma kuni kelishi aytilgan.\nKelasi yilgi ijara narxini ko‘rib chiqish va yangi yil oldidan gaplashish rejalashtirilgan.",
+      "summary_labelled": "Overview: Abdulla aka (ombor) oktabr oyi ombor ijarasi va elektr to‘lovi haqida yozdi; to‘lov kelib tushgan. Shuningdek, yong‘in xavfsizligi tekshiruvi oldidan bajariladigan ishlarni eslatdi.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- You promised Абдулла ака (омбор): Ombor eshigi oldidagi qutilarni olib qo‘yish (due: 2026-10-08 kechqurun)\n- You promised Абдулла ака (омбор): O‘t o‘chirgichni tekshirish\n- Абдулла ака (омбор) asks you to (not agreed yet): Agar o‘t o‘chirgichning muddati o‘tgan bo‘lsa, yangisini olish\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Oktabr oyi ijarasi 3 million so‘m, elektr to‘lovi 380 ming so‘m; jami 3 million 380 ming so‘m.\n- To‘lov 7-oktabrgacha o‘tkazilishi so‘ralgan, karta raqami o‘zgarmagan.\n- 3 million 380 ming so‘m to‘lov kelib tushgan.\n- Yong‘in xavfsizligi tekshiruvi 9-oktabr, juma kuni kelishi aytilgan.\n- Kelasi yilgi ijara narxini ko‘rib chiqish va yangi yil oldidan gaplashish rejalashtirilgan.\nNeeds a reply from the owner: no"
+    },
+    {
+      "id": "c17",
+      "variant": "uz-Cyrl",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 2,
+        "decisions_requested": 1,
+        "key_facts": 3
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c17.q1": null,
+        "c17.c1": null
+      },
+      "open_loop_keys": {
+        "c17.q1": "c17.q1#a4c5335a",
+        "c17.c1": "c17.c1#a4c5335a"
+      },
+      "open_loops_judged": {
+        "c17.q1": true,
+        "c17.c1": true
+      },
+      "open_loops_evidence": {
+        "c17.q1": "- Шоира asks you: Тўловни картага ўтказиш ёки нақд беришдан қайси бири қулай?",
+        "c17.c1": "- Agreed with Шоира: you will do it: 3 kg ёнғоқ мағзини етказиб бериш (due: 2026-10-22, 18:00–20:00)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": false,
+      "language_detected": "uz",
+      "script_share": 0.027,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Шоира sizdan 3 kg ёнғоқ мағзини манзилга етказиб беришни сўради. Етказиш вақти келишилди, аммо тўлов усули бўйича жавоб кутилмоқда.\nТўловни картага ўтказиш ёки нақд беришдан қайси бири қулай?\n3 kg ёнғоқ мағзини етказиб бериш 2026-10-22, 18:00–20:00\nКурьер келишидан олдин қўнғироқ қилиши\nТўлов усулини танлаш: картага ўтказиш ёки нақд бериш\n3 kg ёнғоқ мағзининг нархи 420 минг, етказиб бериш ҳақи 20 минг.\nЕтказиш манзили: Чилонзор тумани, 9-мавзе, 15-уй, 33-хонадон; мўлжал — «Чинор» ресторани рўпараси.\nҚўнғироқ қилиш учун рақам: +998 90 000 00 58.\nШоира тўлов усулидан қайси бири сизга қулайлигини сўради.",
+      "summary_labelled": "Overview: Шоира sizdan 3 kg ёнғоқ мағзини манзилга етказиб беришни сўради. Етказиш вақти келишилди, аммо тўлов усули бўйича жавоб кутилмоқда.\nOpen questions to the owner:\n- Шоира asks you: Тўловни картага ўтказиш ёки нақд беришдан қайси бири қулай?\nCommitments not yet done:\n- Agreed with Шоира: you will do it: 3 kg ёнғоқ мағзини етказиб бериш (due: 2026-10-22, 18:00–20:00)\n- Шоира asks you to (not agreed yet): Курьер келишидан олдин қўнғироқ қилиши\nDecisions requested from the owner:\n- Шоира is waiting for your decision: Тўлов усулини танлаш: картага ўтказиш ёки нақд бериш\nKey facts:\n- 3 kg ёнғоқ мағзининг нархи 420 минг, етказиб бериш ҳақи 20 минг.\n- Етказиш манзили: Чилонзор тумани, 9-мавзе, 15-уй, 33-хонадон; мўлжал — «Чинор» ресторани рўпараси.\n- Қўнғироқ қилиш учун рақам: +998 90 000 00 58.\nNeeds a reply from the owner: yes - Шоира тўлов усулидан қайси бири сизга қулайлигини сўради."
+    },
+    {
+      "id": "c18",
+      "variant": "uz-Cyrl",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 5,
+        "decisions_requested": 0,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c18.c1": null,
+        "c18.c2": true,
+        "c18.c3": null
+      },
+      "open_loop_keys": {
+        "c18.c1": "c18.c1#1053ee30",
+        "c18.c3": "c18.c3#1053ee30"
+      },
+      "open_loops_judged": {
+        "c18.c1": true,
+        "c18.c3": true
+      },
+      "open_loops_evidence": {
+        "c18.c1": "- You promised Гавҳар Раҳимовна (синф раҳбari): 16-oktabr kuni soat 18:00 dagi ota-onalar majlisiga borish (due: 2026-10-16)\n- You promised Гавҳар Раҳимовна (синф раҳбari): Majlisdan keyin 15 daqiqa qolish (due: 2026-10-16)",
+        "c18.c3": "- Гавҳар Раҳимовна (синф раҳбari) promised you: Faylni qayta yuborish (due: 2026-10-12 kechqurun)"
+      },
+      "caveats_expected": 1,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [
+        "c18.g1"
+      ],
+      "caveat_pre_connection": false,
+      "caveat_lines": 1,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Gavhar Rahimovna 16-oktabr kuni ota-onalar majlisi va Akmalning o‘qishi haqida alohida suhbatni belgiladi. Siz qatnashishingizni, suhbatdan keyin qolishingizni va pulni juma kuni berishingizni aytdingiz. Fayl qayta yuborilishi kutilmoqda.\n16-oktabr kuni soat 18:00 dagi ota-onalar majlisiga borish 2026-10-16\nMajlisdan keyin 15 daqiqa qolish 2026-10-16\nPardalar uchun 50 ming so‘m berish 2026-10-16\nFaylni ko‘rib chiqish, imzo qo‘yish va juma kuni olib kelish 2026-10-16\nFaylni qayta yuborish 2026-10-12 kechqurun\nOta-onalar majlisi 16-oktabr kuni soat 18:00 da bo‘ladi; qatnashish shart.\nAkmalning o‘qishi haqida majlisdan keyin alohida gaplashish rejalashtirilgan.\nSinf jamg‘armasiga pardalar uchun 50 ming so‘mdan yig‘ilmoqda.\nFayl sizga kelmagan, shuning uchun uni qayta yuborish so‘ralgan.\nGavhar Rahimovna faylni qayta yuborishini aytdi; hozircha sizdan javob kutilayotgani ko‘rsatilmagan.",
+      "summary_labelled": "Overview: Gavhar Rahimovna 16-oktabr kuni ota-onalar majlisi va Akmalning o‘qishi haqida alohida suhbatni belgiladi. Siz qatnashishingizni, suhbatdan keyin qolishingizni va pulni juma kuni berishingizni aytdingiz. Fayl qayta yuborilishi kutilmoqda.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- You promised Гавҳар Раҳимовна (синф раҳбари): 16-oktabr kuni soat 18:00 dagi ota-onalar majlisiga borish (due: 2026-10-16)\n- You promised Гавҳар Раҳимовна (синф раҳбари): Majlisdan keyin 15 daqiqa qolish (due: 2026-10-16)\n- You promised Гавҳар Раҳимовна (синф раҳбари): Pardalar uchun 50 ming so‘m berish (due: 2026-10-16)\n- Гавҳар Раҳимовна (синф раҳбари) asks you to (not agreed yet): Faylni ko‘rib chiqish, imzo qo‘yish va juma kuni olib kelish (due: 2026-10-16)\n- Гавҳар Раҳимовна (синф раҳбари) promised you: Faylni qayta yuborish (due: 2026-10-12 kechqurun)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Ota-onalar majlisi 16-oktabr kuni soat 18:00 da bo‘ladi; qatnashish shart.\n- Akmalning o‘qishi haqida majlisdan keyin alohida gaplashish rejalashtirilgan.\n- Sinf jamg‘armasiga pardalar uchun 50 ming so‘mdan yig‘ilmoqda.\n- Fayl sizga kelmagan, shuning uchun uni qayta yuborish so‘ralgan.\nNeeds a reply from the owner: no - Gavhar Rahimovna faylni qayta yuborishini aytdi; hozircha sizdan javob kutilayotgani ko‘rsatilmagan."
+    },
+    {
+      "id": "c19",
+      "variant": "uz-Cyrl",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 7,
+        "decisions_requested": 0,
+        "key_facts": 6
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c19.c1": null,
+        "c19.c2": true,
+        "c19.c3": true
+      },
+      "open_loop_keys": {
+        "c19.c1": "c19.c1#4fe48e8e"
+      },
+      "open_loops_judged": {
+        "c19.c1": true
+      },
+      "open_loops_evidence": {
+        "c19.c1": "- You promised Хайрулла тоға: 19-oktyabr kuni soat 9:00 da hokimiyatga borish (due: 2026-10-19 09:00)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Siz va Xayrulla to‘ga kadastr hujjatlari hamda muddati tugagan ishonchnomani yangilash uchun borish masalalarini kelishdingiz.\n19-oktyabr kuni soat 9:00 da hokimiyatga borish 2026-10-19 09:00\nPasportning 2 ta nusxasini tayyorlash\nUyning eski texpasportini onasidan olish\n412 ming so‘m davlat bojini to‘lash\nNotarius xizmatiga taxminan 150 ming so‘m to‘lash\nNotariusga soat 16:30 da yetib borish 2026-10-14 16:30\nPasportning asl nusxasini olib kelish 2026-10-14 16:30\nKadastr hujjatlari uchun hokimiyatga yozilgan.\n19-oktyabr, dushanba kuni soat 9:00 da borish rejalashtirilgan; ishonchnoma sizning nomingizda.\nEski ishonchnomaning muddati tugagan va uni notariusda yangilash kerak.\nNotarius Olmazor tumani, Shifokorlar ko‘chasi 5-uy, ikkinchi qavatda.\nNotarius bilan uchrashuv 14-oktyabr, chorshanba kuni soat 16:30 ga belgilangan.\nNotarius pasportning asl nusxasini so‘raydi.\nXayrulla to‘ga pasportning asl nusxasini olib kelishni so‘radi.",
+      "summary_labelled": "Overview: Siz va Xayrulla to‘ga kadastr hujjatlari hamda muddati tugagan ishonchnomani yangilash uchun borish masalalarini kelishdingiz.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- You promised Хайрулла тоға: 19-oktyabr kuni soat 9:00 da hokimiyatga borish (due: 2026-10-19 09:00)\n- You promised Хайрулла тоға: Pasportning 2 ta nusxasini tayyorlash\n- You promised Хайрулла тоға: Uyning eski texpasportini onasidan olish\n- Хайрулла тоға promised you: 412 ming so‘m davlat bojini to‘lash\n- Agreed with Хайрулла тоға: you will do it: Notarius xizmatiga taxminan 150 ming so‘m to‘lash\n- You promised Хайрулла тоға: Notariusga soat 16:30 da yetib borish (due: 2026-10-14 16:30)\n- Хайрулла тоға asks you to (not agreed yet): Pasportning asl nusxasini olib kelish (due: 2026-10-14 16:30)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Kadastr hujjatlari uchun hokimiyatga yozilgan.\n- 19-oktyabr, dushanba kuni soat 9:00 da borish rejalashtirilgan; ishonchnoma sizning nomingizda.\n- Eski ishonchnomaning muddati tugagan va uni notariusda yangilash kerak.\n- Notarius Olmazor tumani, Shifokorlar ko‘chasi 5-uy, ikkinchi qavatda.\n- Notarius bilan uchrashuv 14-oktyabr, chorshanba kuni soat 16:30 ga belgilangan.\n- Notarius pasportning asl nusxasini so‘raydi.\nNeeds a reply from the owner: yes - Xayrulla to‘ga pasportning asl nusxasini olib kelishni so‘radi."
+    },
+    {
+      "id": "c20",
+      "variant": "uz-Cyrl",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 3,
+        "decisions_requested": 0,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c20.q1": null,
+        "c20.c1": true,
+        "c20.c2": true,
+        "c20.c3": true
+      },
+      "open_loop_keys": {
+        "c20.q1": "c20.q1#76622002"
+      },
+      "open_loops_judged": {
+        "c20.q1": true
+      },
+      "open_loops_evidence": {
+        "c20.q1": "- Ғайрат уста asks you: Avans masalasi nima bo‘ldi?"
+      },
+      "caveats_expected": 1,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": true,
+      "caveat_lines": 1,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 0.965,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Ғайрат уста vannaxonadagi eski plitka ko‘chirilganini aytdi. Plitka tanlash, avans va qurilish bozorida uchrashish masalalari muhokama qilindi.\nAvans masalasi nima bo‘ldi?\nPlitka va yelim uchun 1 million 500 ming so‘m avans berish 2026-10-07 kechqurun\nQurilish bozorida uchrashish 2026-10-08 soat 10:00\nAvans berilsa, bozorga borish 2026-10-08\nVannaxonaning eski plitkasi ko‘chirildi.\nPlitkani siz tanlashingiz ma’qul.\nVannaxona 30-oktyabrgacha bitishi rejalashtirilgan, undan keyin oshxonaga o‘tiladi.\nOshxona bo‘yicha narx avval aytilganidek bo‘ladi.\nҒайрат usta avans nima bo‘lganini so‘radi.",
+      "summary_labelled": "Overview: Ғайрат уста vannaxonadagi eski plitka ko‘chirilganini aytdi. Plitka tanlash, avans va qurilish bozorida uchrashish masalalari muhokama qilindi.\nOpen questions to the owner:\n- Ғайрат уста asks you: Avans masalasi nima bo‘ldi?\nCommitments not yet done:\n- Agreed with Ғайрат уста: you will do it: Plitka va yelim uchun 1 million 500 ming so‘m avans berish (due: 2026-10-07 kechqurun)\n- Agreed with Ғайрат уста: Ғайрат уста will do it: Qurilish bozorida uchrashish (due: 2026-10-08 soat 10:00)\n- Ғайрат уста promised you: Avans berilsa, bozorga borish (due: 2026-10-08)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Vannaxonaning eski plitkasi ko‘chirildi.\n- Plitkani siz tanlashingiz ma’qul.\n- Vannaxona 30-oktyabrgacha bitishi rejalashtirilgan, undan keyin oshxonaga o‘tiladi.\n- Oshxona bo‘yicha narx avval aytilganidek bo‘ladi.\nNeeds a reply from the owner: yes - Ғайрат usta avans nima bo‘lganini so‘radi."
+    },
+    {
+      "id": "c21",
+      "variant": "ru",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 2,
+        "decisions_requested": 0,
+        "key_facts": 6
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c21.q1": true,
+        "c21.c1": null
+      },
+      "open_loop_keys": {
+        "c21.c1": "c21.c1#8cd45b1d"
+      },
+      "open_loops_judged": {
+        "c21.c1": false
+      },
+      "open_loops_evidence": {
+        "c21.c1": "Siz qatnashishingizni aytib, pulni ertaga yuborishingizni bildirdingiz.\n- You promised Дима: Pulni yuborish (due: ertaga)\n- Sovg‘a uchun har kimdan 200 000 so‘mdan yig‘ishmoqchi; Lenaga quloqchin olish rejalashtirilgan."
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Dima Lenaning shanba kungi tug‘ilgan kuni uchun sovg‘a va uchrashuv rejasini yozdi. Siz qatnashishingizni aytib, pulni ertaga yuborishingizni bildirdingiz.\nYaqin ish joyidagi qandolatchilikdan Dima nomiga buyurtma qilingan tortni olib ketish mumkinmi?\nPulni yuborish ertaga\nQandolatchilikdan tortni olib ketish\nLenaning tug‘ilgan kuni shanba kuni.\nSovg‘a uchun har kimdan 200 000 so‘mdan yig‘ishmoqchi; Lenaga quloqchin olish rejalashtirilgan.\nShanba kuni soat 19:30 da parkdagi favvora yonida uchrashib, keyin kafega birga borish rejalashtirilgan.\n«Limon» kafesida soat 20:00 ga 8 kishilik stol band qilingan.\nTort buyurtmasi Dima nomiga rasmiylashtirilgan.\nLenaga bu haqda aytilmasligi va bu syurpriz bo‘lishi kerak.\nDima tortni olib ketishingiz mumkinligini so‘radi.",
+      "summary_labelled": "Overview: Dima Lenaning shanba kungi tug‘ilgan kuni uchun sovg‘a va uchrashuv rejasini yozdi. Siz qatnashishingizni aytib, pulni ertaga yuborishingizni bildirdingiz.\nOpen questions to the owner:\n- Дима asks you: Yaqin ish joyidagi qandolatchilikdan Dima nomiga buyurtma qilingan tortni olib ketish mumkinmi?\nCommitments not yet done:\n- You promised Дима: Pulni yuborish (due: ertaga)\n- Дима asks you to (not agreed yet): Qandolatchilikdan tortni olib ketish\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Lenaning tug‘ilgan kuni shanba kuni.\n- Sovg‘a uchun har kimdan 200 000 so‘mdan yig‘ishmoqchi; Lenaga quloqchin olish rejalashtirilgan.\n- Shanba kuni soat 19:30 da parkdagi favvora yonida uchrashib, keyin kafega birga borish rejalashtirilgan.\n- «Limon» kafesida soat 20:00 ga 8 kishilik stol band qilingan.\n- Tort buyurtmasi Dima nomiga rasmiylashtirilgan.\n- Lenaga bu haqda aytilmasligi va bu syurpriz bo‘lishi kerak.\nNeeds a reply from the owner: yes - Dima tortni olib ketishingiz mumkinligini so‘radi."
+    },
+    {
+      "id": "c22",
+      "variant": "ru",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 6,
+        "decisions_requested": 0,
+        "key_facts": 6
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c22.c2": null,
+        "c22.c3": null,
+        "c22.c4": null
+      },
+      "open_loop_keys": {
+        "c22.c2": "c22.c2#f04ef05c",
+        "c22.c3": "c22.c3#f04ef05c",
+        "c22.c4": "c22.c4#f04ef05c"
+      },
+      "open_loops_judged": {
+        "c22.c2": true,
+        "c22.c3": true,
+        "c22.c4": true
+      },
+      "open_loops_evidence": {
+        "c22.c2": "- Agreed with Марина («Зелёный квадрат»): you will do it: Har bir qutiga logotipli stikerni bepul yopishtirish",
+        "c22.c3": "- Agreed with Марина («Зелёный квадрат»): you will do it: To‘plamlarni yetkazib berish (due: 29-oktabr, soat 12:00 gacha)",
+        "c22.c4": "- Марина («Зелёный квадрат») promised you: Hisob-faktura uchun rekvizitlarni yuborish (due: 16-oktabr)\n- Марина («Зелёный квадрат») promised you: Hisob-fakturani olgandan keyin 2 ish kuni ichida oldindan to‘lovni o‘tkazish (due: Hisob-faktura olinganidan keyin 2 ish kuni ichida)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 0.98,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c22#2f487f9a",
+          "reason": "unsupported",
+          "evidence": [
+            "c22.m07",
+            "c22.m10"
+          ],
+          "statement": "«…buyurtma, narx, to‘lov va yetkazib berishni kelishdingiz» (…you agreed on the order, price, payment, and delivery).",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Siz va Марина («Зелёный квадрат») 15 ta sovg‘a to‘plami bo‘yicha buyurtma, narx, to‘lov va yetkazib berishni kelishdingiz. Namuna ko‘rilib, buyurtma tasdiqlandi; hisob-faktura uchun rekvizitlar va logotip hali yuborilishi kerak.\nQolgan to‘lovni yetkazib berilgandan keyin amalga oshirish mumkinmi?\nYuridik shaxs nomiga hisob-faktura chiqarish\nHar bir qutiga logotipli stikerni bepul yopishtirish\nTo‘plamlarni yetkazib berish 29-oktabr, soat 12:00 gacha\nLogotipni elektron pochta orqali yuborish\nHisob-faktura uchun rekvizitlarni yuborish 16-oktabr\nHisob-fakturani olgandan keyin 2 ish kuni ichida oldindan to‘lovni o‘tkazish Hisob-faktura olinganidan keyin 2 ish kuni ichida\nBuyurtma: 15 ta to‘plam; tarkibi — 500 g asal, quritilgan o‘rik, grek yong‘og‘i va bodom, yog‘och qutida.\nHar bir to‘plam narxi 329 800 so‘m, umumiy summa 4 947 000 so‘m; 3% chegirma kelishildi.\nYetkazib berish manzili: Mirzo-Ulug‘bek tumani, Osennyaya ko‘chasi, 3-uy, 4-qavat.\nNamuna ko‘rildi va buyurtma 15 ta to‘plamga tasdiqlandi.\n15-oktabr kuni soat 16:00 da Qashtanovaya ko‘chasi, 7-uydagi omborda namuna ko‘rish uchrashuvi belgilangan edi.\nHisob-faktura yuridik shaxs nomiga chiqariladi; 30% oldindan to‘lov mos keladi.\nQolgan to‘lovni yetkazib berilgandan keyin amalga oshirish mumkinligi haqidagi savolga javob berilmagan.",
+      "summary_labelled": "Overview: Siz va Марина («Зелёный квадрат») 15 ta sovg‘a to‘plami bo‘yicha buyurtma, narx, to‘lov va yetkazib berishni kelishdingiz. Namuna ko‘rilib, buyurtma tasdiqlandi; hisob-faktura uchun rekvizitlar va logotip hali yuborilishi kerak.\nOpen questions to the owner:\n- Марина («Зелёный квадрат») asks you: Qolgan to‘lovni yetkazib berilgandan keyin amalga oshirish mumkinmi?\nCommitments not yet done:\n- You promised Марина («Зелёный квадрат»): Yuridik shaxs nomiga hisob-faktura chiqarish\n- Agreed with Марина («Зелёный квадрат»): you will do it: Har bir qutiga logotipli stikerni bepul yopishtirish\n- Agreed with Марина («Зелёный квадрат»): you will do it: To‘plamlarni yetkazib berish (due: 29-oktabr, soat 12:00 gacha)\n- Марина («Зелёный квадрат») promised you: Logotipni elektron pochta orqali yuborish\n- Марина («Зелёный квадрат») promised you: Hisob-faktura uchun rekvizitlarni yuborish (due: 16-oktabr)\n- Марина («Зелёный квадрат») promised you: Hisob-fakturani olgandan keyin 2 ish kuni ichida oldindan to‘lovni o‘tkazish (due: Hisob-faktura olinganidan keyin 2 ish kuni ichida)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Buyurtma: 15 ta to‘plam; tarkibi — 500 g asal, quritilgan o‘rik, grek yong‘og‘i va bodom, yog‘och qutida.\n- Har bir to‘plam narxi 329 800 so‘m, umumiy summa 4 947 000 so‘m; 3% chegirma kelishildi.\n- Yetkazib berish manzili: Mirzo-Ulug‘bek tumani, Osennyaya ko‘chasi, 3-uy, 4-qavat.\n- Namuna ko‘rildi va buyurtma 15 ta to‘plamga tasdiqlandi.\n- 15-oktabr kuni soat 16:00 da Qashtanovaya ko‘chasi, 7-uydagi omborda namuna ko‘rish uchrashuvi belgilangan edi.\n- Hisob-faktura yuridik shaxs nomiga chiqariladi; 30% oldindan to‘lov mos keladi.\nNeeds a reply from the owner: yes - Qolgan to‘lovni yetkazib berilgandan keyin amalga oshirish mumkinligi haqidagi savolga javob berilmagan."
+    },
+    {
+      "id": "c23",
+      "variant": "ru",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 2,
+        "decisions_requested": 0,
+        "key_facts": 2
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c23.q1": null,
+        "c23.c1": null
+      },
+      "open_loop_keys": {
+        "c23.q1": "c23.q1#12565412",
+        "c23.c1": "c23.c1#12565412"
+      },
+      "open_loops_judged": {
+        "c23.q1": true,
+        "c23.c1": false
+      },
+      "open_loops_evidence": {
+        "c23.q1": "- Сергей asks you: Singan bankani qaytarish kerakmi yoki tashlab yuborish kerakmi?",
+        "c23.c1": "- Agreed with Сергей: you will do it: Yangi asal bankasini yetkazish (due: 2026-10-20, kechqurun)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c23#0f3b9aeb",
+          "reason": "unsupported",
+          "evidence": [
+            "c23.m06"
+          ],
+          "statement": "Needs a reply from the owner: a confirmation that the courier will call beforehand is expected.",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Sergey yetib kelgan buyurtmadagi singan asal bankasi uchun pulni qaytarish yoki yangisini olib kelishni so‘radi. Yangi banka 20-oktabr, seshanba kuni kechqurun yetkazilishi kelishildi.\nSingan bankani qaytarish kerakmi yoki tashlab yuborish kerakmi?\nYangi asal bankasini yetkazish 2026-10-20, kechqurun\nKuryer oldindan qo‘ng‘iroq qilishi\nBuyurtma 17-oktabrda olingan; asal bankasi paket ichida singan va asal to‘kilgan.\nAsalning narxi 85 000 so‘m.\nSizdan singan bankani qaytarish yoki tashlab yuborish bo‘yicha javob va kuryerning oldindan qo‘ng‘iroq qilishini tasdiqlash kutilmoqda.",
+      "summary_labelled": "Overview: Sergey yetib kelgan buyurtmadagi singan asal bankasi uchun pulni qaytarish yoki yangisini olib kelishni so‘radi. Yangi banka 20-oktabr, seshanba kuni kechqurun yetkazilishi kelishildi.\nOpen questions to the owner:\n- Сергей asks you: Singan bankani qaytarish kerakmi yoki tashlab yuborish kerakmi?\nCommitments not yet done:\n- Agreed with Сергей: you will do it: Yangi asal bankasini yetkazish (due: 2026-10-20, kechqurun)\n- Сергей asks you to (not agreed yet): Kuryer oldindan qo‘ng‘iroq qilishi\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Buyurtma 17-oktabrda olingan; asal bankasi paket ichida singan va asal to‘kilgan.\n- Asalning narxi 85 000 so‘m.\nNeeds a reply from the owner: yes - Sizdan singan bankani qaytarish yoki tashlab yuborish bo‘yicha javob va kuryerning oldindan qo‘ng‘iroq qilishini tasdiqlash kutilmoqda."
+    },
+    {
+      "id": "c24",
+      "variant": "ru",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 2,
+        "decisions_requested": 0,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c24.c1": true
+      },
+      "open_loop_keys": {},
+      "open_loops_judged": {},
+      "open_loops_evidence": {},
+      "caveats_expected": 1,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [
+        "c24.g1"
+      ],
+      "caveat_pre_connection": false,
+      "caveat_lines": 1,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 0.996,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Ravshan (avtoservis) avtomobilni qabul qilgan, oldingi tormoz kolodkalari va diskni almashtirishni kelishgansiz. Moy almashtirilgani va umumiy summa bo‘yicha kelishmovchilik qolgan; siz avtomobilni 16-oktabr kuni 18:30 da olib ketishingizni aytgansiz.\nOldingi tormoz kolodkalari va diskni almashtirish 2026-10-16\nAvtomobilni olib ketish 2026-10-16 18:30\nAvtomobil servisga qabul qilingan.\nOldingi tormoz kolodkalari va diskni almashtirish, ish haqi bilan, 1 250 000 so‘m turadi.\nAvtomobil 16-oktabr, juma kuni tayyor bo‘lishi aytilgan; uni 19:00 gacha olib ketish kerak, shanba kuni servis yopiq.\nServis moy ham almashtirilganini aytib, jami 1 650 000 so‘m degan; siz moy almashtirishga kelishilmaganini bildirgansiz. Ravshan (avtoservis) 15-oktabr kuni 11:00 da энэ մասին yozganini va siz «ok» deb javob berganingizni aytgan, masalani uchrashganda aniqlashga kelishilgan.\nSiz olib ketish vaqtini bildirgansiz; Ravshan (avtoservis) masalani uchrashganda aniqlashni taklif qilgan.",
+      "summary_labelled": "Overview: Ravshan (avtoservis) avtomobilni qabul qilgan, oldingi tormoz kolodkalari va diskni almashtirishni kelishgansiz. Moy almashtirilgani va umumiy summa bo‘yicha kelishmovchilik qolgan; siz avtomobilni 16-oktabr kuni 18:30 da olib ketishingizni aytgansiz.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- Agreed with Равшан (автосервис): Равшан (автосервис) will do it: Oldingi tormoz kolodkalari va diskni almashtirish (due: 2026-10-16)\n- You promised Равшан (автосервис): Avtomobilni olib ketish (due: 2026-10-16 18:30)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Avtomobil servisga qabul qilingan.\n- Oldingi tormoz kolodkalari va diskni almashtirish, ish haqi bilan, 1 250 000 so‘m turadi.\n- Avtomobil 16-oktabr, juma kuni tayyor bo‘lishi aytilgan; uni 19:00 gacha olib ketish kerak, shanba kuni servis yopiq.\n- Servis moy ham almashtirilganini aytib, jami 1 650 000 so‘m degan; siz moy almashtirishga kelishilmaganini bildirgansiz. Ravshan (avtoservis) 15-oktabr kuni 11:00 da энэ մասին yozganini va siz «ok» deb javob berganingizni aytgan, masalani uchrashganda aniqlashga kelishilgan.\nNeeds a reply from the owner: no - Siz olib ketish vaqtini bildirgansiz; Ravshan (avtoservis) masalani uchrashganda aniqlashni taklif qilgan."
+    },
+    {
+      "id": "c25",
+      "variant": "ru",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 2,
+        "decisions_requested": 1,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c25.c1": true
+      },
+      "open_loop_keys": {},
+      "open_loops_judged": {},
+      "open_loops_evidence": {},
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 0.952,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Алексей (тренер) Akmalning noyabrdagi mashg‘ulot jadvali, to‘lovi va 7-noyabrdagi bolalar musobaqasi haqida ma’lumot berdi. Siz to‘lovni shu hafta amalga oshirishingizni aytdingiz.\nNoyabr uchun to‘lovni amalga oshirish shu hafta\nOta-onaning roziligini berish 25-oktabrgacha\nAkmalni bolalar musobaqasiga yozish\nNoyabrdan mashg‘ulotlar dushanba va chorshanba kunlari 18:30 da bo‘ladi.\nNoyabr uchun to‘lov 400 000 so‘m; to‘lov muddati 1-noyabrgacha. To‘lovni resepshenda naqd yoki pul o‘tkazmasi orqali qilish mumkin.\nBolalar musobaqasi 7-noyabrda bo‘ladi.\nMusobaqada qatnashish badali 100 000 so‘m; forma beriladi.\nАлексей (тренер) Akmalni musobaqaga yozish haqida javob kutmoqda.",
+      "summary_labelled": "Overview: Алексей (тренер) Akmalning noyabrdagi mashg‘ulot jadvali, to‘lovi va 7-noyabrdagi bolalar musobaqasi haqida ma’lumot berdi. Siz to‘lovni shu hafta amalga oshirishingizni aytdingiz.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- You promised Алексей (тренер): Noyabr uchun to‘lovni amalga oshirish (due: shu hafta)\n- Алексей (тренер) asks you to (not agreed yet): Ota-onaning roziligini berish (due: 25-oktabrgacha)\nDecisions requested from the owner:\n- Алексей (тренер) is waiting for your decision: Akmalni bolalar musobaqasiga yozish\nKey facts:\n- Noyabrdan mashg‘ulotlar dushanba va chorshanba kunlari 18:30 da bo‘ladi.\n- Noyabr uchun to‘lov 400 000 so‘m; to‘lov muddati 1-noyabrgacha. To‘lovni resepshenda naqd yoki pul o‘tkazmasi orqali qilish mumkin.\n- Bolalar musobaqasi 7-noyabrda bo‘ladi.\n- Musobaqada qatnashish badali 100 000 so‘m; forma beriladi.\nNeeds a reply from the owner: yes - Алексей (тренер) Akmalni musobaqaga yozish haqida javob kutmoqda."
+    },
+    {
+      "id": "c26",
+      "variant": "ru",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 2,
+        "decisions_requested": 0,
+        "key_facts": 5
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c26.c1": null
+      },
+      "open_loop_keys": {
+        "c26.c1": "c26.c1#194caab8"
+      },
+      "open_loops_judged": {
+        "c26.c1": true
+      },
+      "open_loops_evidence": {
+        "c26.c1": "Agreed with Наталья (риелтор): you will do it: Uyni ko‘rishga borish (due: 2026-10-17 12:00)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 0.975,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c26#2ea85372",
+          "reason": "unsupported",
+          "evidence": [],
+          "statement": "Toshkentdagi ikki xonali ijara uyi",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Наталья (риелтор) sizga Toshkentdagi ikki xonali ijara uyini taklif qildi. 17-oktabr kuni ko‘rishga borish vaqti kelishildi; uy egasining mushuk haqidagi sharti ham muhokama qilinishi aytildi.\nUyni ko‘rishga borish 2026-10-17 12:00\nKirish eshigi oldida bo‘lish 2026-10-17 12:00\nTaklif qilingan uy ikki xonali, Mirobod tumani, Tihaya ko‘chasi, 21-uy, 8-xonadonda; ijara haqi oyiga 5 500 000 so‘m.\nAgentlik komissiyasi oylik ijara haqining 50 foizi bo‘lib, shartnoma imzolanganda to‘lanadi.\nUy egasi ikki oylik ijara haqini oldindan va bir oylik depozitni so‘raydi.\nUy egasi hayvonlarga qarshi, ammo mushuk masalasini uchrashuvda muhokama qilishni aytgan.\nKo‘rish vaqti 17-oktabr soat 12:00 deb eslatilgan.\nKo‘rish vaqti va joyi eslatilgan, javob so‘ralmagan.",
+      "summary_labelled": "Overview: Наталья (риелтор) sizga Toshkentdagi ikki xonali ijara uyini taklif qildi. 17-oktabr kuni ko‘rishga borish vaqti kelishildi; uy egasining mushuk haqidagi sharti ham muhokama qilinishi aytildi.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- Agreed with Наталья (риелтор): you will do it: Uyni ko‘rishga borish (due: 2026-10-17 12:00)\n- Наталья (риелтор) promised you: Kirish eshigi oldida bo‘lish (due: 2026-10-17 12:00)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Taklif qilingan uy ikki xonali, Mirobod tumani, Tihaya ko‘chasi, 21-uy, 8-xonadonda; ijara haqi oyiga 5 500 000 so‘m.\n- Agentlik komissiyasi oylik ijara haqining 50 foizi bo‘lib, shartnoma imzolanganda to‘lanadi.\n- Uy egasi ikki oylik ijara haqini oldindan va bir oylik depozitni so‘raydi.\n- Uy egasi hayvonlarga qarshi, ammo mushuk masalasini uchrashuvda muhokama qilishni aytgan.\n- Ko‘rish vaqti 17-oktabr soat 12:00 deb eslatilgan.\nNeeds a reply from the owner: no - Ko‘rish vaqti va joyi eslatilgan, javob so‘ralmagan."
+    },
+    {
+      "id": "c27",
+      "variant": "en",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 2,
+        "commitments": 1,
+        "decisions_requested": 1,
+        "key_facts": 3
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c27.q1": null,
+        "c27.c1": null
+      },
+      "open_loop_keys": {
+        "c27.q1": "c27.q1#51cb151b",
+        "c27.c1": "c27.c1#51cb151b"
+      },
+      "open_loops_judged": {
+        "c27.q1": true,
+        "c27.c1": true
+      },
+      "open_loops_evidence": {
+        "c27.q1": "- Aidana (JarPack) asks you: Yetkazib berish manzili va kuryer uchun aloqa telefon raqamini tasdiqlash.",
+        "c27.c1": "- Aidana (JarPack) promised you: Hisob-fakturani yuborish. (due: 2026-10-05, soat 18:00 gacha, Olmaota vaqti bilan)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c27#91ae4cb4",
+          "reason": "unsupported",
+          "evidence": [
+            "c27.m02",
+            "c27.m04"
+          ],
+          "statement": "“1 000 ta 250 ml li banka, oltin rangli qopqoqlar bilan, har biri $0.38”",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Aidana (JarPack) 1 000 ta shisha banka uchun narx, yetkazib berish va ishlab chiqarish shartlarini aytdi. Siz 1 000 ta bankaga buyurtma berishga rozilik bildirdingiz va hisob-fakturani so‘radingiz; manzil, kuryer telefoni va qopqoqlarga logotip bosish masalalari ochiq.\nYetkazib berish manzili va kuryer uchun aloqa telefon raqamini tasdiqlash.\nQopqoqlarga logotip bosilishini xohlash-xohlamaslik.\nHisob-fakturani yuborish. 2026-10-05, soat 18:00 gacha, Olmaota vaqti bilan\nQopqoqlarga logotip bosish kerakmi; bu har bir bankaga $0.05 qo‘shadi va muddatni 3 kunga uzaytiradi.\n1 000 ta 250 ml li banka, oltin rangli qopqoqlar bilan, har biri $0.38; Toshkentga yetkazib berish $90.\nIshlab chiqarishni boshlash uchun 50% oldindan to‘lov kerak; to‘lovdan keyin tayyorlash muddati 12 ish kuni.\n1 000 ta banka buyurtma qilishga rozilik bildirildi.\nAidana (JarPack) yetkazib berish manzili, kuryer telefoni va logotip bo‘yicha javob kutmoqda.",
+      "summary_labelled": "Overview: Aidana (JarPack) 1 000 ta shisha banka uchun narx, yetkazib berish va ishlab chiqarish shartlarini aytdi. Siz 1 000 ta bankaga buyurtma berishga rozilik bildirdingiz va hisob-fakturani so‘radingiz; manzil, kuryer telefoni va qopqoqlarga logotip bosish masalalari ochiq.\nOpen questions to the owner:\n- Aidana (JarPack) asks you: Yetkazib berish manzili va kuryer uchun aloqa telefon raqamini tasdiqlash.\n- Aidana (JarPack) asks you: Qopqoqlarga logotip bosilishini xohlash-xohlamaslik.\nCommitments not yet done:\n- Aidana (JarPack) promised you: Hisob-fakturani yuborish. (due: 2026-10-05, soat 18:00 gacha, Olmaota vaqti bilan)\nDecisions requested from the owner:\n- Aidana (JarPack) is waiting for your decision: Qopqoqlarga logotip bosish kerakmi; bu har bir bankaga $0.05 qo‘shadi va muddatni 3 kunga uzaytiradi.\nKey facts:\n- 1 000 ta 250 ml li banka, oltin rangli qopqoqlar bilan, har biri $0.38; Toshkentga yetkazib berish $90.\n- Ishlab chiqarishni boshlash uchun 50% oldindan to‘lov kerak; to‘lovdan keyin tayyorlash muddati 12 ish kuni.\n- 1 000 ta banka buyurtma qilishga rozilik bildirildi.\nNeeds a reply from the owner: yes - Aidana (JarPack) yetkazib berish manzili, kuryer telefoni va logotip bo‘yicha javob kutmoqda."
+    },
+    {
+      "id": "c28",
+      "variant": "en",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 3,
+        "decisions_requested": 1,
+        "key_facts": 5
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c28.q2": null,
+        "c28.c1": null,
+        "c28.c2": null
+      },
+      "open_loop_keys": {
+        "c28.q2": "c28.q2#a75bcb54",
+        "c28.c1": "c28.c1#a75bcb54",
+        "c28.c2": "c28.c2#a75bcb54"
+      },
+      "open_loops_judged": {
+        "c28.q2": true,
+        "c28.c1": false,
+        "c28.c2": true
+      },
+      "open_loops_evidence": {
+        "c28.q2": "Laylo asks you: Yakshanba kuni soat 17:00 ga o‘quv xonasini band qilib bera olasizmi? Kutubxonaga kirish huquqingiz hali bormi?",
+        "c28.c1": "",
+        "c28.c2": "You promised Laylo: 5–9-slaydlarni tayyorlash (due: 2026-10-24 shanba oqshomi)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c28#8a24e97d",
+          "reason": "contradicts_source",
+          "evidence": [
+            "c28.m07"
+          ],
+          "statement": "Laylo grafikleri umumiy papkaga joylashni va’da qilgan (hali bajarilmagan; muddati 22-oktabr kechasi).",
+          "status": "pending_owner"
+        },
+        {
+          "id": "c28#f756ab3c",
+          "reason": "contradicts_source",
+          "evidence": [
+            "c28.m04"
+          ],
+          "statement": "Laylo slaydlar taqsimotini tasdiqlashingizni kutmoqda.",
+          "status": "pending_owner"
+        },
+        {
+          "id": "c28#ba586a90",
+          "reason": "contradicts_source",
+          "evidence": [
+            "c28.m04"
+          ],
+          "statement": "Slaydlar taqsimotini tasdiqlashingiz kerakligi sababli javob berishingiz kerak.",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Laylo taqdimot 26-oktabr, dushanba kuni soat 9:00 ga ko‘chirilganini aytdi. Yakuniy slaydlar yakshanba soat 21:00 gacha kerak; slaydlar bo‘limlari taqsimlandi. So‘rov natijalari grafiklari yuklandi va taqdimot uchun 12 daqiqalik chegara belgilandi.\nYakshanba kuni soat 17:00 ga o‘quv xonasini band qilib bera olasizmi? Kutubxonaga kirish huquqingiz hali bormi?\n5–9-slaydlarni tayyorlash 2026-10-24 shanba oqshomi\nYakshanba kuni soat 17:00 ga o‘quv xonasini band qilish\nGrafiklarni umumiy papkaga joylash 2026-10-22 kechasi\nTaqdimot vazifalarini shunday taqsimlash ma’qulmi: 1–4-slaydlar — kirish va so‘rov ma’lumotlari; 5–9-slaydlar — tahlil va tavsiyalar?\nTaqdimot 26-oktabr, dushanba kuni soat 9:00 ga ko‘chirilgan.\nYakuniy taqdimot fayli yakshanba kuni soat 21:00 gacha tayyor bo‘lishi kerak.\nSo‘rovda 126 ta javob olingan.\nGrafiklar umumiy papkaga yuklangan.\nTaqdimot uchun eng ko‘p vaqt 12 daqiqa; undan oshsa, professor to‘xtatadi.\nLaylo o‘quv xonasini band qilish va kutubxonaga kirish huquqingiz bor-yo‘qligi haqida so‘radi; shuningdek, slaydlar taqsimotini tasdiqlashingizni kutmoqda.",
+      "summary_labelled": "Overview: Laylo taqdimot 26-oktabr, dushanba kuni soat 9:00 ga ko‘chirilganini aytdi. Yakuniy slaydlar yakshanba soat 21:00 gacha kerak; slaydlar bo‘limlari taqsimlandi. So‘rov natijalari grafiklari yuklandi va taqdimot uchun 12 daqiqalik chegara belgilandi.\nOpen questions to the owner:\n- Laylo asks you: Yakshanba kuni soat 17:00 ga o‘quv xonasini band qilib bera olasizmi? Kutubxonaga kirish huquqingiz hali bormi?\nCommitments not yet done:\n- You promised Laylo: 5–9-slaydlarni tayyorlash (due: 2026-10-24 shanba oqshomi)\n- Laylo asks you to (not agreed yet): Yakshanba kuni soat 17:00 ga o‘quv xonasini band qilish\n- Laylo promised you: Grafiklarni umumiy papkaga joylash (due: 2026-10-22 kechasi)\nDecisions requested from the owner:\n- Laylo is waiting for your decision: Taqdimot vazifalarini shunday taqsimlash ma’qulmi: 1–4-slaydlar — kirish va so‘rov ma’lumotlari; 5–9-slaydlar — tahlil va tavsiyalar?\nKey facts:\n- Taqdimot 26-oktabr, dushanba kuni soat 9:00 ga ko‘chirilgan.\n- Yakuniy taqdimot fayli yakshanba kuni soat 21:00 gacha tayyor bo‘lishi kerak.\n- So‘rovda 126 ta javob olingan.\n- Grafiklar umumiy papkaga yuklangan.\n- Taqdimot uchun eng ko‘p vaqt 12 daqiqa; undan oshsa, professor to‘xtatadi.\nNeeds a reply from the owner: yes - Laylo o‘quv xonasini band qilish va kutubxonaga kirish huquqingiz bor-yo‘qligi haqida so‘radi; shuningdek, slaydlar taqsimotini tasdiqlashingizni kutmoqda."
+    },
+    {
+      "id": "c29",
+      "variant": "en",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 1,
+        "decisions_requested": 0,
+        "key_facts": 2
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c29.q1": true,
+        "c29.c1": null,
+        "c29.c2": null
+      },
+      "open_loop_keys": {
+        "c29.c1": "c29.c1#6edcafa8",
+        "c29.c2": "c29.c2#6edcafa8"
+      },
+      "open_loops_judged": {
+        "c29.c1": true,
+        "c29.c2": false
+      },
+      "open_loops_evidence": {
+        "c29.c1": "You promised Tom (Samarkand cafe): Ulgurji narxlar ro‘yxatini yuborish (due: 2026-10-19)",
+        "c29.c2": "1 kg namuna so‘ralgan; namuna va yetkazib berish xarajatlari to‘lanishi aytilgan."
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Tom (Samarkand cafe) Samarqanddagi kichik kafesi uchun quritilgan mevalar aralashmasini ulgurji olishga qiziqdi. Siz dushanbagacha ulgurji narxlar ro‘yxatini yuborishingizni aytdingiz.\n1 kg namunani avtobus yuk jo‘natmasi orqali yuborish mumkinmi?\nUlgurji narxlar ro‘yxatini yuborish 2026-10-19\nKafe Samarqandda joylashgan; quritilgan mevalar aralashmasi uchun oyiga 20 kg ulgurji narx, Samarqandga yetkazib berish bilan so‘ralgan.\n1 kg namuna so‘ralgan; namuna va yetkazib berish xarajatlari to‘lanishi aytilgan.\nTom (Samarkand cafe) namunani avtobus yuk jo‘natmasi orqali yuborish mumkinligini so‘radi.",
+      "summary_labelled": "Overview: Tom (Samarkand cafe) Samarqanddagi kichik kafesi uchun quritilgan mevalar aralashmasini ulgurji olishga qiziqdi. Siz dushanbagacha ulgurji narxlar ro‘yxatini yuborishingizni aytdingiz.\nOpen questions to the owner:\n- Tom (Samarkand cafe) asks you: 1 kg namunani avtobus yuk jo‘natmasi orqali yuborish mumkinmi?\nCommitments not yet done:\n- You promised Tom (Samarkand cafe): Ulgurji narxlar ro‘yxatini yuborish (due: 2026-10-19)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Kafe Samarqandda joylashgan; quritilgan mevalar aralashmasi uchun oyiga 20 kg ulgurji narx, Samarqandga yetkazib berish bilan so‘ralgan.\n- 1 kg namuna so‘ralgan; namuna va yetkazib berish xarajatlari to‘lanishi aytilgan.\nNeeds a reply from the owner: yes - Tom (Samarkand cafe) namunani avtobus yuk jo‘natmasi orqali yuborish mumkinligini so‘radi."
+    },
+    {
+      "id": "c30",
+      "variant": "en",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 3,
+        "decisions_requested": 0,
+        "key_facts": 3
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c30.q2": true,
+        "c30.c1": null,
+        "c30.c2": null
+      },
+      "open_loop_keys": {
+        "c30.c1": "c30.c1#cb51cde6",
+        "c30.c2": "c30.c2#cb51cde6"
+      },
+      "open_loops_judged": {
+        "c30.c1": true,
+        "c30.c2": true
+      },
+      "open_loops_evidence": {
+        "c30.c1": "- You promised Daniel: Danielni aeroportdan olib ketish (due: 2026-10-27)\n- Parvoz 27-oktabr, seshanba kuni Toshkentga yetib keladi; kelish vaqti 03:15.",
+        "c30.c2": "- Daniel promised you: Minnatdorchilik sifatida qahva donlari olib kelish"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Daniel Toshkentga safarini rejalashtirdi; siz uni kutib olishga rozi bo‘ldingiz va u minnatdorchilik sifatida qahva donlari olib kelishini aytdi.\nDanielni aeroportdan olib ketish 2026-10-27\nMinnatdorchilik sifatida qahva donlari olib kelish\nMahalliy SIM-karta olishga yordam berish\nParvoz 27-oktabr, seshanba kuni Toshkentga yetib keladi; kelish vaqti 03:15.\nMehmonxona Amir Temur maydoni yaqinida 5 kechaga band qilingan; chiqish sanasi 1-noyabr, yakshanba.\nKartalar ko‘p joylarda ishlaydi; biroz dollar olib kelish tavsiya qilingan.",
+      "summary_labelled": "Overview: Daniel Toshkentga safarini rejalashtirdi; siz uni kutib olishga rozi bo‘ldingiz va u minnatdorchilik sifatida qahva donlari olib kelishini aytdi.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- You promised Daniel: Danielni aeroportdan olib ketish (due: 2026-10-27)\n- Daniel promised you: Minnatdorchilik sifatida qahva donlari olib kelish\n- Daniel asks you to (not agreed yet): Mahalliy SIM-karta olishga yordam berish\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Parvoz 27-oktabr, seshanba kuni Toshkentga yetib keladi; kelish vaqti 03:15.\n- Mehmonxona Amir Temur maydoni yaqinida 5 kechaga band qilingan; chiqish sanasi 1-noyabr, yakshanba.\n- Kartalar ko‘p joylarda ishlaydi; biroz dollar olib kelish tavsiya qilingan.\nNeeds a reply from the owner: no"
+    },
+    {
+      "id": "c31",
+      "variant": "en",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 3,
+        "decisions_requested": 1,
+        "key_facts": 3
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c31.c1": true,
+        "c31.c2": null,
+        "c31.c3": null
+      },
+      "open_loop_keys": {
+        "c31.c2": "c31.c2#eaced6a4",
+        "c31.c3": "c31.c3#eaced6a4"
+      },
+      "open_loops_judged": {
+        "c31.c2": true,
+        "c31.c3": true
+      },
+      "open_loops_evidence": {
+        "c31.c2": "- You promised Madina (designer): A yoki B konsepsiyasidan birini tanlash (due: 2026-10-21)",
+        "c31.c3": "- Madina (designer) promised you: Yakuniy fayllarni tayyorlash (due: 2026-10-26)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c31#6f295b69",
+          "reason": "unsupported",
+          "evidence": [
+            "c31.m04"
+          ],
+          "statement": "“Madina (designer) promised you: Yakuniy fayllarni tayyorlash (due: 2026-10-26)”",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Madina (designer) do‘koningiz uchun A va B logotip konsepsiyalarini yubordi. Siz ikkala variantni ma’qullab, to‘lov va tanlovni keyinroq amalga oshirishingizni aytdingiz; tanlov hali tasdiqlanmagan.\nA yoki B konsepsiyasidan qaysi biri tanlanadi?\n$75 boshlang‘ich to‘lovni yuborish 2026-10-20\nA yoki B konsepsiyasidan birini tanlash 2026-10-21\nYakuniy fayllarni tayyorlash 2026-10-26\nA yoki B logotip konsepsiyasidan birini tanlash\nA konsepsiyasi dumaloq va asalari uyasi naqshli; B konsepsiyasi esa yashil rangdagi, faqat matndan iborat.\nUmumiy haq $150; uning 50 foizi, ya’ni $75, oldindan to‘lanadi.\nYakuniy to‘plamga PNG, SVG va bir sahifalik brend qo‘llanmasi kiradi.\nMadina (designer) A yoki B variantini tanlash bo‘yicha javob kutmoqda.",
+      "summary_labelled": "Overview: Madina (designer) do‘koningiz uchun A va B logotip konsepsiyalarini yubordi. Siz ikkala variantni ma’qullab, to‘lov va tanlovni keyinroq amalga oshirishingizni aytdingiz; tanlov hali tasdiqlanmagan.\nOpen questions to the owner:\n- Madina (designer) asks you: A yoki B konsepsiyasidan qaysi biri tanlanadi?\nCommitments not yet done:\n- You promised Madina (designer): $75 boshlang‘ich to‘lovni yuborish (due: 2026-10-20)\n- You promised Madina (designer): A yoki B konsepsiyasidan birini tanlash (due: 2026-10-21)\n- Madina (designer) promised you: Yakuniy fayllarni tayyorlash (due: 2026-10-26)\nDecisions requested from the owner:\n- Madina (designer) is waiting for your decision: A yoki B logotip konsepsiyasidan birini tanlash\nKey facts:\n- A konsepsiyasi dumaloq va asalari uyasi naqshli; B konsepsiyasi esa yashil rangdagi, faqat matndan iborat.\n- Umumiy haq $150; uning 50 foizi, ya’ni $75, oldindan to‘lanadi.\n- Yakuniy to‘plamga PNG, SVG va bir sahifalik brend qo‘llanmasi kiradi.\nNeeds a reply from the owner: yes - Madina (designer) A yoki B variantini tanlash bo‘yicha javob kutmoqda."
+    },
+    {
+      "id": "c32",
+      "variant": "en",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 4,
+        "decisions_requested": 1,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c32.q1": true,
+        "c32.c1": null,
+        "c32.c2": null
+      },
+      "open_loop_keys": {
+        "c32.c1": "c32.c1#0b47cd62",
+        "c32.c2": "c32.c2#0b47cd62"
+      },
+      "open_loops_judged": {
+        "c32.c1": true,
+        "c32.c2": true
+      },
+      "open_loops_evidence": {
+        "c32.c1": "You promised Sarah (Makers Market): Soat 8:00 da yetib borish (due: 24-oktabr, soat 8:00)",
+        "c32.c2": "Sarah (Makers Market) promised you: Qoidalarni qayta yuborish (due: 21-oktabr kechqurun)"
+      },
+      "caveats_expected": 1,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [
+        "c32.g1"
+      ],
+      "caveat_pre_connection": false,
+      "caveat_lines": 1,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Sarah (Makers Market) 24-oktabrdagi Saturday Makers Market uchun sizning joyingizni tasdiqladi va tashkiliy ma’lumotlarni berdi. Qoidalarni qayta yuborish va elektr kerak-kerakmasligi masalasi ochiq.\nElektr energiyasi kerakmi?\nSoat 8:00 da yetib borish 24-oktabr, soat 8:00\nO‘z stoli va dasturxonini olib kelish 24-oktabr\nYuborilgan qoidalarni, ayniqsa oziq-ovqat yorliqlash qoidalarini o‘qish\nQoidalarni qayta yuborish 21-oktabr kechqurun\nQo‘shimcha 50 000 so‘m evaziga elektr energiyasidan foydalanish kerakmi?\nSaturday Makers Market 24-oktabrda bo‘ladi; joy raqami 14, shimoliy kirish yaqinida.\nJoy haqi 300 000 so‘m; tadbir kuni naqd to‘lanadi.\nTayyorlanish soat 8:00 da boshlanadi, bozor soat 10:00 da ochiladi.\nElektr energiyasi uchun qo‘shimcha 50 000 so‘m olinadi.\nSarah (Makers Market) elektr kerak-kerakmasligini so‘radi.",
+      "summary_labelled": "Overview: Sarah (Makers Market) 24-oktabrdagi Saturday Makers Market uchun sizning joyingizni tasdiqladi va tashkiliy ma’lumotlarni berdi. Qoidalarni qayta yuborish va elektr kerak-kerakmasligi masalasi ochiq.\nOpen questions to the owner:\n- Sarah (Makers Market) asks you: Elektr energiyasi kerakmi?\nCommitments not yet done:\n- You promised Sarah (Makers Market): Soat 8:00 da yetib borish (due: 24-oktabr, soat 8:00)\n- Sarah (Makers Market) asks you to (not agreed yet): O‘z stoli va dasturxonini olib kelish (due: 24-oktabr)\n- Sarah (Makers Market) asks you to (not agreed yet): Yuborilgan qoidalarni, ayniqsa oziq-ovqat yorliqlash qoidalarini o‘qish\n- Sarah (Makers Market) promised you: Qoidalarni qayta yuborish (due: 21-oktabr kechqurun)\nDecisions requested from the owner:\n- Sarah (Makers Market) is waiting for your decision: Qo‘shimcha 50 000 so‘m evaziga elektr energiyasidan foydalanish kerakmi?\nKey facts:\n- Saturday Makers Market 24-oktabrda bo‘ladi; joy raqami 14, shimoliy kirish yaqinida.\n- Joy haqi 300 000 so‘m; tadbir kuni naqd to‘lanadi.\n- Tayyorlanish soat 8:00 da boshlanadi, bozor soat 10:00 da ochiladi.\n- Elektr energiyasi uchun qo‘shimcha 50 000 so‘m olinadi.\nNeeds a reply from the owner: yes - Sarah (Makers Market) elektr kerak-kerakmasligini so‘radi."
+    },
+    {
+      "id": "c33",
+      "variant": "en",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 1,
+        "decisions_requested": 1,
+        "key_facts": 5
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c33.c1": null
+      },
+      "open_loop_keys": {
+        "c33.c1": "c33.c1#771db1ad"
+      },
+      "open_loops_judged": {
+        "c33.c1": true
+      },
+      "open_loops_evidence": {
+        "c33.c1": "Siz budjetni ko‘rib chiqib, chorshanba kuni tushgacha javob berishingizni aytdingiz.\n- You promised Rob (colleague): Budjetni ko‘rib chiqish va javob berish (due: 2026-10-21 tushgacha)\n- Rob (colleague) is waiting for your decision: Q4 qadoqlash budjetiga imzo qo‘yish"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 1,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c33#a8688b4a",
+          "reason": "contradicts_source",
+          "evidence": [
+            "c33.m06"
+          ],
+          "statement": "Needs a reply from the owner: no",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Rob juma kungi logistika jamoasi qo‘ng‘irog‘i qaydlarini yubordi: ombor inventarizatsiyasi sanasi o‘zgardi, yangi kuryer shartnomasi boshlanish sanasi belgilandi va Q4 qadoqlash budjetiga imzo kerak. Siz budjetni ko‘rib chiqib, chorshanba kuni tushgacha javob berishingizni aytdingiz.\nBudjetni ko‘rib chiqish va javob berish 2026-10-21 tushgacha\nQ4 qadoqlash budjetiga imzo qo‘yish\nOmbor inventarizatsiyasi 22-oktabr, payshanba kuniga ko‘chirildi.\nYangi kuryer shartnomasi 1-noyabrda boshlanadi.\nQ4 qadoqlash budjeti 4,800,000 so‘m.\nMoliya bo‘limi chorak rejasini payshanba kuni yopadi.\nRob juma kuni ishda bo‘lmaydi, uning o‘rnini Dilfuza qoplaydi.\nSiz chorshanba kuni tushgacha javob berishingizni aytdingiz.",
+      "summary_labelled": "Overview: Rob juma kungi logistika jamoasi qo‘ng‘irog‘i qaydlarini yubordi: ombor inventarizatsiyasi sanasi o‘zgardi, yangi kuryer shartnomasi boshlanish sanasi belgilandi va Q4 qadoqlash budjetiga imzo kerak. Siz budjetni ko‘rib chiqib, chorshanba kuni tushgacha javob berishingizni aytdingiz.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- You promised Rob (colleague): Budjetni ko‘rib chiqish va javob berish (due: 2026-10-21 tushgacha)\nDecisions requested from the owner:\n- Rob (colleague) is waiting for your decision: Q4 qadoqlash budjetiga imzo qo‘yish\nKey facts:\n- Ombor inventarizatsiyasi 22-oktabr, payshanba kuniga ko‘chirildi.\n- Yangi kuryer shartnomasi 1-noyabrda boshlanadi.\n- Q4 qadoqlash budjeti 4,800,000 so‘m.\n- Moliya bo‘limi chorak rejasini payshanba kuni yopadi.\n- Rob juma kuni ishda bo‘lmaydi, uning o‘rnini Dilfuza qoplaydi.\nNeeds a reply from the owner: no - Siz chorshanba kuni tushgacha javob berishingizni aytdingiz."
+    },
+    {
+      "id": "c34",
+      "variant": "en",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 3,
+        "decisions_requested": 1,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c34.c1": null
+      },
+      "open_loop_keys": {
+        "c34.c1": "c34.c1#bebb0629"
+      },
+      "open_loops_judged": {
+        "c34.c1": true
+      },
+      "open_loops_evidence": {
+        "c34.c1": "- You promised Kevin (IELTS tutor): Berilgan mavzuda Task 2 inshosini yuborish. (due: 2026-10-14 chorshanba kechasi)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Kevin (IELTS tutor) darsdan keyingi fikr-mulohazasini, uy vazifasini va 17-oktabr kungi sinov tafsilotlarini yubordi. Siz inshoni chorshanba kechasi yuborishingizni aytdingiz; noyabr kursi bo‘yicha tanlovingiz kutilmoqda.\nBerilgan mavzuda Task 2 inshosini yuborish. 2026-10-14 chorshanba kechasi\nOxirgi insho haqidagi ovozli fikr-mulohazani tinglash.\n17-oktabrdagi to‘liq sinov testida qatnashish va 9:45 gacha markazga yetib borish. 2026-10-17 9:45\nNoyabr kursida haftasiga 3 ta darsni davom ettirish yoki 2 ta darsga o‘tish.\nSpeaking darajasi taxminan 6.5 band deb baholandi.\nUy vazifasi — berilgan mavzuda bitta Task 2 inshosi; muddati payshanba kuni darsdan oldin.\nTo‘liq sinov testi 17-oktabr, shanba kuni, 10:00–13:00 da markazda bo‘ladi.\nNoyabr kursi narxi 1,200,000 so‘m.\nKevin (IELTS tutor) noyabr kursida haftasiga 3 ta darsni davom ettirish yoki 2 taga o‘tish bo‘yicha tanlovingizni so‘radi.",
+      "summary_labelled": "Overview: Kevin (IELTS tutor) darsdan keyingi fikr-mulohazasini, uy vazifasini va 17-oktabr kungi sinov tafsilotlarini yubordi. Siz inshoni chorshanba kechasi yuborishingizni aytdingiz; noyabr kursi bo‘yicha tanlovingiz kutilmoqda.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- You promised Kevin (IELTS tutor): Berilgan mavzuda Task 2 inshosini yuborish. (due: 2026-10-14 chorshanba kechasi)\n- Kevin (IELTS tutor) asks you to (not agreed yet): Oxirgi insho haqidagi ovozli fikr-mulohazani tinglash.\n- Kevin (IELTS tutor) asks you to (not agreed yet): 17-oktabrdagi to‘liq sinov testida qatnashish va 9:45 gacha markazga yetib borish. (due: 2026-10-17 9:45)\nDecisions requested from the owner:\n- Kevin (IELTS tutor) is waiting for your decision: Noyabr kursida haftasiga 3 ta darsni davom ettirish yoki 2 ta darsga o‘tish.\nKey facts:\n- Speaking darajasi taxminan 6.5 band deb baholandi.\n- Uy vazifasi — berilgan mavzuda bitta Task 2 inshosi; muddati payshanba kuni darsdan oldin.\n- To‘liq sinov testi 17-oktabr, shanba kuni, 10:00–13:00 da markazda bo‘ladi.\n- Noyabr kursi narxi 1,200,000 so‘m.\nNeeds a reply from the owner: yes - Kevin (IELTS tutor) noyabr kursida haftasiga 3 ta darsni davom ettirish yoki 2 taga o‘tish bo‘yicha tanlovingizni so‘radi."
+    },
+    {
+      "id": "c35",
+      "variant": "uz-ru-mix",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 2,
+        "decisions_requested": 0,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c35.c2": null
+      },
+      "open_loop_keys": {
+        "c35.c2": "c35.c2#cf1f8439"
+      },
+      "open_loops_judged": {
+        "c35.c2": true
+      },
+      "open_loops_evidence": {
+        "c35.c2": "- Rustam (kuryer) promised you: Omborda bo‘lish (due: 2026-10-22 08:30)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Rustam (kuryer) 21-oktabrdagi buyurtmalardan uchtasini yetkazdi; Bobur akaning buyurtmasi ertangi kunga qoldi. Pul va benzin cheki ofisga topshirildi, ertangi buyurtmalar ham aniqlashtirildi.\nBobur akaning buyurtmasini birinchi bo‘lib yetkazish 2026-10-22\nOmborda bo‘lish 2026-10-22 08:30\n21-oktabrdagi 4 ta manzildan 3 tasiga buyurtmalar yetkazildi; Chilonzordagi Bobur aka telefonni ko‘tarmagani uchun uning buyurtmasi qolib ketdi.\nBobur aka 22-oktabr ertalab soat 9:00 da uyda bo‘lishini aytgan.\n22-oktabrga 3 ta buyurtma bor: Bobur aka, Chilonzordagi Shoira opa (18:00 dan keyin) va Sergelidagi bitta ofis.\nNaqd yig‘ilgan 640 000 so‘m ofis kassiri Gulchehra opaga topshirildi va sanaldi; benzin uchun 50 ming ketgan, cheki ham berildi.",
+      "summary_labelled": "Overview: Rustam (kuryer) 21-oktabrdagi buyurtmalardan uchtasini yetkazdi; Bobur akaning buyurtmasi ertangi kunga qoldi. Pul va benzin cheki ofisga topshirildi, ertangi buyurtmalar ham aniqlashtirildi.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- Agreed with Rustam (kuryer): Rustam (kuryer) will do it: Bobur akaning buyurtmasini birinchi bo‘lib yetkazish (due: 2026-10-22)\n- Rustam (kuryer) promised you: Omborda bo‘lish (due: 2026-10-22 08:30)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- 21-oktabrdagi 4 ta manzildan 3 tasiga buyurtmalar yetkazildi; Chilonzordagi Bobur aka telefonni ko‘tarmagani uchun uning buyurtmasi qolib ketdi.\n- Bobur aka 22-oktabr ertalab soat 9:00 da uyda bo‘lishini aytgan.\n- 22-oktabrga 3 ta buyurtma bor: Bobur aka, Chilonzordagi Shoira opa (18:00 dan keyin) va Sergelidagi bitta ofis.\n- Naqd yig‘ilgan 640 000 so‘m ofis kassiri Gulchehra opaga topshirildi va sanaldi; benzin uchun 50 ming ketgan, cheki ham berildi.\nNeeds a reply from the owner: no"
+    },
+    {
+      "id": "c36",
+      "variant": "uz-ru-mix",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 3,
+        "decisions_requested": 1,
+        "key_facts": 3
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c36.q2": true,
+        "c36.c1": true
+      },
+      "open_loop_keys": {},
+      "open_loops_judged": {},
+      "open_loops_evidence": {},
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Nigora Dildora opaning 11-oktabrdagi tug‘ilgan kuniga syurpriz uyushtirishni taklif qildi. Yig‘ilish vaqti o‘zgargan, ammo yangi vaqt aytilmagan. Siz sharlarni olishga rozi bo‘ldingiz; tort buyurtma qilingan.\n100 mingdan qo‘shilish ma’qulmi?\n20 ta oq va tilla rangli shar sotib olish\n100 mingdan qo‘shilish\nDildora opaga syurpriz haqida aytmaslik\n100 mingdan qo‘shilish rejasini tasdiqlash\nDildora opaning tug‘ilgan kuni 11-oktabr, yakshanba kuni; syurpriz uning uyida rejalashtirilgan.\nYig‘ilish vaqti o‘zgargan, ammo yangi vaqt ko‘rsatilmagan.\nTort buyurtma qilingan, narxi 350 ming.\nNigora 100 mingdan qo‘shilish rejasini tasdiqlashingizni kutmoqda.",
+      "summary_labelled": "Overview: Nigora Dildora opaning 11-oktabrdagi tug‘ilgan kuniga syurpriz uyushtirishni taklif qildi. Yig‘ilish vaqti o‘zgargan, ammo yangi vaqt aytilmagan. Siz sharlarni olishga rozi bo‘ldingiz; tort buyurtma qilingan.\nOpen questions to the owner:\n- Nigora asks you: 100 mingdan qo‘shilish ma’qulmi?\nCommitments not yet done:\n- You promised Nigora: 20 ta oq va tilla rangli shar sotib olish\n- Nigora asks you to (not agreed yet): 100 mingdan qo‘shilish\n- Nigora asks you to (not agreed yet): Dildora opaga syurpriz haqida aytmaslik\nDecisions requested from the owner:\n- Nigora is waiting for your decision: 100 mingdan qo‘shilish rejasini tasdiqlash\nKey facts:\n- Dildora opaning tug‘ilgan kuni 11-oktabr, yakshanba kuni; syurpriz uning uyida rejalashtirilgan.\n- Yig‘ilish vaqti o‘zgargan, ammo yangi vaqt ko‘rsatilmagan.\n- Tort buyurtma qilingan, narxi 350 ming.\nNeeds a reply from the owner: yes - Nigora 100 mingdan qo‘shilish rejasini tasdiqlashingizni kutmoqda."
+    },
+    {
+      "id": "c37",
+      "variant": "uz-ru-mix",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 4,
+        "decisions_requested": 0,
+        "key_facts": 3
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c37.c1": null,
+        "c37.c2": true
+      },
+      "open_loop_keys": {
+        "c37.c1": "c37.c1#57aa916d"
+      },
+      "open_loops_judged": {
+        "c37.c1": true
+      },
+      "open_loops_evidence": {
+        "c37.c1": "- You promised Ergash aka (asalchi): Oldindan to‘lovni kartaga o‘tkazish (due: 2026-10-06)\n- Oldindan to‘lov 50%; qolgani asalni olganda beriladi."
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c37#250caa18",
+          "reason": "unsupported",
+          "evidence": [
+            "c37.m08"
+          ],
+          "statement": "Needs a reply from the owner: yes.",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Ergash aka (asalchi) tog‘ asalini taklif qildi; siz 40 kilo olishga kelishdingiz. Asalni Toshkentda olib berish va to‘lov tartibi belgilandi.\n40 kilo asalni olish\nAsalni Toshkentga olib kelish 2026-10-07\nOldindan to‘lovni kartaga o‘tkazish 2026-10-06\nO‘tgan safardan qolgan 3 ta bidonni qaytarish\n40 kilo asalning narxi 90 mingdan, jami 3 million 600 ming.\nOldindan to‘lov 50%; qolgani asalni olganda beriladi.\nUchrashuv 2026-10-07 kuni soat 14:00 larda Qo‘yliq bozori oldida bo‘lishi belgilandi.\nErgash aka (asalchi) o‘tgan safardan qolgan 3 ta bidonni qaytarishni so‘radi.",
+      "summary_labelled": "Overview: Ergash aka (asalchi) tog‘ asalini taklif qildi; siz 40 kilo olishga kelishdingiz. Asalni Toshkentda olib berish va to‘lov tartibi belgilandi.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- Agreed with Ergash aka (asalchi): you will do it: 40 kilo asalni olish\n- Agreed with Ergash aka (asalchi): Ergash aka (asalchi) will do it: Asalni Toshkentga olib kelish (due: 2026-10-07)\n- You promised Ergash aka (asalchi): Oldindan to‘lovni kartaga o‘tkazish (due: 2026-10-06)\n- Ergash aka (asalchi) asks you to (not agreed yet): O‘tgan safardan qolgan 3 ta bidonni qaytarish\nDecisions requested from the owner:\n- (none)\nKey facts:\n- 40 kilo asalning narxi 90 mingdan, jami 3 million 600 ming.\n- Oldindan to‘lov 50%; qolgani asalni olganda beriladi.\n- Uchrashuv 2026-10-07 kuni soat 14:00 larda Qo‘yliq bozori oldida bo‘lishi belgilandi.\nNeeds a reply from the owner: yes - Ergash aka (asalchi) o‘tgan safardan qolgan 3 ta bidonni qaytarishni so‘radi."
+    },
+    {
+      "id": "c38",
+      "variant": "uz-ru-mix",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 2,
+        "commitments": 3,
+        "decisions_requested": 0,
+        "key_facts": 5
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c38.q1": null,
+        "c38.q3": true,
+        "c38.c1": null,
+        "c38.c2": true,
+        "c38.c3": true
+      },
+      "open_loop_keys": {
+        "c38.q1": "c38.q1#f6d282a8",
+        "c38.c1": "c38.c1#f6d282a8"
+      },
+      "open_loops_judged": {
+        "c38.q1": true,
+        "c38.c1": false
+      },
+      "open_loops_evidence": {
+        "c38.q1": "- Kamron (hamkasb) asks you: Kecha yuborilgan hisobot ko‘rib chiqildimi?",
+        "c38.c1": "- You promised Kamron (hamkasb): Kechikish haqida xabar berish"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c38#e33586d1",
+          "reason": "unsupported",
+          "evidence": [],
+          "statement": "“Commitments not yet done” — the listed commitments are presented as not yet completed.",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Kamron (hamkasb) yig‘ilish va ish vazifalari haqida so‘radi. Yig‘ilish 9:30 da bo‘lishi aytildi; mijozlar bazasini yangilash va narxlar ro‘yxatini tayyorlash muddatlari belgilandi.\nKecha yuborilgan hisobot ko‘rib chiqildimi?\n30-oktabrda korporativ tadbir bo‘lishi aytildimi?\nKechikish haqida xabar berish\nYangi mijozlar bazasini yangilash juma kungacha\nNarxlar ro‘yxatini tayyorlash dushanbagacha\nYig‘ilish 9:30 da bo‘lishi aytildi.\nTiqilinch sabab kechikish kutilayotgani bildirildi.\nHisobot kecha yuborilgan.\nYig‘ilishdan keyingi vazifa — yangi mijozlar bazasini yangilash; muddati juma kungacha.\nNarxlar ro‘yxati dushanbagacha kerak.\nKamron hisobot ko‘rib chiqilganini va 30-oktabrda korporativ tadbir bo‘lish-bo‘lmasligini so‘radi.",
+      "summary_labelled": "Overview: Kamron (hamkasb) yig‘ilish va ish vazifalari haqida so‘radi. Yig‘ilish 9:30 da bo‘lishi aytildi; mijozlar bazasini yangilash va narxlar ro‘yxatini tayyorlash muddatlari belgilandi.\nOpen questions to the owner:\n- Kamron (hamkasb) asks you: Kecha yuborilgan hisobot ko‘rib chiqildimi?\n- Kamron (hamkasb) asks you: 30-oktabrda korporativ tadbir bo‘lishi aytildimi?\nCommitments not yet done:\n- You promised Kamron (hamkasb): Kechikish haqida xabar berish\n- Agreed with Kamron (hamkasb): Kamron (hamkasb) will do it: Yangi mijozlar bazasini yangilash (due: juma kungacha)\n- You promised Kamron (hamkasb): Narxlar ro‘yxatini tayyorlash (due: dushanbagacha)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Yig‘ilish 9:30 da bo‘lishi aytildi.\n- Tiqilinch sabab kechikish kutilayotgani bildirildi.\n- Hisobot kecha yuborilgan.\n- Yig‘ilishdan keyingi vazifa — yangi mijozlar bazasini yangilash; muddati juma kungacha.\n- Narxlar ro‘yxati dushanbagacha kerak.\nNeeds a reply from the owner: yes - Kamron hisobot ko‘rib chiqilganini va 30-oktabrda korporativ tadbir bo‘lish-bo‘lmasligini so‘radi."
+    },
+    {
+      "id": "c39",
+      "variant": "uz-ru-mix",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 0,
+        "commitments": 3,
+        "decisions_requested": 0,
+        "key_facts": 3
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c39.c1": null,
+        "c39.c2": null,
+        "c39.c3": null
+      },
+      "open_loop_keys": {
+        "c39.c1": "c39.c1#89ae5c60",
+        "c39.c2": "c39.c2#89ae5c60",
+        "c39.c3": "c39.c3#89ae5c60"
+      },
+      "open_loops_judged": {
+        "c39.c1": false,
+        "c39.c2": true,
+        "c39.c3": true
+      },
+      "open_loops_evidence": {
+        "c39.c1": "- Fotoapparat 18-oktabrdagi to'y uchun so'ralgan; uni 17-oktabr kechqurun olib ketish rejalashtirilgan edi.",
+        "c39.c2": "- Ulug'bek promised you: Fotoapparatni qaytarish (due: 2026-10-19)\n- Fotoapparatni 19-oktabr kuni soat 19:00 da ishxonaga olib borish rejalashtirilgan.",
+        "c39.c3": "- Ulug'bek promised you: Obyektiv qopqog'ining yangisini olib berish"
+      },
+      "caveats_expected": 1,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [
+        "c39.g1"
+      ],
+      "caveat_pre_connection": false,
+      "caveat_lines": 1,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Ulug'bek fotoapparatni to'yga olib turishni so'radi; keyin qopqoq yo'qolgani va uni almashtirishini aytib, fotoapparatni qaytarish rejasini bildirdi.\nFotoapparat bilan birga zaryadkasini berish\nObyektiv qopqog'ining yangisini olib berish\nFotoapparatni qaytarish 2026-10-19\nFotoapparat 18-oktabrdagi to'y uchun so'ralgan; uni 17-oktabr kechqurun olib ketish rejalashtirilgan edi.\nFotoapparat Ulug'bekda; obyektiv qopqog'i yo'qolgan, yangisi taxminan 120 ming turadi.\nFotoapparatni 19-oktabr kuni soat 19:00 da ishxonaga olib borish rejalashtirilgan.\nUlug'bek qaytarish rejasini aytgan; javob so'ramagan.",
+      "summary_labelled": "Overview: Ulug'bek fotoapparatni to'yga olib turishni so'radi; keyin qopqoq yo'qolgani va uni almashtirishini aytib, fotoapparatni qaytarish rejasini bildirdi.\nOpen questions to the owner:\n- (none)\nCommitments not yet done:\n- Ulug'bek asks you to (not agreed yet): Fotoapparat bilan birga zaryadkasini berish\n- Ulug'bek promised you: Obyektiv qopqog'ining yangisini olib berish\n- Ulug'bek promised you: Fotoapparatni qaytarish (due: 2026-10-19)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Fotoapparat 18-oktabrdagi to'y uchun so'ralgan; uni 17-oktabr kechqurun olib ketish rejalashtirilgan edi.\n- Fotoapparat Ulug'bekda; obyektiv qopqog'i yo'qolgan, yangisi taxminan 120 ming turadi.\n- Fotoapparatni 19-oktabr kuni soat 19:00 da ishxonaga olib borish rejalashtirilgan.\nNeeds a reply from the owner: no - Ulug'bek qaytarish rejasini aytgan; javob so'ramagan."
+    },
+    {
+      "id": "c40",
+      "variant": "uz-ru-mix",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 1,
+        "commitments": 3,
+        "decisions_requested": 0,
+        "key_facts": 2
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c40.q1": null,
+        "c40.c1": null,
+        "c40.c2": true
+      },
+      "open_loop_keys": {
+        "c40.q1": "c40.q1#0a6bb861",
+        "c40.c1": "c40.c1#0a6bb861"
+      },
+      "open_loops_judged": {
+        "c40.q1": false,
+        "c40.c1": false
+      },
+      "open_loops_evidence": {
+        "c40.q1": "Ойдин опа (қайнона) asks you: Qaynotangizning mashinasini texko‘rikка olib bora olasizmi?",
+        "c40.c1": "You promised Ойдин опа (қайнона): Tushlikka borish (due: 2026-10-11)"
+      },
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 0.966,
+      "screened": true,
+      "screen_error": null,
+      "flags": [],
+      "summary_text": "Ойдин опа ertangi tushlikka taklif qildi; siz borishingizni aytdingiz. Bozordan olib boriladigan mahsulotlar va seshanbadagi texko‘rik masalasi ham yozishildi.\nQaynotangizning mashinasini texko‘rikka olib bora olasizmi?\nTushlikka borish 2026-10-11\n2 kilo pomidor, bodring va ko‘kat olib borish\nQaynotangizning mashinasini texko‘rikka olib borish 2026-10-13\nTushlik 2026-10-11 kuni soat 13:00 lar atrofida bo‘lishi rejalashtirilgan; bolalarni ham olib borish so‘ralgan.\nMashina texko‘rigi seshanba, 2026-10-13 kuni soat 10:00 ga Sergelida belgilangan.\nОйдин опа mashinani texko‘rikka olib bora olishingizni so‘radi.",
+      "summary_labelled": "Overview: Ойдин опа ertangi tushlikka taklif qildi; siz borishingizni aytdingiz. Bozordan olib boriladigan mahsulotlar va seshanbadagi texko‘rik masalasi ham yozishildi.\nOpen questions to the owner:\n- Ойдин опа (қайнона) asks you: Qaynotangizning mashinasini texko‘rikka olib bora olasizmi?\nCommitments not yet done:\n- You promised Ойдин опа (қайнона): Tushlikka borish (due: 2026-10-11)\n- You promised Ойдин опа (қайнона): 2 kilo pomidor, bodring va ko‘kat olib borish\n- Ойдин опа (қайнона) asks you to (not agreed yet): Qaynotangizning mashinasini texko‘rikka olib borish (due: 2026-10-13)\nDecisions requested from the owner:\n- (none)\nKey facts:\n- Tushlik 2026-10-11 kuni soat 13:00 lar atrofida bo‘lishi rejalashtirilgan; bolalarni ham olib borish so‘ralgan.\n- Mashina texko‘rigi seshanba, 2026-10-13 kuni soat 10:00 ga Sergelida belgilangan.\nNeeds a reply from the owner: yes - Ойдин опа mashinani texko‘rikka olib bora olishingizni so‘radi."
+    }
+  ]
+}

@@ -156,7 +156,7 @@ async def test_an_owner_turn_gets_a_reply_and_everything_is_recorded(
     assert channel.sends == ["Synthetic answer."]
     assert channel.events == ["typing", "send"]
     [run] = await rows(factory, AgentRun)
-    assert (run.status, run.iterations, run.prompt_version) == ("succeeded", 1, "owner_request.v5")
+    assert (run.status, run.iterations, run.prompt_version) == ("succeeded", 1, "owner_request.v7")
     assert run.trigger_ref == f"turn:{turn_id}"
     assert run.finished_at is not None
     reply = (await rows(factory, ControlTurn))[-1]
@@ -192,8 +192,35 @@ async def test_the_request_carries_the_prompt_profile_and_history(
         ("assistant", "Reply"),
         ("user", "Synthetic question?"),
     ]
-    assert request.prompt_cache_key == "owner_request:owner_request.v5"
+    assert request.prompt_cache_key == "owner_request:owner_request.v7"
     assert request.effort == "low"
+
+
+@pytest.mark.parametrize(
+    ("tag", "profile_line"),
+    [
+        ("uz-Latn", "- preferred language: uz-Latn (Uzbek written in Latin letters)\n"),
+        ("uz-Cyrl", "- preferred language: uz-Cyrl (Uzbek written in Cyrillic letters)\n"),
+        ("ru", "- preferred language: ru (Russian)\n"),
+        ("kk", "- preferred language: kk\n"),
+        (None, "- preferred language: not set\n"),
+    ],
+)
+async def test_the_owner_profile_spells_out_the_language_and_script(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock, tag: str | None, profile_line: str
+) -> None:
+    """S03.7 fix round: 10 of 33 agent-mode replies were not in the owner's uz-Latn.
+    The bare tag is spelled out as the summarize context does (S03.6)."""
+    turn_id = await owner_turn(factory, clock)
+    async with transaction(factory) as uow:
+        account = (await uow.session.execute(select(Account))).scalar_one()
+        account.locale_pref = tag
+    fake = FakeLLM(text_response("ok"))
+
+    await build(factory, clock, fake, FakeChannel()).run(turn_id)
+
+    [request] = fake.requests
+    assert profile_line in request.instructions
 
 
 # --------------------------------------------------------------------- consent

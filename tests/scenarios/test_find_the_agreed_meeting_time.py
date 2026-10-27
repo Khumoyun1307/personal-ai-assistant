@@ -123,7 +123,7 @@ async def test_the_owner_finds_where_the_meeting_time_was_agreed(env: Env) -> No
         ).scalar_one()
         calls = (await session.execute(select(LlmCall))).scalars().all()
     assert run.tainted is True
-    assert run.prompt_version == "owner_request.v5"
+    assert run.prompt_version == "owner_request.v7"
     assert reply.refs == {"conversation_ids": [conversation_id], "contact_ids": [contact_id]}
     assert reply.contains_managed is True
     assert len(calls) == 3

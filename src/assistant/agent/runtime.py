@@ -9,8 +9,14 @@ scope tools per run:
         refusal / filtered       → safe reply
         truncated                → retry once with a larger budget, else fail
         tool calls               → execute all, append all results, continue
-        text                     → reply
+        text                     → cite sources, reply
     budget or deadline exhausted → partial reply with a note
+
+A reply's `[msg:<id>]` markers become sources read from the database, and
+markers for messages no tool returned in the run are removed (S03.7 B3,
+`agent/citations.py`). Without `ai_managed`, the chat-reading tools are
+offered as blocked stubs; a run that called one gets a fixed "chat access is
+off" line and the `/privacy managed` card (B5, D104).
 
 Messages within a run are append-only: the model's output is passed back
 unchanged. Across runs, context is rebuilt from `control_turns`.
@@ -36,8 +42,10 @@ from assistant.accounts.service import (
     ConsentMissingError,
     active_consent,
 )
-from assistant.agent import prompt_registry
+from assistant.agent import owner_texts, prompt_registry
+from assistant.agent.citations import apply_citations
 from assistant.agent.context import OWNER_HISTORY_TURNS, build_owner_request
+from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.agent.models import AgentRun
 from assistant.agent.persistence import (
     AgentRunRepository,
@@ -59,6 +67,7 @@ from assistant.agent.tools.registry import (
 from assistant.core.clock import Clock
 from assistant.core.model_routes import processor_for_model
 from assistant.db.uow import transaction
+from assistant.inbox.connection_alerts import send_managed_consent_card
 from assistant.llm.port import (
     InputItem,
     LLMClient,
@@ -118,6 +127,12 @@ class RunOutcome:
     note: str | None = None
     account_id: int | None = None
     ack_latency_ms: int | None = None
+    #: Messages the reply cites, verified against what the run's tools
+    #: returned (S03.7 B3), and how many markers were removed as unverified.
+    cited_message_ids: tuple[int, ...] = ()
+    unverified_citations: int = 0
+    #: A chat-reading tool was called while chat access is off (B5).
+    chat_access_off: bool = False
 
 
 # Owner-facing texts. Each says plainly what happened (§6 invariant 11).
@@ -172,6 +187,15 @@ class _RunState:
     #: When the owner's message arrived, and how long until the typing indicator.
     received_at: datetime | None = None
     ack_latency_ms: int | None = None
+    #: The owner's fixed-wording locale and timezone, for cited sources.
+    locale: SupportedLocale = "en"
+    timezone: str = "UTC"
+    #: A tool returned `chat_access_off` in this run (B5).
+    chat_access_off: bool = False
+    #: `ai_managed` is not granted at all: the consent card can help (B5).
+    may_ask_managed: bool = False
+    cited_ids: tuple[int, ...] = ()
+    unverified_citations: int = 0
 
 
 def _managed_refs(turns: list[ControlTurn]) -> ToolRefs:
@@ -247,6 +271,9 @@ class OwnerRequestRuntime:
             tier=CapabilityTier.CONTROL_ONLY,
             enabled_flags=self._config.enabled_flags,
             managed_consent=started.managed_consent,
+            # Without managed consent, the chat tools are blocked stubs: a
+            # chat question is answered "access is off", not blind (B5).
+            stub_managed_tools=True,
         )
         executor = ToolExecutor(
             context=ToolContext(
@@ -371,6 +398,9 @@ class OwnerRequestRuntime:
                 # refs and a purge of that chat redacts it too (§10.4).
                 refs=_managed_refs([*history, turn]),
                 received_at=turn.created_at,
+                locale=supported_locale(account.locale_pref),
+                timezone=account.timezone,
+                may_ask_managed=not managed_state.granted,
             )
             return _Started(
                 account_id,
@@ -449,13 +479,30 @@ class OwnerRequestRuntime:
                     state.items.extend(results)
                     state.refs = executor.refs
                     state.directly_tainted = state.directly_tainted or executor.saw_untrusted
+                    state.chat_access_off = executor.saw_chat_access_off
                     if any(result.provenance is Provenance.MANAGED for result in results):
                         state.used_managed = True
                 case StopReason.COMPLETED:
-                    text = (response.text or "").strip() or TEXT_EMPTY
+                    text = self._reply_text(state, executor, response.text)
                     return await self._finish(state, text, RunStatus.SUCCEEDED)
 
         return await self._finish(state, TEXT_LIMITS, RunStatus.FAILED, "run_limits")
+
+    def _reply_text(self, state: _RunState, executor: ToolExecutor, model_text: str | None) -> str:
+        """The model's answer with verified sources (B3), plus the fixed
+        "chat access is off" line when the run needed the chats (B5)."""
+        cited = apply_citations(
+            (model_text or "").strip(),
+            executor.citable,
+            locale=state.locale,
+            timezone=state.timezone,
+        )
+        state.cited_ids, state.unverified_citations = cited.cited_ids, cited.unverified
+        text = cited.text.strip()
+        if state.chat_access_off:
+            line = owner_texts.CHAT_ACCESS_OFF[state.locale]
+            return f"{text}\n\n{line}" if text else line
+        return text or TEXT_EMPTY
 
     async def _call(self, request: LLMRequest, state: _RunState) -> LLMResponse:
         """One call, retried once with a larger output budget if truncated (AGENTS §8).
@@ -554,6 +601,21 @@ class OwnerRequestRuntime:
                     refs=state.refs.as_json(),
                 )
             )
+        if (
+            status is RunStatus.SUCCEEDED
+            and delivery.ok
+            and state.chat_access_off
+            and state.may_ask_managed
+        ):
+            # After the reply, once per run (`_finish` runs once): the same
+            # card `/privacy managed` sends, through the control channel.
+            await send_managed_consent_card(
+                self._session_factory,
+                self._clock,
+                self._channel,
+                account_id=state.account_id,
+                chat_id=state.chat_id,
+            )
         logger.info(
             "agent_run_finished",
             account_id=state.account_id,
@@ -561,6 +623,9 @@ class OwnerRequestRuntime:
             status=status.value,
             iterations=state.iterations,
             delivered=delivery.ok,
+            cited=len(state.cited_ids),
+            unverified_citations=state.unverified_citations,
+            chat_access_off=state.chat_access_off,
         )
         return RunOutcome(
             status,
@@ -568,4 +633,7 @@ class OwnerRequestRuntime:
             delivery.message_id,
             account_id=state.account_id,
             ack_latency_ms=state.ack_latency_ms,
+            cited_message_ids=state.cited_ids,
+            unverified_citations=state.unverified_citations,
+            chat_access_off=state.chat_access_off,
         )

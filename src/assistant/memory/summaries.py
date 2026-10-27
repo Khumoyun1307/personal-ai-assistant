@@ -36,7 +36,7 @@ for a summary, which exists to outlive it.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -73,9 +73,16 @@ class SourceMessage:
     content_type: str
     text: str | None
     media_kind: str | None
-    edited: bool
+    #: When the message was last edited (its text is the edited one), or None.
+    #: Shown with the message (S03.7 A2, c36): a later "I changed the time"
+    #: refers to this edit, so the text holds the corrected value.
+    edited_at: datetime | None
     #: What the store re-checks: the message still has this content.
     content_hash: str | None = None
+
+    @property
+    def edited(self) -> bool:
+        return self.edited_at is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +160,7 @@ def _source(row: Message) -> SourceMessage:
         content_type=row.content_type,
         text=row.text,
         media_kind=(row.media or {}).get("kind") if row.media else None,
-        edited=row.edited_at is not None,
+        edited_at=row.edited_at,
         content_hash=row.content_hash,
     )
 
@@ -192,6 +199,53 @@ async def conversation_ref(session: AsyncSession, conversation_id: int) -> Conve
         return None
     account_id, mode, pending, is_bot = row
     return ConversationRef(conversation_id, int(account_id), str(mode), bool(is_bot), pending)
+
+
+def preferred_name(display_name: str | None, username: str | None) -> str | None:
+    """How the owner's views name a contact: the display name, else the
+    @username, else None (contact-chosen: callers wrap it as untrusted)."""
+    if display_name and display_name.strip():
+        return display_name.strip()
+    if username and username.strip().lstrip("@"):
+        return "@" + username.strip().lstrip("@")
+    return None
+
+
+async def contact_display_name(
+    session: AsyncSession, account_id: int, conversation_id: int
+) -> str | None:
+    """The name of THIS conversation's contact, for its summary run (S03.7):
+    account-scoped, one conversation, nothing about any other chat (§6
+    invariant 4)."""
+    row = (
+        await session.execute(
+            select(Contact.display_name, Contact.username)
+            .join(Conversation, Conversation.contact_id == Contact.id)
+            .where(Conversation.account_id == account_id)
+            .where(Contact.account_id == account_id)
+            .where(Conversation.id == conversation_id)
+        )
+    ).first()
+    return None if row is None else preferred_name(row[0], row[1])
+
+
+async def message_directions(
+    session: AsyncSession, account_id: int, conversation_id: int, ids: Collection[int]
+) -> dict[int, str]:
+    """Message id → direction (classification; content-free) for those of
+    `ids` that are this conversation's messages — who wrote what a summary
+    cites, for the attribution check (S03.7). Expired and deleted messages
+    keep their direction, so their authorship is still known."""
+    if not ids:
+        return {}
+    rows = await session.execute(
+        select(Message.id, Message.direction)
+        .where(Message.account_id == account_id)
+        .where(Message.conversation_id == conversation_id)
+        .where(Message.id.in_(sorted(ids)))
+        .where(Message.direction.is_not(None))
+    )
+    return {int(mid): str(direction) for mid, direction in rows.all()}
 
 
 async def rolling_summaries(
@@ -347,8 +401,12 @@ async def cached_period(
     start: datetime,
     end: datetime | None,
     digest: str,
+    prompt_version: str,
+    model: str,
 ) -> StoredSummary | None:
-    """A period summary for exactly this range and these messages."""
+    """A period summary for exactly this range and these messages, written by
+    this prompt version and model (S03.7: a v4 summary, without attribution
+    status, is never served as a v5 one; a changed model is a new summary)."""
     row = (
         await session.execute(
             select(ConversationSummary)
@@ -358,6 +416,8 @@ async def cached_period(
             .where(ConversationSummary.period_start == start)
             .where(ConversationSummary.period_end.is_not_distinct_from(end))
             .where(ConversationSummary.source_digest == digest)
+            .where(ConversationSummary.prompt_version == prompt_version)
+            .where(ConversationSummary.model == model)
         )
     ).scalar_one_or_none()
     return None if row is None else _stored(row)

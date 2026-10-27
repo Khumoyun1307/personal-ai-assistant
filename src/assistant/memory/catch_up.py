@@ -510,13 +510,23 @@ IMPORTANCE_ORDER = (NEEDS_ATTENTION, COMMITMENTS, OTHER)
 
 
 def importance(summary: Mapping[str, Any] | None, *, awaiting_owner_reply: bool) -> str:
-    """Grouping for a catch-up (FR-SUM-01): questions or decisions for the
-    owner, or a reply owed, first; then commitments; then the rest."""
+    """Grouping for a catch-up (FR-SUM-01): questions, decisions or requests
+    (S03.7: something the contact asked the owner to do, not yet agreed) for
+    the owner, or a reply owed, first; then commitments; then the rest. A
+    v1-v4 commitment (no `status`) is a promise."""
     if summary is None:
         return NEEDS_ATTENTION if awaiting_owner_reply else OTHER
+    commitments = summary.get("commitments")
+    requested = any(
+        isinstance(item, Mapping)
+        and item.get("by") == "owner"
+        and item.get("status") == "requested"
+        for item in (commitments if isinstance(commitments, list) else [])
+    )
     if (
         summary.get("open_questions_to_owner")
         or summary.get("decisions_requested")
+        or requested
         or (awaiting_owner_reply and summary.get("needs_reply"))
     ):
         return NEEDS_ATTENTION

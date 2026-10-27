@@ -8,7 +8,8 @@ place that turns a conversation into prompt text, so that rule has one test.
 
 Times are shown in the owner's timezone, as the summarizer is shown them (E-w):
 a judge reading UTC flagged a correct local time ("08:30" for 03:30 UTC) as
-contradicting the chat.
+contradicting the chat. An edited message says when it was edited and that its
+text is the current one, as the summarizer is shown it (S03.7 A2).
 """
 
 from __future__ import annotations
@@ -23,8 +24,10 @@ from evals.schema import Conversation, Message
 OWNER_TIMEZONE = "Asia/Tashkent"
 #: Version of what `render_conversation` produces, part of the judge's label in a
 #: report: v1 showed UTC times (the 2026-10-26 baseline and summarize.v3 runs), v2
-#: the owner's local times (E-w, from the summarize.v4 runs on).
-RENDER_VERSION = "render.v2"
+#: the owner's local times (E-w, from the summarize.v4 runs on), v3 when an edited
+#: message was edited and that its text is the current one, as the summarizer is
+#: shown it (S03.7 A2, from the summarize.v6 runs on).
+RENDER_VERSION = "render.v3"
 
 _MEDIA = {
     "photo": "[photo]",
@@ -40,8 +43,13 @@ def _local(moment: datetime, zone: ZoneInfo) -> str:
 def _line(conversation: Conversation, message: Message, zone: ZoneInfo) -> str:
     who = conversation.owner.display_name if message.direction == "owner" else None
     who = who or conversation.contact.display_name
-    flags = " (edited)" if message.edited else ""
+    flags = (
+        f" (edited at {_local(message.edited_at, zone)}; this is its current text)"
+        if message.edited_at is not None
+        else ""
+    )
     if message.deleted:
+        flags = " (edited)" if message.edited_at is not None else ""  # no text to call current
         body = "[deleted]"
     else:
         parts = [_MEDIA[message.media]] if message.media else []

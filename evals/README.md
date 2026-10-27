@@ -117,6 +117,8 @@ python -m evals run retrieval                           # deterministic baseline
 python -m evals run retrieval --mode variants --estimate-only   # worst-case cost, calls nothing
 python -m evals run retrieval --mode variants --live    # REAL model; owner's go-ahead + cost approval
 python -m evals run retrieval --mode replay --replay-from docs/evals/<variants run>.json  # no model, no cost
+python -m evals run retrieval --mode agent --live --limit 1   # REAL model: a one-query trial of the agent loop
+python -m evals run retrieval --mode agent --live --calibrate-from docs/evals/<agent trial>.json  # full agent run (E-ab)
 python -m evals run summary --estimate-only             # worst-case cost of the summary run, calls nothing
 python -m evals run summary --live                      # REAL model; owner's go-ahead + cost approval
 python -m evals run summary --live --owner-language ru  # summaries in another owner language (default uz-Latn)
@@ -134,7 +136,8 @@ flags: `--limit N` (N >= 1: a **trial** run, named `…-trial`, never a gate),
 `--model ID` (model-choice comparison; default is the route's configured model),
 `--price MODEL=IN:OUT` (positive USD per 1M tokens, for a model the product's price
 table lacks; refused for a model it already prices), `--budget-usd` (default 1),
-`--owner-language uz-Latn|uz-Cyrl|ru|en` (summary only, default `uz-Latn`).
+`--owner-language uz-Latn|uz-Cyrl|ru|en` (summary and retrieval `--mode agent`, default
+`uz-Latn`), `--calibrate-from TRIAL.json` (retrieval `--mode agent` only, E-ab).
 Exit codes: 0 done (a deliberate trial included), 2 refused or misconfigured, 4 the
 run **stopped before its planned items** (budget cap; its report is still written). A run that fails midway writes a content-free
 `…-aborted.json` with what it spent. A run drops its throwaway database when it ends, fails
@@ -143,12 +146,17 @@ database on the server. `python -m evals cleanup` lists such leftovers and
 `python -m evals cleanup --yes` drops them (only names of exactly that form, and never a database a running evaluation is
 connected to: it is not listed, and the drop is not forced, S03.6).
 
-**Targets.** `retrieval` has three modes over the 38 queries: `deterministic` (the
+**Targets.** `retrieval` has four modes over the 38 queries: `deterministic` (the
 query as typed goes to `memory.retrieval.search_messages`; target in the top 5,
-threshold 85 %) and `variants` (a model writes query variants and names the chat
-partner if the owner did; the name is resolved with the product's own contact matcher,
-as the agent's `resolve_contact` would, and an unambiguous match narrows the search to
-that contact, widened again if it finds nothing, E-t; the original plus variants are
+threshold 85 %) and `variants` (a model writes query variants with the eval-side prompt
+`retrieval_variants.v2`, whose rule 1 mirrors the search bullet of the shipped
+`owner_request` rule 5 (v6, unchanged in v7) — the
+partner's name out of the search phrases, the words the message would contain — E-f, and
+names the chat partner if the owner did; the name is resolved with the product's own
+contact matcher, as the agent's `resolve_contact` would, and an unambiguous match
+narrows the search to that contact; a narrowed search that finds nothing is widened by
+the **product's** search service (`widen_empty_scope`, as the `search_messages` tool
+does), not by the harness, E-t, E-z; the original plus variants are
 searched; the JSON report keeps what was searched, the partner named, the contact filter
 that produced the hits and `widened` (the filter was dropped because the filtered search
 found nothing; the filter is then not shown); a second call writes the final answer from
@@ -163,6 +171,56 @@ report given with `--replay-from`) with the current search code: top 5 only, a
 pre-screen, written as `<date>-retrieval-replay-deterministic`. It measures a search
 change without paying for a model, but the variants are those the model wrote for the
 old code.
+
+`agent` (`evals/agent_mode.py`, S03.7) measures **the pipeline exactly as the product
+runs it**: per query, the question is stored as an owner control turn and the real
+`OwnerRequestRuntime` answers it, with the shipped `owner_request` prompt (the prompt
+registry's active version), `default_registry()` with the production release flags (the
+`FEATURE_FLAGS` line of the M03 owner guide), a real `Summarizer`, the product's
+`AgentConfig` budgets, a fixed clock and an eval-side control channel that keeps the
+reply. The corpus account gets a control chat, `ai_control` and `ai_managed` consents
+naming the processor of the run's model, an active connection and the owner language
+(`--owner-language`, default `uz-Latn`). After each query the account's control turns,
+agent runs, memory items, summaries, cards, confirmations and audit rows are deleted and
+its settings and chat modes restored: **no query sees another's history**. Every stored
+chat has a coverage start, as ingestion sets it (the dataset's pre-connection start, else
+the chat's first message; `corpus.coverage_start`), so the account-wide coverage start a
+search reports is the earliest chat's, not the one labelled chat's. Wrappers around the
+`search_messages` and `get_conversation` handlers record what each call returned, and the
+run's tool sequence is read from `agent_run_steps` before the reset (instrumentation
+only). Metrics (E-aa): **top 5** = a target among the first 5 results of *any*
+`search_messages` call in the run (no search at all is a miss, `no_search`); **correct
+reply with reference** = the run succeeded, at least one citation the runtime verified
+(`[msg:id]` turned into a source, ARCHITECTURE §7.2) points to a target, no citation was
+removed as unverified, and every `answer_values` string is in the model's own words
+(markers removed; the sources the application added do not count) as whole words, or
+with E-s endings only where a cited target message has that very form. Amounts and clock
+times compare as values (`agent_mode.value_key`): `03:15` = `3:15 a.m.`, `1 500 000` =
+`1,5 mln` = `1 million 500 ming`, `3 mln` = `3 миллион`, `300 ming` = `300 000`; a number
+with no unit or thousands group is left as written, and an Uzbek ending on an amount
+still needs a cited target with that form. Thresholds 85 % and 80 %, gated on
+owner-confirmed items like every gate. Next to them, **target reached the model** (a
+target among *any* search result, past the fifth too, or among the messages
+`get_conversation` showed) is informational only: it would also credit a run that found
+the answer by reading a whole chat, hiding a search-ranking regression, and the answer
+metric already scores the pipeline end to end. **Provider outages:** a run that fails
+with `llm_unavailable` or `llm_rate_limited` is run again from a fresh state after 15 s
+and 60 s (at most 3 attempts, each billed; the evaluation's SDK client retries nothing);
+an item that never gets through is **not evaluated** — neither a hit nor a miss, listed
+in `not_evaluated` — and the run is incomplete (exit 4, no gate, no calibration). The
+JSON keeps per item the tool sequence (names and statuses), the searches (phrases,
+contact filter, `widened`, top 5 and every result), the chats read and the message ids
+they showed, the verified citations, the unverified count, the run status, the provider
+error's SDK class (`exc_type`) and each failed attempt, and the reply (synthetic). **Cost (E-ab):** the agent
+loop's worst case (its token budget, the last call at full output plus one truncation
+retry, and two summary calls per query) is USD 1.34 for 38 queries on gpt-6-luna (USD
+0.035 for one), over the default cap, so a full run is refused unless it is calibrated: run a `--limit 1`
+trial first, then pass its JSON report with `--calibrate-from`. The run then starts when
+the trial's spend per query × the queries × 1.5 fits the cap (the trial must be a
+finished agent-mode run of the same model and the shipped prompt, with spend recorded),
+and the hard in-flight cap still refuses every call that could pass it: a run that hits
+the cap is **stopped**, incomplete (exit 4), never a gate. Without `--calibrate-from` the
+usual worst-case rule applies.
 
 `summary` (`evals/summary.py`) runs the **real S03.2 `summarize` path** over the 40 E1
 conversations, always with a model (so `--live` is always needed). Each conversation
@@ -207,9 +265,48 @@ one place for the judges (`evals/render.py`); the summarizer sees only what the 
 context builder gives it (messages, never labels, `original_text` or `purged_text`); a test
 asserts that for every call.
 
+**Attribution (S03.7).** The summarizer's context also names the conversation's contact
+once (the dataset's `contact.display_name`, wrapped as untrusted, as the product does), and
+the stored summary has already passed the product's attribution check (a "promise" citing
+only the other side's messages is stored as that side's request; an item no cited message
+supports from the side it names is dropped). The judges read the summary with who asked,
+promised or agreed written **in the product's own English wording** (`agent/attribution.py`
+`render_who`, with the contact's name — e.g. `- Aziza asks you to (not agreed yet): …`),
+not a harness-only phrasing; that text is `labelled_text`, version `labels.v2`, and the
+fabrication judge's label names it (then `fabrication.v1+render.v2+labels.v2`), so flags counted
+over the older "promised by the owner" text are not compared as one series. The language
+and value checks still read the model's own words only (`plain_text`, E-q). Each
+conversation's JSON record carries `attribution_demoted` and `attribution_dropped` (counts).
+
+**Judges after the summarize.v5 run (S03.7 A2).** Both rubrics now say that "you" in the
+summary (or its translation: siz, сиз, вы) is the owner, the person marked `(owner)` in the
+transcript (`fabrication.v2`, `open_loops.v4`): 3 of the 11 over-flags of that run were
+correct "You promised …" lines. The judge transcript shows when an edited message was
+edited and that its text is the current one, as the summarizer is shown it (`render.v3`),
+so the fabrication judge's label is `fabrication.v2+render.v3+labels.v2`; earlier labels are
+not one series with it. The open-loop judge's quote is checked in code
+(`judge.evidence_in_summary`: every quoted line, split at line breaks and ellipses, must
+occur in the summary, ignoring case, spacing, bullets and apostrophe forms): a "surfaced"
+whose quote is not in the summary — or is empty — counts as **missed** in the pre-screen,
+and the JSON record lists it under `open_loops_unquoted` with the judge's quote kept in
+`open_loops_evidence` for the owner. This changes only the pre-screen; owner verdicts decide
+the gate.
+
+**Near quotes (S03.7 round 3).** In the summarize.v6 run the exact check rejected four
+correct verdicts and caught no invented quote: the judge had copied the line with a slip (a
+Latin letter swapped for its Cyrillic look-alike next to a Cyrillic name, a dropped "(not
+agreed yet)"). A quoted piece that is not in the summary now still counts when it is at
+least 0.90 similar (`difflib`, on the same folded text) to one summary line **and** carries
+exactly that line's numbers (`judge.quote_match`, `NEAR_QUOTE_RATIO`): the four slips score
+0.925–0.973, the v5 run's invented line 0.55, and a copy with another time or amount never
+counts. Such loops count as surfaced in the pre-screen and are listed under
+`open_loops_near_quotes`, so the owner can check them. The rubric text is unchanged
+(`open_loops.v4`).
+
 `python -m evals run summary --estimate-only` prints the worst-case cost, and
-`--limit N` (a trial) runs the first N conversations; both leave the set sizes of the
-gate at the whole set, so a trial never passes.
+`--limit N` (a trial) runs the first N conversations; `--only c36,c28,c15` (a trial) runs
+just the named conversations, in set order (not with `--limit`, and never the whole set).
+Both leave the set sizes of the gate at the whole set, so a trial never passes.
 
 **Gate versus pre-screen.** Every metric is reported twice: over all items (the
 deterministic and judge *pre-screen*) and over the items the owner has confirmed

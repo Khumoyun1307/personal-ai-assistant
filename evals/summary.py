@@ -51,6 +51,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from assistant.accounts.models import Account, BusinessConnection
 from assistant.accounts.service import CONSENT_AI_CONTROL, CONSENT_AI_MANAGED, grant_consent
 from assistant.agent import prompt_registry
+from assistant.agent.attribution import (
+    MAX_NAME,
+    NO_CHANGES,
+    WHO_TEMPLATES,
+    AttributionCounts,
+    render_who,
+)
 from assistant.agent.context import build_summarize
 from assistant.agent.models import AgentRun
 from assistant.agent.schemas import (
@@ -124,6 +131,12 @@ _EVAL_OWNER_CHAT_ID = 7_000_000_098
 #: the pre-run estimate only.
 _ID_SLACK_CHARS = 500
 
+#: The longest `who` line `labelled_text` can write: the longest English template
+#: with the longest name, in every slot it has.
+_MAX_WHO_CHARS = max(
+    len(template.replace("{name}", "")) + template.count("{name}") * MAX_NAME
+    for template in WHO_TEMPLATES["en"].values()
+)
 #: The longest summary text `sanitize` can store (every list at its cap, every
 #: text at its limit) plus the labels of `labelled_text`: an upper bound on what a
 #: judge can be asked to read, for the pre-run estimate.
@@ -131,6 +144,7 @@ MAX_SUMMARY_CHARS = (
     MAX_OVERVIEW
     + 3 * MAX_ITEMS * (MAX_ITEM_TEXT + 4)
     + MAX_ITEMS * (MAX_ITEM_TEXT + MAX_DUE + 40)
+    + 3 * MAX_ITEMS * (_MAX_WHO_CHARS + 2)
     + MAX_REASON
     + 300
 )
@@ -183,7 +197,7 @@ def _source_messages(conversation: Conversation) -> list[SourceMessage]:
             content_type=message.media or "text",
             text=message.text,
             media_kind=message.media,
-            edited=message.edited_at is not None,
+            edited_at=message.edited_at,
         )
         for number, message in enumerate(conversation.messages, start=1)
         if not message.deleted
@@ -208,22 +222,27 @@ def plain_text(summary: Mapping[str, Any]) -> str:
     return "\n".join(part for part in parts if part)
 
 
-def labelled_text(summary: Mapping[str, Any]) -> str:
+def labelled_text(summary: Mapping[str, Any], *, contact_name: str | None) -> str:
     """The summary with its structure named, for the judges (who must know that
-    an item is a commitment of the owner, say). English labels: never used for the
-    language check."""
+    an item is a commitment of the owner, say). Who asked, promised or agreed is
+    written exactly as the product words it for the owner (`render_who`, English,
+    with the contact's name; `judge.LABELS_VERSION`). English labels: never used
+    for the language check."""
+
+    def line(key: str, item: Mapping[str, Any]) -> str:
+        who = render_who(key, item, contact_name, "en")
+        return f"- {who}: {item['text']}" if who else f"- {item['text']}"
 
     def points(title: str, key: str) -> list[str]:
         items = summary.get(key) or []
-        return [title, *(f"- {item['text']}" for item in items)] if items else [title, "- (none)"]
+        return [title, *(line(key, item) for item in items)] if items else [title, "- (none)"]
 
     commitments = summary.get("commitments") or []
     lines = [f"Overview: {summary.get('overview') or ''}"]
     lines += points("Open questions to the owner:", "open_questions_to_owner")
     lines.append("Commitments not yet done:")
     lines += [
-        f"- promised by the {item['by']}: {item['text']}"
-        + (f" (due: {item['due']})" if item.get("due") else "")
+        line("commitments", item) + (f" (due: {item['due']})" if item.get("due") else "")
         for item in commitments
     ] or ["- (none)"]
     lines += points("Decisions requested from the owner:", "decisions_requested")
@@ -323,6 +342,15 @@ class _Record:
     check: CaveatCheck
     caveat_lines: int
     screen: ScreenResult
+    #: What the product's attribution check changed in this summary (S03.7).
+    attribution: AttributionCounts = NO_CHANGES
+    #: Loops the judge called surfaced with a quote that is not in the summary:
+    #: counted as missed in the pre-screen, listed for the owner (S03.7 A2).
+    unquoted: tuple[str, ...] = ()
+    #: Loops judged surfaced whose quote is only a near copy of a summary line (a
+    #: letter in another script, a dropped parenthesis): counted, listed for the
+    #: owner (S03.7 round 3).
+    near_quotes: tuple[str, ...] = ()
 
     @property
     def summarized(self) -> bool:
@@ -347,6 +375,11 @@ class _Record:
             "error": self.error,
             "summary_calls": self.calls,
             "items": dict(self.counts),
+            # Items the attribution check demoted (a "promise" citing only the
+            # other side became a request) or dropped (no cited message of the
+            # side it names): counts, written before the judges read the summary.
+            "attribution_demoted": self.attribution.demoted,
+            "attribution_dropped": self.attribution.dropped,
             "open_loops": dict(self.coverage),
             # The ledger key of each loop awaiting the owner's verdict: it names the
             # summary the verdict is about (a re-run's summary has other keys).
@@ -357,6 +390,10 @@ class _Record:
             },
             "open_loops_judged": dict(self.judged),
             "open_loops_evidence": dict(self.evidence),
+            # Judged surfaced, but the quote is not in the summary: no evidence.
+            "open_loops_unquoted": list(self.unquoted),
+            # Judged surfaced on a near copy of a summary line: counted, listed.
+            "open_loops_near_quotes": list(self.near_quotes),
             "caveats_expected": self.check.expected,
             "caveats_missing": list(self.check.missing),
             "caveats_spurious": list(self.check.spurious),
@@ -426,11 +463,28 @@ class SummaryTarget:
         return self._factory
 
     def _selected(self, context: RunContext) -> list[Conversation]:
+        if context.only is not None:
+            return self.named(context.only, limit=context.limit)
         if context.limit is None:
             return self._conversations
         if context.limit < 1:
             raise ValueError("limit must be at least 1")
         return self._conversations[: context.limit]
+
+    def named(self, ids: Sequence[str], *, limit: int | None = None) -> list[Conversation]:
+        """The conversations `--only` names, in set order: a cheap trial of chosen
+        chats (S03.7 round 3). A selection is always a trial, so it must name at
+        least one chat and fewer than all of them, and cannot be combined with a
+        limit."""
+        if limit is not None:
+            raise ValueError("only and limit cannot be combined")
+        wanted = set(ids)
+        unknown = sorted(wanted - {c.id for c in self._conversations})
+        if unknown:
+            raise ValueError(f"only names unknown conversations: {', '.join(unknown)}")
+        if not wanted or len(wanted) >= len(self._conversations):
+            raise ValueError("only must name at least one conversation and not the whole set")
+        return [c for c in self._conversations if c.id in wanted]
 
     # ------------------------------------------------------------- estimate
     def plan(self, context: RunContext) -> Sequence[PlannedCall]:
@@ -465,6 +519,7 @@ class SummaryTarget:
             account=Account(timezone=OWNER_TIMEZONE, locale_pref=self.owner_language),
             messages=_source_messages(conversation),
             period=catch_up_window(conversation),
+            contact_name=conversation.contact.display_name,
         )
         return (
             len(built.instructions) + sum(len(item.text) for item in built.items) + _ID_SLACK_CHARS
@@ -534,7 +589,8 @@ class SummaryTarget:
         if summary is None:
             error = await self._failure_code(loaded, outcome)
         else:
-            text, plain, counts = labelled_text(summary), plain_text(summary), _item_counts(summary)
+            text = labelled_text(summary, contact_name=conversation.contact.display_name)
+            plain, counts = plain_text(summary), _item_counts(summary)
         output = SummaryOutput(
             conversation.id, text, self.owner_language, facts.gap_ids, facts.pre_connection
         )
@@ -543,6 +599,8 @@ class SummaryTarget:
             screen = ScreenResult(conversation.id, (), screened=False, error="summary_failed")
             judged: dict[str, bool] = {}
             evidence: dict[str, str] = {}
+            unquoted: tuple[str, ...] = ()
+            near_quotes: tuple[str, ...] = ()
             language = LanguageVerdict(False, None, 0.0)
         else:
             screen = await LLMFabricationJudge(
@@ -564,6 +622,18 @@ class SummaryTarget:
             )
             judged = {loop: verdict.surfaced for loop, verdict in verdicts.items()}
             evidence = {loop: verdict.evidence for loop, verdict in verdicts.items()}
+            unquoted = tuple(
+                sorted(
+                    loop
+                    for loop, verdict in verdicts.items()
+                    if verdict.judge_surfaced and not verdict.quoted
+                )
+            )
+            near_quotes = tuple(
+                sorted(
+                    loop for loop, verdict in verdicts.items() if verdict.surfaced and verdict.near
+                )
+            )
             language = check_language(plain, self.owner_language)
         return _Record(
             conversation=conversation,
@@ -577,9 +647,12 @@ class SummaryTarget:
             coverage=loops,
             judged=judged,
             evidence=evidence,
+            unquoted=unquoted,
+            near_quotes=near_quotes,
             check=check_caveats(conversation, output),
             caveat_lines=facts.lines,
             screen=screen,
+            attribution=outcome.attribution,
         )
 
     async def _failure_code(self, loaded: _Loaded, outcome: PeriodOutcome) -> str:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -28,6 +29,7 @@ from evals.summary import SummaryTarget
 from evals.targets import Measure, MetricResult, RunContext, TargetResult
 from pydantic import SecretStr
 
+from assistant.agent import prompt_registry
 from assistant.config import Settings
 from assistant.llm.port import Usage
 
@@ -341,6 +343,41 @@ def test_the_summary_estimate_follows_the_owner_language_and_limit(
     assert "summary (period-ru)" in second
 
 
+def test_only_runs_the_named_summary_conversations(
+    no_settings: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S03.7 round 3: `--only c36,c28,c15` estimates (and runs) those chats only."""
+    assert cli.main(["run", "summary", "--model", LUNA, "--estimate-only", "--limit", "3"]) == 0
+    assert (
+        cli.main(["run", "summary", "--model", LUNA, "--estimate-only", "--only", "c36,c28,c15"])
+        == 0
+    )
+    limited, only = capsys.readouterr().out.splitlines()
+    assert re.search(r"\b(9|1[0-2]) calls", only)
+    assert limited != only  # other chats, other sizes
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["run", "summary", "--only", "c36,c99"], "c99"),
+        (["run", "summary", "--only", "c36", "--limit", "1"], "--only"),
+        (["run", "summary", "--only", ",".join(c.id for c in load_e1())], "--only"),
+        (["run", "retrieval", "--only", "r01"], "--only"),
+    ],
+)
+def test_a_bad_only_selection_is_refused_before_anything_runs(
+    no_settings: None, args: list[str], message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main([*args, "--model", LUNA, "--estimate-only"]) == cli.EXIT_REFUSED
+    assert message in capsys.readouterr().err
+
+
+def test_an_only_run_is_reported_as_a_trial(tmp_path: Path) -> None:
+    trial = result(items=3, planned=3, total=38, confirmed=Measure(3, 3))
+    assert "selected (`--limit` or `--only`)" in render_markdown(meta(LUNA), trial, spent())
+
+
 def test_a_summary_run_over_the_cap_does_not_start(
     no_settings: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -372,6 +409,73 @@ def test_no_client_is_built_for_a_summary_run_without_live(
     assert cli.main([*summary, "--live", "--estimate-only"]) == 0  # estimating builds nothing
     assert cli.main([*summary, "--live", "--no-write"]) == cli.EXIT_REFUSED
     assert cli.main([*summary, "--live", "--budget-usd", "0.01"]) == cli.EXIT_REFUSED
+
+
+def _agent_trial(tmp_path: Path, name: str = "trial.json", **overrides: Any) -> Path:
+    """A recorded `--limit 1` agent-mode trial, as `to_json` writes it."""
+    report: dict[str, Any] = {
+        "target": "retrieval",
+        "mode": "agent",
+        "model": LUNA,
+        "items": 1,
+        "stopped": False,
+        "prompts": [prompt_registry.active("owner_request").label],
+        "cost": {"spent_usd": "0.004", "calls": 3},
+    }
+    report.update(overrides)
+    path = tmp_path / name
+    path.write_text(json.dumps(report), encoding="utf-8")
+    return path
+
+
+def test_agent_mode_budget_rule(
+    forbid_client: None, no_settings: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """E-ab: a full agent run's worst case is over the cap, so it starts only on
+    the expected cost calibrated from a trial, under the in-flight cap."""
+    agent = ["run", "retrieval", "--mode", "agent", "--model", LUNA]
+
+    # Without --live nothing runs; a trial's worst case fits the cap.
+    assert cli.main(agent) == cli.EXIT_REFUSED
+    assert cli.main([*agent, "--estimate-only", "--limit", "1"]) == 0
+    capsys.readouterr()
+
+    # Uncalibrated, the full run is refused on its worst case, with the way out.
+    assert cli.main([*agent, "--live"]) == cli.EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert "over the $1 cap" in err
+    assert "--calibrate-from" in err
+
+    # Calibrated: 0.004 per query x 38 queries x the 1.5 margin = 0.228, under the cap.
+    trial = _agent_trial(tmp_path)
+    assert cli.main([*agent, "--estimate-only", "--calibrate-from", str(trial)]) == 0
+    out = capsys.readouterr().out
+    assert "expected $0.2280" in out
+    assert "worst case $" in out
+    # With --live every guard passes: it gets as far as building the client.
+    with pytest.raises(AssertionError, match="a model client was configured or built"):
+        cli.main([*agent, "--live", "--calibrate-from", str(trial)])
+
+    # An expected cost over the cap is refused too.
+    pricey = _agent_trial(tmp_path, "pricey.json", cost={"spent_usd": "0.05", "calls": 3})
+    assert cli.main([*agent, "--live", "--calibrate-from", str(pricey)]) == cli.EXIT_REFUSED
+    assert "expected" in capsys.readouterr().err
+
+    # A calibration only counts from a finished agent trial of the same model and prompt.
+    for name, wrong in {
+        "variants.json": {"mode": "variants"},
+        "model.json": {"model": "gpt-6-other"},
+        "prompt.json": {"prompts": ["owner_request.v1"]},
+        "stopped.json": {"stopped": True},
+        "empty.json": {"items": 0},
+    }.items():
+        path = _agent_trial(tmp_path, name, **wrong)
+        assert cli.main([*agent, "--live", "--calibrate-from", str(path)]) == cli.EXIT_REFUSED
+        assert "calibrat" in capsys.readouterr().err
+
+    # And only agent mode takes one.
+    variants = ["run", "retrieval", "--mode", "variants", "--model", LUNA, "--live"]
+    assert cli.main([*variants, "--calibrate-from", str(trial)]) == cli.EXIT_REFUSED
 
 
 def test_a_summary_run_with_the_flag_reaches_the_client_before_any_database(
@@ -661,3 +765,31 @@ def test_the_only_sdk_client_is_built_in_live_py() -> None:
         if "AsyncOpenAI(" in p.read_text(encoding="utf-8")
     ]
     assert builders == ["live.py"]
+
+
+def test_items_not_evaluated_make_the_run_incomplete_never_a_pass(tmp_path: Path) -> None:
+    """S03.7 fix round (H1): an item the provider kept failing is neither a hit
+    nor a miss; the run is incomplete, flagged, and exits non-zero."""
+    full = result(items=37, planned=38, confirmed=Measure(37, 37))
+    outage = replace(full, not_evaluated=("r14",))
+    assert not outage.stopped  # every planned item ran
+    assert not outage.complete
+    assert cli.exit_code(outage) == cli.EXIT_INCOMPLETE
+    text = render_markdown(meta(LUNA), outage, spent())
+    assert "INCOMPLETE RUN" in text
+    assert "r14" in text
+    assert "STOPPED RUN" not in text
+    assert "**PASS**" not in text
+    _, machine = write_report(tmp_path, meta(LUNA), outage, spent())
+    data = json.loads(machine.read_text(encoding="utf-8"))
+    assert data["not_evaluated"] == ["r14"]
+    assert data["complete"] is False
+
+
+def test_a_trial_with_an_item_not_evaluated_cannot_calibrate(
+    no_settings: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    agent = ["run", "retrieval", "--mode", "agent", "--model", LUNA, "--estimate-only"]
+    path = _agent_trial(tmp_path, "outage.json", not_evaluated=["r01"])
+    assert cli.main([*agent, "--calibrate-from", str(path)]) == cli.EXIT_REFUSED
+    assert "not evaluated" in capsys.readouterr().err

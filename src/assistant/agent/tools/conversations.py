@@ -20,6 +20,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
+from assistant.agent.citations import CitableMessage
+from assistant.agent.locales import supported_locale
 from assistant.agent.tools.common import (
     COVERAGE_RULE,
     DIRECTION_LABELS,
@@ -31,6 +33,7 @@ from assistant.agent.tools.common import (
     name,
     one,
     require_contacts,
+    summary_authors,
     summary_view,
 )
 from assistant.agent.tools.registry import (
@@ -211,6 +214,11 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
             limit=args.limit or 30,
         )
         stored = await summaries.rolling_summary(session, ctx.account_id, conversation_id)
+        authors = (
+            {}
+            if stored is None
+            else await summary_authors(session, ctx.account_id, conversation_id, stored.summary)
+        )
         unseen = (
             await session.execute(
                 select(Conversation.pending_ai_since)
@@ -225,7 +233,14 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
         # The chat's running summary (S03.2): model output, wrapped as
         # untrusted like the messages it was written from.
         summary = {
-            **summary_view(stored.summary),
+            **summary_view(
+                stored.summary,
+                contact_name=summaries.preferred_name(
+                    page.conversation.display_name, page.conversation.username
+                ),
+                locale=supported_locale(account.locale_pref),
+                authors=authors,
+            ),
             "updated_at": local_time(stored.updated_at, tz),
             "up_to_date": not unseen,
         }
@@ -263,6 +278,16 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
             conversation_ids=frozenset({page.conversation.conversation_id}),
             contact_ids=frozenset({page.conversation.contact_id}),
         ),
+        # The page's messages may be cited in the reply (S03.7 B3).
+        citable={
+            m.message_id: CitableMessage(
+                conversation_id=page.conversation.conversation_id,
+                contact_name=page.conversation.display_name,
+                sent_at=m.sent_at,
+                direction=m.direction,
+            )
+            for m in page.messages
+        },
     )
 
 
@@ -284,6 +309,15 @@ GET_CONVERSATION = ToolDefinition(
 
 
 # ------------------------------------------------------------ resolve_contact
+#: No contact by that name: it may be someone mentioned inside a chat, so the
+#: model searches for it before saying nothing was found (S03.7 fix round,
+#: owner decision 2 of 2026-10-26; r21, r30 stopped here).
+NO_CONTACT_NOTE = (
+    "No stored contact matches that name. It may be a person mentioned inside a chat: "
+    "search for it with search_messages across all chats before saying nothing was found."
+)
+
+
 class ResolveContactArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -316,7 +350,7 @@ async def resolve_contact_tool(ctx: ToolContext, args: ResolveContactArgs) -> To
     if len(candidates) > 1 and matches[0].kind == matches[1].kind:
         data["note"] = "Several contacts match equally: ask the owner which one they mean."
     if not candidates:
-        data["note"] = "No stored contact matches that name."
+        data["note"] = NO_CONTACT_NOTE
     return ToolOutcome(
         "ok",
         data,

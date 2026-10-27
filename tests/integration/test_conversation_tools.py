@@ -14,13 +14,24 @@ import json
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from assistant.accounts.models import ControlTurn, PendingInput
+from assistant.accounts.service import AI_PROCESSORS
+from assistant.agent import owner_texts
+from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.agent.models import AgentRun, AgentRunStep, ToolConfirmation
 from assistant.agent.runtime import RunStatus
-from assistant.agent.tools.registry import CapabilityTier, default_registry
-from assistant.llm.port import LLMRequest, ToolResultItem
+from assistant.agent.tools.conversations import NO_CONTACT_NOTE
+from assistant.agent.tools.registry import (
+    CHAT_ACCESS_OFF,
+    CHAT_ACCESS_OFF_REASON,
+    CapabilityTier,
+    default_registry,
+)
+from assistant.agent.tools.search import WIDENED_NOTE
+from assistant.inbox.connection_alerts import MANAGED_CONSENT_BUTTONS, MANAGED_CONSENT_QUESTION
+from assistant.llm.port import LLMRequest, Provenance, ToolResultItem
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response, tool_response
 from tests.integration.agent_env import (
@@ -38,6 +49,7 @@ from tests.integration.agent_env import (
 )
 from tests.integration.business_env import (
     CONTACT,
+    OTHER_CONTACT,
     OWNER,
     T_BASE,
     Env,
@@ -45,6 +57,7 @@ from tests.integration.business_env import (
     callback,
     connect,
     connection_update,
+    decline_managed,
     deliver,
     environment,
     grant_managed,
@@ -592,12 +605,16 @@ async def test_reject_changes_nothing_and_clears_the_arguments(env: Env) -> None
 
 
 # ------------------------------------------------------------ RG-08 extension
-async def test_rg08_without_managed_consent_the_read_tools_are_absent_and_no_managed_text_is_sent(
+async def test_rg08_without_managed_consent_the_read_tools_are_blocked_stubs_and_no_managed_text_is_sent(  # noqa: E501
     env: Env,
 ) -> None:
     """RG-08 (invariant 9), S03.1 extension: an owner question about a contact
-    after `ai_managed` is revoked offers no read tool, and nothing managed —
-    not the contact's text, not their name — reaches the model."""
+    after `ai_managed` is revoked reaches no read tool, and nothing managed —
+    not the contact's text, not their name — reaches the model.
+
+    S03.7 B5 (D104): the read tools are offered under their names as blocked
+    stubs, so a chat question is answered "chat access is off" instead of
+    blindly; a stub reads nothing and returns only `chat_access_off`."""
     await seed(env, message_text="CANARY-SYNTH-77 secret plan")
     await deliver(env, private_message(OWNER, "/privacy revoke"))
     await deliver(env, private_message(OWNER, "/start"))
@@ -623,12 +640,273 @@ async def test_rg08_without_managed_consent_the_read_tools_are_absent_and_no_man
     await runtime(env, fake, FakeChannel()).run(turn)
 
     offered = {tool.name for tool in fake.requests[0].tools}
-    assert offered.isdisjoint(READ_TOOLS)
+    assert offered >= READ_TOOLS  # as blocked stubs only
     [refused] = results(fake.requests[1])
-    assert refused == {"status": "error", "reason": "this tool is not available"}
+    assert refused == {"status": CHAT_ACCESS_OFF, "reason": CHAT_ACCESS_OFF_REASON}
     for request in fake.requests:
         assert "CANARY-SYNTH-77" not in request_texts(request)
+        assert "Kamola" not in request_texts(request).replace(
+            "What did Kamola say about the plan?", ""
+        )
         assert not request.contains_managed()
+        assert all(item.provenance is not Provenance.MANAGED for item in request.items)
+    async with env.factory() as session:
+        steps = (await session.execute(select(AgentRunStep.status))).scalars().all()
+    assert list(steps) == [CHAT_ACCESS_OFF]
+
+
+# ------------------------------------------------------------ B5: chat access off
+async def _managed_cards(env: Env) -> list[PendingInput]:
+    async with env.factory() as session:
+        rows = await session.execute(
+            select(PendingInput).where(PendingInput.kind == "managed_consent")
+        )
+        return list(rows.scalars().all())
+
+
+async def _locale(env: Env) -> SupportedLocale:
+    async with env.factory() as session:
+        locale_pref = (
+            await session.execute(text("SELECT locale_pref FROM app.accounts LIMIT 1"))
+        ).scalar_one()
+    return supported_locale(locale_pref)
+
+
+async def _access_off_line(env: Env) -> str:
+    return owner_texts.CHAT_ACCESS_OFF[await _locale(env)]
+
+
+SEARCH_PLAN = args(
+    queries=["plan"], contact_id=None, conversation_id=None, since=None, until=None, limit=None
+)
+
+
+async def test_without_managed_consent_a_chat_question_gets_the_consent_card(env: Env) -> None:
+    await seed(env, managed=False, message_text="CANARY-SYNTH-78 plan")
+    cards_before = len(await _managed_cards(env))
+    turn = await ask(env, "What did Kamola say about the plan?")
+    fake = FakeLLM(
+        tool_response(("c1", "search_messages", SEARCH_PLAN)),
+        text_response("I can't see your chats, so I can't tell what Kamola said."),
+    )
+    channel = FakeChannel()
+
+    outcome = await runtime(env, fake, channel).run(turn)
+
+    assert outcome.status is RunStatus.SUCCEEDED
+    line = await _access_off_line(env)
+    reply, card = channel.sends
+    assert reply == f"I can't see your chats, so I can't tell what Kamola said.\n\n{line}"
+    assert card == MANAGED_CONSENT_QUESTION.format(processors=", ".join(AI_PROCESSORS))
+    reply_buttons, card_buttons = channel.buttons
+    assert reply_buttons == ()
+    assert [b.label for b in card_buttons] == [label for label, _ in MANAGED_CONSENT_BUTTONS]
+    cards = await _managed_cards(env)
+    assert len(cards) == cards_before + 1
+    new_card = cards[-1]
+    assert new_card.prompt_message_id is not None
+    assert all(new_card.token in b.callback_data for b in card_buttons)
+    assert outcome.chat_access_off is True
+    for request in fake.requests:
+        assert "CANARY-SYNTH-78" not in request_texts(request)
+        assert not request.contains_managed()
+
+
+async def test_the_card_is_sent_at_most_once_per_run(env: Env) -> None:
+    await seed(env, managed=False)
+    turn = await ask(env, "Kamola?")
+    fake = FakeLLM(
+        tool_response(
+            ("c1", "search_messages", SEARCH_PLAN),
+            ("c2", "list_conversations", args(**LIST_ARGS)),
+        ),
+        tool_response(("c3", "get_conversation", args(**{**GET_ARGS, "conversation_id": 1}))),
+        text_response("Chat access is off."),
+    )
+    channel = FakeChannel()
+
+    await runtime(env, fake, channel).run(turn)
+
+    assert len(channel.sends) == 2  # the reply, then one card
+    assert sum(1 for buttons in channel.buttons if buttons) == 1
+    assert [r["status"] for r in results(fake.requests[1])] == [CHAT_ACCESS_OFF] * 2
+
+
+async def test_without_managed_consent_a_question_that_needs_no_chat_gets_no_card(
+    env: Env,
+) -> None:
+    await seed(env, managed=False)
+    turn = await ask(env, "Hello")
+    fake = FakeLLM(text_response("Hello!"))
+    channel = FakeChannel()
+
+    await runtime(env, fake, channel).run(turn)
+
+    assert channel.sends == ["Hello!"]
+
+
+async def test_with_managed_consent_the_real_tool_runs(env: Env) -> None:
+    await seed(env, message_text="Plan tayyor")
+    turn = await ask(env, "Plan?")
+    fake = FakeLLM(
+        tool_response(("c1", "search_messages", SEARCH_PLAN)),
+        text_response("The plan is ready."),
+    )
+    channel = FakeChannel()
+
+    outcome = await runtime(env, fake, channel).run(turn)
+
+    [found] = results(fake.requests[1])
+    assert found["status"] == "ok"
+    assert found["result_count"] == 1
+    assert channel.sends == ["The plan is ready."]
+    assert outcome.chat_access_off is False
+
+
+async def test_the_card_is_not_offered_again_for_a_day_after_not_now(env: Env) -> None:
+    """Owner decision 5 (2026-10-26): after "Not now", a chat question gets the
+    one-line "chat access is off" text but not the card, for 24 hours."""
+    await seed(env, managed=False)
+    await decline_managed(env)
+    line = await _access_off_line(env)
+
+    async def chat_question() -> FakeChannel:
+        turn = await ask(env, "What did Kamola say about the plan?")
+        fake = FakeLLM(
+            tool_response(("c1", "search_messages", SEARCH_PLAN)),
+            text_response("Chat access is off."),
+        )
+        channel = FakeChannel()
+        await runtime(env, fake, channel).run(turn)
+        return channel
+
+    cards_before = len(await _managed_cards(env))
+    env.clock.advance(hours=23)
+    quiet = await chat_question()
+    assert quiet.sends == [f"Chat access is off.\n\n{line}"]
+    assert quiet.buttons == [()]
+    assert len(await _managed_cards(env)) == cards_before
+
+    env.clock.advance(hours=2)  # more than a day after "Not now"
+    again = await chat_question()
+    assert again.sends[0] == f"Chat access is off.\n\n{line}"
+    assert again.sends[1] == MANAGED_CONSENT_QUESTION.format(processors=", ".join(AI_PROCESSORS))
+    assert len(await _managed_cards(env)) == cards_before + 1
+
+
+# ------------------------------------------------------------ owner decision 2
+async def test_resolve_contact_without_a_match_points_to_a_search_across_all_chats(
+    env: Env,
+) -> None:
+    """A name that is no contact may be someone mentioned inside a chat (r21, r30)."""
+    await seed(env)
+    turn = await ask(env, "tom ustasi Hamid")
+    fake = FakeLLM(
+        tool_response(("c1", "resolve_contact", args(name="Hamid", limit=None))),
+        text_response("Searching."),
+    )
+
+    await runtime(env, fake, FakeChannel()).run(turn)
+
+    [found] = results(fake.requests[1])
+    assert found["status"] == "ok"
+    assert found["count"] == 0
+    assert found["note"] == NO_CONTACT_NOTE
+    assert "search_messages" in NO_CONTACT_NOTE
+    assert "across all chats" in NO_CONTACT_NOTE
+
+
+# ------------------------------------------------------------ B1 widening, B3 citations
+async def test_search_messages_reports_widened_results_with_their_contacts(env: Env) -> None:
+    await seed(env, message_text="Kalitni qoshnida qoldirdim")
+    await deliver(
+        env,
+        business_message(
+            from_id=OTHER_CONTACT,
+            chat_id=OTHER_CONTACT,
+            message_id=12,
+            message_text="Salom",
+            first_name="Dilnoza",
+            date=T_BASE,
+        ),
+    )
+    dilnoza = await one_id(
+        env, "SELECT id FROM app.contacts WHERE telegram_user_id = :t", t=OTHER_CONTACT
+    )
+    turn = await ask(env, "Dilnoza kalit haqida nima dedi?")
+    fake = FakeLLM(
+        tool_response(
+            (
+                "c1",
+                "search_messages",
+                args(**{**SEARCH_ARGS, "queries": ["kalit"], "contact_id": dilnoza}),
+            )
+        ),
+        text_response("Not from Dilnoza: Kamola wrote it."),
+    )
+
+    await runtime(env, fake, FakeChannel()).run(turn)
+
+    [found] = results(fake.requests[1])
+    assert found["status"] == "ok"
+    assert found["widened"] is True
+    assert found["note"] == WIDENED_NOTE
+    [hit] = found["results"]
+    assert "Kamola" in hit["contact_name"]
+    assert hit["contact_id"] != dilnoza
+
+
+async def test_the_reply_cites_only_messages_the_run_retrieved(env: Env) -> None:
+    """B3: a marker for a message a tool returned becomes its source; one for
+    any other message (even a real one in this account) is removed with a note."""
+    await seed(env, message_text="Uchrashuv soat 5 da")
+    await deliver(
+        env,
+        business_message(
+            from_id=OTHER_CONTACT,
+            chat_id=OTHER_CONTACT,
+            message_id=12,
+            message_text="Boshqa xabar",
+            first_name="Dilnoza",
+            date=T_BASE,
+        ),
+    )
+    not_retrieved = await one_id(
+        env, "SELECT id FROM app.messages WHERE text = :t", t="Boshqa xabar"
+    )
+    turn = await ask(env, "Uchrashuv qachon?")
+
+    def answer(request: LLMRequest) -> Any:
+        [found] = results(request)
+        message_id = found["results"][0]["message_id"]
+        return text_response(f"Soat 5 da [msg:{message_id}]. Yana [msg:{not_retrieved}].")
+
+    fake = FakeLLM(
+        tool_response(("c1", "search_messages", args(**{**SEARCH_ARGS, "queries": ["uchrashuv"]}))),
+        answer,
+    )
+    channel = FakeChannel()
+
+    outcome = await runtime(env, fake, channel).run(turn)
+
+    [reply] = channel.sends
+    assert "[msg:" not in reply
+    assert "Kamola" in reply
+    assert "Dilnoza" not in reply
+    assert reply.endswith(owner_texts.CITATION_REMOVED[await _locale(env)])
+    assert len(outcome.cited_message_ids) == 1
+    assert not_retrieved not in outcome.cited_message_ids
+    assert outcome.unverified_citations == 1
+    async with env.factory() as session:
+        stored = (
+            await session.execute(
+                select(ControlTurn.text)
+                .where(ControlTurn.role == "assistant")
+                .order_by(ControlTurn.id.desc())
+                .limit(1)
+            )
+        ).scalar_one()
+    assert stored == reply
 
 
 async def test_flags_off_means_no_read_tools(env: Env) -> None:

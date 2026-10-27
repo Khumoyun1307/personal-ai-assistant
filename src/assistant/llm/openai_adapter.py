@@ -231,4 +231,4 @@ def _classify(error: openai.OpenAIError) -> LLMError:
     else:
         kind = LLMErrorKind.UNAVAILABLE
     logger.warning("llm_call_failed", exc_type=type(error).__name__, kind=kind.value, code=code)
-    return LLMError(kind, code=code)
+    return LLMError(kind, code=code, exc_type=type(error).__name__)

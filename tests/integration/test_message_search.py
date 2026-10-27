@@ -324,6 +324,122 @@ async def test_contact_and_date_filters(env: Env) -> None:
     assert recent == ["Hisobot tayyor emas"]
 
 
+async def contact_id_of(env: Env, telegram_user_id: int) -> int:
+    async with env.factory() as session:
+        return int(
+            (
+                await session.execute(
+                    text("SELECT id FROM app.contacts WHERE telegram_user_id = :t"),
+                    {"t": telegram_user_id},
+                )
+            ).scalar_one()
+        )
+
+
+async def widened_search(
+    env: Env, *queries: str, filters: SearchFilters, owner: int = OWNER
+) -> retrieval.SearchResult:
+    async with env.factory() as session:
+        return await search_messages(
+            session,
+            await account_id(env, owner),
+            queries,
+            now=env.clock.now(),
+            filters=filters,
+            widen_empty_scope=True,
+        )
+
+
+# ------------------------------------------------------------ widening (S03.7 B1)
+async def test_an_empty_contact_filtered_search_is_widened_and_says_so(env: Env) -> None:
+    await connect(env)
+    await say(env, "Kalitni qoshnida qoldirdim", contact=CONTACT)
+    await say(env, "Salom", contact=OTHER_CONTACT)
+    other = await contact_id_of(env, OTHER_CONTACT)
+
+    result = await widened_search(env, "kalit", filters=SearchFilters(contact_ids=(other,)))
+
+    assert [hit.text for hit in result.hits] == ["Kalitni qoshnida qoldirdim"]
+    assert result.widened is True
+    assert result.hits[0].contact_id == await contact_id_of(env, CONTACT)
+    # Without the option the filtered search stays empty: other callers keep
+    # today's behaviour unless they ask for it.
+    assert await find(env, "kalit", filters=SearchFilters(contact_ids=(other,))) == []
+
+
+async def test_a_filtered_search_with_hits_is_not_widened(env: Env) -> None:
+    await connect(env)
+    await say(env, "Hisobot tayyor", contact=CONTACT)
+    await say(env, "Hisobot tayyor emas", contact=OTHER_CONTACT)
+    other = await contact_id_of(env, OTHER_CONTACT)
+
+    result = await widened_search(env, "hisobot", filters=SearchFilters(contact_ids=(other,)))
+
+    assert [hit.text for hit in result.hits] == ["Hisobot tayyor emas"]
+    assert result.widened is False
+
+
+async def test_widening_keeps_the_date_range(env: Env) -> None:
+    await connect(env)
+    await say(env, "Eski hisobot", contact=CONTACT, days_ago=10)
+    await say(env, "Yangi hisobot", contact=CONTACT, days_ago=1)
+    await say(env, "Salom", contact=OTHER_CONTACT)
+    other = await contact_id_of(env, OTHER_CONTACT)
+    since = env.clock.now() - timedelta(days=3)
+
+    result = await widened_search(
+        env, "hisobot", filters=SearchFilters(contact_ids=(other,), since=since)
+    )
+
+    assert [hit.text for hit in result.hits] == ["Yangi hisobot"]
+    assert result.widened is True
+
+
+async def test_widening_stays_within_the_account(migrated_url: str) -> None:
+    """Invariant 12: a widened search is still account-scoped."""
+    other_owner = 7000000002
+    async with environment(migrated_url, owner_ids=frozenset({OWNER, other_owner})) as env:
+        await connect(env)
+        await say(env, "Salom", contact=CONTACT)
+        await deliver(env, private_message(other_owner, "/start"))
+        await deliver(env, private_message(other_owner, "yes"))
+        await deliver(env, connection_update(user_id=other_owner, connection_id="synthetic-conn-b"))
+        await deliver(
+            env,
+            business_message(
+                "synthetic-conn-b",
+                from_id=7000000077,
+                chat_id=7000000077,
+                message_text="Maxfiy shartnoma theirs",
+            ),
+        )
+        mine = await contact_id_of(env, CONTACT)
+
+        result = await widened_search(env, "shartnoma", filters=SearchFilters(contact_ids=(mine,)))
+
+        assert result.hits == ()
+        assert result.widened is True
+
+
+async def test_a_russian_accusative_finds_the_nominative(env: Env) -> None:
+    """S03.7 B2: Russian case endings (квартиру / квартира) meet in both scripts."""
+    await connect(env)
+    await say(env, "Квартиру сдали в аренду")
+    await say(env, "Mashina tayyor")
+    for query, expected in (
+        ("квартира аренда", "Квартиру сдали в аренду"),
+        ("kvartira", "Квартиру сдали в аренду"),
+        ("машину", "Mashina tayyor"),
+    ):
+        async with env.factory() as session:
+            result = await search_messages(
+                session, await account_id(env), [query], now=env.clock.now()
+            )
+        # A word match (all words), not only a trigram near-miss.
+        assert [hit.text for hit in result.hits if hit.word_match] == [expected], query
+        assert result.relaxed is False
+
+
 async def test_deleted_and_purged_messages_are_not_found(env: Env) -> None:
     await connect(env)
     gone = await say(env, "Maxfiy parol yozuvi")

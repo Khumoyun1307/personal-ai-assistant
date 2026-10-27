@@ -412,7 +412,7 @@ async def test_a_small_period_takes_its_digest_from_the_rows_it_read(
 
 
 def test_the_cap_note_does_not_claim_the_left_out_items_are_older() -> None:
-    view = summary_view({"items_omitted": 3})
+    view = summary_view({"items_omitted": 3}, contact_name=None, locale="en", authors={})
     assert "older" not in view["note"]
     assert view["items_omitted"] == 3
 

@@ -1,0 +1,256 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-26",
+  "set": "summary",
+  "target": "summary",
+  "dataset": "e1",
+  "mode": "period-uz-Latn",
+  "model": "gpt-6-luna",
+  "live": true,
+  "effort": "low",
+  "complete": false,
+  "trial": true,
+  "stopped": false,
+  "items": 1,
+  "items_planned": 1,
+  "items_total": 40,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "summarize.v6",
+    "fabrication.v2+render.v3+labels.v2",
+    "open_loops.v4"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "open_loop_recall",
+      "label": "Open question/commitment recall",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.95,
+      "all_items": {
+        "numerator": 4,
+        "denominator": 5,
+        "ratio": 0.8
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "fail",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 103,
+      "failed_items": [
+        "c01.c3"
+      ],
+      "pending": 0,
+      "note": "2 open loop(s) not matched on `values` (none, or not found literally, e.g. translated): judge pre-screen only, the gate needs the owner's verdict (0 unresolved among the owner-confirmed items)"
+    },
+    {
+      "key": "caveat_presence",
+      "label": "Coverage caveat present whenever gaps exist",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "not evaluable",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 6,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "spurious_caveats",
+      "label": "Caveats for gaps that lost nothing",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 1,
+        "ratio": 0.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": "Ungated wiring check: the plan's caveat threshold (the final reply keeps every caveat, D64) is not measured by this target; see E-p."
+    },
+    {
+      "key": "owner_language",
+      "label": "Owner-facing language and script correct",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 1.0,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "fabricated_facts",
+      "label": "Fabricated facts (zero allowed)",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": 0,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "fail",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 40,
+      "failed_items": [
+        "c01#ea5932ac"
+      ],
+      "pending": 1,
+      "note": "1 flagged statement(s) pending owner confirmation"
+    }
+  ],
+  "breakdowns": {
+    "open-loop recall (pre-screen) by variant": {
+      "uz-Latn": {
+        "numerator": 4,
+        "denominator": 5,
+        "ratio": 0.8
+      }
+    },
+    "owner-language check by variant": {
+      "uz-Latn": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.0016445",
+    "calls": 3,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 3,
+        "input_tokens": 6375,
+        "output_tokens": 2014,
+        "cost_usd": "0.0016445",
+        "cost_per_100_items_usd": "0.1644500"
+      }
+    }
+  },
+  "notes": [
+    "Caveats come from the product's deterministic renderer over the harness's own synthetic gap rows, not from the model (E-d, E-p): the two caveat metrics are an ungated wiring regression check. Recall and language are measured on the per-chat summary (the summarize output), not on the owner-facing reply."
+  ],
+  "details": [
+    {
+      "id": "c01",
+      "variant": "uz-Latn",
+      "status": "summarized",
+      "error": null,
+      "summary_calls": 1,
+      "items": {
+        "open_questions_to_owner": 2,
+        "commitments": 4,
+        "decisions_requested": 2,
+        "key_facts": 4
+      },
+      "attribution_demoted": 0,
+      "attribution_dropped": 0,
+      "open_loops": {
+        "c01.q2": true,
+        "c01.q3": null,
+        "c01.c1": true,
+        "c01.c2": true,
+        "c01.c3": null
+      },
+      "open_loop_keys": {
+        "c01.q3": "c01.q3#86f741ac",
+        "c01.c3": "c01.c3#86f741ac"
+      },
+      "open_loops_judged": {
+        "c01.q3": true,
+        "c01.c3": false
+      },
+      "open_loops_evidence": {
+        "c01.q3": "- Dilnoza asks you: Nodira opalar ham keladimi?\n- Dilnoza is waiting for your decision: Nodira opalarga xabar berish yoki ularga qo‘ng‘iroq qilishni tanlash",
+        "c01.c3": "- Dilnoza promised you: Katta ro‘mol va chiroyli choynak to‘plamini olish"
+      },
+      "open_loops_unquoted": [],
+      "caveats_expected": 0,
+      "caveats_missing": [],
+      "caveats_spurious": [],
+      "caveat_gap_ids": [],
+      "caveat_pre_connection": false,
+      "caveat_lines": 0,
+      "language_ok": true,
+      "language_detected": "uz",
+      "script_share": 1.0,
+      "screened": true,
+      "screen_error": null,
+      "flags": [
+        {
+          "id": "c01#ea5932ac",
+          "reason": "unsupported",
+          "evidence": [
+            "c01.m07"
+          ],
+          "statement": "Dilnoza promised you: Katta ro‘mol va chiroyli choynak to‘plamini olish",
+          "status": "pending_owner"
+        }
+      ],
+      "summary_text": "Dilnoza onangizning tug‘ilgan kuni uchun 17-oktabr soat 19:00 da «Gulzor» kafesida 12 kishilik joy band qilgan. Tort, buvingizni olib kelish, sovg‘a va menyu haqida gaplashgansiz.\nNodira opalar ham keladimi?\nSovg‘a uchun 300 ming so‘mdan berishga rozilik bormi?\nShokoladli tortni buyurtma qilish\nBuvini soat 18:00 da uyidan olib kelish 17-oktabr\nSovg‘a uchun 300 ming so‘mni naqd berish shanba kuni\nKatta ro‘mol va chiroyli choynak to‘plamini olish\nNodira opalarga xabar berish yoki ularga qo‘ng‘iroq qilishni tanlash\nMenyuni osh yoki shashlik qilib tasdiqlash\nOnangizning tug‘ilgan kuni 17-oktabrga to‘g‘ri keladi.\n«Gulzor» kafesida 17-oktabr soat 19:00 ga 12 kishilik joy band qilingan.\nKafe 50% oldindan to‘lov — 600 ming so‘m — so‘ragan va to‘lov amalga oshirilgan.\nMenyuni 15-oktabr soat 12:00 gacha tasdiqlash kerak.\nSizdan menyu tanlovi, Nodira opalarga xabar berish masalasi va sovg‘a uchun pul berishga rozilik kutilmoqda.",
+      "summary_labelled": "Overview: Dilnoza onangizning tug‘ilgan kuni uchun 17-oktabr soat 19:00 da «Gulzor» kafesida 12 kishilik joy band qilgan. Tort, buvingizni olib kelish, sovg‘a va menyu haqida gaplashgansiz.\nOpen questions to the owner:\n- Dilnoza asks you: Nodira opalar ham keladimi?\n- Dilnoza asks you: Sovg‘a uchun 300 ming so‘mdan berishga rozilik bormi?\nCommitments not yet done:\n- You promised Dilnoza: Shokoladli tortni buyurtma qilish\n- You promised Dilnoza: Buvini soat 18:00 da uyidan olib kelish (due: 17-oktabr)\n- Dilnoza asks you to (not agreed yet): Sovg‘a uchun 300 ming so‘mni naqd berish (due: shanba kuni)\n- Dilnoza promised you: Katta ro‘mol va chiroyli choynak to‘plamini olish\nDecisions requested from the owner:\n- Dilnoza is waiting for your decision: Nodira opalarga xabar berish yoki ularga qo‘ng‘iroq qilishni tanlash\n- Dilnoza is waiting for your decision: Menyuni osh yoki shashlik qilib tasdiqlash\nKey facts:\n- Onangizning tug‘ilgan kuni 17-oktabrga to‘g‘ri keladi.\n- «Gulzor» kafesida 17-oktabr soat 19:00 ga 12 kishilik joy band qilingan.\n- Kafe 50% oldindan to‘lov — 600 ming so‘m — so‘ragan va to‘lov amalga oshirilgan.\n- Menyuni 15-oktabr soat 12:00 gacha tasdiqlash kerak.\nNeeds a reply from the owner: yes - Sizdan menyu tanlovi, Nodira opalarga xabar berish masalasi va sovg‘a uchun pul berishga rozilik kutilmoqda."
+    }
+  ]
+}

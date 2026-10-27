@@ -23,9 +23,18 @@ from pydantic import AfterValidator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.agent.attribution import (
+    ATTRIBUTION_RULE,
+    check_attribution,
+    effective_status,
+    render_who,
+)
+from assistant.agent.locales import SupportedLocale
+from assistant.agent.schemas import cited_ids
 from assistant.agent.untrusted import Source, wrap
 from assistant.conversations import coverage
 from assistant.conversations.models import Contact, Conversation
+from assistant.memory import summaries
 
 DIRECTION_LABELS = {
     "contact": "contact",
@@ -174,39 +183,72 @@ def _ids(value: object) -> list[int]:
     return [i for i in value if isinstance(i, int) and not isinstance(i, bool)]
 
 
-def summary_view(summary: Mapping[str, Any]) -> dict[str, Any]:
+def summary_view(
+    summary: Mapping[str, Any],
+    *,
+    contact_name: str | None,
+    locale: SupportedLocale,
+    authors: Mapping[int, str],
+) -> dict[str, Any]:
     """A stored summary as the model sees it: every string is model output
     derived from contact text, so each is wrapped as untrusted (§6 inv. 3b);
-    message ids let it check a point with `get_conversation`."""
+    message ids let it check a point with `get_conversation`.
 
-    def points(key: str) -> list[dict[str, Any]]:
-        items = summary.get(key)
+    S03.7: the summary is attribution-checked again here (`authors`: message
+    id → direction of what it cites; v1-v4 rows included), and each question,
+    decision and commitment gets a `who` line — fixed words for who asked,
+    promised or agreed, in the owner's `locale`, rendered from the structured
+    fields and the contact's name, never from model text. It holds a
+    contact-chosen name, so it is wrapped as untrusted too."""
+    checked, _ = check_attribution(summary, authors)
+
+    def who(key: str, item: Mapping[str, Any]) -> str | None:
+        return wrap(render_who(key, item, contact_name, locale), Source.CONTACT_NAME)
+
+    def points(key: str, *, attributed: bool) -> list[dict[str, Any]]:
+        items = checked.get(key)
         return [
-            {"text": _summary_text(item.get("text")), "message_ids": _ids(item.get("message_ids"))}
+            {
+                **({"who": who(key, item)} if attributed else {}),
+                "text": _summary_text(item.get("text")),
+                "message_ids": _ids(item.get("message_ids")),
+            }
             for item in (items if isinstance(items, list) else [])
-            if isinstance(item, dict)
+            if isinstance(item, Mapping)
         ]
 
-    commitments = summary.get("commitments")
+    commitments = checked.get("commitments")
     return {
-        "overview": _summary_text(summary.get("overview")),
-        "open_questions_to_owner": points("open_questions_to_owner"),
-        "decisions_requested": points("decisions_requested"),
+        "overview": _summary_text(checked.get("overview")),
+        "open_questions_to_owner": points("open_questions_to_owner", attributed=True),
+        "decisions_requested": points("decisions_requested", attributed=True),
         "commitments": [
             {
-                "by": item.get("by") if item.get("by") in ("owner", "contact") else None,
+                "who": who("commitments", item),
+                "by": item.get("by"),
+                "status": effective_status(item),
                 "text": _summary_text(item.get("text")),
                 "due": _summary_text(item.get("due")),
                 "message_ids": _ids(item.get("message_ids")),
             }
             for item in (commitments if isinstance(commitments, list) else [])
-            if isinstance(item, dict)
+            if isinstance(item, Mapping)
         ],
-        "key_facts": points("key_facts"),
-        "needs_reply": bool(summary.get("needs_reply")),
-        "needs_reply_reason": _summary_text(summary.get("needs_reply_reason")),
-        **_omitted(summary.get("items_omitted")),
+        "key_facts": points("key_facts", attributed=False),
+        "needs_reply": bool(checked.get("needs_reply")),
+        "needs_reply_reason": _summary_text(checked.get("needs_reply_reason")),
+        "attribution_rule": ATTRIBUTION_RULE,
+        **_omitted(checked.get("items_omitted")),
     }
+
+
+async def summary_authors(
+    session: AsyncSession, account_id: int, conversation_id: int, summary: Mapping[str, Any]
+) -> dict[int, str]:
+    """Who wrote each message a stored summary cites (for `summary_view`)."""
+    return await summaries.message_directions(
+        session, account_id, conversation_id, cited_ids(dict(summary))
+    )
 
 
 def _omitted(value: object) -> dict[str, Any]:

@@ -178,10 +178,15 @@ class LLMErrorKind(StrEnum):
 class LLMError(Exception):
     """A classified provider failure. Carries no request or response content."""
 
-    def __init__(self, kind: LLMErrorKind, *, code: str | None = None) -> None:
+    def __init__(
+        self, kind: LLMErrorKind, *, code: str | None = None, exc_type: str | None = None
+    ) -> None:
         super().__init__(kind.value if code is None else f"{kind.value}:{code}")
         self.kind = kind
         self.code = code
+        #: The provider SDK's exception class name (e.g. `APITimeoutError`), when
+        #: an adapter classified one: content-free, for diagnosis only.
+        self.exc_type = exc_type
 
 
 @dataclass(frozen=True, slots=True)

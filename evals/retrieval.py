@@ -1,6 +1,10 @@
 """The retrieval target (S03.4): the real search service over the synthetic corpus.
 
-Three modes, all over the 38-query owner-style set:
+Three modes here, all over the 38-query owner-style set (a fourth, **agent**,
+runs the real `owner_request` runtime per query: `evals/agent_mode.py`).
+A named chat partner narrows the search, and an empty narrowed search is
+widened by the product's own service (`widen_empty_scope`, S03.7 E-z), as the
+`search_messages` tool does:
 
 - **deterministic** (no model): the query exactly as typed goes to
   `memory.retrieval.search_messages`; measures *target message in the top 5*
@@ -91,6 +95,8 @@ class RetrievalMode(StrEnum):
     DETERMINISTIC = "deterministic"
     VARIANTS = "variants"
     REPLAY = "replay"
+    #: The real `owner_request` runtime per query (S03.7 E2): `evals/agent_mode.py`.
+    AGENT = "agent"
 
 
 # ---------------------------------------------------------- structured output
@@ -261,6 +267,8 @@ class RetrievalTarget:
         recorded: Mapping[str, QueryVariants | None] | None = None,
         replayed_from: str | None = None,
     ) -> None:
+        if mode is RetrievalMode.AGENT:
+            raise RefusedError("agent mode runs the owner_request runtime: evals/agent_mode.py")
         if (mode is RetrievalMode.REPLAY) != (recorded is not None):
             raise RefusedError(
                 "a replay needs a recorded variants run (--replay-from), "
@@ -411,29 +419,22 @@ class RetrievalTarget:
     async def _search(
         self, queries: Sequence[str], contact: _ContactFilter | None = None
     ) -> tuple[Sequence[SearchHit], bool]:
-        """The service's top results; narrowed to the named contact when there is
-        one, and searched again without the filter if that finds nothing (the agent
-        would widen a search that came back empty). The flag says it was widened."""
+        """The service's top results, narrowed to the named contact when there is
+        one, exactly as the product's `search_messages` tool searches: the service
+        widens a narrowed search that finds nothing (`widen_empty_scope`, S03.7 B1)
+        and says so; the harness no longer widens by itself (E-z)."""
+        filters = SearchFilters(contact_ids=(contact.contact_id,)) if contact else SearchFilters()
         async with self._corpus.session_factory() as session:
-            if contact is not None:
-                narrowed = await search_messages(
-                    session,
-                    self._corpus.account_id,
-                    queries,
-                    now=self._corpus.now,
-                    filters=SearchFilters(contact_ids=(contact.contact_id,)),
-                    limit=TOP_N,
-                )
-                if narrowed.hits:
-                    return narrowed.hits, False
             result = await search_messages(
                 session,
                 self._corpus.account_id,
                 queries,
                 now=self._corpus.now,
+                filters=filters,
                 limit=TOP_N,
+                widen_empty_scope=True,
             )
-        return result.hits, contact is not None
+        return result.hits, result.widened
 
     # ------------------------------------------------------------ model calls
     async def _variants(self, query: RetrievalQuery, context: RunContext) -> QueryVariants:

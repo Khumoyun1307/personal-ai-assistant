@@ -3,7 +3,10 @@
     python -m evals verify
     python -m evals run retrieval [--mode deterministic|variants|both] [--live] ...
     python -m evals run retrieval --mode replay --replay-from docs/evals/<variants run>.json
+    python -m evals run retrieval --mode agent --live --limit 1   # a trial of the real agent loop
+    python -m evals run retrieval --mode agent --live --calibrate-from docs/evals/<agent trial>.json
     python -m evals run summary [--owner-language uz-Latn|uz-Cyrl|ru|en] [--live] ...
+    python -m evals run summary --live --only c36,c28,c15   # a trial of chosen chats
     python -m evals compare docs/evals/<run>.json [...]
     python -m evals cleanup [--yes]        # list (or drop) throwaway databases a killed run left
 
@@ -11,7 +14,8 @@ Safe by default: `run retrieval` is the deterministic, model-free baseline, and
 `run summary` (which always calls a model) refuses without `--live`. Any run
 that calls a model refuses without `--live`, refuses when the worst-case cost
 exceeds the cap, and stops mid-run before overspending. See `evals/README.md`
-"Running". Exit codes: 0 done, 2 refused or misconfigured, 4 stopped early.
+"Running". Exit codes: 0 done, 2 refused or misconfigured, 4 stopped early or
+items not evaluated.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from pathlib import Path
 from typing import get_args
 
 from assistant.core.clock import SystemClock
+from evals.agent_mode import AgentModeTarget, Calibration, check_agent_estimate, load_calibration
 from evals.budget import (
     DEFAULT_BUDGET_USD,
     BudgetedLLMClient,
@@ -63,14 +68,16 @@ REPO = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_DIR = REPO / "docs" / "evals"
 REVIEWS_DIR = Path(__file__).resolve().parent / "reviews"
 EXIT_REFUSED = 2
-#: A run that stopped before its planned items (the budget cap): its report was
-#: written, but the run failed.
+#: A run that stopped before its planned items (the budget cap), or with items it
+#: could not evaluate (the provider stayed unavailable): its report was written,
+#: but the run failed.
 EXIT_INCOMPLETE = 4
 
 
 def exit_code(result: TargetResult) -> int:
-    """Non-zero for a stopped run. A deliberate `--limit` trial is not a failure."""
-    return EXIT_INCOMPLETE if result.stopped else 0
+    """Non-zero for an incomplete run (stopped early, or an item not evaluated).
+    A deliberate `--limit` or `--only` trial is not a failure."""
+    return EXIT_INCOMPLETE if result.incomplete else 0
 
 
 def _positive(value: str) -> int:
@@ -81,6 +88,14 @@ def _positive(value: str) -> int:
     if number < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
     return number
+
+
+def _ids(value: str) -> tuple[str, ...]:
+    """`--only c36,c28,c15`: comma-separated item ids, at least one."""
+    ids = tuple(part.strip() for part in value.split(",") if part.strip())
+    if not ids:
+        raise argparse.ArgumentTypeError("expected comma-separated ids, e.g. c36,c28")
+    return ids
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,7 +111,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=RetrievalMode.DETERMINISTIC.value,
         help=(
             "retrieval only: deterministic (no model, default), variants (a model), both, "
-            "replay (no model: a recorded variants run searched again, see --replay-from)"
+            "replay (no model: a recorded variants run searched again, see --replay-from), "
+            "agent (the real owner_request runtime per query, a model)"
+        ),
+    )
+    run.add_argument(
+        "--calibrate-from",
+        type=Path,
+        metavar="TRIAL.json",
+        help=(
+            "retrieval --mode agent: the JSON report of a --limit 1 agent trial; the run then "
+            "starts on its expected cost under the in-flight cap (E-ab)"
         ),
     )
     run.add_argument(
@@ -109,7 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--owner-language",
         choices=get_args(OwnerLanguage),
         default="uz-Latn",
-        help="summary only: the owner's language and script the summaries are written in",
+        help=(
+            "summary and retrieval --mode agent: the owner's language and script "
+            "(summaries are written in it; the agent's owner preference)"
+        ),
     )
     run.add_argument(
         "--live",
@@ -133,6 +161,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=_positive,
         help="evaluate only the first N items (N >= 1): a trial run, never a gate",
+    )
+    run.add_argument(
+        "--only",
+        type=_ids,
+        metavar="ID,ID,...",
+        help=(
+            "summary only: evaluate only these conversations (e.g. c36,c28,c15), in set "
+            "order: a trial run, never a gate"
+        ),
     )
     run.add_argument("--estimate-only", action="store_true", help="print the cost and stop")
     run.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="where to write reports")
@@ -248,7 +285,7 @@ def _print_outcome(
     label: str, outcome: RunOutcome, *, ledger: CallLedger, cap: Decimal, spent: bool
 ) -> None:
     result = outcome.result
-    suffix = " (TRIAL: a --limit run is never a gate)" if result.trial else ""
+    suffix = " (TRIAL: a --limit or --only run is never a gate)" if result.trial else ""
     _say(f"{label}: {result.items} items{suffix}")
     for metric in result.metrics:
         confirmed, of = metric.confirmation()
@@ -269,10 +306,17 @@ async def _summary(args: argparse.Namespace) -> int:
     """The summary target: the real S03.2 catch-up path on the E1 set, in a
     throwaway database. It always calls a model, so every guard applies."""
     _require_recorded(args)
+    if args.calibrate_from is not None:
+        raise RefusedError("--calibrate-from is only for retrieval --mode agent")
     digests = ensure_frozen()
     cap, prices = _cap(args.budget_usd), _prices(args.price)
     reviews = _reviews(args.reviews, "e1")
     target = SummaryTarget(load_e1(), owner_language=args.owner_language)
+    if args.only is not None:
+        try:
+            target.named(args.only, limit=args.limit)
+        except ValueError as error:
+            raise RefusedError(f"--only: {error}") from None
     (choice,) = _guard([target], [target.label], args, cap, prices, reviews)
     if args.estimate_only:
         return 0
@@ -283,7 +327,12 @@ async def _summary(args: argparse.Namespace) -> int:
     ledger = CallLedger()
     llm = BudgetedLLMClient(live_client, cap_usd=cap, overrides=prices, ledger=ledger)
     context = RunContext(
-        llm=llm, model=choice.model, effort=choice.effort, reviews=reviews, limit=args.limit
+        llm=llm,
+        model=choice.model,
+        effort=choice.effort,
+        reviews=reviews,
+        limit=args.limit,
+        only=args.only,
     )
     meta = RunMeta(
         run_date=run_date,
@@ -309,6 +358,8 @@ async def _summary(args: argparse.Namespace) -> int:
 
 async def _retrieval(args: argparse.Namespace) -> int:
     _require_recorded(args)
+    if args.only is not None:
+        raise RefusedError("--only is only for the summary target")
     digests = ensure_frozen()
     cap, prices = _cap(args.budget_usd), _prices(args.price)
     reviews = _reviews(args.reviews, "retrieval")
@@ -317,10 +368,14 @@ async def _retrieval(args: argparse.Namespace) -> int:
         if args.mode == "both"
         else [RetrievalMode(args.mode)]
     )
+    if args.calibrate_from is not None and modes != [RetrievalMode.AGENT]:
+        raise RefusedError("--calibrate-from is only for --mode agent")
     queries = load_queries()
     recorded = _recorded(args)
-    targets = [
-        RetrievalTarget(
+    targets: list[RetrievalTarget | AgentModeTarget] = [
+        AgentModeTarget(queries, owner_language=args.owner_language)
+        if mode is RetrievalMode.AGENT
+        else RetrievalTarget(
             queries,
             mode=mode,
             recorded=recorded if mode is RetrievalMode.REPLAY else None,
@@ -392,9 +447,12 @@ def _recorded(args: argparse.Namespace) -> dict[str, QueryVariants | None] | Non
     return load_recorded(args.replay_from)
 
 
-def _set_name(target: RetrievalTarget) -> str:
-    """A replay's report must not take the name of the deterministic baseline's."""
-    return f"{target.name}-replay" if target.mode is RetrievalMode.REPLAY else target.name
+def _set_name(target: RetrievalTarget | AgentModeTarget) -> str:
+    """A replay's report must not take the name of the deterministic baseline's,
+    nor an agent run's the name of a variants run with the same model."""
+    if target.mode in (RetrievalMode.REPLAY, RetrievalMode.AGENT):
+        return f"{target.name}-{target.mode.value}"
+    return target.name
 
 
 def _guard(
@@ -414,11 +472,32 @@ def _guard(
         if not args.estimate_only:
             require_live(target, live=args.live)
         choice = resolve_model(target.route, args.model)
-        context = RunContext(model=choice.model, reviews=reviews, limit=args.limit)
-        result = check_estimate(target, context, model=choice.model, cap_usd=cap, prices=prices)
+        context = RunContext(model=choice.model, reviews=reviews, limit=args.limit, only=args.only)
+        expected_text = ""
+        if isinstance(target, AgentModeTarget):
+            calibration = _calibration(args, choice.model)
+            result, expected = check_agent_estimate(
+                target,
+                context,
+                model=choice.model,
+                cap_usd=cap,
+                prices=prices,
+                calibration=calibration,
+            )
+            if expected is not None and calibration is not None:
+                expected_text = f", expected ${expected:.4f} (calibrated from {calibration.source})"
+        else:
+            result = check_estimate(target, context, model=choice.model, cap_usd=cap, prices=prices)
         _say(
             f"{target.name} ({label}): model {choice.model}, {result.calls} calls, "
-            f"worst case ${result.upper_bound_usd:.4f}, cap ${cap}"
+            f"worst case ${result.upper_bound_usd:.4f}{expected_text}, cap ${cap}"
         )
         choices.append(choice)
     return choices
+
+
+def _calibration(args: argparse.Namespace, model: str) -> Calibration | None:
+    """The agent trial a full agent run is calibrated from (E-ab), if given."""
+    if args.calibrate_from is None:
+        return None
+    return load_calibration(args.calibrate_from, model=model)

@@ -101,6 +101,17 @@ def _row_values(message: DatasetMessage, index: int) -> dict[str, Any]:
     return values
 
 
+def coverage_start(conversation: Conversation) -> datetime:
+    """Where the product's coverage of this chat begins: the dataset's
+    pre-connection start where it has one, else the first message — as
+    ingestion sets it (`conversations.service`: the earliest stored message's
+    date). A stored chat never has none in the product; leaving it null here
+    made the account-wide start the one labelled chat's (S03.7 fix round)."""
+    first = min(message.sent_at for message in conversation.messages)
+    started = conversation.coverage_started_at
+    return first if started is None else min(started, first)
+
+
 async def load_corpus(
     session_factory: async_sessionmaker[AsyncSession], conversations: Sequence[Conversation]
 ) -> LoadedCorpus:
@@ -127,7 +138,7 @@ async def load_corpus(
                 account_id=account.id,
                 business_chat_id=1_000_000 + number,
                 contact_id=contact.id,
-                coverage_started_at=conversation.coverage_started_at,
+                coverage_started_at=coverage_start(conversation),
             )
             session.add(row)
             await session.flush()

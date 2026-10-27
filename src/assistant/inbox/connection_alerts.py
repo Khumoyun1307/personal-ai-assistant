@@ -21,7 +21,7 @@ from assistant.accounts import service
 from assistant.accounts.callbacks import encode, new_token
 from assistant.accounts.connections import Change, Tier, connection_for_account, unused_rights
 from assistant.accounts.models import Account, BusinessConnectionEvent
-from assistant.core.channel import Button
+from assistant.core.channel import Button, ControlChannel, Delivery
 from assistant.core.clock import Clock
 from assistant.db.uow import transaction
 from assistant.inbox.notify import AlertKind, AlertResult, OwnerAlerts
@@ -191,3 +191,54 @@ async def notify_connection_change(
                 ref_id=event_id,
             )
     return result
+
+
+async def send_managed_consent_card(
+    session_factory: async_sessionmaker[AsyncSession],
+    clock: Clock,
+    channel: ControlChannel,
+    *,
+    account_id: int,
+    chat_id: int,
+) -> Delivery | None:
+    """The `/privacy managed` card — the same question, buttons and lifetime
+    — for an owner question that needed the chats while AI for them is off
+    (S03.7 B5, D104). None when there is nothing to ask: the consent is on,
+    or no business connection exists. As with the connection notice, the
+    card is recorded only once its message arrived, so a failed send leaves
+    nothing open. Control chat only: `ControlChannel` cannot name another.
+
+    Not again for a day after the owner chose "Not now" (owner decision 5,
+    2026-10-26: the same quiet period as the connection notice); the caller's
+    one-line "chat access is off" text still says how to turn it on.
+    """
+    async with transaction(session_factory) as uow:
+        if not await _managed_consent_missing(uow.session, account_id):
+            return None
+        if await connection_for_account(uow.session, account_id) is None:
+            return None
+        if await service.managed_consent_declined_since(
+            uow.session,
+            account_id=account_id,
+            since=clock.now() - service.MANAGED_CONSENT_TTL,
+        ):
+            return None
+    token = new_token()
+    delivery = await channel.send(
+        account_id=account_id,
+        chat_id=chat_id,
+        text=MANAGED_CONSENT_QUESTION.format(processors=", ".join(service.AI_PROCESSORS)),
+        buttons=consent_buttons(token),
+    )
+    if delivery.ok:
+        async with transaction(session_factory) as uow:
+            await service.create_card(
+                uow.session,
+                account_id=account_id,
+                kind=service.MANAGED_CONSENT_CARD,
+                clock=clock,
+                ttl=service.MANAGED_CONSENT_TTL,
+                prompt_message_id=delivery.message_id,
+                token=token,
+            )
+    return delivery
