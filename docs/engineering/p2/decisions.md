@@ -95,6 +95,15 @@ Routine technical decisions inside the approved scope (AGENTS §3). Each names w
 
 **Status recorded 2026-10-26 (owner):** M03's CI is running; the owner will merge M03, mark it OK and done, and then authorise the start of this plan. **No pre-start work is authorised yet** (no dataset authoring, no QA-P, no LV-08 scheduling). Product code starts only after "M03 OK" and the owner's go-ahead.
 
+### B4. Phase start (2026-10-27)
+
+**Status recorded 2026-10-27 (owner, in the TL conversation):** *"I am giving you the go ahead approval to you all. If you have understood your responsibilities - get to work."* M03 was already `done` ("M03 OK" 2026-10-27; S03.7 merged in #32 and deployed with the fix round the same day), so this is **D0 = 2026-10-27**: CP0 runs, wave 1 starts, and the datasets (E2D, E3D) and QA-P are authorised with it as ordinary units (no longer "pre-start"). OPS-LV08 stays deferred (B3 E1). IMPLEMENTATION_PLAN §1.4 records M04 and M05 as `in progress`.
+
+| ID | Decision | Why | Where |
+|---|---|---|---|
+| P2-T29 | **Every issue carries an `eng:<name>` label** (`eng:neryn`, `eng:viro`, `eng:jack`, `eng:junior`, `eng:antony`, `eng:tl`); engineers find their units with `gh issue list --label eng:<you>` and their reviews with the `needs-review:<you>` / `needs-qa` labels. | Every session uses the same GitHub account, so assignees and `review-requested:@me` cannot tell engineers apart | WORKFLOW §8 |
+| P2-T30 | **No CI trigger on pushes to `int/*`.** Before merging a unit, the TL checks that the PR's latest CI run tested a merge with the **current** int head; if the int branch moved since, the TL closes and reopens the PR (GitHub then tests a fresh merge with the base) and merges only when that run is green. | A push trigger would also rebuild both arm64 images on every integration merge; reopening tests the real combination without touching the author's branch | WORKFLOW §7.1 |
+
 ## C. Interface-change log
 
 *Append one row per approved interface change request after CP1 (ORG §5). Format: date · requester · contract section · change · affected WUs · TL decision.*

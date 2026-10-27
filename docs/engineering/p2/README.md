@@ -2,7 +2,7 @@
 
 *Engineering plan for the phase after M03. Owner-approved 2026-10-26 (see [decisions.md](decisions.md)). Written by the Technical Lead. This folder is the **single entry point** for every engineer in P2: start here, then read your handoff in [handoffs/](handoffs/).*
 
-**Status:** specifications complete; **no implementation has started**. Product code (including tests) starts only after the owner says **"M03 OK"** (AGENTS §3, [M03-handoff.md](../../milestones/M03-handoff.md)). Before that, only the data-only and docs-only work marked *pre-start* below may run, and only when the owner says so.
+**Status (2026-10-27):** **P2 has started.** The owner said "M03 OK" on 2026-10-27 and gave every engineer the go-ahead the same day (D0 = 2026-10-27; [decisions.md](decisions.md) B4). CP0 is done: labels, one GitHub issue per work unit (#44–#66), the `P2 integration` issue (#43) and the owner-gate issues. Wave 1 is running; the datasets (E2D, E3D) and QA-P are authorised with the go-ahead and run as ordinary units.
 
 ---
 
@@ -65,7 +65,7 @@ Every piece of work is a **work unit (WU)** with one owner, one spec, one branch
 
 ```
 pre-start (only with the owner's OK; data/docs only, no product code or tests):
-    E2D, E3D (Junior) · QA-P (Antony)            — not authorised yet (owner, 2026-10-26)
+    E2D, E3D (Junior) · QA-P (Antony)            — authorised with the go-ahead (owner, 2026-10-27)
 ──── "M03 OK" (S03.7 merged and deployed) ────────────────────────────────────────────
 Wave 1  F0 (Neryn)                 ← critical path
         S04.2 part a: draft run (Viro)       S05.1 run part + S05.2 policy fn (Jack)
