@@ -300,6 +300,9 @@ def carried_caveats(
         ignored_with_activity=0,
         expired_in_period=0,
         deleted_in_period=0,
+        deleted_on_request=0,
+        deleted_on_request_last=None,
+        not_stored_in_period=0,
     )
     start_lines = Counter(caveats(only_start, timezone))
     pre_connection = bool(start_lines) and not start_lines - rendered
