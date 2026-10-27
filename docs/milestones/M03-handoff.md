@@ -43,13 +43,13 @@ If any of these ever needs an interface change, the M03 lead updates §2 here an
 
 ## 4. Open M03 items, already sorted
 
-Every open item from M03.md's "Known follow-ups" (numbered as there) and the S03.7 findings has one tag. **Yours** = consider it in M04's plan. **Later** = a named later milestone owns it. **Accepted** = recorded, rare or minor, not planned. **Closed** = done by S03.7.
+Every open item from M03.md's "Known follow-ups" (numbered as there) and the S03.7 findings has one tag. **Yours** = consider it in M04's plan. **Later** = a named later milestone owns it. **Accepted** = recorded, rare or minor, not planned. **Closed** = done by S03.7 or the M03 fix round.
 
 | Item | Tag | Note |
 |---|---|---|
 | 1–3 Deletion receipts: two true receipts on an overlapping stalled retry; a lost receipt on a crash between commit and send; "could not confirm" where "nothing was deleted" would be exact | Accepted | rare; D90 |
 | 4 Lifting the `ingest_error` pause on deletion may drop a lost-takeover signal | Later — M06 | matters once autonomy relies on that pause (D91) |
-| 5 `except LookupError` in `privacy/requests.py` `_attempt` also catches `KeyError`/`IndexError` | Yours (optional hygiene, XS) | a dedicated `SubjectNotFound`; fold into any slice that touches `privacy/` |
+| 5 `except LookupError` in `privacy/requests.py` `_attempt` also catches `KeyError`/`IndexError` | Closed | M03 fix round C2: `core/errors.py::NotInAccountError` is the one "not found" error (ARCHITECTURE §8.3); `_attempt` catches only it, a `KeyError` takes the failure path (test `test_a_lookup_bug_inside_the_deletion_is_a_failure_not_not_found`). Raise `NotInAccountError`, never a bare `LookupError`, for an id that is not the account's (a unit test scans `src/`) |
 | 6–8 Unattributed dead letters cleared by the 7-day sweep; `delete_managed_data` also clears pending payloads; the M01 no-consent notice can repeat on a stalled re-run | Accepted | |
 | 9 Period-summary cache key lacks the prompt version | Closed | S03.7 D99 (key = range + digest + prompt version + model) |
 | 10 `owner_request` search changes (name out of phrases; widen an empty filtered search) | Closed | S03.7 D100, D103, D109 |

@@ -48,6 +48,7 @@ from assistant.agent.tools.registry import (
 )
 from assistant.core.channel import Button, ControlChannel
 from assistant.core.clock import Clock
+from assistant.core.errors import NotInAccountError
 from assistant.db.uow import after_commit, transaction
 from assistant.observability.logging import get_logger
 from assistant.privacy.deletion import receipt_text
@@ -172,7 +173,7 @@ _EXISTING = {
 
 def _existing_outcome(status: str) -> ToolOutcome:
     state, note = _EXISTING.get(ConfirmationStatus(status), ("not_executed", "nothing changed"))
-    return ToolOutcome(state, {"card": note})
+    return ToolOutcome(state, {"card": note}, log_code=f"existing:{ConfirmationStatus(status)}")
 
 
 def card_buttons(token: str) -> tuple[Button, ...]:
@@ -192,26 +193,38 @@ async def hold(
     retried owner turn has a new run id) reuses that card instead of sending
     a second confirmable one. A card whose send failed or is uncertain is
     expired at once, so no later tap can apply it.
+
+    Every outcome carries a fixed `log_code` (the reason it took this path),
+    which the executor's one log line names; nothing here is content.
     """
     services = ctx.services
     channel = services.channel
     if channel is None:
         # No way to ask: fail closed (§6 invariant 7).
-        return ToolOutcome("not_executed", {"reason": "confirmation is not available"})
+        return ToolOutcome(
+            "not_executed", {"reason": "confirmation is not available"}, log_code="no_channel"
+        )
     if len(render_args(args)) > CARD_ARGS_LIMIT:
         # The owner must see everything they confirm; truncating would let
         # them approve a payload they never saw (invariant 3b).
         return ToolOutcome(
-            "not_executed", {"reason": "the change is too large to show on a confirmation card"}
+            "not_executed",
+            {"reason": "the change is too large to show on a confirmation card"},
+            log_code="args_too_large",
         )
     delivered: dict[str, bool] = {}
     async with transaction(services.session_factory) as uow:
         session = uow.session
         account = await session.get(Account, ctx.account_id)
         if account is None or account.control_chat_id is None:
-            return ToolOutcome("not_executed", {"reason": "the owner cannot be reached"})
+            return ToolOutcome(
+                "not_executed",
+                {"reason": "the owner cannot be reached"},
+                log_code="owner_unreachable",
+            )
         # What the ids refer to, so the owner sees what they confirm (S1).
-        # An id that is not this account's is "not found", like a direct call.
+        # An id that is not this account's is "not found" (`NotInAccountError`),
+        # like a direct call.
         description = await tool.describe(session, ctx.account_id, args) if tool.describe else None
         if description is not None and len(render_description(description)) > (
             CARD_DESCRIPTION_LIMIT
@@ -219,6 +232,7 @@ async def hold(
             return ToolOutcome(
                 "not_executed",
                 {"reason": "the change is too large to show on a confirmation card"},
+                log_code="description_too_large",
             )
         existing = (
             await session.execute(
@@ -259,6 +273,7 @@ async def hold(
                 return ToolOutcome(
                     "awaiting_confirmation",
                     {"card": "the same change already awaits the owner's tap; not done yet"},
+                    log_code="same_change_pending",
                 )
             # Its card is gone (expired or never shown): nothing can confirm
             # it any more, so it expires and a fresh card is sent below.
@@ -287,7 +302,11 @@ async def hold(
         confirmation_id = inserted.scalar_one_or_none()
         if confirmation_id is None:
             # Raced with the same call: report what that one is.
-            return ToolOutcome("awaiting_confirmation", {"card": "already sent; not done yet"})
+            return ToolOutcome(
+                "awaiting_confirmation",
+                {"card": "already sent; not done yet"},
+                log_code="insert_race",
+            )
         card = await service.create_card(
             session,
             account_id=ctx.account_id,
@@ -348,10 +367,12 @@ async def hold(
                 "reason": "the confirmation card could not be delivered; nothing will be "
                 "changed, and a card that may have arrived anyway no longer works"
             },
+            log_code="card_not_delivered",
         )
     return ToolOutcome(
         "awaiting_confirmation",
         {"card": "sent to the owner; nothing is changed until they tap Confirm"},
+        log_code="card_sent",
     )
 
 
@@ -533,12 +554,13 @@ class ConfirmationApplier:
                 )
                 try:
                     outcome = await tool.handler(context, parsed)
-                except LookupError:
+                except NotInAccountError:
                     outcome = ToolOutcome("error", {"reason": "not found"})
                 except Exception as error:
                     # The row is already claimed `applied`: whatever went
                     # wrong, it must end `failed` and the owner must hear it
-                    # (§6 invariant 11). Type only in the log (§14.4).
+                    # (§6 invariant 11). Type only in the log (§14.4). Any
+                    # other LookupError lands here too: a bug, not "not found".
                     logger.error(
                         "tool_confirmation_handler_failed",
                         confirmation_id=confirmation_id,

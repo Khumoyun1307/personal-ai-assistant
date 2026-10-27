@@ -3,11 +3,18 @@
 Owner instructions, preferences, facts and contact notes in `memory_items`
 (`memory/items.py`). Following AGENTS §8:
 
-- strict arguments; constraints checked in validators (M03 D52);
+- strict arguments; constraints checked in validators (M03 D52), and a
+  broken rule is told to the model in our fixed words (`ArgumentRuleError`);
+- the ids a model copies from `resolve_contact` are accepted: a
+  `contact_id` with that contact's `conversation_id` means the contact
+  (whose notes include their chat's), in `list_memories` also with a scope
+  matching either id; normalised in the validator before the confirmation
+  gate, so a card shows what is applied (M03 fix round C2);
 - `remember`/`forget` are `configure`: in a tainted run they are held for a
   confirmation card (the executor's gate); otherwise they execute and are
   echoed to the owner with a one-tap Undo (`agent/tools/echo.py`);
-- every id must be this account's, or "not found" (§6 invariant 12);
+- every id must be this account's, or "not found" (`NotInAccountError`, §6
+  invariant 12);
 - `remember` is idempotent on `(run_id, tool_call_id)`;
 - results are factual ("ok" only when saved), never content in logs or steps.
 
@@ -34,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts.models import Account, ControlTurn
 from assistant.agent.context import OWNER_HISTORY_TURNS
 from assistant.agent.models import AgentRun
-from assistant.agent.tools.common import OptionalId, check_id, local_time
+from assistant.agent.tools.common import ArgumentRuleError, OptionalId, check_id, local_time
 from assistant.agent.tools.echo import queue_echo
 from assistant.agent.tools.registry import (
     CapabilityClass,
@@ -45,6 +52,7 @@ from assistant.agent.tools.registry import (
 )
 from assistant.agent.untrusted import Source, wrap
 from assistant.conversations.models import Contact, Conversation
+from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.memory import items
 from assistant.memory.items import MemoryView
@@ -55,11 +63,20 @@ LIST_FLAG = "tool.list_memories"
 
 MemoryKind = Literal["instruction", "preference", "fact", "style"]
 
+#: Our rules, in the fixed words the model is shown (§8.3).
+RULE_APPLIES_TO_REPLIES = (
+    "applies_to_replies is only for kind instruction; set it to null for other kinds"
+)
+RULE_SCOPE_WITH_ID = (
+    "with contact_id or conversation_id, set scope to null (or to the matching "
+    "'contact' or 'conversation'): the id already chooses the notes"
+)
+
 
 def _content(value: str) -> str:
     stripped = value.strip()
     if not stripped or len(stripped) > items.MAX_CONTENT:
-        raise ValueError(f"must be 1-{items.MAX_CONTENT} characters")
+        raise ArgumentRuleError(f"must be 1-{items.MAX_CONTENT} characters")
     return stripped
 
 
@@ -70,7 +87,7 @@ def _required_id(value: int) -> int:
 
 def _limit(value: int | None) -> int | None:
     if value is not None and not 1 <= value <= 50:
-        raise ValueError("must be between 1 and 50")
+        raise ArgumentRuleError("must be between 1 and 50")
     return value
 
 
@@ -93,7 +110,12 @@ class RememberArgs(BaseModel):
     contact_id: OptionalId = Field(
         description="A note about one contact (from resolve_contact), or null."
     )
-    conversation_id: OptionalId = Field(description="A note about one chat, or null.")
+    conversation_id: OptionalId = Field(
+        description=(
+            "A note about one chat, or null (null when contact_id is given: a note "
+            "about a contact covers their chat)."
+        )
+    )
     applies_to_replies: bool | None = Field(
         description="true only for an instruction about how replies to people should be written."
     )
@@ -104,9 +126,13 @@ class RememberArgs(BaseModel):
     @model_validator(mode="after")
     def _consistent(self) -> Self:
         if self.contact_id is not None and self.conversation_id is not None:
-            raise ValueError("give contact_id or conversation_id, not both")
+            # `resolve_contact` returns both and a model copies both (C2): a
+            # note about the contact, whose notes include their chat's. Here,
+            # pure and before the confirmation gate, so a card shows exactly
+            # what is applied; the contact id is still checked when used.
+            self.conversation_id = None
         if self.applies_to_replies and self.kind != "instruction":
-            raise ValueError("applies_to_replies is only for instructions")
+            raise ArgumentRuleError(RULE_APPLIES_TO_REPLIES)
         return self
 
 
@@ -262,14 +288,14 @@ async def _contact_name(session: AsyncSession, account_id: int, contact_id: int)
         )
     ).one_or_none()
     if name is None:
-        raise LookupError("contact not found in this account")
+        raise NotInAccountError("contact not found in this account")
     return name[0] or "(a contact without a stored name)"
 
 
 async def _note(session: AsyncSession, account_id: int, memory_id: int) -> str:
     item = await items.get(session, account_id, memory_id)
     if item is None:
-        raise LookupError("memory item not found in this account")
+        raise NotInAccountError("memory item not found in this account")
     return f'"{item.content}"'
 
 
@@ -312,7 +338,7 @@ async def contact_of_chat(session: AsyncSession, account_id: int, conversation_i
         )
     ).one_or_none()
     if row is None:
-        raise LookupError("conversation not found in this account")
+        raise NotInAccountError("conversation not found in this account")
     return row[0] or "(a contact without a stored name)"
 
 
@@ -390,9 +416,18 @@ class ListMemoriesArgs(BaseModel):
     contact_id: OptionalId = Field(
         description="Only notes about this contact (and their chat), or null."
     )
-    conversation_id: OptionalId = Field(description="Only notes about this chat, or null.")
+    conversation_id: OptionalId = Field(
+        description=(
+            "Only notes about this chat, or null (null when contact_id is given: the "
+            "contact's notes include their chat's)."
+        )
+    )
     scope: Literal["owner", "contact", "conversation"] | None = Field(
-        description="owner: the owner's own instructions, preferences and facts; or null."
+        description=(
+            "owner: the owner's own instructions, preferences and facts; contact: notes "
+            "about contacts; conversation: notes about one chat; or null for all. With "
+            "contact_id or conversation_id, null: the id already chooses the notes."
+        )
     )
     limit: Annotated[int | None, AfterValidator(_limit)] = Field(
         description="How many, 1-50 (default 20), or null."
@@ -400,11 +435,21 @@ class ListMemoriesArgs(BaseModel):
 
     @model_validator(mode="after")
     def _one_filter(self) -> Self:
-        targets = [x for x in (self.contact_id, self.conversation_id) if x is not None]
-        if len(targets) > 1:
-            raise ValueError("give contact_id or conversation_id, not both")
-        if targets and self.scope is not None:
-            raise ValueError("scope cannot be combined with contact_id or conversation_id")
+        """One filter (C2). Both ids, as `resolve_contact` returns them: the
+        contact filter, which already includes their chat's notes — never
+        both filters, whose AND would hide the contact's own notes. A scope
+        that matches an id the model sent (with both ids, either one) is
+        dropped, so the id alone chooses the notes (a contact's include their
+        chat's); any other scope with an id is a contradiction."""
+        given = (("contact", self.contact_id), ("conversation", self.conversation_id))
+        matching = {scope for scope, value in given if value is not None}
+        if not matching:
+            return self
+        if self.scope is not None and self.scope not in matching:
+            raise ArgumentRuleError(RULE_SCOPE_WITH_ID)
+        if self.contact_id is not None:
+            self.conversation_id = None
+        self.scope = None
         return self
 
 
@@ -430,7 +475,7 @@ async def list_memories_tool(ctx: ToolContext, args: ListMemoriesArgs) -> ToolOu
     async with transaction(services.session_factory) as uow:
         account = await uow.session.get(Account, ctx.account_id)
         if account is None:
-            raise LookupError("account")
+            raise NotInAccountError("account")
         # Items that may hold managed-chat content reach a model only with
         # `ai_managed` naming this run's processor — the runtime's own check
         # (verification item 3), so a consent for another processor

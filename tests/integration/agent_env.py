@@ -30,6 +30,7 @@ from assistant.agent.tools.registry import (
     ToolServices,
     default_registry,
 )
+from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.metering import MeteredLLMClient
@@ -82,6 +83,17 @@ DELETION_FLAGS = frozenset(
         "tool.delete_everything",
     }
 )
+#: Verbatim from docs/milestones/M03.md, "The production flags line" (what
+#: production runs with). A unit test keeps it equal to every registered
+#: tool's flag plus the background refresh (M03 fix round C2).
+PRODUCTION_LINE = (
+    "tool.get_status,tool.search_messages,tool.resolve_contact,tool.get_conversation,"
+    "tool.list_conversations,tool.summarize_period,tool.get_attention_list,summary.refresh,"
+    "tool.remember,tool.forget,tool.list_memories,tool.set_conversation_mode,"
+    "tool.update_preferences,tool.delete_conversation_data,tool.delete_contact_data,"
+    "tool.delete_everything"
+)
+PRODUCTION_FLAGS = frozenset(PRODUCTION_LINE.split(","))
 
 
 class SetNoteArgs(BaseModel):
@@ -93,12 +105,18 @@ class SetNoteArgs(BaseModel):
 NOTE_EXPLODE = "explode"
 NOTE_ODD_STATUS = "odd-status"
 NOTE_CANCEL = "cancel"
+NOTE_NOT_IN_ACCOUNT = "not-in-account"  # an id that is not the account's
+NOTE_KEY_ERROR = "key-error"  # a lookup bug, not "not found" (C2)
 
 
 async def set_note(ctx: ToolContext, args: SetNoteArgs) -> ToolOutcome:
     """A state change: one content-free audit row per execution."""
     if args.note == NOTE_EXPLODE:
         raise RuntimeError("synthetic handler failure")
+    if args.note == NOTE_NOT_IN_ACCOUNT:
+        raise NotInAccountError("synthetic id not in this account")
+    if args.note == NOTE_KEY_ERROR:
+        raise KeyError("synthetic")
     if args.note == NOTE_CANCEL:
         raise asyncio.CancelledError  # a shutdown mid-way
     if args.note == NOTE_ODD_STATUS:

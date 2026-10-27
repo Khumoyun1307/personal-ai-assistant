@@ -1,6 +1,12 @@
 """S03.3 tool arguments: schema-valid but semantically invalid input is
 refused by our own validators (AGENTS §8, M03 D52), and every schema stays a
-plain strict schema."""
+plain strict schema.
+
+M03 fix round C2: the combinations a real model sends after
+`resolve_contact` (both ids; `scope` "contact" with `contact_id`) are
+accepted and normalised, so the held card shows exactly what is applied; a
+real contradiction is refused with one of our fixed rules, which the model
+is shown (`ArgumentRuleError`)."""
 
 from __future__ import annotations
 
@@ -9,6 +15,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from assistant.agent.tools.common import ArgumentRuleError
 from assistant.agent.tools.memory import ForgetArgs, ListMemoriesArgs, RememberArgs
 from assistant.agent.tools.modes import SetConversationModeArgs, UpdatePreferencesArgs
 
@@ -44,7 +51,6 @@ def _with(base: dict[str, Any], **changes: Any) -> dict[str, Any]:
         (RememberArgs, _with(REMEMBER, content="")),
         (RememberArgs, _with(REMEMBER, content="   ")),
         (RememberArgs, _with(REMEMBER, content="x" * 401)),  # must fit a confirmation card
-        (RememberArgs, _with(REMEMBER, contact_id=3, conversation_id=4)),
         (RememberArgs, _with(REMEMBER, contact_id=0)),
         (RememberArgs, _with(REMEMBER, conversation_id=-1)),
         (RememberArgs, _with(REMEMBER, contact_id=2**63)),
@@ -55,11 +61,19 @@ def _with(base: dict[str, Any], **changes: Any) -> dict[str, Any]:
         (ForgetArgs, {"memory_id": 2**63}),
         (
             ListMemoriesArgs,
-            {"contact_id": 1, "conversation_id": 2, "scope": None, "limit": None},
+            {"contact_id": 1, "conversation_id": None, "scope": "owner", "limit": None},
         ),
         (
             ListMemoriesArgs,
-            {"contact_id": 1, "conversation_id": None, "scope": "owner", "limit": None},
+            {"contact_id": None, "conversation_id": 2, "scope": "owner", "limit": None},
+        ),
+        (
+            ListMemoriesArgs,
+            {"contact_id": None, "conversation_id": 2, "scope": "contact", "limit": None},
+        ),
+        (
+            ListMemoriesArgs,
+            {"contact_id": 1, "conversation_id": None, "scope": "conversation", "limit": None},
         ),
         (
             ListMemoriesArgs,
@@ -149,3 +163,80 @@ def test_valid_arguments_are_accepted_and_trimmed() -> None:
         }
     )
     assert prefs.preferred_language == "uz-Latn"
+
+
+def test_both_ids_from_resolve_contact_make_a_contact_note() -> None:
+    """`resolve_contact` returns `contact_id` and `conversation_id` together, and
+    a model copies both (C2). The note is about the contact (whose notes
+    include their chat's), normalised before the confirmation gate: the card
+    shows the arguments that are applied, and the applier's re-validation of
+    them gives the same note."""
+    parsed = RememberArgs.model_validate(_with(REMEMBER, contact_id=3, conversation_id=4))
+    assert (parsed.contact_id, parsed.conversation_id) == (3, None)
+    held = parsed.model_dump(mode="json")
+    assert RememberArgs.model_validate(held).model_dump(mode="json") == held
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        # Both ids: the contact filter, which already includes their chat's notes
+        # (never both filters at once, which would hide the contact's notes).
+        ({"contact_id": 1, "conversation_id": 2, "scope": None}, (1, None, None)),
+        ({"contact_id": 1, "conversation_id": 2, "scope": "contact"}, (1, None, None)),
+        # With both ids either scope matches an id the model sent (review of
+        # C2): still the contact filter, whose notes include the chat's.
+        ({"contact_id": 1, "conversation_id": 2, "scope": "conversation"}, (1, None, None)),
+        # The id already selects; the matching scope adds nothing.
+        ({"contact_id": 1, "conversation_id": None, "scope": "contact"}, (1, None, None)),
+        ({"contact_id": None, "conversation_id": 2, "scope": "conversation"}, (None, 2, None)),
+        (
+            {"contact_id": None, "conversation_id": None, "scope": "contact"},
+            (None, None, "contact"),
+        ),
+    ],
+)
+def test_list_memories_accepts_the_filters_a_model_sends_after_resolve_contact(
+    values: dict[str, Any], expected: tuple[int | None, int | None, str | None]
+) -> None:
+    parsed = ListMemoriesArgs.model_validate({**values, "limit": None})
+    assert (parsed.contact_id, parsed.conversation_id, parsed.scope) == expected
+
+
+@pytest.mark.parametrize(
+    ("model", "values"),
+    [
+        (RememberArgs, _with(REMEMBER, applies_to_replies=True)),
+        (RememberArgs, _with(REMEMBER, kind="preference", applies_to_replies=True)),
+        (
+            ListMemoriesArgs,
+            {"contact_id": 1, "conversation_id": None, "scope": "owner", "limit": None},
+        ),
+        (
+            ListMemoriesArgs,
+            {"contact_id": None, "conversation_id": 2, "scope": "contact", "limit": None},
+        ),
+    ],
+)
+def test_a_real_contradiction_is_refused_with_one_of_our_rules(
+    model: type[BaseModel], values: dict[str, Any]
+) -> None:
+    """The executor shows the model only `ArgumentRuleError` texts (§8.3), so
+    these refusals must be ours, in fixed words that say what to change."""
+    with pytest.raises(ValidationError) as refused:
+        model.model_validate(values)
+    [issue] = refused.value.errors(include_input=False, include_url=False)
+    assert issue["loc"] == ()
+    assert isinstance(issue["ctx"]["error"], ArgumentRuleError)
+    assert "null" in str(issue["ctx"]["error"]) or "instruction" in str(issue["ctx"]["error"])
+
+
+def test_the_memory_id_fields_say_which_to_leave_null_and_explain_every_scope() -> None:
+    """Like the deletion and mode tools that worked in production: the schema
+    the model sees states the rule (C2)."""
+    for model in (RememberArgs, ListMemoriesArgs):
+        description = model.model_fields["conversation_id"].description or ""
+        assert "null when contact_id is given" in description, model.__name__
+    scope = ListMemoriesArgs.model_fields["scope"].description or ""
+    for value in ("owner", "contact", "conversation", "null"):
+        assert value in scope

@@ -295,6 +295,7 @@ class OwnerRequestRuntime:
             clock=self._clock,
             on_taint=self._taint_recorder(state),
             refs=state.refs,
+            registered=frozenset(tool.name for tool in self._registry.all()),
         )
         return await self._loop(state, executor, prompt.label)
 

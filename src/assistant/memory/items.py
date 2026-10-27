@@ -3,7 +3,7 @@
 
 Domain code only — no model calls. Every query is account-scoped, and every
 contact or conversation an item names must be this account's (§6 invariant
-12): otherwise `LookupError`, the same as an id that does not exist.
+12): otherwise `NotInAccountError`, the same as an id that does not exist.
 
 - **save** stores the owner's words as given (trimmed; never paraphrased by
   code). Idempotent per `(run_id, tool_call_id)`: a repeated tool call
@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry
 from assistant.conversations.models import Contact, Conversation
+from assistant.core.errors import NotInAccountError
 from assistant.memory.models import (
     SCOPE_CONTACT,
     SCOPE_CONVERSATION,
@@ -143,7 +144,7 @@ async def _require_contact(session: AsyncSession, account_id: int, contact_id: i
         )
     ).scalar_one_or_none()
     if found is None:
-        raise LookupError("contact not found in this account")
+        raise NotInAccountError("contact not found in this account")
 
 
 async def _require_conversation(
@@ -157,7 +158,7 @@ async def _require_conversation(
         )
     ).scalar_one_or_none()
     if found is None:
-        raise LookupError("conversation not found in this account")
+        raise NotInAccountError("conversation not found in this account")
 
 
 def _audit(
@@ -217,7 +218,7 @@ async def save(
 ) -> SaveOutcome:
     """Store one item (scope from the target: contact, conversation or the
     owner). `replaces_id` archives an active item of this account in the same
-    change (a correction). LookupError for a foreign or unknown id.
+    change (a correction). NotInAccountError for a foreign or unknown id.
 
     `tainted`: saved by a run that had other people's text in its context.
     `managed` defaults to `tainted` — every tainted item is treated as
@@ -261,7 +262,7 @@ async def save(
             )
         ).scalar_one_or_none()
         if replaced is None:
-            raise LookupError("memory item not found in this account")
+            raise NotInAccountError("memory item not found in this account")
         old = _view(replaced)
         if old.tainted or old.managed:
             # A correction of a note from other people's text is one too: it
@@ -350,7 +351,7 @@ async def forget(
         )
     ).scalar_one_or_none()
     if row is None:
-        raise LookupError("memory item not found in this account")
+        raise NotInAccountError("memory item not found in this account")
     if row.status == STATUS_ARCHIVED:
         return ForgetOutcome(_view(row), False, None)
     row.status = STATUS_ARCHIVED

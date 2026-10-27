@@ -25,7 +25,13 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.agent.tools.common import OptionalId, check_id, require_contacts
+from assistant.agent.tools.common import (
+    ONE_TARGET_RULE,
+    ArgumentRuleError,
+    OptionalId,
+    check_id,
+    require_contacts,
+)
 from assistant.agent.tools.registry import (
     CapabilityClass,
     ToolContext,
@@ -34,6 +40,7 @@ from assistant.agent.tools.registry import (
 )
 from assistant.conversations import modes
 from assistant.conversations.models import Contact, Conversation, Message
+from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.privacy import deletion
 from assistant.privacy.deletion import DeletionReport, DeletionRequest
@@ -65,7 +72,7 @@ class DeleteConversationDataArgs(BaseModel):
     @model_validator(mode="after")
     def _exactly_one_target(self) -> Self:
         if (self.conversation_id is None) == (self.contact_id is None):
-            raise ValueError("give exactly one of conversation_id or contact_id")
+            raise ArgumentRuleError(ONE_TARGET_RULE)
         return self
 
 
@@ -93,7 +100,7 @@ async def _chat_of(session: AsyncSession, account_id: int, args: Mapping[str, An
         await require_contacts(session, account_id, [contact_id])
         return await modes.conversation_for_contact(session, account_id, contact_id)
     if not isinstance(conversation_id, int):
-        raise LookupError("no chat given")
+        raise NotInAccountError("no chat given")
     found = (
         await session.execute(
             select(Conversation.id)
@@ -102,7 +109,7 @@ async def _chat_of(session: AsyncSession, account_id: int, args: Mapping[str, An
         )
     ).scalar_one_or_none()
     if found is None:
-        raise LookupError("conversation not found in this account")
+        raise NotInAccountError("conversation not found in this account")
     return int(found)
 
 
@@ -116,7 +123,7 @@ async def _name(session: AsyncSession, account_id: int, contact_id: int) -> str:
         )
     ).one_or_none()
     if row is None:
-        raise LookupError("contact not found in this account")
+        raise NotInAccountError("contact not found in this account")
     name, username = row
     return name or (f"@{username}" if username else "a contact without a stored name")
 
@@ -243,7 +250,7 @@ async def describe_contact_deletion(
 ) -> str:
     contact_id = args.get("contact_id")
     if not isinstance(contact_id, int):
-        raise LookupError("no contact given")
+        raise NotInAccountError("no contact given")
     name = await _name(session, account_id, contact_id)
     chats = select(Conversation.id).where(
         Conversation.account_id == account_id, Conversation.contact_id == contact_id

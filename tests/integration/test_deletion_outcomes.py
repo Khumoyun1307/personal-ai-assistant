@@ -28,7 +28,7 @@ from sqlalchemy.exc import OperationalError
 
 from assistant.accounts.models import AuditLogEntry
 from assistant.privacy import deletion
-from assistant.privacy.requests import RequestedDeletions
+from assistant.privacy.requests import NOT_FOUND_TEXT, RequestedDeletions
 from assistant.telegram.control import panels
 from tests.fakes.channel import FakeChannel
 from tests.integration.business_env import (
@@ -166,6 +166,34 @@ async def test_a_deletion_whose_commit_errors_is_reported_as_unconfirmed(
     assert "either all of it was deleted or none of it" in report
     assert "nothing was deleted" not in report
     assert "Deleted:" not in report
+
+
+# ------------------------------------------------------------ M03 follow-up 5
+async def test_a_lookup_bug_inside_the_deletion_is_a_failure_not_not_found(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only `NotInAccountError` means the chat or contact is gone (M03
+    follow-up 5, closed by fix round C2). A `KeyError` raised after most of
+    the deletion ran used to read as "no longer there" and commit the part
+    that ran; now it rolls back and is reported as a failure."""
+    await seed(env)
+    await tap_delete_chat(env)
+    job_args = await queued_job_args(env)
+
+    async def lookup_bug(*args: Any, **kwargs: Any) -> int:
+        raise KeyError("synthetic")
+
+    monkeypatch.setattr(deletion, "_clear_names", lookup_bug)  # the deletion's last step
+    receipts = FakeChannel()
+    with pytest.raises(KeyError):
+        await runner(env, receipts).run(**job_args)
+    [report] = receipts.sends
+    assert report != NOT_FOUND_TEXT
+    assert "nothing was deleted" in report
+    assert await stored(env, "CHATK") > 0
+    assert await deletions(env) == 0
+    [marker] = await failure_markers(env)
+    assert marker["outcome"] == "failed"
 
 
 # ------------------------------------------------------------ D: no deletion after "failed"

@@ -19,7 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import preferences
 from assistant.accounts.models import Account
-from assistant.agent.tools.common import OptionalId, require_contacts
+from assistant.agent.tools.common import (
+    ONE_TARGET_RULE,
+    ArgumentRuleError,
+    OptionalId,
+    require_contacts,
+)
 from assistant.agent.tools.echo import queue_echo
 from assistant.agent.tools.memory import contact_of_chat
 from assistant.agent.tools.registry import (
@@ -30,6 +35,7 @@ from assistant.agent.tools.registry import (
 )
 from assistant.conversations import modes
 from assistant.conversations.models import Contact
+from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.privacy import retention_policy
 from assistant.privacy.retention_policy import CONTROL_CHAT, MESSAGES, RAW_UPDATES
@@ -59,7 +65,7 @@ class SetConversationModeArgs(BaseModel):
     @model_validator(mode="after")
     def _exactly_one_target(self) -> Self:
         if (self.conversation_id is None) == (self.contact_id is None):
-            raise ValueError("give exactly one of conversation_id or contact_id")
+            raise ArgumentRuleError(ONE_TARGET_RULE)
         return self
 
 
@@ -157,7 +163,7 @@ def _language(value: str | None) -> str | None:
 
 def _timezone_shape(value: str | None) -> str | None:
     if value is not None and not 1 <= len(value.strip()) <= preferences.MAX_TIMEZONE_LENGTH:
-        raise ValueError("timezone must be an IANA name such as Asia/Tashkent")
+        raise ArgumentRuleError("timezone must be an IANA name such as Asia/Tashkent")
     return None if value is None else value.strip()
 
 
@@ -212,7 +218,7 @@ class UpdatePreferencesArgs(BaseModel):
     @model_validator(mode="after")
     def _something(self) -> Self:
         if all(getattr(self, name) is None for name in type(self).model_fields):
-            raise ValueError("give at least one setting to change")
+            raise ArgumentRuleError("give at least one setting to change")
         return self
 
     def retention(self) -> dict[str, int]:
@@ -235,7 +241,7 @@ async def update_preferences_tool(ctx: ToolContext, args: UpdatePreferencesArgs)
         # `preferences.update` takes the account lock (FOR NO KEY UPDATE).
         account = await session.get(Account, ctx.account_id)
         if account is None:
-            raise LookupError("account")
+            raise NotInAccountError("account")
         try:
             change = await preferences.update(
                 session,

@@ -54,6 +54,7 @@ from assistant.agent.tools.registry import (
     default_registry,
 )
 from assistant.conversations.models import Conversation
+from assistant.core.errors import NotInAccountError
 from assistant.llm.port import LLMRequest, ToolResultItem
 from assistant.memory.models import MemoryItem
 from tests.fakes.channel import FakeChannel
@@ -479,7 +480,7 @@ async def test_another_accounts_ids_are_not_found_by_memory_tools(env: Env) -> N
             theirs, SetConversationModeArgs(conversation_id=None, contact_id=kamola, mode="ignore")
         ),
     ):
-        with pytest.raises(LookupError):
+        with pytest.raises(NotInAccountError):
             await call
     assert [i.content for i in await items(env)] == ["SYNTH other"]
     assert await mode(env, conversation) == "observe"

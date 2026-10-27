@@ -2,7 +2,7 @@
 
 Account-scoped by construction: every function takes the account id and
 every query filters on it, so an id from another account behaves exactly
-like an unknown one (`LookupError` — §6 invariant 12; the tool executor
+like an unknown one (`NotInAccountError` — §6 invariant 12; the tool executor
 answers both with "not found").
 
 The rows carry contact-authored text and contact-chosen names. They are for
@@ -26,6 +26,7 @@ from sqlalchemy import ColumnElement, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
+from assistant.core.errors import NotInAccountError
 from assistant.memory.search import normalize
 
 MAX_PAGE = 50
@@ -229,7 +230,7 @@ async def conversation_page(
     Keyset pagination on `(sent_at, id)`, the order the page is read in, so
     a message whose id is out of step with its date (a re-queued dead
     letter: a new id for an old message) is neither skipped nor repeated.
-    Raises `LookupError` for an id that is unknown or another account's.
+    Raises `NotInAccountError` for an id that is unknown or another account's.
     """
     limit = max(1, min(limit, MAX_PAGE))
     pair = (
@@ -241,7 +242,7 @@ async def conversation_page(
         )
     ).first()
     if pair is None:
-        raise LookupError("conversation not found in this account")
+        raise NotInAccountError("conversation not found in this account")
     conversation, contact = pair
     statement = (
         select(Message)

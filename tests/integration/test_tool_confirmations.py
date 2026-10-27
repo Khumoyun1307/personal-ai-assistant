@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import select, text, update
+from structlog.testing import capture_logs
 
 from assistant.accounts.models import PendingInput
 from assistant.agent import confirmations
@@ -36,6 +37,8 @@ from tests.integration.agent_env import (
     ALL_FLAGS,
     NOTE_CANCEL,
     NOTE_EXPLODE,
+    NOTE_KEY_ERROR,
+    NOTE_NOT_IN_ACCOUNT,
     NOTE_ODD_STATUS,
     SET_NOTE,
     applier,
@@ -128,6 +131,37 @@ async def test_only_an_explicit_success_status_is_reported_done(env: Env) -> Non
     assert "not counting it as done" in channel.sends[-1]
     assert "Done" not in channel.sends[-1]
     assert (await status_of(env))[0] == "failed"
+
+
+async def test_an_id_not_in_the_account_after_confirm_is_reported_not_found(env: Env) -> None:
+    """The one exception that means "not found" (§8.3, M03 fix round C2)."""
+    _, channel = await held_call(env, NOTE_NOT_IN_ACCOUNT)
+    confirmation_id = await confirm(env)
+
+    with capture_logs() as logs:
+        outcome = await applier(env, channel).apply(confirmation_id)
+
+    assert outcome.status == "failed"
+    assert "not found" in channel.sends[-1]
+    assert not [e for e in logs if e["event"] == "tool_confirmation_handler_failed"]
+
+
+async def test_a_lookup_bug_after_confirm_is_a_failure_not_not_found(env: Env) -> None:
+    """A `KeyError` in a confirmed handler is a bug, which may have stopped
+    half-way: the owner hears it may not have been applied — not "not found.
+    Nothing was changed" — and the log names its type (§8.3, invariant 11)."""
+    _, channel = await held_call(env, NOTE_KEY_ERROR)
+    confirmation_id = await confirm(env)
+
+    with capture_logs() as logs:
+        outcome = await applier(env, channel).apply(confirmation_id)
+
+    assert outcome.status == "failed"
+    assert "may or may not have been applied" in channel.sends[-1]
+    assert "not found" not in channel.sends[-1]
+    assert await status_of(env) == ("failed", None)
+    failures = [e for e in logs if e["event"] == "tool_confirmation_handler_failed"]
+    assert [e["exc_type"] for e in failures] == ["KeyError"]
 
 
 # ------------------------------------------------------------ B: the card

@@ -12,18 +12,26 @@ production.
 
 from __future__ import annotations
 
+import json
 import logging
 from decimal import Decimal
 from typing import Any
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
 from assistant.accounts import service
 from assistant.accounts.models import Account
 from assistant.agent.persistence import DbCallRecorder, DbConsentReader
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime
-from assistant.agent.tools.registry import default_registry
+from assistant.agent.tools.registry import (
+    CapabilityClass,
+    ToolContext,
+    ToolDefinition,
+    ToolOutcome,
+    default_registry,
+)
 from assistant.config import Settings
 from assistant.core.routing import Route
 from assistant.inbox.processor import DeterministicError
@@ -36,9 +44,10 @@ from assistant.telegram.ingress.poller import Poller
 from assistant.telegram.ingress.ports import TelegramTransientError
 from tests.fakes.channel import FakeChannel
 from tests.fakes.clock import FakeClock
-from tests.fakes.llm import FakeLLM, tool_response
+from tests.fakes.llm import FakeLLM, text_response, tool_response
 from tests.fakes.sender import telegram_error
 from tests.fakes.telegram import FakeUpdateSource
+from tests.integration.agent_env import NOTE_FLAG, PRODUCTION_FLAGS, SET_NOTE
 from tests.integration.business_env import (
     OWNER,
     Env,
@@ -46,6 +55,7 @@ from tests.integration.business_env import (
     connect,
     deleted_messages,
     deliver,
+    grant_managed,
     press,
     private_message,
     run_deletion_jobs,
@@ -264,3 +274,133 @@ async def test_postgres_runs_with_terse_error_logging(env: Env) -> None:
     assert verbosity == "terse"
     assert statement == "panic"
     assert logged == "none"
+
+
+class _NoArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+async def _lookup_bug(_ctx: ToolContext, _args: _NoArgs) -> ToolOutcome:
+    """A programming error inside a handler: a `KeyError` carrying the canary."""
+    missing: dict[str, Any] = {}
+    return ToolOutcome("ok", missing[CANARY])
+
+
+#: Test-only: a read tool whose handler has a lookup bug.
+LOOKUP_BUG = ToolDefinition(
+    name="test_lookup_bug",
+    description="Test-only read tool with a bug.",
+    args_model=_NoArgs,
+    capability=CapabilityClass.READ,
+    handler=_lookup_bug,
+    release_flag="tool.test_lookup_bug",
+)
+#: Ten characters, so it reaches `date.fromisoformat`, whose message quotes it.
+DAY_CANARY = CANARY[:10]
+
+
+def _remember(**values: Any) -> str:
+    return json.dumps(
+        {
+            "content": "SYNTH",
+            "kind": "fact",
+            "contact_id": None,
+            "conversation_id": None,
+            "applies_to_replies": None,
+            "replaces_memory_id": None,
+            **values,
+        }
+    )
+
+
+def _tool_lines(output: str) -> list[dict[str, Any]]:
+    lines = [json.loads(line) for line in output.splitlines() if line.startswith("{")]
+    return [
+        line
+        for line in lines
+        if line.get("event") in {"agent_tool_call_failed", "agent_tool_call_not_run"}
+    ]
+
+
+async def test_every_tool_call_that_does_not_succeed_logs_one_content_free_line(
+    env: Env,
+    json_logs: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """M03 fix round C2: a failed tool call used to leave no trace at all.
+    Each one now writes exactly one line with a fixed code, through the real
+    runtime and the real log pipeline — and the canary, in a tool name, the
+    arguments, a stdlib error message, an exception and a held call, appears
+    nowhere (RG-10)."""
+    caplog.set_level(logging.DEBUG)
+    await connect(env)
+    await grant_managed(env)
+    await deliver(env, business_message(message_id=1, message_text=CANARY, first_name="Kamola"))
+    account = await _owner(env)
+    async with env.factory() as session, session.begin():
+        turn = await service.record_control_turn(
+            session, account_id=account.id, role="owner", text=f"question {CANARY}"
+        )
+        turn_id = turn.id
+        unknown = int(
+            (
+                await session.execute(text("SELECT coalesce(max(id), 0) + 1000 FROM app.contacts"))
+            ).scalar_one()
+        )
+    search = {"queries": ["synthetic"], "contact_id": None, "conversation_id": None}
+    fake = FakeLLM(
+        tool_response(
+            ("f1", f"{CANARY}_tool", "{}"),  # not offered (and not registered)
+            ("f2", "list_memories", f"{{not json {CANARY}"),
+            ("f3", "remember", _remember(content=f"{CANARY} " + "x" * 400)),  # too long
+            (
+                "f4",
+                "search_messages",
+                json.dumps({**search, "since": DAY_CANARY, "until": None, "limit": None}),
+            ),
+            ("f5", "remember", _remember(contact_id=unknown)),  # not this account's
+            ("f6", "test_lookup_bug", "{}"),
+            ("f7", "resolve_contact", json.dumps({"name": "Kamola", "limit": None})),  # taints
+            # Held (the run is tainted now), and too large to show on a card.
+            ("f8", "test_set_note", json.dumps({"note": CANARY * 40})),
+        ),
+        text_response("Synthetic answer."),
+    )
+    registry = default_registry()
+    registry.register(SET_NOTE)
+    registry.register(LOOKUP_BUG)
+    runtime = OwnerRequestRuntime(
+        session_factory=env.factory,
+        llm=ConsentGatedLLMClient(
+            MeteredLLMClient(fake, DbCallRecorder(env.factory, env.clock)),
+            DbConsentReader(env.factory),
+        ),
+        channel=FakeChannel(),
+        registry=registry,
+        clock=env.clock,
+        config=AgentConfig(
+            model="gpt-6-luna",
+            monthly_budget_usd=Decimal("5"),
+            enabled_flags=PRODUCTION_FLAGS | {NOTE_FLAG, LOOKUP_BUG.release_flag},
+        ),
+    )
+    outcome = await runtime.run(turn_id)
+    assert outcome.status.value == "succeeded"
+
+    output = json_logs.readouterr().out
+    lines = _tool_lines(output)
+    assert [(line["event"], line["tool"], line["code"]) for line in lines] == [
+        ("agent_tool_call_failed", "(unknown)", "not_offered"),
+        ("agent_tool_call_failed", "list_memories", "args_not_json"),
+        ("agent_tool_call_failed", "remember", "args_invalid"),
+        ("agent_tool_call_failed", "search_messages", "args_invalid"),
+        ("agent_tool_call_failed", "remember", "not_found"),
+        ("agent_tool_call_failed", "test_lookup_bug", "internal_lookup"),
+        ("agent_tool_call_not_run", "test_set_note", "hold:args_too_large"),
+    ]
+    assert [line["level"] for line in lines] == ["warning"] * 6 + ["info"]
+    assert all(line["run_id"] > 0 and line["account_id"] == account.id for line in lines)
+    assert (lines[2]["fields"], lines[3]["fields"]) == (["content"], ["since"])
+    assert (lines[4]["exc_type"], lines[5]["exc_type"]) == ("NotInAccountError", "KeyError")
+    _assert_clean(output, caplog.records)
+    assert DAY_CANARY not in output

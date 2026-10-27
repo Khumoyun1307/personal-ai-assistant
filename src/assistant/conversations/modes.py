@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts.models import AuditLogEntry
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
+from assistant.core.errors import NotInAccountError
 from assistant.memory import summaries
 
 MODE_OBSERVE = "observe"
@@ -57,7 +58,7 @@ class ModeChange:
 
 
 async def conversation_for_contact(session: AsyncSession, account_id: int, contact_id: int) -> int:
-    """The conversation with this contact; LookupError if it is not this
+    """The conversation with this contact; NotInAccountError if it is not this
     account's contact or there is no chat with them."""
     found = (
         await session.execute(
@@ -69,12 +70,12 @@ async def conversation_for_contact(session: AsyncSession, account_id: int, conta
         )
     ).scalar_one_or_none()
     if found is None:
-        raise LookupError("no conversation with this contact")
+        raise NotInAccountError("no conversation with this contact")
     return int(found)
 
 
 async def contact_of(session: AsyncSession, account_id: int, conversation_id: int) -> int:
-    """The contact of one of the account's chats; LookupError otherwise."""
+    """The contact of one of the account's chats; NotInAccountError otherwise."""
     found = (
         await session.execute(
             select(Conversation.contact_id)
@@ -83,7 +84,7 @@ async def contact_of(session: AsyncSession, account_id: int, conversation_id: in
         )
     ).scalar_one_or_none()
     if found is None:
-        raise LookupError("conversation not found in this account")
+        raise NotInAccountError("conversation not found in this account")
     return int(found)
 
 
@@ -121,7 +122,7 @@ async def set_mode(
     """Set one conversation's mode, in the caller's transaction. With
     `expect` (an Undo), only if the chat is still in that mode.
 
-    LookupError: not this account's conversation. ModeError: a mode that
+    NotInAccountError: not this account's conversation. ModeError: a mode that
     cannot be chosen, or a bot chat leaving Ignore."""
     if mode not in SETTABLE_MODES:
         raise ModeError("chats can be set to observe or ignore")
@@ -134,7 +135,7 @@ async def set_mode(
         )
     ).scalar_one_or_none()
     if conversation is None:
-        raise LookupError("conversation not found in this account")
+        raise NotInAccountError("conversation not found in this account")
     is_bot = (
         await session.execute(select(Contact.is_bot).where(Contact.id == conversation.contact_id))
     ).scalar_one_or_none()
