@@ -82,6 +82,8 @@ class IngestOutcome:
     message_id: int | None
     effect: Effect
     metadata_only: bool
+    mode: str = "observe"
+    content_changed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +96,7 @@ class DeletionOutcome:
     #: Messages that still held content until this deletion (a subset of
     #: `purged_message_ids`, which also lists rows already deleted).
     content_lost_ids: tuple[int, ...] = ()
+    assistant_sent_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,7 +367,9 @@ async def record_message(
         effect=effect.value,
         metadata_only=metadata_only,
     )
-    return IngestOutcome(conversation.id, message_id, effect, metadata_only)
+    return IngestOutcome(
+        conversation.id, message_id, effect, metadata_only, conversation.mode, content_changed
+    )
 
 
 def _advance_state(conversation: Conversation, event: ObservedMessage) -> None:
@@ -511,16 +516,19 @@ async def record_deletion(
     # redelivered deletion or a never-stored id must not invalidate a summary
     # (and force a paid rebuild) — the conversation row lock orders this read
     # against any concurrent edit of the chat.
-    content_lost = tuple(
-        int(message_id)
-        for message_id in (
-            await session.execute(
-                select(Message.id)
-                .where(Message.conversation_id == conversation.id)
-                .where(Message.telegram_message_id.in_(ids))
-                .where((Message.text.is_not(None)) | (Message.media.is_not(None)))
-            )
-        ).scalars()
+    content_lost_rows = (
+        await session.execute(
+            select(Message.id, Message.direction)
+            .where(Message.account_id == account_id)
+            .where(Message.conversation_id == conversation.id)
+            .where(Message.telegram_message_id.in_(ids))
+            .where((Message.text.is_not(None)) | (Message.media.is_not(None)))
+            .order_by(Message.id)
+        )
+    ).all()
+    content_lost = tuple(int(row[0]) for row in content_lost_rows)
+    assistant_sent = tuple(
+        int(row[0]) for row in content_lost_rows if row[1] == Direction.ASSISTANT_SENT
     )
     purged = await session.execute(
         update(Message)
@@ -579,6 +587,7 @@ async def record_deletion(
         missing,
         metadata_only=conversation.mode == "ignore",
         content_lost_ids=content_lost,
+        assistant_sent_ids=assistant_sent,
     )
 
 

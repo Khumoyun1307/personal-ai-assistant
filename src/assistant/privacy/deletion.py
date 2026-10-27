@@ -30,6 +30,7 @@ from assistant.core.errors import NotInAccountError
 from assistant.inbox.models import InboundUpdate
 from assistant.memory import items
 from assistant.memory.summaries import delete_account_summaries, delete_conversation_summaries
+from assistant.privacy.p2_deletion import purge_p2
 
 #: Raw updates that carry managed content, or the owner's name from the
 #: connection payload (`business_connection.user`).
@@ -68,7 +69,9 @@ def receipt_text(counts: Mapping[str, Any]) -> str:
         f"🗑 Deleted: {n('messages')} message(s), {n('contacts_cleared')} contact name(s), "
         f"{n('payloads_cleared')} raw update(s), {n('summaries_deleted')} summary(ies), "
         f"{n('memory_items_deleted')} note(s), {n('control_turns_cleared')} turn(s) of our "
-        f"conversation here, {n('held_calls_cleared')} held change(s).\n" + BACKUP_NOTE
+        f"conversation here, {n('held_calls_cleared')} held change(s), "
+        f"{n('actions')} action(s), {n('tasks')} task(s), "
+        f"{n('notifications')} notification(s), {n('automations')} automation(s).\n" + BACKUP_NOTE
     )
 
 
@@ -84,6 +87,10 @@ class DeletionReport:
     memory_items: int = 0
     #: Held tool calls whose arguments were cleared (S03.5).
     held_calls_cleared: int = 0
+    actions: int = 0
+    tasks: int = 0
+    notifications: int = 0
+    automations: int = 0
 
     @property
     def total(self) -> int:
@@ -95,6 +102,10 @@ class DeletionReport:
             + self.control_turns_cleared
             + self.summaries
             + self.held_calls_cleared
+            + self.actions
+            + self.tasks
+            + self.notifications
+            + self.automations
         )
 
     def receipt(self) -> str:
@@ -111,6 +122,10 @@ class DeletionReport:
             "summaries_deleted": self.summaries,
             "memory_items_deleted": self.memory_items,
             "held_calls_cleared": self.held_calls_cleared,
+            "actions": self.actions,
+            "tasks": self.tasks,
+            "notifications": self.notifications,
+            "automations": self.automations,
         }
 
 
@@ -234,7 +249,15 @@ async def delete_managed_data(
             select(func.count()).select_from(Message).where(Message.account_id == account_id)
         )
     ).scalar_one()
-    report = DeletionReport(messages, contacts, payloads, turns, summaries, notes, held)
+    p2 = await purge_p2(
+        session,
+        account_id=account_id,
+        conversation_ids=None,
+        contact_ids=(),
+        scope="managed",
+        now=clock.now(),
+    )
+    report = DeletionReport(messages, contacts, payloads, turns, summaries, notes, held, **p2)
     details: dict[str, Any] = {**report.counts(), "messages_remaining": int(remaining)}
     if request is not None:
         details.update(request.key)
@@ -343,7 +366,15 @@ async def purge_conversation(
         )
     )
     await session.flush()
-    return DeletionReport(messages, contacts, payloads, turns, summaries, notes)
+    p2 = await purge_p2(
+        session,
+        account_id=account_id,
+        conversation_ids=[conversation_id],
+        contact_ids=[] if contact_id is None else [int(contact_id)],
+        scope="scoped",
+        now=clock.now(),
+    )
+    return DeletionReport(messages, contacts, payloads, turns, summaries, notes, **p2)
 
 
 async def redact_turns_referring_to(
@@ -694,7 +725,15 @@ async def _purge_chats(
         clock=clock,
     )
     names = await _clear_names(session, account_id, contact_ids, clock)
-    return DeletionReport(messages, names, payloads, turns, summaries, notes, held)
+    p2 = await purge_p2(
+        session,
+        account_id=account_id,
+        conversation_ids=conversation_ids,
+        contact_ids=contact_ids,
+        scope="scoped",
+        now=clock.now(),
+    )
+    return DeletionReport(messages, names, payloads, turns, summaries, notes, held, **p2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -957,7 +996,15 @@ async def delete_everything(
         .where(Conversation.account_id == account_id)
         .values(pending_ai_since=None, updated_at=clock.now())
     )
-    report = DeletionReport(messages, names, payloads, turns, summaries, notes, held)
+    p2 = await purge_p2(
+        session,
+        account_id=account_id,
+        conversation_ids=None,
+        contact_ids=(),
+        scope="everything",
+        now=clock.now(),
+    )
+    report = DeletionReport(messages, names, payloads, turns, summaries, notes, held, **p2)
     _audit(
         session,
         account_id=account_id,

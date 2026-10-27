@@ -39,6 +39,7 @@ from assistant.observability.logging import get_logger
 from assistant.observability.status import build_status
 from assistant.telegram.control import deeplinks, handlers, panels
 from assistant.telegram.control.handlers import HandlerResult, IncomingMessage
+from assistant.telegram.control.routes import ControlRoutes
 from assistant.telegram.gateway import ControlChat, OutboundGateway
 
 logger = get_logger(__name__)
@@ -66,6 +67,7 @@ class ControlDispatcher:
         *,
         policy_url: str | None = None,
         monthly_budget_usd: Decimal | None = None,
+        routes: ControlRoutes | None = None,
     ) -> None:
         self._gateway = gateway
         self._clock = clock
@@ -73,6 +75,7 @@ class ControlDispatcher:
         self._scheduler = scheduler
         self._policy_url = policy_url
         self._budget = monthly_budget_usd
+        self._routes = routes or ControlRoutes()
 
     async def dispatch(self, session: AsyncSession, message: IncomingMessage) -> DispatchOutcome:
         # A forwarded message is someone else's text: it is never a command,
@@ -144,6 +147,13 @@ class ControlDispatcher:
             return DispatchOutcome(result, account.id)
         # The managed-conversation consent is a card (Agree / Decline), never
         # a text question: a plain message is never read as that answer.
+        if pending is not None and (handler := self._routes.pending_inputs.get(pending.kind)):
+            return DispatchOutcome(
+                await handler(
+                    session, self._gateway, self._clock, self._scheduler, account, message, pending
+                ),
+                account.id,
+            )
 
         # Rule 4: free text. Record the turn and queue the agent run in the
         # SAME transaction: a crash between the two can lose neither, and a
@@ -252,6 +262,18 @@ class ControlDispatcher:
             return await panels.handle_press(
                 session, self._gateway, self._clock, account, press, self._scheduler
             )
+        if parsed.kind in {
+            service.MANAGED_CONSENT_CARD,
+            handlers.MANAGED_DELETE_KIND,
+            handlers.MANAGED_MODE_KIND,
+        }:
+            return await handlers.handle_card_press(
+                session, self._gateway, self._clock, account, press, self._scheduler
+            )
+        if handler := self._routes.callbacks.get(parsed.kind):
+            return await handler(
+                session, self._gateway, self._clock, self._scheduler, account, press
+            )
         return await handlers.handle_card_press(
             session, self._gateway, self._clock, account, press, self._scheduler
         )
@@ -359,6 +381,16 @@ class ControlDispatcher:
                 )
                 return HandlerResult(True, "resume", send)
             case _:
+                if handler := self._routes.commands.get(command):
+                    return await handler(
+                        session,
+                        self._gateway,
+                        self._clock,
+                        self._scheduler,
+                        account,
+                        message,
+                        argument,
+                    )
                 send = await self._gateway.send_text(
                     ControlChat(account_id=account.id, chat_id=message.chat_id),
                     handlers.describe_unknown_command(command),

@@ -51,6 +51,8 @@ class ConversationPanel:
     #: Messages that arrived while the chat was in Ignore: a row each, without
     #: content (`read.not_stored_while_ignored`, M03 fix round C3).
     not_stored: int = 0
+    contact_id: int | None = None
+    contact_priority: str = "normal"
 
     @property
     def total(self) -> int:
@@ -152,4 +154,6 @@ async def conversation_panel(
         notes=tuple(note.content for note in notes),
         notes_total=notes_total,
         not_stored=int(not_stored),
+        contact_id=contact.id,
+        contact_priority=contact.priority,
     )

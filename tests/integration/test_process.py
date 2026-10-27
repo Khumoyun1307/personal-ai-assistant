@@ -91,3 +91,39 @@ async def test_a_second_inbox_processor_cannot_start(settings: Settings, migrate
     finally:
         await holder.release()
         await engine.dispose()
+
+
+async def test_startup_resets_the_ingestion_barrier_before_any_role_runs(
+    settings: Settings, migrated_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assistant.db.engine import build_session_factory
+    from assistant.telegram.ingress.poller import Poller
+    from assistant.telegram.ingress.ports import BotIdentity
+    from assistant.telegram.ingress.writer import read_state, write_state
+
+    engine = build_engine(migrated_url)
+    factory = build_session_factory(engine)
+    async with factory() as session, session.begin():
+        await write_state(
+            session,
+            "ingestion_barrier",
+            {"process_run_id": "previous", "caught_up_at": "synthetic"},
+        )
+    seen: list[str] = []
+
+    async def startup(poller: Poller) -> BotIdentity:
+        async with factory() as session:
+            barrier = await read_state(session, "ingestion_barrier")
+        assert barrier is not None
+        assert barrier["process_run_id"] != "previous"
+        assert barrier["caught_up_at"] is None
+        assert poller.process_run_id == barrier["process_run_id"]
+        seen.append(barrier["process_run_id"])
+        return BotIdentity(SYNTHETIC_BOT_ID, "synthetic_bot", True)
+
+    monkeypatch.setattr(Poller, "startup", startup)
+    try:
+        async with running_process(settings, frozenset({"poller"})):
+            assert len(seen) == 1
+    finally:
+        await engine.dispose()

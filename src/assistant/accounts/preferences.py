@@ -73,6 +73,12 @@ REPLY_DEFAULTS = {
     FIELD_REPLY_TONE: "neutral",
     FIELD_REPLY_STYLE: "brief",
 }
+M05_DEFAULTS: dict[str, str | int | bool] = {
+    "quiet_hours": "23:00-08:00",
+    "urgent_bypass": False,
+    "digest_time": "21:00",
+    "alert_cap_per_hour": 6,
+}
 #: Owner-facing names of the fields.
 FIELD_LABELS = {
     FIELD_LANGUAGE: "language",
@@ -84,14 +90,63 @@ FIELD_LABELS = {
     FIELD_RETENTION[retention_policy.MESSAGES]: "messages kept (days)",
     FIELD_RETENTION[retention_policy.CONTROL_CHAT]: "this chat kept (days)",
     FIELD_RETENTION[retention_policy.RAW_UPDATES]: "raw updates kept (days)",
+    "quiet_hours": "quiet hours",
+    "urgent_bypass": "urgent alerts during quiet hours",
+    "digest_time": "daily digest time",
+    "alert_cap_per_hour": "alerts per hour",
 }
 
 _LANGUAGE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,4})?$")
 MAX_TIMEZONE_LENGTH = 64
+_LOCAL_TIME = r"(?:[01][0-9]|2[0-3]):[0-5][0-9]"
 
 
 class PreferenceError(ValueError):
     """A value that cannot be applied. The message is safe to show the owner."""
+
+
+def check_quiet_hours(value: object) -> str:
+    if isinstance(value, str) and (
+        value == "off" or re.fullmatch(f"{_LOCAL_TIME}-{_LOCAL_TIME}", value)
+    ):
+        return value
+    raise PreferenceError("quiet hours use HH:MM-HH:MM or off")
+
+
+def check_digest_time(value: object) -> str:
+    if isinstance(value, str) and (value == "off" or re.fullmatch(_LOCAL_TIME, value)):
+        return value
+    raise PreferenceError("digest time uses HH:MM or off")
+
+
+def check_alert_cap(value: object) -> int:
+    if type(value) is int and 1 <= value <= 30:
+        return value
+    raise PreferenceError("alerts per hour must be an integer from 1 to 30")
+
+
+def check_urgent_bypass(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise PreferenceError("urgent bypass must be true or false")
+
+
+def _m05_setting(account: Account, field: str) -> str | int | bool:
+    value = (account.settings or {}).get(field)
+    try:
+        match field:
+            case "quiet_hours":
+                return check_quiet_hours(value)
+            case "digest_time":
+                return check_digest_time(value)
+            case "alert_cap_per_hour":
+                return check_alert_cap(value)
+            case "urgent_bypass":
+                return check_urgent_bypass(value)
+            case _:
+                raise PreferenceError("unknown preference")
+    except PreferenceError:
+        return M05_DEFAULTS[field]
 
 
 def check_language(value: str) -> str:
@@ -192,6 +247,8 @@ def current(account: Account) -> dict[str, Any]:
     }
     for field in REPLY_DEFAULTS:
         values[field] = _reply_setting(account, field)
+    for field in M05_DEFAULTS:
+        values[field] = _m05_setting(account, field)
     for key, field in FIELD_RETENTION.items():
         values[field] = retention_policy.days(account.settings, key)
     return values
@@ -204,7 +261,7 @@ def _apply(account: Account, field: str, value: Any) -> None:
         account.timezone = value
     elif field == FIELD_DEFAULT_MODE:
         account.settings = {**(account.settings or {}), DEFAULT_MODE_KEY: value}
-    elif field in REPLY_DEFAULTS:
+    elif field in REPLY_DEFAULTS or field in M05_DEFAULTS:
         account.settings = {**(account.settings or {}), field: value}
     elif field in _RETENTION_OF_FIELD:
         account.settings = retention_policy.with_override(
@@ -233,6 +290,10 @@ async def update(
     reply_tone: str | None = None,
     reply_style: str | None = None,
     retention: Mapping[str, int] | None = None,
+    quiet_hours: str | None = None,
+    urgent_bypass: bool | None = None,
+    digest_time: str | None = None,
+    alert_cap_per_hour: int | None = None,
     actor: str,
     clock: Clock,
 ) -> PreferenceChange:
@@ -252,6 +313,14 @@ async def update(
         wanted[FIELD_REPLY_TONE] = check_reply_tone(reply_tone)
     if reply_style is not None:
         wanted[FIELD_REPLY_STYLE] = check_reply_style(reply_style)
+    if quiet_hours is not None:
+        wanted["quiet_hours"] = check_quiet_hours(quiet_hours)
+    if urgent_bypass is not None:
+        wanted["urgent_bypass"] = check_urgent_bypass(urgent_bypass)
+    if digest_time is not None:
+        wanted["digest_time"] = check_digest_time(digest_time)
+    if alert_cap_per_hour is not None:
+        wanted["alert_cap_per_hour"] = check_alert_cap(alert_cap_per_hour)
     for key, value in (retention or {}).items():
         wanted[FIELD_RETENTION.get(key, key)] = check_retention(key, value)
     await lock(session, account)
