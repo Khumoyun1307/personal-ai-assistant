@@ -60,6 +60,11 @@ ACTIVE: dict[str, str] = {
     # shown, so "I changed the time" means the edited text holds the new
     # value. v1-v6 stay.
     "summarize": "v7",
+    # v1 (S05.1): one chat's new messages (the burst) → flags, urgency,
+    # commitments and questions citing their source message, resolved open
+    # tasks, escalation category, short reasons; contact text is data, an
+    # instruction to the assistant is `suspicious`; no tools.
+    "triage": "v1",
 }
 
 

@@ -50,6 +50,10 @@ class Source(StrEnum):
     (the owner confirmed it on a card, S03.3, M03 D70): the words may be
     someone else's."""
 
+    TASK_TITLE = "task_title"
+    """A task's title (S05.1): model-written from a contact's message, so it
+    may carry an injection forward."""
+
 
 OPEN_TAG = '<untrusted source="{source}" trust="untrusted">'
 CLOSE_TAG = "</untrusted>"
