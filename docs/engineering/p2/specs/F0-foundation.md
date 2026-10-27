@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Owner** | Neryn · **Peer review** Viro (code), Jack (privacy cascade, M05 schema) · **QA** Antony · **Sign-off** TL · **Merge** owner (to `main`) |
+| **Owner** | Neryn · **Peer review** Viro (code), Jack (privacy cascade, M05 schema) · **QA** Antony · **Sign-off and merge** TL (to `main`, P2-O13) |
 | **Size** | M · **Critical path** yes — every other unit builds on it |
 | **Branch** | `p2/f0-foundation` from `main` after "M03 OK" → PR to `main` |
 | **Normative inputs** | [contracts/F0-schema.md](../contracts/F0-schema.md), [contracts/F0-interfaces.md](../contracts/F0-interfaces.md), [decisions.md](../decisions.md) P2-T01…T05, T12, T16 |

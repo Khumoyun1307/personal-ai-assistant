@@ -95,6 +95,18 @@ Routine technical decisions inside the approved scope (AGENTS §3). Each names w
 
 **Status recorded 2026-10-26 (owner):** M03's CI is running; the owner will merge M03, mark it OK and done, and then authorise the start of this plan. **No pre-start work is authorised yet** (no dataset authoring, no QA-P, no LV-08 scheduling). Product code starts only after "M03 OK" and the owner's go-ahead.
 
+### B4. Phase start (2026-10-27)
+
+**Status recorded 2026-10-27 (owner, in the TL conversation):** *"I am giving you the go ahead approval to you all. If you have understood your responsibilities - get to work."* M03 was already `done` ("M03 OK" 2026-10-27; S03.7 merged in #32 and deployed with the fix round the same day), so this is **D0 = 2026-10-27**: CP0 runs, wave 1 starts, and the datasets (E2D, E3D) and QA-P are authorised with it as ordinary units (no longer "pre-start"). OPS-LV08 stays deferred (B3 E1). IMPLEMENTATION_PLAN §1.4 records M04 and M05 as `in progress`.
+
+| ID | Decision | Why | Where |
+|---|---|---|---|
+| P2-O13 | **Owner decision 2026-10-27 — the TL merges into `main`.** The TL merges P2's PRs that go straight to `main` (F0, docs, datasets, the QA plan, E4D, OPS-LV08) once CI is green (docs-only PRs skip CI) and the reviews are clean. Only `int/m04` → `main` and `int/m05` → `main` stay the owner's (the AGENTS §15 integration-branch rule). Merging is not deploying: every deploy still needs the owner's go-ahead. AGENTS §15's "P2: only the owner merges into `main`" was replaced accordingly. | The owner: "we updated the rule that you can merge stuff now" | AGENTS §15, WORKFLOW §2, §4 |
+| P2-O14 | **Junior runs in Antigravity** (Gemini) and follows the same workflow (owner, 2026-10-27). Antigravity has no secret-guard hook, so WORKFLOW §2's "you are the guard" applies. | CP0 question answered | README §2 |
+| P2-T29 | **Every issue carries an `eng:<name>` label** (`eng:neryn`, `eng:viro`, `eng:jack`, `eng:junior`, `eng:antony`, `eng:tl`); engineers find their units with `gh issue list --label eng:<you>` and their reviews with the `needs-review:<you>` / `needs-qa` labels. | Every session uses the same GitHub account, so assignees and `review-requested:@me` cannot tell engineers apart | WORKFLOW §8 |
+| P2-T30 | **No CI trigger on pushes to `int/*`.** Before merging a unit, the TL checks that the PR's latest CI run tested a merge with the **current** int head; if the int branch moved since, the TL closes and reopens the PR (GitHub then tests a fresh merge with the base) and merges only when that run is green. | A push trigger would also rebuild both arm64 images on every integration merge; reopening tests the real combination without touching the author's branch | WORKFLOW §7.1 |
+| P2-T31 | **Units started before CP1** (S04.2 part a, S05.1 run part, S05.2 policy function, S05.3a, and the datasets) may open a **draft PR against `main` to get CI**, titled `[retarget to int/m0x]`; the TL retargets it when the int branches are cut, and it is never merged into `main`. F0 is the only P2 unit PR that is meant for `main`. | Sessions without Docker (WORKFLOW §3.2) otherwise have no test run before CP1 | WORKFLOW §4 |
+
 ## C. Interface-change log
 
 *Append one row per approved interface change request after CP1 (ORG §5). Format: date · requester · contract section · change · affected WUs · TL decision.*

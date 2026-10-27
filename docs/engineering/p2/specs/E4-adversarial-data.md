@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Owner** | Junior · **Mentor** Viro · **QA** Antony · **Sign-off** TL · **Merge** owner (to `main`) |
+| **Owner** | Junior · **Mentor** Viro · **QA** Antony · **Sign-off and merge** TL (to `main`, P2-O13) |
 | **Size** | M (≈ 1.5 days, two PRs) · **Priority** lowest in P2: start only when E2D, E3D, S05.3a, S04.5 and S05.2P are done or waiting on review |
 | **Depends on** | nothing (data only; no product code) |
 | **Branch** | `evals/e4-dataset` from `main` → PR to `main` |
