@@ -1,4 +1,6 @@
-# M03 — decisions waiting for your confirmation
+# M03 — decisions (confirmed by the owner 2026-10-27)
+
+**Confirmed 2026-10-27:** the owner replied "confirmed" — every decision on this page takes its recommendation. The real choices: G1 run the stronger-summary trial in the M03 fix round; P9 yes, an open request keeps "needs a reply" on; S5 copy addresses and numbers exactly as written; D61 background summaries on; D97 keep; E-k whole set; E-p accept; E-c spot-check 5.
 
 *For the owner. Written 2026-10-26 at the M03 close-out; S03.7's decisions
 (D95–D114, E-z…E-al) added the same day at the end of the page. Every

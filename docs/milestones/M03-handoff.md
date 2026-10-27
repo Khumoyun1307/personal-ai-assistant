@@ -4,6 +4,8 @@
 
 ## 1. Where things stand
 
+> **Update 2026-10-27: M03 is `done`** (owner "M03 OK"; decisions confirmed; checklist done, NFR-04 met). The owner plans an **M03 fix round before any M04 code**: C1–C5 and O1 (M03.md "Owner checklist"), G1 and the S03.7 open items. M04 planning can proceed; M04 code starts after that fix round.
+
 - **Milestones:** M00–M02 `done`. M03 (Context, memory & summaries) has S03.1–S03.6 and the close-out merged and deployed; **S03.7 "Robust attribution and search"** (added by the owner on 2026-10-26 after the first live evals) is **complete** on branch `m03/s03.7-attribution-search` and **in its PR into `main`**, waiting for the owner's merge and a deploy (record: [M03.md](M03.md) *S03.7*). **M04 is `approved` in advance** (IMPLEMENTATION_PLAN §1.4): planning may start now; **M04 code starts only after the owner's "M03 OK"** (AGENTS §3).
 - **Production:** Oracle server, production bot Alviro, `main` deployed with every M03 feature flag on, privacy policy v5 published (2026-10-26), the owner's `ai_control` and `ai_managed` consents granted. Production runs `summarize.v4` and `owner_request.v5` until S03.7 deploys; then `summarize.v7` and `owner_request.v7`.
 - **Process (AGENTS §11, §15):** CI is the test gate (docs-only changes skip CI); locally only the relevant tests (if they would take ~15 min or more, push and let CI run them); a branch and a draft PR per slice; the owner merges; bug fixes start with a failing test.
