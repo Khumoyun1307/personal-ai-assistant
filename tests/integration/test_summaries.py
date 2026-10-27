@@ -1150,6 +1150,35 @@ async def test_get_conversation_reports_messages_not_stored_while_ignored(senv: 
     assert back["coverage"]["not_stored_while_ignored"] == 2
 
 
+async def test_a_message_that_holds_content_is_never_counted_as_not_stored(senv: Env) -> None:
+    """C3 (CI on the stack): the eval corpus seeds rows with text and no
+    content hash, and every such row read as "arrived while ignored". Only a
+    row with no text and no media can be one."""
+    a, _ = await seed(senv)
+    fake = FakeLLM()
+    ctx = await tool_context(senv, fake)
+    async with senv.factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE app.messages SET content_hash = NULL"
+                " WHERE conversation_id = :c AND text IS NOT NULL"
+            ),
+            {"c": a},
+        )
+    arguments = GetConversationArgs(conversation_id=a, contact_id=None, cursor=None, limit=None)
+    coverage = (await get_conversation_tool(ctx, arguments)).data["coverage"]
+    async with senv.factory() as session:
+        period = await waiting.period_coverage(
+            session,
+            ctx.account_id,
+            start=AT - timedelta(days=1),
+            end=AT + timedelta(days=1),
+            conversation_ids=[a],
+        )
+
+    assert (coverage["not_stored_while_ignored"], period.not_stored_in_period) == (0, 0)
+
+
 async def test_a_refresh_queued_before_the_switch_to_ignore_makes_no_call(senv: Env) -> None:
     """C3 guard: a refresh job that runs after the chat was set to Ignore
     sends nothing to the model (summarize.py's mode check)."""

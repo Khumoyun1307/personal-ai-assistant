@@ -795,6 +795,20 @@ The uz-Latn, uz-Cyrl and ru wording in `agent/owner_texts.py` are drafts, as bef
   eval-summary tests, the untouched cases of `test_summaries*.py` and of `test_deletion_cards.py`.
   CI is the gate.
 
+### CI on the stack
+
+CI on the C3 PR failed four eval-harness tests (`tests/integration/test_eval_summary.py`:
+a spurious `pre_connection` caveat for c26). The eval corpus seeds rows with text and no content
+hash, and `not_stored_while_ignored` treated every such row as "arrived while ignored", so the
+new count rendered a caveat line that the harness took for a coverage-start line. Fixed both ways:
+the rule now also requires no text and no media (a row that holds content is never one, whatever
+its hash; `saved_message` is its exact complement), and the harness's start-line isolation
+(`evals/summary.py::carried_caveats`) also zeroes `not_stored_in_period` and the owner-deletion
+counts. Production rows always have a hash (the column exists since migration 0005), so the
+product's behaviour is unchanged. Red first:
+`test_summaries.py::test_a_message_that_holds_content_is_never_counted_as_not_stored`
+(`assert (2, 2) == (0, 0)`) and the CI failures.
+
 ## G1 — stronger summary model
 
 **Decided by the owner (2026-10-27): summaries stay on `gpt-6-luna`.**
