@@ -186,6 +186,8 @@ def test_occurrences_are_strictly_after_and_one_per_local_day() -> None:
         seen_days.add(local_day)
         current = nxt
 
+    assert sorted(seen_days) == [date(2026, 1, 1) + timedelta(days=i) for i in range(400)]
+
 
 def test_an_invalid_rrule_is_rejected() -> None:
     spec = ScheduleSpec(
@@ -344,3 +346,18 @@ def test_lateness_boundaries() -> None:
         )
         == Lateness.SKIP
     )
+
+
+def test_timezone_keyword_argument_compatibility() -> None:
+    res = to_utc(datetime(2026, 11, 2, 9, 0), timezone="Europe/Berlin")  # noqa: DTZ001
+    assert res == datetime(2026, 11, 2, 8, 0, tzinfo=UTC)
+
+    spec = daily_at("09:00", timezone="Europe/Berlin", starting=date(2026, 11, 1))
+    assert spec.timezone == "Europe/Berlin"
+
+    nxt = next_local_time(
+        "09:00",
+        timezone="Europe/Berlin",
+        after=datetime(2026, 11, 1, 0, 0, tzinfo=UTC),
+    )
+    assert nxt == datetime(2026, 11, 1, 8, 0, tzinfo=UTC)
