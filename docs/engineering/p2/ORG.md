@@ -2,6 +2,8 @@
 
 *Who owns what, who reviews whom, how people talk to each other and when something goes to the owner. Engineers are independent engineers in owner-controlled sessions, not the TL's subagents; each engineer organises their own internal subagents within their unit's boundaries (WORKFLOW §2).*
 
+> **Changed 2026-10-27 (owner, P2-O16):** from the next TL session the TL runs **Neryn, Viro, Jack and Junior** as its own agents and workflows (tech-lead handoff §7). **Antony (QA) stays a separate owner-run session.** Roles, ownership, the review matrix and GitHub as the record are unchanged; only who starts the engineer sessions changes.
+
 ## 1. Roles
 
 | Role | Person | Accountable for | Not responsible for |

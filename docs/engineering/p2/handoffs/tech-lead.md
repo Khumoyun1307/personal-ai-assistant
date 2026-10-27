@@ -39,3 +39,14 @@ Interface changes; revision numbers if Neryn is unavailable; disagreements betwe
 ## 6. Things you never do
 
 Read `.env`, `var/` or real data; use Alviro's token or the production server without the owner's go-ahead for that action; merge an integration branch into `main`; deploy without the owner's go-ahead; change a §6 invariant, a regression test, the PRD or a TF fact; approve eval spending; start M06/M07 work.
+
+## 7. Running the engineer roles yourself (P2-O16, from the session after 2026-10-27)
+
+The TL session (Claude Code, ultracode) runs **Neryn, Viro, Jack and Junior** as its own agents and workflows. **Antony stays a separate owner-run Codex session**; keep labelling `needs-qa` and wait for his reviews.
+
+- **One agent per unit step, briefed as that engineer:** its handoff (`handoffs/<name>.md`), the unit spec, the issue number, its worktree and branch (`..\alviro-wt\<name>-<unit>`; create one from the right base if missing), its `COMPOSE_PROJECT_NAME` (`neryn`, `viro`, `jack`, `junior`; extra parallel agents `<name>-2`, …), and WORKFLOW §2's safety rules. The role agent implements red-first, runs the relevant tests and static checks, commits, **pushes its own unit branch, opens or updates its PR with the template, and comments on its issue**, as the engineer did. It never merges and never pushes to `main` or `int/*`. Tell role agents not to write bare `@names` on GitHub (they notify real accounts).
+- **Reviews stay independent:** a peer or mentor review is a **fresh** agent in the reviewer's role (ORG §3), never the authoring agent; you add your TL review; Antony adds QA. The one-fix-round rule (P2-T18) applies.
+- **Parallelism:** run units on disjoint files concurrently (workflow `pipeline`); never two pytest runs on one compose project; give parallel writers their own worktree.
+- **Gate:** while CI is disabled (P2-O15), run before every merge, in your gate worktree (`..\alviro-wt\tl-p2-kickoff`, `COMPOSE_PROJECT_NAME=tlp2`): `git fetch origin; git switch --detach origin/<int-branch>; git merge --no-ff --no-commit origin/<unit-branch>; just check; git merge --abort`. Merge only when it is green and post the result on the PR. When CI is back, CI green replaces this.
+- **GitHub stays the record:** issues, PRs, labels and the daily summary on #43, so Antony and the owner can follow.
+- **Owner gates are unchanged:** live windows, deploys, eval spend, `int/*` → `main`.
