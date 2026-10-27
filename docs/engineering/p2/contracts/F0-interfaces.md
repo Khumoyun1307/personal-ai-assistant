@@ -362,8 +362,10 @@ class NotificationRefs:  # ids only
 async def enqueue(session, *, account_id: int, kind: NotificationKind, priority: Priority, dedupe_key: str,
                   refs: NotificationRefs, clock: Clock, alert_class: AlertClass = AlertClass.STANDARD,
                   conversation_id: int | None = None, contact_id: int | None = None,
-                  bypass_quiet_hours: bool = False) -> int | None   # None = deduplicated
+                  bypass_quiet_hours: bool = False,
+                  scheduler: JobScheduler | None = None) -> int | None   # None = deduplicated
 ```
+`scheduler` (P2-T40): when given, `enqueue` defers `notify.deliver` after commit; every production caller passes it (S05.1 effects, S05.4's listener and evaluator, `OwnerAlerts` at CP4). `None` (tests) leaves the row to the notifications reconciler.
 `enqueue` inserts the row (`ON CONFLICT (account_id, dedupe_key) DO NOTHING`) and registers an after-commit defer of `notify.deliver`; the policy decision happens at delivery. Dedupe keys are built from ids and enums only (e.g. `triage:{conversation_id}:{covers_through_message_id}:urgent`).
 
 `inbox/notify.py::AlertKind` gains (F0): `DELIVERY_UNCERTAIN = "delivery_uncertain"`, `CONNECTION_STALE = "connection_stale"` (their texts are added by S04.4). M04 uses `OwnerAlerts.notify_owner` for them. At CP4, S05.2 routes `OwnerAlerts.notify_owner` itself through `notifications` (class `system`); **callers do not change**, dedupe keeps reading the `system_alert` audit rows, and an uncertain outcome counts as delivered (R10, P2-T24; S05.2 §3.5 is the definition).

@@ -114,6 +114,7 @@ Routine technical decisions inside the approved scope (AGENTS §3). Each names w
 | P2-T37 | **S04.4: an action whose `text IS NULL` is never sendable** (Tx A → `blocked`/`data_deleted`), and the 429 branch never returns it to `approved`. | Viro, #82: a deletion during an in-flight send clears the text; a later 429 would make a NULL-text action executable again | S04.4 §3.2 |
 | P2-T38 | **S05.2: muting matches the exact `(kind, contact_id)` pair**; the cap counts claimed-`uncertain` rows as well as `sent`. | Jack, #53: a literal reading would let feedback on alerts that name no contact silence that kind for every contact | S05.2 §3.1 |
 | P2-T39 | **Wave-1 parts merge as their own PRs** (S04.2 part a, the S05.1 run part, the S05.2 policy function, an early S04.1 PR): reviewed now, merged into their int branch right after CP1; the rest of the unit follows in a second PR on the same issue. S04.1 may start before CP1 on a branch from `p2/f0-foundation`. | Keeps the critical path moving while F0 is reviewed (TL: "whether a unit may be split") | WORKFLOW §4 |
+| P2-T40 | **`enqueue` gains `scheduler: JobScheduler \| None = None`** and defers `notify.deliver` after commit when given; every production caller passes it; the reconciler stays the safety net. | Jack, #53: without it every alert waited up to ~90 s for the reconciler, risking NFR-05's urgent p95 < 2 min | F0-interfaces §8.3 |
 
 ## C. Interface-change log
 
