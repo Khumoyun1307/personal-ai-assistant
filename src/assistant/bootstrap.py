@@ -220,8 +220,14 @@ def _wire_m04(
     clock: Clock,
     scheduler: ProcrastinateScheduler,
     process_run_id: str,
+    llm: LLMClient | None,
+    roles: frozenset[str],
 ) -> None:
-    """M04 units add their adapters here; F0 enables no feature behaviour."""
+    """M04 units add their adapters here; F0 enables no feature behaviour.
+
+    `llm` is the process's one gated, metered client, or None when no
+    `worker`/`system` role runs (model-backed adapters are then not needed).
+    """
     wiring.actions_config = ActionsConfig(
         approval_max_age=timedelta(hours=settings.approval_max_age_hours),
         draft_debounce=timedelta(seconds=settings.draft_debounce_seconds),
@@ -243,8 +249,11 @@ def _wire_m05(
     channel: ControlChannel,
     clock: Clock,
     scheduler: ProcrastinateScheduler,
+    llm: LLMClient | None,
+    roles: frozenset[str],
 ) -> None:
-    """M05 units add their adapters and listeners here after F0."""
+    """M05 units add their adapters and listeners here after F0 (`llm` as
+    in `_wire_m04`)."""
 
 
 class InstanceAlreadyRunningError(RuntimeError):
@@ -284,13 +293,11 @@ async def running_process(
         # would come back as executable.
         async with session_factory() as session, session.begin():
             await assert_not_restore_pending(session)
-            # A caught-up value from another process must never permit a send.
-            # Commit the reset before constructing or starting any role (R1).
-            await write_state(
-                session,
-                "ingestion_barrier",
-                {"process_run_id": process_run_id, "caught_up_at": None},
-            )
+        # One client per process, and only where a role can call the model:
+        # a poller- or inbox-only process needs no provider key (P2-T35).
+        llm: LLMClient | None = None
+        if roles & {"worker", "system"}:
+            llm = build_llm_client(settings, session_factory, clock)
         wiring = _PhaseWiring()
         _wire_m04(
             wiring,
@@ -301,6 +308,8 @@ async def running_process(
             clock=clock,
             scheduler=scheduler,
             process_run_id=process_run_id,
+            llm=llm,
+            roles=roles,
         )
         _wire_m05(
             wiring,
@@ -310,11 +319,12 @@ async def running_process(
             channel=channel,
             clock=clock,
             scheduler=scheduler,
+            llm=llm,
+            roles=roles,
         )
         debounce, max_wait = summary_timing(settings)
-        if roles & {"worker", "system"}:
+        if llm is not None:
             alerts = OwnerAlerts(session_factory, channel, clock)
-            llm = build_llm_client(settings, session_factory, clock)
             summarizer = build_summarizer(settings, session_factory, clock, llm)
             register_tasks(
                 jobs_app,
@@ -372,6 +382,16 @@ async def running_process(
                 if not await lock.acquire():
                     raise InstanceAlreadyRunningError("another process is polling this bot")
                 locks.append(lock)
+                # Only the process that holds the poller lock resets the barrier,
+                # and before any role starts: a caught-up value from another run
+                # never permits a send (R1), and a second process that fails the
+                # lock leaves the live run's barrier alone (P2-T36).
+                async with session_factory() as session, session.begin():
+                    await write_state(
+                        session,
+                        "ingestion_barrier",
+                        {"process_run_id": process_run_id, "caught_up_at": None},
+                    )
                 poller = Poller(
                     AiogramUpdateSource(bot), session_factory, clock, process_run_id=process_run_id
                 )

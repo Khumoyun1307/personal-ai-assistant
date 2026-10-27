@@ -516,6 +516,124 @@ async def test_deleting_everything_leaves_no_content_of_the_account(env: Env) ->
     assert statuses == {"expired"}
 
 
+async def test_deleting_everything_keeps_only_the_digest_automation(env: Env) -> None:
+    """R11: owner-authored monitors are content and go; the digest schedule
+    is a setting and stays."""
+    seeded = await seed(env)
+    async with env.factory() as session, session.begin():
+        session.add(
+            Automation(
+                account_id=seeded.account_id,
+                kind="digest",
+                spec={"schema_version": 1},
+                timezone="UTC",
+                tz_policy="follow_owner",
+            )
+        )
+
+    async with env.factory() as session, session.begin():
+        await deletion.delete_everything(
+            session, account_id=seeded.account_id, actor="owner", clock=env.clock
+        )
+
+    kinds = await scalar(
+        env,
+        "SELECT array_agg(kind ORDER BY kind) FROM app.automations WHERE account_id = :a",
+        a=seeded.account_id,
+    )
+    assert kinds == ["digest"]
+    other = await scalar(
+        env,
+        "SELECT count(*) FROM app.automations WHERE account_id = :a",
+        a=seeded.other_account_id,
+    )
+    assert other == 1
+
+
+@pytest.mark.parametrize("scope", ["conversation", "contact"])
+async def test_rows_that_name_a_chat_or_contact_only_in_refs_go_with_it(
+    env: Env, scope: str
+) -> None:
+    """Notifications and automations hold no content, so the canary scans
+    cannot see them: assert the rows themselves. Each names the deleted chat
+    or contact in one place only (Jack's F0 read, non-blocking 1)."""
+    seeded = await seed(env)
+    named = {
+        "chat-refs": {"refs": {"conversation_ids": [seeded.kamola_chat]}},
+        "contact-refs": {"refs": {"contact_ids": [seeded.kamola]}},
+        "contact-column": {"contact_id": seeded.kamola},
+        "other-chat": {
+            "refs": {"conversation_ids": [seeded.bobur_chat]},
+            "contact_id": seeded.bobur,
+        },
+    }
+    async with env.factory() as session, session.begin():
+        for key, fields in named.items():
+            session.add(
+                Notification(
+                    account_id=seeded.account_id,
+                    kind="monitor_match",
+                    priority="normal",
+                    dedupe_key=f"synthetic:{key}",
+                    **fields,
+                )
+            )
+        for key, person in (("contact-only", seeded.kamola), ("other-contact", seeded.bobur)):
+            session.add(
+                Automation(
+                    account_id=seeded.account_id,
+                    kind="monitor",
+                    spec={"schema_version": 1, "label": key},
+                    refs={"contact_ids": [person]},
+                    timezone="UTC",
+                    tz_policy="fixed",
+                )
+            )
+
+    async with env.factory() as session, session.begin():
+        if scope == "conversation":
+            await deletion.delete_conversation_data(
+                session,
+                account_id=seeded.account_id,
+                conversation_id=seeded.kamola_chat,
+                actor="owner",
+                clock=env.clock,
+            )
+        else:
+            await deletion.delete_contact_data(
+                session,
+                account_id=seeded.account_id,
+                contact_id=seeded.kamola,
+                actor="owner",
+                clock=env.clock,
+            )
+
+    left = await scalar(
+        env,
+        "SELECT array_agg(dedupe_key ORDER BY dedupe_key) FROM app.notifications "
+        "WHERE account_id = :a AND dedupe_key IN ('synthetic:chat-refs', "
+        "'synthetic:contact-refs', 'synthetic:contact-column', 'synthetic:other-chat')",
+        a=seeded.account_id,
+    )
+    assert left == ["synthetic:other-chat"]
+    labels = await scalar(
+        env,
+        "SELECT array_agg(spec->>'label') FROM app.automations "
+        "WHERE account_id = :a AND spec->>'label' IS NOT NULL",
+        a=seeded.account_id,
+    )
+    assert labels == ["other-contact"]
+    # The other account's rows are untouched.
+    assert (
+        await scalar(
+            env,
+            "SELECT count(*) FROM app.notifications WHERE account_id = :a",
+            a=seeded.other_account_id,
+        )
+        == 1
+    )
+
+
 async def test_a_new_message_after_deleting_everything_is_stored_again(env: Env) -> None:
     """Deleting is not stopping: the connection and the chat's mode stay, so
     a later message is observed as before (M03 D78)."""

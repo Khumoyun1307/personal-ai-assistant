@@ -131,8 +131,9 @@ class Freshness:            newest_owner_manual_sent_at: datetime | None   # max
 @dataclass(frozen=True, slots=True)
 class IngestionState:       pending_inbound: int; barrier_passed: bool
     # barrier_passed (R1): system_state['ingestion_barrier'] holds {"process_run_id", "caught_up_at"}.
-    # bootstrap.running_process (F0) generates process_run_id and commits it with caught_up_at = null
-    # BEFORE any role starts; the poller sets caught_up_at for that run id when a poll returns fewer than
+    # bootstrap.running_process (F0) generates process_run_id and, in a process with the poller role, commits
+    # it with caught_up_at = null right after the poller lock is acquired and BEFORE any role starts (P2-T36:
+    # a process that fails the lock never overwrites the live run's barrier); the poller sets caught_up_at for that run id when a poll returns fewer than
     # `limit` updates (S04.4). Passed <=> stored run id == this process's run id AND caught_up_at is set.
     # A process without the poller role never passes (fail closed).
 @dataclass(frozen=True, slots=True)
@@ -361,8 +362,10 @@ class NotificationRefs:  # ids only
 async def enqueue(session, *, account_id: int, kind: NotificationKind, priority: Priority, dedupe_key: str,
                   refs: NotificationRefs, clock: Clock, alert_class: AlertClass = AlertClass.STANDARD,
                   conversation_id: int | None = None, contact_id: int | None = None,
-                  bypass_quiet_hours: bool = False) -> int | None   # None = deduplicated
+                  bypass_quiet_hours: bool = False,
+                  scheduler: JobScheduler | None = None) -> int | None   # None = deduplicated
 ```
+`scheduler` (P2-T40): when given, `enqueue` defers `notify.deliver` after commit; every production caller passes it (S05.1 effects, S05.4's listener and evaluator, `OwnerAlerts` at CP4). `None` (tests) leaves the row to the notifications reconciler.
 `enqueue` inserts the row (`ON CONFLICT (account_id, dedupe_key) DO NOTHING`) and registers an after-commit defer of `notify.deliver`; the policy decision happens at delivery. Dedupe keys are built from ids and enums only (e.g. `triage:{conversation_id}:{covers_through_message_id}:urgent`).
 
 `inbox/notify.py::AlertKind` gains (F0): `DELIVERY_UNCERTAIN = "delivery_uncertain"`, `CONNECTION_STALE = "connection_stale"` (their texts are added by S04.4). M04 uses `OwnerAlerts.notify_owner` for them. At CP4, S05.2 routes `OwnerAlerts.notify_owner` itself through `notifications` (class `system`); **callers do not change**, dedupe keeps reading the `system_alert` audit rows, and an uncertain outcome counts as delivered (R10, P2-T24; S05.2 §3.5 is the definition).
@@ -479,7 +482,7 @@ Other M04 events: `assistant_message_deleted`, `draft_skipped` and `draft_failed
 | `agent/untrusted.py` | Viro (S04.2 adds `Source.DRAFT`); others append `Source` members only | Append only |
 | `telegram/control/panels.py` | Viro (conversation panel: Assist button), Junior (S05.2P: settings sections, priority row) | Separate functions; integrator resolves textual conflicts |
 | `jobs/tasks.py`, `jobs/reconcile.py` | F0 only | Per-domain modules for everything new |
-| `bootstrap.py` | M04 units inside `_wire_m04`, M05 units inside `_wire_m05`; S04.4 also sets the `Bot` session's 20 s request timeout and passes the owner allowlist to the poller (fast lane) | Nothing else outside the blocks |
+| `bootstrap.py` | M04 units inside `_wire_m04`, M05 units inside `_wire_m05` — both hooks receive `llm: LLMClient \| None` (built once, before the hooks, only when the `worker` or `system` role runs; reused for the owner runtime and the summarizer) and `roles: frozenset[str]` (P2-T35); S04.4 also sets the `Bot` session's 20 s request timeout and passes the owner allowlist to the poller (fast lane) | Nothing else outside the blocks |
 | `config.py`, `.env.example` | F0 | New settings via ICR |
 | `accounts/preferences.py` | F0 (M05 keys) | Via ICR |
 | `agent/tools/registry.py` | Each tool's owner adds its import and list entry | Append only |
