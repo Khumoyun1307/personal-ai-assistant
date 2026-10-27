@@ -22,6 +22,7 @@ pytestmark = pytest.mark.integration
 SCRATCH = "assistant_migration_test"
 
 EXPECTED_TABLES = {
+    "actions",
     "accounts",
     "agent_run_steps",
     "agent_runs",
@@ -38,6 +39,12 @@ EXPECTED_TABLES = {
     "pending_inputs",
     "system_state",
     "tool_confirmations",
+    "tasks",
+    "conversation_triage",
+    "automations",
+    "automation_occurrences",
+    "digests",
+    "notifications",
 }
 
 
@@ -472,3 +479,123 @@ def test_every_tenant_table_has_an_account_id(scratch_url: str) -> None:
         ).fetchall()
     missing = {row[0] for row in rows} - exempt
     assert missing == set(), f"tenant tables without account_id: {missing}"
+
+
+def test_there_is_exactly_one_alembic_head() -> None:
+    from alembic.script import ScriptDirectory
+
+    from tests.integration.conftest import alembic_config
+
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0014"]
+
+
+def test_0013_actions_reverse(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    run_alembic(scratch_url, "0012", down=True)
+    run_alembic(scratch_url, "0013")
+    assert "actions" in tables_in(scratch_url, "app")
+    assert {"action_id"} <= _columns(scratch_url, "messages")
+    assert {"pending_draft_at"} <= _columns(scratch_url, "conversations")
+    assert {
+        "approved_text_hash",
+        "sent_text_hash",
+        "draft_flags",
+        "revision_turn_id",
+        "card_state",
+    } <= _columns(scratch_url, "actions")
+    assert {"ux_actions_live_card", "ix_actions_card_unsynced"} <= _indexes(scratch_url, "actions")
+    run_alembic(scratch_url, "0012", down=True)
+    assert "actions" not in tables_in(scratch_url, "app")
+    assert "action_id" not in _columns(scratch_url, "messages")
+    assert "pending_draft_at" not in _columns(scratch_url, "conversations")
+    run_alembic(scratch_url, "head")
+
+
+def test_0014_inbox_intelligence_reverse(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    run_alembic(scratch_url, "0013", down=True)
+    run_alembic(scratch_url, "0014")
+    tables = {
+        "tasks",
+        "conversation_triage",
+        "automations",
+        "automation_occurrences",
+        "digests",
+        "notifications",
+    }
+    assert tables <= tables_in(scratch_url, "app")
+    assert "priority" in _columns(scratch_url, "contacts")
+    assert {"pending_triage_at", "pending_monitor_at"} <= _columns(scratch_url, "conversations")
+    run_alembic(scratch_url, "0013", down=True)
+    assert not tables & tables_in(scratch_url, "app")
+    assert "priority" not in _columns(scratch_url, "contacts")
+    assert not {"pending_triage_at", "pending_monitor_at"} & _columns(scratch_url, "conversations")
+    run_alembic(scratch_url, "head")
+
+
+def _phase_conversation(conn: psycopg.Connection, owner: int) -> tuple[int, int]:
+    account = conn.execute(
+        "INSERT INTO app.accounts (telegram_user_id) VALUES (%s) RETURNING id", (owner,)
+    ).fetchone()
+    assert account is not None
+    contact = conn.execute(
+        "INSERT INTO app.contacts (account_id, telegram_user_id) VALUES (%s, 424242) RETURNING id",
+        (account[0],),
+    ).fetchone()
+    assert contact is not None
+    conversation = conn.execute(
+        "INSERT INTO app.conversations (account_id, contact_id, business_chat_id) "
+        "VALUES (%s, %s, 424242) RETURNING id",
+        (account[0], contact[0]),
+    ).fetchone()
+    assert conversation is not None
+    return account[0], conversation[0]
+
+
+def test_one_live_card_per_conversation_is_enforced_by_the_database(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account, conversation = _phase_conversation(conn, 81001)
+        sql = (
+            "INSERT INTO app.actions (account_id, conversation_id, kind, origin, state) "
+            "VALUES (%s, %s, 'send_message', 'agent_proposal', %s)"
+        )
+        conn.execute(sql, (account, conversation, "awaiting_approval"))
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(sql, (account, conversation, "revising"))
+        conn.execute("UPDATE app.actions SET state = 'outdated' WHERE account_id = %s", (account,))
+        conn.execute(sql, (account, conversation, "revising"))
+        conn.execute("DELETE FROM app.accounts WHERE id = %s", (account,))
+
+
+def test_an_agent_task_is_unique_per_conversation_kind_and_first_source(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account, conversation = _phase_conversation(conn, 81002)
+        sql = (
+            "INSERT INTO app.tasks (account_id, conversation_id, kind, title, created_by, "
+            "first_source_message_id) VALUES (%s, %s, %s, 'Synthetic task', %s, %s)"
+        )
+        conn.execute(sql, (account, conversation, "open_question", "agent", 111))
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(sql, (account, conversation, "open_question", "agent", 111))
+        conn.execute(sql, (account, conversation, "open_question", "agent", 112))
+        conn.execute(sql, (account, conversation, "decision", "agent", 111))
+        conn.execute(sql, (account, conversation, "open_question", "owner", 111))
+        conn.execute("DELETE FROM app.accounts WHERE id = %s", (account,))
+
+
+def test_notification_dedupe_key_is_unique_per_account(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account, _ = _phase_conversation(conn, 81003)
+        other, _ = _phase_conversation(conn, 81004)
+        sql = (
+            "INSERT INTO app.notifications (account_id, kind, priority, dedupe_key) "
+            "VALUES (%s, 'triage_urgent', 'urgent', 'triage:1:2:urgent')"
+        )
+        conn.execute(sql, (account,))
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(sql, (account,))
+        conn.execute(sql, (other,))
+        conn.execute("DELETE FROM app.accounts WHERE id IN (%s, %s)", (account, other))

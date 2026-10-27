@@ -36,6 +36,107 @@ pytestmark = pytest.mark.integration
 CANARY = "CANARY-SYNTH-4d1a"
 
 
+async def test_managed_deletion_clears_action_texts_agent_tasks_and_triage_and_keeps_automations(
+    env: Env,
+) -> None:
+    from assistant.actions.models import Action
+    from assistant.automation.models import Automation
+    from assistant.inbox.models import ConversationTriage, Notification, Task
+    from tests.integration.test_action_lifecycle_bulk import seed_actions
+
+    account_id, conversation_id, ids = await seed_actions(env)
+    other_account_id, _, _ = await seed_actions(env, user_id=7000080002)
+    async with env.factory() as session, session.begin():
+        for created_by in ("owner", "agent"):
+            session.add(
+                Task(
+                    account_id=account_id,
+                    conversation_id=conversation_id,
+                    kind="open_question",
+                    title="synthetic task",
+                    created_by=created_by,
+                )
+            )
+        session.add(
+            ConversationTriage(
+                account_id=account_id,
+                conversation_id=conversation_id,
+                covers_through_message_id=1,
+                needs_reply=True,
+                contains_question=True,
+                requests_decision=False,
+                urgency="normal",
+                escalation_category="none",
+                reasons=["synthetic reason"],
+                prompt_version="synthetic.v1",
+                model="synthetic-model",
+            )
+        )
+        session.add(
+            Automation(
+                account_id=account_id,
+                kind="monitor",
+                spec={"schema_version": 1},
+                timezone="UTC",
+                tz_policy="fixed",
+            )
+        )
+        session.add(
+            Notification(
+                account_id=account_id,
+                kind="system",
+                priority="normal",
+                dedupe_key="synthetic-managed",
+            )
+        )
+    async with env.factory() as session, session.begin():
+        await delete_managed_data(session, account_id=account_id, clock=env.clock)
+    async with env.factory() as session:
+        actions = list(await session.scalars(select(Action).where(Action.account_id == account_id)))
+        assert all(action.text is None for action in actions)
+        assert all(
+            action.state == "cancelled"
+            for action in actions
+            if action.id
+            in {ids["proposed"], ids["awaiting_approval"], ids["approved"], ids["scheduled"]}
+        )
+        assert list(
+            await session.scalars(select(Task.created_by).where(Task.account_id == account_id))
+        ) == ["owner"]
+        assert (
+            list(
+                await session.scalars(
+                    select(ConversationTriage).where(ConversationTriage.account_id == account_id)
+                )
+            )
+            == []
+        )
+        assert (
+            list(
+                await session.scalars(
+                    select(Notification).where(Notification.account_id == account_id)
+                )
+            )
+            == []
+        )
+        assert (
+            len(
+                list(
+                    await session.scalars(
+                        select(Automation).where(Automation.account_id == account_id)
+                    )
+                )
+            )
+            == 1
+        )
+        assert all(
+            action.text is not None
+            for action in await session.scalars(
+                select(Action).where(Action.account_id == other_account_id)
+            )
+        )
+
+
 async def _text_columns(env: Env) -> list[tuple[str, str, str]]:
     async with env.factory() as session:
         rows = await session.execute(

@@ -49,11 +49,14 @@ from assistant.accounts.models import (
     ForeignConnection,
 )
 from assistant.accounts.service import sweep_expired_cards
+from assistant.actions.models import Action
+from assistant.actions.states import TERMINAL, ActionState
+from assistant.automation.models import Automation, AutomationOccurrence
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.jobs import JobScheduler
 from assistant.db.uow import transaction
-from assistant.inbox.models import InboundUpdate
+from assistant.inbox.models import ConversationTriage, Digest, InboundUpdate, Notification, Task
 from assistant.memory.items import sweep_forgotten
 from assistant.memory.summaries import (
     covered_through,
@@ -99,6 +102,14 @@ class SweepReport:
     rollups_scheduled: int = 0
     #: Inbound metadata rows deleted after 30 days (S03.5).
     inbound_rows: int = 0
+    action_texts: int = 0
+    actions: int = 0
+    tasks: int = 0
+    triage_verdicts: int = 0
+    automations: int = 0
+    occurrences: int = 0
+    digests: int = 0
+    notifications: int = 0
 
     @property
     def total(self) -> int:
@@ -118,6 +129,14 @@ class SweepReport:
             + self.expired_inputs
             + self.period_summaries
             + self.inbound_rows
+            + self.action_texts
+            + self.actions
+            + self.tasks
+            + self.triage_verdicts
+            + self.automations
+            + self.occurrences
+            + self.digests
+            + self.notifications
         )
 
 
@@ -282,6 +301,8 @@ async def sweep_all(
             )
         )
     message_contents = await sweep_message_content(session_factory, clock)
+    action_texts, triage_verdicts = await sweep_p2_content(session_factory, clock)
+    p2_rows = await sweep_p2_rows(session_factory, clock)
     contact_names = await sweep_contact_names(session_factory, clock)
     async with transaction(session_factory) as uow:
         period_summaries = await sweep_period_summaries(uow.session, now)
@@ -314,7 +335,89 @@ async def sweep_all(
         forgotten,
         rollups,
         inbound_rows,
+        action_texts=action_texts,
+        triage_verdicts=triage_verdicts,
+        **p2_rows,
     )
+
+
+async def sweep_p2_content(
+    session_factory: async_sessionmaker[AsyncSession], clock: Clock
+) -> tuple[int, int]:
+    """Action texts and triage reasons share each account's message period."""
+    action_texts = triage_verdicts = 0
+    for period, account_ids in (await _groups(session_factory, MESSAGES)).items():
+        cutoff = clock.now() - period
+        async with transaction(session_factory) as uow:
+            action_texts += _count(
+                await uow.session.execute(
+                    update(Action)
+                    .where(Action.account_id.in_(account_ids), Action.created_at < cutoff)
+                    .where(Action.state != ActionState.EXECUTING.value, Action.text.is_not(None))
+                    .values(text=None)
+                )
+            )
+            triage_verdicts += _count(
+                await uow.session.execute(
+                    delete(ConversationTriage).where(
+                        ConversationTriage.account_id.in_(account_ids),
+                        ConversationTriage.updated_at < cutoff,
+                    )
+                )
+            )
+    return action_texts, triage_verdicts
+
+
+async def sweep_p2_rows(
+    session_factory: async_sessionmaker[AsyncSession], clock: Clock
+) -> dict[str, int]:
+    """Bound metadata and ended content without deleting active tasks/rules."""
+    counts = dict.fromkeys(
+        ("actions", "tasks", "automations", "occurrences", "digests", "notifications"), 0
+    )
+    cutoff = clock.now() - ACCOUNTING_RETENTION
+    # Explicit account scope even for the system sweep (AGENTS §9).
+    for account_id in await account_settings_from_factory(session_factory):
+        async with transaction(session_factory) as uow:
+            session = uow.session
+            statements = {
+                "actions": delete(Action).where(
+                    Action.account_id == account_id,
+                    Action.created_at < cutoff,
+                    Action.state.in_(TERMINAL | {ActionState.DELIVERY_UNCERTAIN}),
+                ),
+                "tasks": delete(Task).where(
+                    Task.account_id == account_id,
+                    Task.status.in_(("done", "cancelled", "expired")),
+                    Task.closed_at < cutoff,
+                ),
+                "automations": delete(Automation).where(
+                    Automation.account_id == account_id,
+                    Automation.status.in_(("completed", "cancelled", "expired")),
+                    Automation.ended_at < cutoff,
+                ),
+                "occurrences": delete(AutomationOccurrence).where(
+                    AutomationOccurrence.account_id == account_id,
+                    AutomationOccurrence.created_at < cutoff,
+                ),
+                "digests": delete(Digest).where(
+                    Digest.account_id == account_id, Digest.created_at < cutoff
+                ),
+                "notifications": delete(Notification).where(
+                    Notification.account_id == account_id,
+                    Notification.created_at < clock.now() - timedelta(days=30),
+                ),
+            }
+            for key, statement in statements.items():
+                counts[key] += _count(await session.execute(statement))
+    return counts
+
+
+async def account_settings_from_factory(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> dict[int, Mapping[str, Any]]:
+    async with session_factory() as session:
+        return await account_settings(session)
 
 
 async def sweep_tool_confirmations(

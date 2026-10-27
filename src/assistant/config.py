@@ -100,6 +100,23 @@ class Settings(BaseSettings):
     #: ...or at the latest this many hours after its first unseen message.
     summary_refresh_max_wait_hours: int = Field(default=6, ge=1, le=168)
 
+    # --- Assisted replies and inbox intelligence (P2) ------------------------
+    approval_max_age_hours: int = Field(default=12, ge=1, le=24)
+    draft_debounce_seconds: int = Field(default=20, ge=5, le=300)
+    triage_debounce_seconds: int = Field(default=20, ge=5, le=300)
+    monitor_debounce_seconds: int = Field(default=20, ge=5, le=300)
+    mark_uncertain_after_seconds: int = Field(default=120, ge=120)
+    connection_stale_alert_minutes: int = Field(default=30, ge=1)
+    llm_draft_reply_effort: (
+        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
+    ) = "low"
+    llm_triage_effort: (
+        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
+    ) = "low"
+    llm_evaluate_monitor_effort: (
+        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
+    ) = "low"
+
     # --- Privacy ---------------------------------------------------------------
     #: The published privacy policy (FR-PRV-01), shown by /privacy.
     privacy_policy_url: str | None = None
@@ -122,6 +139,9 @@ class Settings(BaseSettings):
         "llm_monthly_budget_usd",
         "llm_owner_request_effort",
         "llm_summarize_effort",
+        "llm_draft_reply_effort",
+        "llm_triage_effort",
+        "llm_evaluate_monitor_effort",
         "llm_route_owner_request_model",
         "llm_route_triage_model",
         "llm_route_draft_reply_model",

@@ -132,6 +132,8 @@ Indexes: `ux_tasks_agent_dedupe` UNIQUE (`conversation_id`, `kind`, `first_sourc
 | `run_id` | bigint | yes | | FK agent_runs SET NULL |
 | `created_at`, `updated_at` | timestamptz | no | `now()` | |
 
+Indexes: an account-leading index, as ARCHITECTURE §10.1 requires for tenant tables (P2-T34; exact columns as built in 0014 and listed in the F0 PR).
+
 ### 3.4 `automations` (ORM: `src/assistant/automation/models.py::Automation`)
 
 | Column | Type | Null | Default | Notes |
@@ -160,7 +162,7 @@ Indexes: `ix_automations_due` (`next_run_at`) WHERE `status = 'active' AND next_
 
 ### 3.5 `automation_occurrences` (ORM: `automation/models.py::AutomationOccurrence`)
 
-`id`; `account_id` (FK accounts CASCADE); `automation_id` (FK automations CASCADE); `occurrence_at` timestamptz NOT NULL; `status` text NOT NULL CHECK `IN ('claimed','fired','skipped')`; `note_code` text NULL (`late`, `skipped_obsolete`, `skipped_restore`); `fired_at` timestamptz NULL; `created_at`. UNIQUE (`automation_id`, `occurrence_at`).
+`id`; `account_id` (FK accounts CASCADE); `automation_id` (FK automations CASCADE); `occurrence_at` timestamptz NOT NULL; `status` text NOT NULL CHECK `IN ('claimed','fired','skipped')`; `note_code` text NULL (`late`, `skipped_obsolete`, `skipped_restore`); `fired_at` timestamptz NULL; `created_at`. UNIQUE (`automation_id`, `occurrence_at`); an account-leading index (ARCHITECTURE §10.1, P2-T34).
 
 ### 3.6 `digests` (ORM: `inbox/models.py::Digest`)
 

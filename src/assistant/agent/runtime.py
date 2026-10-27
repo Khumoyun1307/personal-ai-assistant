@@ -32,6 +32,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -78,6 +79,11 @@ from assistant.llm.port import (
     Provenance,
     StopReason,
 )
+
+if TYPE_CHECKING:
+    from assistant.actions.config import ActionsConfig
+    from assistant.actions.ports import ApprovalCardPresenter
+    from assistant.agent.drafting import Drafter  # type: ignore[import-untyped, unused-ignore]
 from assistant.memory import items
 from assistant.observability.logging import get_logger
 
@@ -229,6 +235,10 @@ class OwnerRequestRuntime:
         clock: Clock,
         config: AgentConfig,
         summarizer: Summarizer | None = None,
+        drafter: Drafter | None = None,
+        approval_cards: ApprovalCardPresenter | None = None,
+        actions_config: ActionsConfig | None = None,
+        notifications_enabled: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._llm = llm
@@ -238,6 +248,10 @@ class OwnerRequestRuntime:
         self._config = config
         #: The `summarize` run type, for the catch-up and attention tools.
         self._summarizer = summarizer
+        self._drafter = drafter
+        self._approval_cards = approval_cards
+        self._actions_config = actions_config
+        self._notifications_enabled = notifications_enabled
 
     async def run(self, turn_id: int) -> RunOutcome:
         prompt = prompt_registry.active(RUN_TYPE)
@@ -280,6 +294,7 @@ class OwnerRequestRuntime:
                 account_id=state.account_id,
                 run_id=state.run_id,
                 run_type=RUN_TYPE,
+                turn_id=turn_id,
                 tainted=state.tainted,
                 managed_ok=started.managed_consent,
                 services=ToolServices(
@@ -288,6 +303,10 @@ class OwnerRequestRuntime:
                     monthly_budget_usd=self._config.monthly_budget_usd,
                     channel=self._channel,
                     summarizer=self._summarizer,
+                    drafter=self._drafter,
+                    approval_cards=self._approval_cards,
+                    actions_config=self._actions_config,
+                    notifications_enabled=self._notifications_enabled,
                 ),
             ),
             offered=offered,

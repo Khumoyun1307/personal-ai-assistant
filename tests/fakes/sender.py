@@ -12,7 +12,7 @@ in production.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from http import HTTPStatus
 from typing import Any
 
@@ -36,6 +36,7 @@ class FakeTelegramSender:
     def __init__(self) -> None:
         self.sends: list[dict[str, Any]] = []
         self.edits: list[dict[str, Any]] = []
+        self.deletes: list[dict[str, Any]] = []
         #: `editMessageReplyMarkup` calls (a card's buttons removed, text kept).
         self.keyboard_edits: list[dict[str, Any]] = []
         self.actions: list[dict[str, Any]] = []
@@ -117,6 +118,17 @@ class FakeTelegramSender:
 
     async def send_chat_action(self, *, chat_id: int, action: str) -> None:
         self.actions.append({"chat_id": chat_id, "action": action})
+
+    async def delete_business_messages(
+        self, *, business_connection_id: str, message_ids: Sequence[int]
+    ) -> bool:
+        await self._observe()
+        self.deletes.append(
+            {"business_connection_id": business_connection_id, "message_ids": list(message_ids)}
+        )
+        if self.fail_with is not None:
+            raise self.fail_with
+        return True
 
     async def answer_callback_query(
         self, *, callback_query_id: str, text: str | None = None, show_alert: bool = False

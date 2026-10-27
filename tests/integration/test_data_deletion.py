@@ -36,8 +36,11 @@ from sqlalchemy import select, text
 
 from assistant.accounts.models import AuditLogEntry
 from assistant.accounts.service import record_control_turn
+from assistant.actions.models import Action
 from assistant.agent.models import ToolConfirmation
 from assistant.agent.summarize import SummaryStatus
+from assistant.automation.models import Automation
+from assistant.inbox.models import ConversationTriage, Notification, Task
 from assistant.memory import items
 from assistant.privacy import deletion
 from assistant.privacy.content_columns import CONTENT_COLUMNS
@@ -86,6 +89,51 @@ class Seeded:
 async def scalar(env: Env, sql: str, **params: Any) -> Any:
     async with env.factory() as session:
         return (await session.execute(text(sql), params)).scalar_one()
+
+
+async def test_a_pending_action_in_a_deleted_conversation_is_cancelled_with_reason(
+    env: Env,
+) -> None:
+    from tests.integration.test_action_lifecycle_bulk import seed_actions
+
+    account_id, conversation_id, ids = await seed_actions(env)
+    async with env.factory() as session, session.begin():
+        report = await deletion.delete_conversation_data(
+            session,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            actor="owner",
+            clock=env.clock,
+        )
+    async with env.factory() as session:
+        action = await session.get(Action, ids["awaiting_approval"])
+        assert action is not None
+        assert (action.state, action.state_reason, action.text, action.approval_token) == (
+            "cancelled",
+            "data_deleted",
+            None,
+            None,
+        )
+    assert report.actions == len(ids)
+
+
+async def test_an_executing_action_keeps_its_state_when_its_chat_is_deleted(env: Env) -> None:
+    from tests.integration.test_action_lifecycle_bulk import seed_actions
+
+    account_id, conversation_id, ids = await seed_actions(env)
+    async with env.factory() as session, session.begin():
+        await deletion.delete_conversation_data(
+            session,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            actor="owner",
+            clock=env.clock,
+        )
+    async with env.factory() as session:
+        action = await session.get(Action, ids["executing"])
+        assert action is not None
+        assert action.state == "executing"
+        assert action.text is None
 
 
 async def hits(env: Env, needle: str) -> set[str]:
@@ -263,6 +311,69 @@ async def seed(env: Env) -> Seeded:
                     args=values,
                 )
             )
+        for tenant, chat, person, marker in (
+            (account_id, kamola_chat, kamola, "CHATK"),
+            (account_id, bobur_chat, bobur, "CHATB"),
+            (other_id, other_chat, other_contact, "ACCTB"),
+        ):
+            session.add(
+                Action(
+                    account_id=tenant,
+                    conversation_id=chat,
+                    kind="send_message",
+                    origin="agent_proposal",
+                    state="awaiting_approval",
+                    text=f"{marker} draft",
+                    approval_token=f"synthetic-{marker}",
+                    card_state="awaiting_approval",
+                )
+            )
+            session.add(
+                Task(
+                    account_id=tenant,
+                    conversation_id=chat,
+                    kind="open_question",
+                    title=f"{marker} task",
+                    details=f"{marker} details",
+                    created_by="agent",
+                )
+            )
+            session.add(
+                ConversationTriage(
+                    account_id=tenant,
+                    conversation_id=chat,
+                    covers_through_message_id=1,
+                    needs_reply=True,
+                    contains_question=True,
+                    requests_decision=False,
+                    urgency="normal",
+                    escalation_category="none",
+                    reasons=[f"{marker} reason"],
+                    prompt_version="synthetic.v1",
+                    model="synthetic-model",
+                )
+            )
+            session.add(
+                Automation(
+                    account_id=tenant,
+                    kind="monitor",
+                    spec={"schema_version": 1, "text": f"{marker} condition"},
+                    refs={"conversation_ids": [chat], "contact_ids": [person]},
+                    timezone="UTC",
+                    tz_policy="fixed",
+                )
+            )
+            session.add(
+                Notification(
+                    account_id=tenant,
+                    kind="monitor_match",
+                    priority="normal",
+                    dedupe_key=f"synthetic:{marker}",
+                    refs={"conversation_ids": [chat]},
+                    conversation_id=chat,
+                    contact_id=person,
+                )
+            )
     return Seeded(account_id, kamola_chat, kamola, bobur_chat, bobur, other_id)
 
 
@@ -280,6 +391,11 @@ async def assert_seeded(env: Env) -> dict[str, set[str]]:
         "control_turns.text",
         "control_turns.quoted_text",
         "tool_confirmations.args",
+        "actions.text",
+        "tasks.title",
+        "tasks.details",
+        "conversation_triage.reasons",
+        "automations.spec",
     } <= before["CHATK"]
     assert {"memory_items.content", "tool_confirmations.args"} <= before["NOTEK"]
     assert {"control_turns.text", "inbound_updates.payload", "memory_items.content"} <= before[
@@ -400,6 +516,124 @@ async def test_deleting_everything_leaves_no_content_of_the_account(env: Env) ->
     assert statuses == {"expired"}
 
 
+async def test_deleting_everything_keeps_only_the_digest_automation(env: Env) -> None:
+    """R11: owner-authored monitors are content and go; the digest schedule
+    is a setting and stays."""
+    seeded = await seed(env)
+    async with env.factory() as session, session.begin():
+        session.add(
+            Automation(
+                account_id=seeded.account_id,
+                kind="digest",
+                spec={"schema_version": 1},
+                timezone="UTC",
+                tz_policy="follow_owner",
+            )
+        )
+
+    async with env.factory() as session, session.begin():
+        await deletion.delete_everything(
+            session, account_id=seeded.account_id, actor="owner", clock=env.clock
+        )
+
+    kinds = await scalar(
+        env,
+        "SELECT array_agg(kind ORDER BY kind) FROM app.automations WHERE account_id = :a",
+        a=seeded.account_id,
+    )
+    assert kinds == ["digest"]
+    other = await scalar(
+        env,
+        "SELECT count(*) FROM app.automations WHERE account_id = :a",
+        a=seeded.other_account_id,
+    )
+    assert other == 1
+
+
+@pytest.mark.parametrize("scope", ["conversation", "contact"])
+async def test_rows_that_name_a_chat_or_contact_only_in_refs_go_with_it(
+    env: Env, scope: str
+) -> None:
+    """Notifications and automations hold no content, so the canary scans
+    cannot see them: assert the rows themselves. Each names the deleted chat
+    or contact in one place only (Jack's F0 read, non-blocking 1)."""
+    seeded = await seed(env)
+    named = {
+        "chat-refs": {"refs": {"conversation_ids": [seeded.kamola_chat]}},
+        "contact-refs": {"refs": {"contact_ids": [seeded.kamola]}},
+        "contact-column": {"contact_id": seeded.kamola},
+        "other-chat": {
+            "refs": {"conversation_ids": [seeded.bobur_chat]},
+            "contact_id": seeded.bobur,
+        },
+    }
+    async with env.factory() as session, session.begin():
+        for key, fields in named.items():
+            session.add(
+                Notification(
+                    account_id=seeded.account_id,
+                    kind="monitor_match",
+                    priority="normal",
+                    dedupe_key=f"synthetic:{key}",
+                    **fields,
+                )
+            )
+        for key, person in (("contact-only", seeded.kamola), ("other-contact", seeded.bobur)):
+            session.add(
+                Automation(
+                    account_id=seeded.account_id,
+                    kind="monitor",
+                    spec={"schema_version": 1, "label": key},
+                    refs={"contact_ids": [person]},
+                    timezone="UTC",
+                    tz_policy="fixed",
+                )
+            )
+
+    async with env.factory() as session, session.begin():
+        if scope == "conversation":
+            await deletion.delete_conversation_data(
+                session,
+                account_id=seeded.account_id,
+                conversation_id=seeded.kamola_chat,
+                actor="owner",
+                clock=env.clock,
+            )
+        else:
+            await deletion.delete_contact_data(
+                session,
+                account_id=seeded.account_id,
+                contact_id=seeded.kamola,
+                actor="owner",
+                clock=env.clock,
+            )
+
+    left = await scalar(
+        env,
+        "SELECT array_agg(dedupe_key ORDER BY dedupe_key) FROM app.notifications "
+        "WHERE account_id = :a AND dedupe_key IN ('synthetic:chat-refs', "
+        "'synthetic:contact-refs', 'synthetic:contact-column', 'synthetic:other-chat')",
+        a=seeded.account_id,
+    )
+    assert left == ["synthetic:other-chat"]
+    labels = await scalar(
+        env,
+        "SELECT array_agg(spec->>'label') FROM app.automations "
+        "WHERE account_id = :a AND spec->>'label' IS NOT NULL",
+        a=seeded.account_id,
+    )
+    assert labels == ["other-contact"]
+    # The other account's rows are untouched.
+    assert (
+        await scalar(
+            env,
+            "SELECT count(*) FROM app.notifications WHERE account_id = :a",
+            a=seeded.other_account_id,
+        )
+        == 1
+    )
+
+
 async def test_a_new_message_after_deleting_everything_is_stored_again(env: Env) -> None:
     """Deleting is not stopping: the connection and the chat's mode stay, so
     a later message is observed as before (M03 D78)."""
@@ -488,12 +722,15 @@ async def test_each_deletion_writes_exactly_one_content_free_audit_row(env: Env)
                     )
                 ).scalars()
             )
-        assert [r.event for r in rows] == [DELETION_EVENT], scope
-        [row] = rows
+        # P2 cancellation transitions add their own content-free audit rows;
+        # the owner's deletion itself still writes exactly one receipt row.
+        assert all(r.event in {DELETION_EVENT, "action_cancelled"} for r in rows), scope
+        [row] = [entry for entry in rows if entry.event == DELETION_EVENT]
         assert row.details["scope"] == scope
         dumped = json.dumps(row.details)
         for marker in MARKERS:
             assert marker not in dumped
+            assert all(marker not in json.dumps(entry.details) for entry in rows)
         # Ids, counts and enums only.
         for key, value in row.details.items():
             assert isinstance(value, int | bool) or key == "scope", (key, value)
