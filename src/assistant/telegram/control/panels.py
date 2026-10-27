@@ -9,7 +9,9 @@ of a press run after the commit (AGENTS §13).
 - **Conversation panel** (`/start bizChat<id>` from "Manage Bot", or a chat
   picked in a /settings list): summary, notes, mode, and Observe / Ignore
   buttons. Observe applies at once. Ignore asks first, in place: new
-  messages will not be stored, what is stored stays.
+  messages will not be saved, what was saved before stays. After a change
+  the panel opens with a receipt of what the mode does, or "nothing to
+  change" (M03 fix round C3, D68; texts in `agent/owner_texts.py`).
 - **/settings**: language and timezone (as before), the default mode for new
   chats (Observe / Ignore), and the chats listed by mode, paginated; a chat
   opens its panel.
@@ -37,6 +39,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import callbacks, preferences, service
 from assistant.accounts.models import Account, PendingInput
+from assistant.agent import owner_texts
+from assistant.agent.locales import supported_locale
+from assistant.agent.tools.modes import mode_change_text
 from assistant.conversations import modes, visibility
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
@@ -94,10 +99,10 @@ Rows = list[list[tuple[str, str]]]
 
 MODE_LABELS = {"observe": "Observe", "ignore": "Ignore", "assist": "Assist"}
 
-IGNORE_CONFIRM_TEXT = (
-    "<b>Ignore the chat with {name}?</b>\n\n"
-    "From now on I will not store or use new messages from this chat. What is "
-    "already stored stays: messages until they expire, the summary and your notes.\n\n"
+#: The Ignore confirmation: this question, what Ignore does in the owner's
+#: locale (`owner_texts.ignore_effects`, C3), then `IGNORE_DELETE_TEXT`.
+IGNORE_CONFIRM_QUESTION = "<b>Ignore the chat with {name}?</b>"
+IGNORE_DELETE_TEXT = (
     "<b>Ignore + delete data</b> also deletes what is stored from this chat now: its "
     "messages, summary and raw updates, notes about this chat, and every note or turn "
     "here that drew on this chat or on {name}. Other notes about {name} stay. That "
@@ -271,18 +276,62 @@ async def panel_screen(
     panel: ConversationPanel,
     *,
     deleting: bool = False,
+    change: tuple[str, str] | None = None,
 ) -> Screen:
     """The panel with its buttons. `deleting`: a deletion of the chat's data
-    was just queued, so the panel shows none of it (`render_panel`)."""
+    was just queued, so the panel shows none of it (`render_panel`).
+    `change`: the mode `(before, after)` a tap just set; the panel opens with
+    what that did, or "nothing to change" (C3). During a deletion the
+    receipt leaves out the name, as the panel does."""
+    notice = None
+    if change is not None:
+        before, after = change
+        notice = await mode_change_text(
+            session,
+            account,
+            previous=before,
+            current=after,
+            name=None if deleting else panel.display_name,
+            deleting=deleting,
+        )
+        if before != after:
+            notice = "✅ " + notice
     return await _screen(
         session,
         clock,
         account.id,
         PANEL_CARD,
-        render_panel(panel, timezone=account.timezone, deleting=deleting),
+        render_panel(
+            panel,
+            timezone=account.timezone,
+            deleting=deleting,
+            locale=supported_locale(account.locale_pref),
+            notice=notice,
+        ),
         panel_rows(panel),
         ref_id=panel.conversation_id,
     )
+
+
+def ignore_confirm_text(account: Account, name: str) -> str:
+    """The Ignore confirmation (`name` escaped): what Ignore does, in the
+    owner's locale, then what "Ignore + delete data" deletes."""
+    effects = owner_texts.ignore_effects(
+        supported_locale(account.locale_pref),
+        days=retention_policy.days(account.settings, retention_policy.MESSAGES),
+    )
+    return "\n\n".join(
+        (
+            IGNORE_CONFIRM_QUESTION.format(name=name),
+            "\n".join(effects),
+            IGNORE_DELETE_TEXT.format(name=name),
+        )
+    )
+
+
+#: The press's toast (English, like the buttons) once the mode is set.
+MODE_SET_ANSWER = {modes.MODE_OBSERVE: "Observe is on", modes.MODE_IGNORE: "Ignore is on"}
+NOTHING_CHANGED = "Nothing changed"
 
 
 async def handle_panel_command(
@@ -351,16 +400,16 @@ async def _press_panel(
             clock,
             account.id,
             IGNORE_CARD,
-            IGNORE_CONFIRM_TEXT.format(name=name),
+            ignore_confirm_text(account, name),
             _ignore_confirm(),
             ref_id=conversation_id,
         )
         _after_press(session, gateway, press, target, answer="Confirm to ignore", edit=screen)
         return HandlerResult(True, "card", None, note="ignore_asked")
-    note = "unchanged"
+    change = (panel.mode, panel.mode)
     if press.op != panel.mode:
         try:
-            await modes.set_mode(
+            changed = await modes.set_mode(
                 session,
                 account_id=account.id,
                 conversation_id=conversation_id,
@@ -371,12 +420,14 @@ async def _press_panel(
         except modes.ModeError:
             _after_press(session, gateway, press, target, answer="Bot chats stay ignored")
             return HandlerResult(False, "card", None, note="bot_chat")
-        note = press.op
+        change = (changed.previous, changed.current)
         panel = await _load_panel(session, clock, account, conversation_id)
         assert panel is not None
-    screen = await panel_screen(session, clock, account, panel)
-    _after_press(session, gateway, press, target, answer=MODE_LABELS[panel.mode], edit=screen)
-    return HandlerResult(True, "card", None, note=note)
+    screen = await panel_screen(session, clock, account, panel, change=change)
+    moved = change[0] != change[1]
+    answer = MODE_SET_ANSWER[change[1]] if moved else NOTHING_CHANGED
+    _after_press(session, gateway, press, target, answer=answer, edit=screen)
+    return HandlerResult(True, "card", None, note=press.op if moved else "unchanged")
 
 
 def _ignore_confirm() -> Rows:
@@ -415,10 +466,11 @@ async def _press_ignore(
         return HandlerResult(False, "card", None, note="unknown_op")
     note = "cancelled"
     receipt = None
+    change = None
     if press.op in ("confirm", delete_op):
         try:
             # Ignore applies at once: nothing new is stored from now on.
-            await modes.set_mode(
+            changed = await modes.set_mode(
                 session,
                 account_id=account.id,
                 conversation_id=conversation_id,
@@ -429,6 +481,7 @@ async def _press_ignore(
         except LookupError:
             _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
             return HandlerResult(False, "card", None, note="no_longer_active")
+        change = (changed.previous, changed.current)
         if press.op == delete_op:
             # Queued in this transaction: committed with the Ignore, or neither.
             receipt = await _queue_deletion(
@@ -439,16 +492,23 @@ async def _press_ignore(
                 conversation_id,
                 card_id,
             )
-        note = "ignored" if receipt is None else "ignored_and_deleting"
+        # A stale confirmation (set to Ignore another way meanwhile) changed
+        # nothing, and says so (D68, §6 invariant 11).
+        note = "ignored" if changed.changed else "unchanged"
+        if receipt is not None:
+            note = "ignored_and_deleting" if changed.changed else "deleting"
     panel = await _load_panel(session, clock, account, conversation_id)
     if panel is None:
         _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
         return HandlerResult(False, "card", None, note="no_longer_active")
-    screen = await panel_screen(session, clock, account, panel, deleting=receipt is not None)
+    screen = await panel_screen(
+        session, clock, account, panel, deleting=receipt is not None, change=change
+    )
     answer = {
-        "ignored": "Ignored: new messages are not stored",
-        "ignored_and_deleting": "Ignored; deleting its data",
-    }.get(note, "Nothing changed")
+        "ignored": MODE_SET_ANSWER[modes.MODE_IGNORE],
+        "ignored_and_deleting": "Ignore is on; deleting its data",
+        "deleting": "Deleting its data",
+    }.get(note, NOTHING_CHANGED)
     _after_press(session, gateway, press, target, answer=answer, edit=screen, send=receipt)
     return HandlerResult(True, "card", None, note=note)
 

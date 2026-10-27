@@ -43,6 +43,7 @@ from assistant.agent.tools.memory import (
 from assistant.agent.tools.modes import (
     SetConversationModeArgs,
     UpdatePreferencesArgs,
+    describe_mode,
     set_conversation_mode_tool,
     update_preferences_tool,
 )
@@ -315,6 +316,71 @@ async def test_undo_after_a_later_change_changes_nothing(env: Env) -> None:
     await press_undo(env, channel, 0)  # the first change's Undo
     assert await mode(env, conversation) == "observe"
     assert any("changed again" in text for text in env.sender.texts)
+
+
+async def test_the_mode_echo_says_what_the_mode_does(env: Env) -> None:
+    """M03 fix round C3: the echo of a mode change is the same fixed receipt
+    as the panel's (owner_texts), not a one-line summary (§6 invariant 11)."""
+    conversation = await seed(env)  # AI for the chats is on
+    channel = FakeChannel()
+    context = await ctx(env, channel=channel)
+
+    ignored = await set_conversation_mode_tool(
+        context,
+        SetConversationModeArgs(conversation_id=conversation, contact_id=None, mode="ignore"),
+    )
+    observed = await set_conversation_mode_tool(
+        context,
+        SetConversationModeArgs(conversation_id=conversation, contact_id=None, mode="observe"),
+    )
+    again = await set_conversation_mode_tool(
+        context,
+        SetConversationModeArgs(conversation_id=conversation, contact_id=None, mode="observe"),
+    )
+
+    ignore_echo, observe_echo = channel.sends
+    assert ignore_echo.startswith("🔧 <b>Ignore is on</b> for the chat with Kamola.")
+    assert "• New messages here are not saved" in ignore_echo
+    assert "messages until 90 days old" in ignore_echo
+    assert "Delete stored data…" in ignore_echo
+    assert observe_echo.startswith("🔧 <b>Observe is on</b> for the chat with Kamola.")
+    assert "• Messages that arrived while the chat was ignored were not saved:" in observe_echo
+    assert "cannot be recovered" not in observe_echo
+    assert "/privacy managed" not in observe_echo
+    # The model is told the same facts, in its own (English) words.
+    assert "only a note that a message arrived" in ignored.data["effect"]
+    assert observed.data["effect"] == (
+        "new messages from this chat are saved and used again; messages that arrived "
+        "while it was ignored were not saved"
+    )
+    assert (again.data["changed"], len(channel.sends)) == (False, 2)  # D68: no echo
+    # Nothing changed, so nothing is said about an ignored period (C3 review).
+    assert again.data["effect"] == "new messages from this chat are saved and used again"
+
+
+async def test_a_mode_card_names_the_ignored_period_only_for_an_ignored_chat(env: Env) -> None:
+    """A tainted run's confirmation card says what the mode would do; the lost
+    Ignore-period messages only for a chat that is in Ignore (C3 review)."""
+    conversation = await seed(env)
+    owner = await account_id(env)
+    observe = {"conversation_id": conversation, "contact_id": None, "mode": "observe"}
+
+    async with env.factory() as session:
+        never_ignored = await describe_mode(session, owner, observe)
+    await set_conversation_mode_tool(
+        await ctx(env, channel=FakeChannel()),
+        SetConversationModeArgs(conversation_id=conversation, contact_id=None, mode="ignore"),
+    )
+    async with env.factory() as session:
+        from_ignore = await describe_mode(session, owner, observe)
+
+    assert never_ignored == (
+        "the chat with Kamola: new messages from this chat are saved and used again"
+    )
+    assert from_ignore == (
+        "the chat with Kamola: new messages from this chat are saved and used again; "
+        "messages that arrived while it was ignored were not saved"
+    )
 
 
 # ------------------------------------------------------------ taint

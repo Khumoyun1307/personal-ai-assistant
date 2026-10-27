@@ -339,7 +339,12 @@ def bot_chat(env: Env) -> Callable[[], Awaitable[None]]:
     ("kind", "reason", "words"),
     [
         ("expired", "expired_during_summary", "expire under the retention setting"),
-        ("ignore", "set_to_ignore_during_summary", "was set to Ignore mode"),
+        (
+            "ignore",
+            "set_to_ignore_during_summary",
+            "was set to Ignore mode while it was being summarized, so it was left out: chats "
+            "in Ignore mode are not summarized and their new messages are not stored.",
+        ),
         ("bot", "bot_chat_during_summary", "is a chat with a bot"),
     ],
 )

@@ -4,7 +4,9 @@ FR-MEM-02; S03.3).
 Both are `configure`: held for a confirmation card in a tainted run,
 otherwise executed and echoed with a one-tap Undo. The domain setters
 (`conversations/modes.py`, `accounts/preferences.py`) validate, scope by
-account and audit; these handlers only translate.
+account and audit; these handlers only translate. A mode change is echoed
+with the same fixed receipt as the conversation panel's (`mode_change_text`,
+M03 fix round C3).
 """
 
 from __future__ import annotations
@@ -17,8 +19,10 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts import preferences
+from assistant.accounts import preferences, service
 from assistant.accounts.models import Account
+from assistant.agent import owner_texts
+from assistant.agent.locales import supported_locale
 from assistant.agent.tools.common import (
     ONE_TARGET_RULE,
     ArgumentRuleError,
@@ -34,7 +38,7 @@ from assistant.agent.tools.registry import (
     ToolOutcome,
 )
 from assistant.conversations import modes
-from assistant.conversations.models import Contact
+from assistant.conversations.models import Contact, Conversation
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.privacy import retention_policy
@@ -43,13 +47,60 @@ from assistant.privacy.retention_policy import CONTROL_CHAT, MESSAGES, RAW_UPDAT
 MODE_FLAG = "tool.set_conversation_mode"
 PREFERENCES_FLAG = "tool.update_preferences"
 
+#: What the mode does, in English, as exactly as the owner's receipt
+#: (`owner_texts.mode_receipt`) says it: the tool result's `effect` (for the
+#: model) and a tainted run's confirmation card (for the owner), so it is
+#: worded for both readers. Use `mode_effect`.
 MODE_EFFECT = {
     modes.MODE_IGNORE: (
-        "new messages from this chat are no longer stored or processed; what is "
-        "already stored stays"
+        "new messages from this chat are no longer saved (only a note that a message "
+        "arrived); the chat is left out of summaries, catch-ups and the list of who is "
+        "waiting for a reply; what was saved before stays unless deleted (messages until "
+        "they expire), and Ignore does not hide it from answers"
     ),
-    modes.MODE_OBSERVE: "new messages from this chat are stored and used again",
+    modes.MODE_OBSERVE: "new messages from this chat are saved and used again",
 }
+#: Said with Observe only when the chat was in Ignore until now.
+OBSERVE_AFTER_IGNORE = "; messages that arrived while it was ignored were not saved"
+
+
+def mode_effect(mode: str, *, previous: str | None) -> str:
+    """What switching to `mode` from `previous` does (C3 review: the lost
+    Ignore-period messages are named only for a chat that was ignored)."""
+    effect = MODE_EFFECT.get(mode, "")
+    if mode == modes.MODE_OBSERVE and previous == modes.MODE_IGNORE:
+        effect += OBSERVE_AFTER_IGNORE
+    return effect
+
+
+async def mode_change_text(
+    session: AsyncSession,
+    account: Account,
+    *,
+    previous: str,
+    current: str,
+    name: str | None,
+    deleting: bool = False,
+) -> str:
+    """What a mode change did, for the owner, in their locale (§6 invariant
+    11): the receipt, or "nothing to change" when the chat was already in
+    that mode (M03 D68). `name`: the contact's stored name, or None. Fixed
+    texts only; no model is involved (`agent/owner_texts.py`)."""
+    locale = supported_locale(account.locale_pref)
+    if previous == current:
+        return owner_texts.mode_unchanged(locale, mode=current, name=name)
+    ai_on = True  # only the Observe receipt depends on it
+    if current == modes.MODE_OBSERVE:
+        ai_on = (await service.active_consent(session, account.id, kind="ai_managed")).granted
+    return owner_texts.mode_receipt(
+        locale,
+        mode=current,
+        previous=previous,
+        name=name,
+        days=retention_policy.days(account.settings, MESSAGES),
+        ai_on=ai_on,
+        deleting=deleting,
+    )
 
 
 # ------------------------------------------------------------ set_conversation_mode
@@ -95,6 +146,9 @@ async def set_conversation_mode_tool(
             return ToolOutcome("error", {"reason": str(error)})
         echo = None
         if change.audit_id is not None:
+            account = await session.get(Account, ctx.account_id)
+            if account is None:  # pragma: no cover - the FK guarantees it
+                raise LookupError("account")
             name = (
                 await session.execute(
                     select(Contact.display_name)
@@ -102,10 +156,8 @@ async def set_conversation_mode_tool(
                     .where(Contact.id == change.contact_id)
                 )
             ).scalar_one_or_none()
-            who = html.escape(name) if name else "this contact"
-            text = (
-                f"🔧 Chat with {who} set to <b>{change.current.capitalize()}</b>: "
-                f"{MODE_EFFECT[change.current]}."
+            text = "🔧 " + await mode_change_text(
+                session, account, previous=change.previous, current=change.current, name=name
             )
             echo = await queue_echo(ctx, session, change.audit_id, text)
     data: dict[str, object] = {
@@ -113,7 +165,7 @@ async def set_conversation_mode_tool(
         "contact_id": change.contact_id,
         "previous_mode": change.previous,
         "mode": change.current,
-        "effect": MODE_EFFECT.get(change.current, ""),
+        "effect": mode_effect(change.current, previous=change.previous),
     }
     if echo is None:
         # Already so: the owner's wish holds; nothing changed (review item 3).
@@ -128,7 +180,8 @@ async def set_conversation_mode_tool(
 async def describe_mode(
     session: AsyncSession, account_id: int, args: Mapping[str, Any]
 ) -> str | None:
-    """For the confirmation card (owner-facing): whose chat it is (S1)."""
+    """For the confirmation card (owner-facing): whose chat it is (S1) and
+    what the mode would do from the chat's mode now (C3 review)."""
     conversation_id = args.get("conversation_id")
     contact_id = args.get("contact_id")
     if isinstance(contact_id, int):
@@ -137,7 +190,14 @@ async def describe_mode(
     if not isinstance(conversation_id, int):
         return None
     name = await contact_of_chat(session, account_id, conversation_id)
-    effect = MODE_EFFECT.get(str(args.get("mode")), "")
+    current = (
+        await session.execute(
+            select(Conversation.mode)
+            .where(Conversation.account_id == account_id)
+            .where(Conversation.id == conversation_id)
+        )
+    ).scalar_one_or_none()
+    effect = mode_effect(str(args.get("mode")), previous=current)
     return f"the chat with {name}: {effect}"
 
 

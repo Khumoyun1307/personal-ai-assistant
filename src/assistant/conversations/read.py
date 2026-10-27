@@ -11,8 +11,9 @@ before they reach a model (§6 invariant 3b).
 
 Coverage is part of every answer (§6 invariant 11): when the conversation's
 coverage began, whether older content expired without a summary, how many
-messages were deleted or expired, and unresolved gaps — so the model never
-implies it saw more than was retained.
+messages were deleted or expired, how many arrived while the chat was in
+Ignore and were not stored (M03 fix round C3), and unresolved gaps — so the
+model never implies it saw more than was retained.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import ColumnElement, func, or_, select, tuple_
+from sqlalchemy import ColumnElement, and_, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
@@ -70,6 +71,8 @@ class Coverage:
     unresolved_gaps: int
     #: Gaps recorded for the whole account (outages), not one chat.
     account_gaps: int
+    #: Messages that arrived while the chat was in Ignore (`not_stored_while_ignored`).
+    not_stored_while_ignored: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +93,51 @@ class DirectoryEntry:
     display_name: str | None
     username: str | None
     last_activity_at: datetime | None
+
+
+def saved_message() -> ColumnElement[bool]:
+    """A message whose content is stored now. Observe always writes the
+    content hash; a deletion or the retention purge clears it and sets
+    `deleted_at` / `purged_at`."""
+    return and_(
+        Message.direction.is_not(None),
+        Message.content_hash.is_not(None),
+        Message.deleted_at.is_(None),
+        Message.purged_at.is_(None),
+    )
+
+
+def not_stored_while_ignored() -> ColumnElement[bool]:
+    """A message that arrived while its chat was in Ignore: the row is
+    metadata only (§6.5). Every other row without a content hash is marked —
+    deleted or expired — or is a deletion tombstone, which has no direction."""
+    return and_(
+        Message.direction.is_not(None),
+        Message.content_hash.is_(None),
+        Message.deleted_at.is_(None),
+        Message.purged_at.is_(None),
+    )
+
+
+async def not_stored_count(
+    session: AsyncSession,
+    account_id: int,
+    conversation_id: int,
+    *,
+    after_message_id: int | None = None,
+) -> int:
+    """How many of a chat's messages were not stored because it was in
+    Ignore; with `after_message_id`, only those that arrived after that row."""
+    statement = (
+        select(func.count())
+        .select_from(Message)
+        .where(Message.account_id == account_id)
+        .where(Message.conversation_id == conversation_id)
+        .where(not_stored_while_ignored())
+    )
+    if after_message_id is not None:
+        statement = statement.where(Message.id > after_message_id)
+    return int((await session.execute(statement)).scalar_one())
 
 
 def _last_activity() -> ColumnElement[datetime]:
@@ -190,11 +238,12 @@ async def _coverage(session: AsyncSession, account_id: int, conversation: Conver
         select(
             func.count().filter(Message.deleted_at.is_not(None)),
             func.count().filter(Message.purged_at.is_not(None)),
+            func.count().filter(not_stored_while_ignored()),
         )
         .where(Message.account_id == account_id)
         .where(Message.conversation_id == conversation.id)
     )
-    deleted, expired = counted.one()
+    deleted, expired, not_stored = counted.one()
     gaps = await session.execute(
         select(CoverageGap.conversation_id.is_(None), func.count())
         .where(CoverageGap.account_id == account_id)
@@ -214,6 +263,7 @@ async def _coverage(session: AsyncSession, account_id: int, conversation: Conver
         expired_messages=int(expired),
         unresolved_gaps=by_scope.get(False, 0),
         account_gaps=by_scope.get(True, 0),
+        not_stored_while_ignored=int(not_stored),
     )
 
 

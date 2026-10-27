@@ -193,7 +193,7 @@ async def test_choosing_also_delete_existing_data_on_the_ignore_confirmation_del
         panels.IGNORE_DELETE_OPTION[1],
         "cancel",
     ]
-    assert "What is already stored stays" in question["text"]
+    assert "What was saved before stays unless deleted" in question["text"]
     assert "cannot be undone" in question["text"]
     # Review items 4, 6, 10: what stays as D79 has it, arrivals, backups.
     assert "your notes about the person stay" not in question["text"]
@@ -204,6 +204,13 @@ async def test_choosing_also_delete_existing_data_on_the_ignore_confirmation_del
     await tap(env, panels.IGNORE_CARD, panels.IGNORE_DELETE_OPTION[1])
     assert await mode(env, conversation) == "ignore"  # at once: nothing new is stored
     assert any("Deleting" in t for t in env.sender.texts)
+    # M03 fix round C3: the panel says what Ignore did, without the name and
+    # without claiming that what is being deleted stays.
+    shown = env.sender.edits[-1]["text"]
+    assert shown.startswith("✅ <b>Ignore is on</b> for the chat with the contact.")
+    assert "CHATK" not in shown
+    assert "What was saved before stays" not in shown
+    assert "You asked me to delete" in shown
     # The deletion itself is queued under the owner's control lock (D83).
     receipts = FakeChannel()
     assert await run_deletion_jobs(env, receipts) == 1

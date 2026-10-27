@@ -139,10 +139,12 @@ async def _upsert_contact(
         values["display_name"] = display_name
         values["username"] = username
     statement = insert(Contact).values(**values)
-    on_conflict: dict[str, Any] = {
-        "is_bot": Contact.is_bot | statement.excluded.is_bot,
-        "updated_at": clock.now(),
-    }
+    # `updated_at` moves only with the names: the name sweep reads it as "name
+    # last written" (§10.4), so a message in an Ignore chat, which stores no
+    # name, must not extend how long an earlier name is kept (M03 fix round
+    # C3, B2). Observe refreshes names, and with them `updated_at`, in
+    # `_refresh_names`.
+    on_conflict: dict[str, Any] = {"is_bot": Contact.is_bot | statement.excluded.is_bot}
     if write_names:
         # Names are refreshed from messages (§10.3); a message without a name
         # does not erase one we have.
@@ -150,6 +152,7 @@ async def _upsert_contact(
             statement.excluded.display_name, Contact.display_name
         )
         on_conflict["username"] = func.coalesce(statement.excluded.username, Contact.username)
+        on_conflict["updated_at"] = clock.now()
     upsert = statement.on_conflict_do_update(
         constraint="uq_contacts_account_id_telegram_user_id", set_=on_conflict
     ).returning(Contact.id)

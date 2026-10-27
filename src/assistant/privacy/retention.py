@@ -513,7 +513,9 @@ async def sweep_contact_names(
     session_factory: async_sessionmaker[AsyncSession], clock: Clock
 ) -> int:
     """Clear names of contacts with no retained message content (§10.4),
-    once the account's message retention has passed since they were seen."""
+    once the account's message retention has passed since a name was last
+    written. A message in an Ignore chat writes none, so it does not keep an
+    earlier name (M03 fix round C3, B2)."""
     cleared = 0
     for period, account_ids in (await _groups(session_factory, MESSAGES)).items():
         async with transaction(session_factory) as uow:
@@ -528,8 +530,9 @@ async def sweep_contact_names(
                     .where(Contact.account_id.in_(account_ids))
                     .where((Contact.display_name.is_not(None)) | (Contact.username.is_not(None)))
                     .where(Contact.id.not_in(retained))
-                    # Only contacts whose conversations have aged out: a contact
-                    # seen today without content yet still gets to keep their name.
+                    # Only names written longer ago than the period (`updated_at`
+                    # moves with the names only): a contact named today whose
+                    # message holds no content yet still keeps the name.
                     .where(Contact.updated_at < clock.now() - period)
                     .values(display_name=None, username=None, updated_at=clock.now())
                 )

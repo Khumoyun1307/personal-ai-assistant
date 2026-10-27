@@ -14,21 +14,33 @@ The required S03.3 tests (IMPLEMENTATION_PLAN §5), each findable by name:
   mode, paginated, opening the panel —
   `test_settings_lists_chats_by_mode_page_by_page_and_opens_a_panel`.
 
+M03 fix round C3 (owner check 11): what the panel says a mode change did,
+the panel's saved / not-saved counts, "nothing to change" (D68), an Ignore
+message that no longer keeps an expired name (B2), and guard tests for each
+"nothing stored" property.
+
 Synthetic text only.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from assistant.accounts.models import AuditLogEntry, PendingInput
-from assistant.conversations.models import Contact, Conversation, Message
+from assistant.agent import owner_texts
+from assistant.agent.locales import SupportedLocale
+from assistant.conversations import modes
+from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
+from assistant.db.uow import transaction
 from assistant.memory import items
 from assistant.memory.models import ConversationSummary
+from assistant.memory.retrieval import search_messages
+from assistant.privacy.retention import sweep_all
 from assistant.telegram.control import panels
 from tests.integration.agent_env import one_id
 from tests.integration.business_env import (
@@ -41,9 +53,13 @@ from tests.integration.business_env import (
     connect,
     deliver,
     environment,
+    grant_managed,
     inbound,
+    job_names,
     payload_is_sql_null,
     private_message,
+    queued_refreshes,
+    take_job,
 )
 
 pytestmark = pytest.mark.integration
@@ -129,7 +145,7 @@ async def test_the_panel_switches_to_ignore_only_after_a_confirmation(env: Env) 
     await deliver(env, business_message(message_id=1, message_text=FIRST, first_name="Kamola"))
     await open_panel(env)
     panel_send = env.sender.sends[-1]
-    assert "Mode: observe" in panel_send["text"]
+    assert "Mode: <b>Observe</b> (new messages here are saved)" in panel_send["text"]
     assert keyboard_ops(panel_send["reply_markup"]) == [
         "observe",
         "ignore",
@@ -145,7 +161,8 @@ async def test_the_panel_switches_to_ignore_only_after_a_confirmation(env: Env) 
     assert (await conversation_row(env)).mode == "observe"  # asked, not done
     question = env.sender.edits[-1]
     assert "Ignore the chat with Kamola?" in question["text"]
-    assert "What is already stored stays" in question["text"]
+    assert "What was saved before stays unless deleted" in question["text"]
+    assert "New messages here are not saved" in question["text"]
 
     await tap(env, panels.IGNORE_CARD, "cancel")
     assert (await conversation_row(env)).mode == "observe"
@@ -272,6 +289,293 @@ async def test_existing_data_is_kept_after_switching_to_ignore(env: Env) -> None
     assert "SYNTH note about Kamola" in shown
 
 
+# ------------------------------------------------------------ C3: what the panel says
+async def test_the_panel_says_what_ignore_did(env: Env) -> None:
+    """Owner check 11: after the confirmation the panel opens with what
+    Ignore does and does not do — not a toast that disappears (§6
+    invariant 11)."""
+    await connect(env)
+    await deliver(env, business_message(message_id=1, message_text=FIRST, first_name="Kamola"))
+    await ignore_from_panel(env)
+
+    shown = env.sender.edits[-1]["text"]
+    assert shown.startswith("✅ <b>Ignore is on</b> for the chat with Kamola.")
+    assert "• New messages here are not saved" in shown
+    assert "left out of summaries, catch-ups" in shown
+    assert "messages until 90 days old" in shown
+    assert "Delete stored data…" in shown
+    assert "Mode: <b>Ignore</b> (new messages here are not saved)" in shown
+    assert env.sender.answered_callbacks[-1]["text"] == "Ignore is on"
+
+
+async def test_the_panel_says_what_observe_did_and_that_ignored_messages_are_lost(
+    env: Env,
+) -> None:
+    await connect(env)
+    await deliver(env, business_message(message_id=1, message_text=FIRST, first_name="Kamola"))
+    await ignore_from_panel(env)
+    await deliver(env, business_message(message_id=2, message_text=LATER))
+    await tap(env, panels.PANEL_CARD, "observe")
+
+    shown = env.sender.edits[-1]["text"]
+    assert shown.startswith("✅ <b>Observe is on</b> for the chat with Kamola.")
+    assert "• New messages here are saved" in shown
+    assert "• Messages that arrived while the chat was ignored were not saved:" in shown
+    assert "cannot be recovered" not in shown  # a later edit or a requeue can store one
+    assert "/privacy managed" in shown  # AI for managed chats is off: said so
+    assert "Mode: <b>Observe</b> (new messages here are saved)" in shown
+
+    # With AI for the chats on, the receipt does not say it is off.
+    await grant_managed(env)
+    await tap(env, panels.PANEL_CARD, "ignore")
+    await tap(env, panels.IGNORE_CARD, "confirm")
+    await tap(env, panels.PANEL_CARD, "observe")
+    shown = env.sender.edits[-1]["text"]
+    assert shown.startswith("✅ <b>Observe is on</b>")
+    assert "/privacy managed" not in shown
+
+
+@pytest.mark.parametrize(
+    ("tag", "locale"), [("en", "en"), ("uz", "uz-Latn"), ("uz-Cyrl", "uz-Cyrl"), ("ru", "ru")]
+)
+async def test_the_mode_receipt_follows_the_owner_language(
+    env: Env, tag: str, locale: SupportedLocale
+) -> None:
+    await connect(env)
+    await deliver(env, business_message(message_id=1, message_text=FIRST, first_name="Kamola"))
+    async with env.factory() as session, session.begin():
+        await session.execute(text("UPDATE app.accounts SET locale_pref = :t"), {"t": tag})
+    await ignore_from_panel(env)
+
+    shown = env.sender.edits[-1]["text"]
+    header = owner_texts.MODE_ON[locale]["ignore"].format(name="Kamola")
+    assert shown.startswith("✅ " + header)
+    assert owner_texts.IGNORE_NOT_SAVED[locale] in shown
+    assert owner_texts.MODE_LINE[locale]["ignore"] in shown
+
+
+async def test_the_panel_counts_an_ignored_message_as_not_saved(env: Env) -> None:
+    """The panel's count was every row with a direction, so a message that
+    arrived in Ignore made it go up (owner check 11 could not be read)."""
+    await connect(env)
+    await deliver(env, business_message(message_id=1, message_text=FIRST, first_name="Kamola"))
+    await ignore_from_panel(env)
+    await deliver(env, business_message(message_id=2, message_text=LATER))
+    await open_panel(env)
+
+    shown = env.sender.sends[-1]["text"]
+    assert "Messages saved: 1 (1 contact)" in shown
+    assert "Not saved (arrived while ignored): 1" in shown
+
+
+async def test_confirming_ignore_on_an_already_ignored_chat_says_nothing_changed(
+    env: Env,
+) -> None:
+    """A stale confirmation (the chat was set to Ignore another way in the
+    meantime) says "nothing to change", not that it ignored it (D68)."""
+    await connect(env)
+    await deliver(env, business_message(message_id=1, message_text=FIRST, first_name="Kamola"))
+    await open_panel(env)
+    await tap(env, panels.PANEL_CARD, "ignore")  # the confirmation is shown
+    conversation = await conversation_row(env)
+    async with transaction(env.factory) as uow:
+        await modes.set_mode(
+            uow.session,
+            account_id=conversation.account_id,
+            conversation_id=conversation.id,
+            mode="ignore",
+            actor="owner",
+            clock=env.clock,
+        )
+    await tap(env, panels.IGNORE_CARD, "confirm")
+
+    assert env.sender.answered_callbacks[-1]["text"] == "Nothing changed"
+    shown = env.sender.edits[-1]["text"]
+    assert shown.startswith("Nothing to change: the chat with Kamola is already in Ignore.")
+    assert "Ignore is on" not in shown
+
+
+async def test_tapping_the_current_mode_says_nothing_to_change(env: Env) -> None:
+    await connect(env)
+    await deliver(env, business_message(message_id=1, message_text=FIRST, first_name="Kamola"))
+    await open_panel(env)
+    await tap(env, panels.PANEL_CARD, "observe")
+
+    assert env.sender.answered_callbacks[-1]["text"] == "Nothing changed"
+    shown = env.sender.edits[-1]["text"]
+    assert shown.startswith("Nothing to change: the chat with Kamola is already in Observe.")
+
+
+# ------------------------------------------------------------ C3: retention (B2)
+async def test_messages_in_ignore_mode_do_not_keep_an_expired_contacts_name(env: Env) -> None:
+    """B2: an Ignore message moved `contacts.updated_at`, which the name sweep
+    reads, so a contact who kept writing kept a name saved before the switch
+    long after its messages expired (§10.4: names while content is retained)."""
+    await connect(env)
+    await deliver(env, business_message(message_id=1, message_text=FIRST, first_name="Kamola"))
+    await ignore_from_panel(env)
+    env.clock.advance(days=60)
+    await deliver(
+        env,
+        business_message(
+            message_id=2,
+            message_text=LATER,
+            first_name="Kamola",
+            date=T_BASE + int(timedelta(days=60).total_seconds()),
+        ),
+    )
+    env.clock.advance(days=31)  # message 1 is past the 90-day retention now
+
+    await sweep_all(env.factory, env.clock)
+
+    conversation = await conversation_row(env)
+    first = next(m for m in await messages(env, conversation.id) if m.telegram_message_id == 1)
+    assert first.purged_at is not None
+    async with env.factory() as session:
+        contact = (
+            await session.execute(select(Contact).where(Contact.telegram_user_id == CONTACT))
+        ).scalar_one()
+    assert (contact.display_name, contact.username) == (None, None)
+
+
+# ------------------------------------------------------------ C3: guard tests
+#: Synthetic markers delivered in an Ignore chat; none may be stored anywhere.
+IGNORED_MARKERS = (
+    "IGNTXT",
+    "IGNNAME",
+    "ignuser",
+    "IGNFID",
+    "IGNFUQ",
+    "IGNCAP",
+    "IGNEDIT2",
+    "IGNEDIT1",
+    "IGNPRE",
+)
+
+
+async def columns_holding(env: Env, needle: str) -> set[str]:
+    """Every column of every table in our schemas (content-bearing or not)
+    whose value, as text, contains `needle`."""
+    found: set[str] = set()
+    async with env.factory() as session:
+        columns = (
+            await session.execute(
+                text(
+                    "SELECT c.table_schema, c.table_name, c.column_name "
+                    "FROM information_schema.columns c JOIN information_schema.tables t "
+                    "USING (table_schema, table_name) "
+                    "WHERE c.table_schema IN ('app', 'procrastinate') "
+                    "AND t.table_type = 'BASE TABLE'"
+                )
+            )
+        ).all()
+        for schema, table, column in columns:
+            row = await session.execute(
+                text(
+                    f'SELECT 1 FROM "{schema}"."{table}" '  # noqa: S608 - catalog identifiers
+                    f'WHERE "{column}"::text ILIKE :needle LIMIT 1'
+                ),
+                {"needle": f"%{needle}%"},
+            )
+            if row.first() is not None:
+                found.add(f"{schema}.{table}.{column}")
+    return found
+
+
+async def test_an_ignored_chats_messages_leave_no_text_name_or_file_id_in_any_column(
+    migrated_url: str,
+) -> None:
+    """Owner check 11, verified: after Ignore, a text with a new name and
+    username, a photo with a caption and file ids, an edit of it, an edit of
+    a message saved before the switch and an edit of a message never seen
+    leave their content in no column of the database (content-bearing or
+    not); every raw update is cleared; no summary job is queued; no gap is
+    recorded. With the summary trigger wired, as production has it."""
+    async with environment(migrated_url, summaries=True) as env:
+        await connect(env)
+        await deliver(env, business_message(message_id=1, message_text=FIRST, first_name="Kamola"))
+        await ignore_from_panel(env)
+        conversation = await conversation_row(env)
+        # Message 1 queued a refresh (the trigger is wired). A worker takes
+        # it, so its queueing lock no longer swallows a later defer.
+        assert (await job_names(env)).count("memory.refresh_summary") == 1
+        await take_job(env, conversation.id)
+        assert await queued_refreshes(env, conversation.id) == 0
+        photo = [
+            {"file_id": "IGNFID-1", "file_unique_id": "IGNFUQ-1", "file_size": 9},
+            {"file_id": "IGNFID-2", "file_unique_id": "IGNFUQ-2", "file_size": 99, "width": 2},
+        ]
+        updates = [
+            business_message(
+                message_id=2,
+                message_text="IGNTXT Ertaga keling",
+                first_name="IGNNAME",
+                username="ignuser",
+            ),
+            business_message(
+                message_id=3,
+                message_text=None,
+                first_name="IGNNAME",
+                extra={"photo": photo, "caption": "IGNCAP rasm"},
+            ),
+            business_message(message_id=2, message_text="IGNEDIT2 tahrir", edit=True),
+            business_message(message_id=1, message_text="IGNEDIT1 tahrir", edit=True),
+            business_message(message_id=9, message_text="IGNPRE eski", edit=True),
+        ]
+        for update in updates:
+            await deliver(env, update)
+
+        for marker in IGNORED_MARKERS:
+            assert await columns_holding(env, marker) == set(), marker
+        for update in updates:
+            assert await payload_is_sql_null(env, update)
+            assert (await inbound(env, update)).status == "processed"
+        conversation = await conversation_row(env)
+        async with env.factory() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT telegram_message_id, text, media, search_key, search_tsv, "
+                        "script, lang_guess, content_hash, content_type "
+                        "FROM app.messages WHERE conversation_id = :c "
+                        "AND telegram_message_id <> 1 ORDER BY telegram_message_id"
+                    ),
+                    {"c": conversation.id},
+                )
+            ).all()
+            contact = (
+                await session.execute(select(Contact).where(Contact.telegram_user_id == CONTACT))
+            ).scalar_one()
+            gaps = (await session.execute(select(CoverageGap))).scalars().all()
+        # Metadata only: the row says a message came, not what it said.
+        assert [(r[0], r[1:8], r[8]) for r in rows] == [
+            (2, (None,) * 7, "text"),
+            (3, (None,) * 7, "photo"),
+            (9, (None,) * 7, "text"),
+        ]
+        assert await queued_refreshes(env, conversation.id) == 0
+        assert (await job_names(env)).count("memory.refresh_summary") == 1
+        assert conversation.pending_ai_since is None
+        assert list(gaps) == []
+        assert (contact.display_name, contact.username) == ("Kamola", None)
+
+
+async def test_what_was_saved_before_ignore_is_still_found_by_search(env: Env) -> None:
+    """The receipt says Ignore does not hide earlier data from answers: an
+    owner run's search still finds a message saved before the switch."""
+    await connect(env)
+    await deliver(env, business_message(message_id=1, message_text=FIRST, first_name="Kamola"))
+    await ignore_from_panel(env)
+    conversation = await conversation_row(env)
+
+    async with env.factory() as session:
+        result = await search_messages(
+            session, conversation.account_id, ["uchrashamiz"], now=env.clock.now()
+        )
+
+    assert [hit.text for hit in result.hits] == [FIRST]
+
+
 # ------------------------------------------------------------ /settings
 async def test_new_chats_start_in_the_default_mode_set_in_settings(env: Env) -> None:
     await connect(env)
@@ -282,7 +586,9 @@ async def test_new_chats_start_in_the_default_mode_set_in_settings(env: Env) -> 
     await tap(env, panels.SETTINGS_CARD, "dignore")
     assert "New chats start in: Ignore" in env.sender.edits[-1]["text"]
 
-    new_chat = business_message(message_id=1, message_text=FIRST, first_name="Newcomer")
+    new_chat = business_message(
+        message_id=1, message_text=FIRST, first_name="Newcomer", username="newuser"
+    )
     await deliver(env, new_chat)
     conversation = await conversation_row(env)
     assert conversation.mode == "ignore"
@@ -294,6 +600,7 @@ async def test_new_chats_start_in_the_default_mode_set_in_settings(env: Env) -> 
             await session.execute(select(Contact).where(Contact.telegram_user_id == CONTACT))
         ).scalar_one()
     assert contact.display_name is None  # not even the name
+    assert contact.username is None  # nor the username (C3 guard)
 
     # Back to Observe: the next new chat is stored again.
     await tap(env, panels.SETTINGS_CARD, "dobserve")

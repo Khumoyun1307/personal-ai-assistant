@@ -415,6 +415,48 @@ async def job_names(env: Env) -> list[str]:
         return [str(row[0]) for row in result.all()]
 
 
+async def take_job(env: Env, conversation: int) -> None:
+    """A worker picks the queued job up (`doing`), freeing its queueing lock.
+
+    Until then a later defer of a refresh for the same chat is swallowed
+    (`AlreadyEnqueued`, `sum:{id}`): a test that checks no refresh is queued
+    must free the lock first, or the check cannot fail (C3 review)."""
+    async with env.factory() as session, session.begin():
+        worker = (
+            await session.execute(
+                text(
+                    "INSERT INTO procrastinate.procrastinate_workers (last_heartbeat) "
+                    "VALUES (now()) RETURNING id"
+                )
+            )
+        ).scalar_one()
+        await session.execute(
+            text(
+                "UPDATE procrastinate.procrastinate_jobs SET status = 'doing', worker_id = :w "
+                "WHERE task_name = 'memory.refresh_summary' AND status = 'todo' "
+                "AND args->>'conversation_id' = :c"
+            ),
+            {"w": worker, "c": str(conversation)},
+        )
+
+
+async def queued_refreshes(env: Env, conversation: int) -> int:
+    """`memory.refresh_summary` jobs waiting (`todo`) for one chat."""
+    async with env.factory() as session:
+        return int(
+            (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM procrastinate.procrastinate_jobs "
+                        "WHERE task_name = 'memory.refresh_summary' AND status = 'todo' "
+                        "AND args->>'conversation_id' = :c"
+                    ),
+                    {"c": str(conversation)},
+                )
+            ).scalar_one()
+        )
+
+
 async def count(env: Env, model: type[Any]) -> int:
     async with env.factory() as session:
         return len((await session.execute(select(model))).scalars().all())

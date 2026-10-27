@@ -287,8 +287,9 @@ async def test_bizchat_panel_shows_the_conversation(env: Env) -> None:
     shown = await _start_with(env, f"bizChat{CONTACT}")
 
     assert "<b>Synthetic</b> @syn" in shown
-    assert "Mode: observe" in shown
-    assert "Messages: 2 (1 contact, 1 owner manual)" in shown
+    assert "Mode: <b>Observe</b> (new messages here are saved)" in shown
+    assert "Messages saved: 2 (1 contact, 1 owner manual)" in shown
+    assert "Not saved" not in shown  # nothing arrived while ignored (M03 fix round C3)
     assert "Deleted: 1" in shown
     assert "Observing since: 2026-10-18 20:06 UTC" in shown
     assert "Last from contact: 2026-10-18 20:08 UTC" in shown

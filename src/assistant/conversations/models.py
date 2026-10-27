@@ -124,8 +124,11 @@ class Conversation(Base):
     last_assistant_msg_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
-    #: `date` of the first message we stored: everything before it is outside
-    #: coverage (there is no history API — AGENTS §7).
+    #: `date` of the first message observed — its content stored, or only its
+    #: metadata in Ignore mode: everything before it is outside coverage
+    #: (there is no history API — AGENTS §7). Messages that arrived while the
+    #: chat was in Ignore are inside coverage but were not stored
+    #: (`read.not_stored_while_ignored`, M03 fix round C3).
     coverage_started_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )

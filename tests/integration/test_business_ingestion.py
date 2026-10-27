@@ -14,8 +14,11 @@ import pytest
 from sqlalchemy import select, text
 
 from assistant.accounts.models import AuditLogEntry
+from assistant.conversations import modes
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
+from assistant.db.uow import transaction
 from assistant.inbox.processor import DeterministicError, requeue_failed
+from assistant.memory.models import ConversationSummary
 from tests.integration.business_env import (
     BOT_ID,
     CONTACT,
@@ -30,12 +33,16 @@ from tests.integration.business_env import (
     count,
     deleted_messages,
     deliver,
+    environment,
     gaps,
     inbound,
+    job_names,
     message,
     messages,
     payload_is_sql_null,
     private_message,
+    queued_refreshes,
+    take_job,
 )
 
 pytestmark = pytest.mark.integration
@@ -486,6 +493,60 @@ async def test_an_ignore_mode_deletion_keeps_no_payload(env: Env) -> None:
 
     assert (await inbound(env, update)).status == "processed"
     assert await payload_is_sql_null(env, update)
+
+
+async def test_an_ignore_mode_deletion_purges_what_was_stored_and_queues_nothing(
+    migrated_url: str,
+) -> None:
+    """M03 fix round C3 guard: a deletion that arrives while the chat is in
+    Ignore still purges the content saved before the switch and drops the
+    summary that covered it (D63), but queues no rebuild: nothing is
+    summarized in Ignore."""
+    async with environment(migrated_url, summaries=True) as env:
+        await connect(env)
+        await deliver(env, business_message(message_id=705, message_text="synthetic SYNTH-705"))
+        stored = await message(env, 705)
+        conv = await conversation(env)
+        assert stored is not None
+        assert conv is not None
+        async with env.factory() as session, session.begin():
+            session.add(
+                ConversationSummary(
+                    account_id=conv.account_id,
+                    conversation_id=conv.id,
+                    kind="rolling",
+                    covers_through_message_id=stored.id,
+                    summary={"overview": "SYNTH summary of 705"},
+                )
+            )
+        async with transaction(env.factory) as uow:  # the setter clears the refresh flag
+            await modes.set_mode(
+                uow.session,
+                account_id=conv.account_id,
+                conversation_id=conv.id,
+                mode="ignore",
+                actor="owner",
+                clock=env.clock,
+            )
+        # 705 queued a refresh (the trigger is wired). A worker takes it, so
+        # its queueing lock no longer swallows a rebuild the deletion defers.
+        assert (await job_names(env)).count("memory.refresh_summary") == 1
+        await take_job(env, conv.id)
+        assert await queued_refreshes(env, conv.id) == 0
+        update = deleted_messages(message_ids=[705])
+        await deliver(env, update)
+
+        gone = await message(env, 705)
+        assert gone is not None
+        assert (gone.text, gone.search_key, gone.content_hash) == (None, None, None)
+        assert gone.deleted_at is not None
+        assert await count(env, ConversationSummary) == 0
+        after = await conversation(env)
+        assert after is not None
+        assert after.pending_ai_since is None
+        assert await queued_refreshes(env, conv.id) == 0
+        assert (await job_names(env)).count("memory.refresh_summary") == 1
+        assert await payload_is_sql_null(env, update)
 
 
 async def test_a_deletion_for_an_unknown_chat_stores_nothing(env: Env) -> None:

@@ -128,7 +128,7 @@ _NOTICE_CAUSE = {
     ),
     StoreResult.IGNORED: (
         "was set to Ignore mode while it was being summarized, so it was left out: chats in "
-        "Ignore mode are not stored or summarized."
+        "Ignore mode are not summarized and their new messages are not stored."
     ),
     StoreResult.BOT_CHAT: (
         "is a chat with a bot (this showed while it was being summarized), so it was left out "

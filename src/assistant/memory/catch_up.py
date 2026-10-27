@@ -8,8 +8,9 @@ Account-scoped queries plus pure functions:
   contain, rendered as plain sentences the answer must carry: possible and
   definite gaps overlapping the range (a `delayed` gap only delayed
   processing and is never reported, §6.6), the period before the business
-  connection, chats in Ignore mode with activity, chats that may be paused,
-  expired and deleted messages;
+  connection, chats in Ignore mode with activity, messages of the period
+  that arrived while their chat was in Ignore (M03 fix round C3), chats
+  that may be paused, expired and deleted messages;
 - `unanswered` — attention-list candidates: the contact spoke last and
   neither the owner nor the assistant has answered since;
 - `waiting_questions` + `has_question` — the application's own "may be
@@ -37,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry, BusinessConnection, BusinessConnectionEvent
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
+from assistant.conversations.read import not_stored_while_ignored
 
 #: Gap certainties a summary reports. `delayed` means the messages arrived
 #: late, nothing is missing (ARCHITECTURE §6.6, §10.3 `coverage_gaps`).
@@ -169,6 +171,9 @@ class PeriodCoverage:
     #: tombstones, so the audit row is the marker (M03 D86).
     deleted_on_request: int = 0
     deleted_on_request_last: datetime | None = None
+    #: Messages sent in the period that arrived while their chat was in
+    #: Ignore: rows without content, whatever the chat's mode is now (C3).
+    not_stored_in_period: int = 0
 
 
 async def period_coverage(
@@ -251,11 +256,12 @@ async def period_coverage(
     ]
     if conversation_ids is not None:
         in_range.append(Message.conversation_id.in_(list(conversation_ids)))
-    expired, deleted = (
+    expired, deleted, not_stored = (
         await session.execute(
             select(
                 func.count().filter(Message.purged_at.is_not(None)),
                 func.count().filter(Message.deleted_at.is_not(None)),
+                func.count().filter(not_stored_while_ignored()),
             ).where(*in_range)
         )
     ).one()
@@ -319,6 +325,7 @@ async def period_coverage(
         off_intervals=off_intervals,
         deleted_on_request=len(on_request),
         deleted_on_request_last=max(on_request, default=None),
+        not_stored_in_period=int(not_stored),
     )
 
 
@@ -438,9 +445,11 @@ def caveats(coverage: PeriodCoverage, timezone: str) -> list[str]:
             f"The business connection is not active ({coverage.connection_inactive}){since}: "
             "new messages are not being observed, so anything sent meanwhile is missing."
         )
+    # What an ignored chat saved before the switch is still stored (C3).
     if coverage.ignored_in_scope:
         lines.append(
-            "The chat asked about is in Ignore mode: its messages are not stored or summarized."
+            "The chat asked about is in Ignore mode: its new messages are not stored and it "
+            "is not summarized."
         )
     for gap in coverage.gaps:
         if gap.certainty not in REPORTED_CERTAINTIES:
@@ -454,7 +463,13 @@ def caveats(coverage: PeriodCoverage, timezone: str) -> list[str]:
     if coverage.ignored_with_activity:
         lines.append(
             f"{coverage.ignored_with_activity} chat(s) in Ignore mode had activity since "
-            f"{_local(coverage.start, timezone)}; they are not stored or summarized."
+            f"{_local(coverage.start, timezone)}; their new messages are not stored and they "
+            "are not summarized."
+        )
+    if coverage.not_stored_in_period:
+        lines.append(
+            f"{coverage.not_stored_in_period} message(s) from this period arrived while their "
+            "chat was in Ignore mode and were not stored."
         )
     if coverage.expired_in_period:
         lines.append(

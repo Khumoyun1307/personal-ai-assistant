@@ -229,6 +229,18 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
                 .where(Conversation.id == conversation_id)
             )
         ).scalar_one_or_none() is not None
+        # Ignore clears the refresh flag, so the flag alone called a summary
+        # current while unsaved messages kept arriving (M03 fix round C3).
+        if stored is not None and not unseen:
+            unseen = (
+                await read.not_stored_count(
+                    session,
+                    ctx.account_id,
+                    conversation_id,
+                    after_message_id=stored.covers_through_message_id,
+                )
+                > 0
+            )
     tz = account.timezone
     cov = page.coverage
     summary: dict[str, object] | None = None
@@ -274,6 +286,9 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
                 "expired_messages": cov.expired_messages,
                 "unresolved_gaps_in_this_chat": cov.unresolved_gaps,
                 "unresolved_account_wide_gaps": cov.account_gaps,
+                # Arrived while the chat was in Ignore: their content was not
+                # stored (C3).
+                "not_stored_while_ignored": cov.not_stored_while_ignored,
             },
         },
         contains_managed=True,

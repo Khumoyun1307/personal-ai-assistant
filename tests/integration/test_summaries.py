@@ -84,6 +84,7 @@ from tests.integration.business_env import (
     environment,
     grant_managed,
     private_message,
+    take_job,
 )
 
 pytestmark = pytest.mark.integration
@@ -215,27 +216,6 @@ async def refresh_jobs(env: Env) -> list[JobRow]:
             )
         )
         return [JobRow(int(r[0]), str(r[1]), r[2], r[3], r[4]) for r in rows.all()]
-
-
-async def take_job(env: Env, conversation: int) -> None:
-    """A worker picks the queued job up (`doing`), freeing its queueing lock."""
-    async with env.factory() as session, session.begin():
-        worker = (
-            await session.execute(
-                text(
-                    "INSERT INTO procrastinate.procrastinate_workers (last_heartbeat) "
-                    "VALUES (now()) RETURNING id"
-                )
-            )
-        ).scalar_one()
-        await session.execute(
-            text(
-                "UPDATE procrastinate.procrastinate_jobs SET status = 'doing', worker_id = :w "
-                "WHERE task_name = 'memory.refresh_summary' AND status = 'todo' "
-                "AND args->>'conversation_id' = :c"
-            ),
-            {"w": worker, "c": str(conversation)},
-        )
 
 
 def handlers(env: Env, fake: FakeLLM, **config: Any) -> JobHandlers:
@@ -1021,7 +1001,11 @@ async def test_catch_up_mentions_ignored_and_paused_chats_and_expired_messages(
     result = await catch_up(senv, fake, since="2026-10-18 08:30", until="2026-10-18 10:00")
 
     lines = result.data["coverage_caveats"]
-    assert any(line.startswith("1 chat(s) in Ignore mode") for line in lines)
+    # Exact (M03 fix round C3): what such a chat saved before is still stored.
+    assert (
+        "1 chat(s) in Ignore mode had activity since 2026-10-18 08:30; their new messages "
+        "are not stored and they are not summarized."
+    ) in lines
     assert any(line.startswith("1 chat(s) may be paused") for line in lines)
     assert any(line.startswith("1 message(s) from this period expired") for line in lines)
     assert c not in {e["conversation_id"] for e in result.data["conversations"]}
@@ -1123,6 +1107,61 @@ async def test_get_conversation_returns_the_rolling_summary_wrapped(senv: Env) -
     assert summary["up_to_date"] is True
     await deliver(senv, business_message(message_id=15, message_text="SYNTH-A yana", date=ts(30)))
     assert (await get_conversation_tool(ctx, arguments)).data["summary"]["up_to_date"] is False
+
+
+async def _set_mode_sql(env: Env, conversation: int, mode: str) -> None:
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text("UPDATE app.conversations SET mode = :m WHERE id = :c"),
+            {"m": mode, "c": conversation},
+        )
+
+
+async def test_get_conversation_reports_messages_not_stored_while_ignored(senv: Env) -> None:
+    """M03 fix round C3: messages that arrived while the chat was ignored are
+    counted in the coverage, and the summary is not "up to date" past them —
+    Ignore clears the refresh flag, so the flag alone said it was."""
+    a, _ = await seed(senv)
+    fake = FakeLLM()
+    fake.parsed = [echo]
+    await summarizer(senv, fake).refresh(a)
+    ctx = await tool_context(senv, fake)
+    arguments = GetConversationArgs(conversation_id=a, contact_id=None, cursor=None, limit=None)
+    before = (await get_conversation_tool(ctx, arguments)).data
+    assert (before["summary"]["up_to_date"], before["coverage"]["not_stored_while_ignored"]) == (
+        True,
+        0,
+    )
+
+    await _set_mode_sql(senv, a, "ignore")
+    for message_id, minutes in ((15, 30), (16, 31)):
+        await deliver(
+            senv,
+            business_message(message_id=message_id, message_text="SYNTH-A yana", date=ts(minutes)),
+        )
+    ignored = (await get_conversation_tool(ctx, arguments)).data
+
+    assert ignored["summary"]["up_to_date"] is False
+    assert ignored["coverage"]["not_stored_while_ignored"] == 2
+    assert "SYNTH-A yana" not in json.dumps(ignored, ensure_ascii=False)
+    # Back in Observe, the count still says what is missing.
+    await _set_mode_sql(senv, a, "observe")
+    back = (await get_conversation_tool(ctx, arguments)).data
+    assert back["coverage"]["not_stored_while_ignored"] == 2
+
+
+async def test_a_refresh_queued_before_the_switch_to_ignore_makes_no_call(senv: Env) -> None:
+    """C3 guard: a refresh job that runs after the chat was set to Ignore
+    sends nothing to the model (summarize.py's mode check)."""
+    a, _ = await seed(senv)
+    await _set_mode_sql(senv, a, "ignore")
+    fake = FakeLLM()
+
+    outcome = await summarizer(senv, fake).refresh(a)
+
+    assert outcome.status is SummaryStatus.SKIPPED
+    assert fake.requests == []
+    assert await summary_rows(senv) == []
 
 
 # ============================================================ attention list

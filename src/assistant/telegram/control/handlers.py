@@ -18,8 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import connections, preferences, service
 from assistant.accounts.models import Account, PendingInput
-from assistant.agent import confirmations
+from assistant.agent import confirmations, owner_texts
 from assistant.agent.confirmations import OP_CONFIRM, OP_REJECT, TOOL_CONFIRM_CARD
+from assistant.agent.locales import SupportedLocale
 from assistant.conversations.coverage import STATUS_GAP_WINDOW
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
@@ -981,11 +982,20 @@ PANEL_DELETING = (
 )
 
 
-def render_panel(panel: ConversationPanel, *, timezone: str, deleting: bool = False) -> str:
+def render_panel(
+    panel: ConversationPanel,
+    *,
+    timezone: str,
+    deleting: bool = False,
+    locale: SupportedLocale = "en",
+    notice: str | None = None,
+) -> str:
     """The conversation panel (J12). `deleting`: a deletion of its data was
     just queued (D83), so the name, summary and notes it would show are left
     out (fix round 2, item 4); counts and dates are not content, and are
-    those of the moment of the tap."""
+    those of the moment of the tap. `notice`: what the tap just did (a mode
+    receipt, M03 fix round C3), shown first. The mode line and the counts
+    follow the owner's locale (`owner_texts`); the rest is English for now."""
     name = panel.display_name or "(no name)"
     handle = f" @{escape(panel.username)}" if panel.username else ""
     counts = ", ".join(
@@ -997,14 +1007,18 @@ def render_panel(panel: ConversationPanel, *, timezone: str, deleting: bool = Fa
         if panel.window_open
         else "closed (no contact message in the last 24 h)"
     )
-    lines = [
+    lines = [notice, ""] if notice else []
+    lines += [
         PANEL_DELETING if deleting else f"<b>{escape(name)}</b>{handle}",
         "",
-        f"Mode: {escape(panel.mode)}",
+        owner_texts.mode_line(locale, panel.mode),
         f"First seen: {local_time(panel.first_seen_at, timezone)}",
         f"Observing since: {local_time(panel.coverage_started_at, timezone)}",
-        f"Messages: {panel.total}" + (f" ({escape(counts)})" if counts else ""),
+        owner_texts.SAVED_COUNT[locale].format(saved=panel.total)
+        + (f" ({escape(counts)})" if counts else ""),
     ]
+    if panel.not_stored:
+        lines.append(owner_texts.NOT_SAVED_COUNT[locale].format(unsaved=panel.not_stored))
     if panel.deleted or panel.expired:
         lines.append(f"Deleted: {panel.deleted}, expired: {panel.expired}")
     lines += [
@@ -1017,8 +1031,6 @@ def render_panel(panel: ConversationPanel, *, timezone: str, deleting: bool = Fa
         lines.append("⚠️ A message here could not be processed; automation is paused.")
     if panel.unresolved_gaps:
         lines.append(f"⚠️ {panel.unresolved_gaps} coverage gap(s): some messages may be missing.")
-    if panel.mode == "ignore":
-        lines.append("Ignored: new messages from this chat are not stored.")
     if deleting:
         return "\n".join(lines)
     if panel.summary_overview:
