@@ -69,6 +69,7 @@ Every open item from M03.md's "Known follow-ups" (numbered as there) and the S03
 | S03.4/S03.6 E-p: an agent-level check that the final reply relays every caveat | Later — optional eval | |
 | S03.7 owner replies not always in the owner's language (10 of 33 v6 agent-mode replies; v7 adds the rule and the spelled-out script, D109/D111) | **Yours** | drafts must follow the owner's reply-language preferences; plan an eval check |
 | S03.7 coverage caveat when only some chats have a coverage start | Closed for the eval (E-aj) | in the product a null `coverage_started_at` means "nothing stored yet" (`conversations/service.py`); product unchanged |
+| Owner checklist 2026-10-27 (M03.md "Owner checklist"): C1 attention list misses a waiting contact; C2 notes do not save/load, silently; C3 Ignore-mode check and panel wording; C4 owner language unset at onboarding; C5 tone; O1 remember deleted messages like a coworker (owner direction) | Later — M03 fix round (before M04 code) | C2 also matters to M04 (notes feed drafts); C5 and O1 shape M04 drafting |
 | TF LV-08 reopen half (does an owner message or a contact edit reopen the 24-hour window?) | **Yours** | moved to M04 by the owner (2026-10-26): run on Alviro's own connection in a planned server window with the server's poller briefly stopped and a per-run owner go-ahead — no second Premium. Until verified, assume only a new contact message reopens the window |
 
 ## 5. What M04 must respect (carried from M03)
