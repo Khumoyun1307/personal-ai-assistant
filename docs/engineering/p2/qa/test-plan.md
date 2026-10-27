@@ -15,6 +15,8 @@
 
 Rules from AGENTS §11 apply unchanged: real Postgres, no real Telegram or model calls in tests, deterministic (FakeClock, barriers, no sleeps), red first, never the full suite locally (CI is the gate), one pytest process per compose project.
 
+**QA-P kickoff (2026-10-27):** the owner authorised the P2 team to start; IMPLEMENTATION_PLAN §1.4 records "M03 OK" and the end of its fix round. This is a planning review only: every P2 scenario and regression extension remains **planned** until its test PR lands. QA-S4/QA-S5 start at CP1, on F0's merged contracts. The phase go-ahead does not substitute for a specific production-window or live-eval go-ahead.
+
 ## 2. Test infrastructure to use
 
 | Piece | Where | Use it for |
@@ -30,6 +32,8 @@ Rules from AGENTS §11 apply unchanged: real Postgres, no real Telegram or model
 | Scenario drive helpers | `tests/scenarios/p2_drive.py` (QA-S4, owned by Antony) | `run_queued(env, task_name, *, limit=None)` — runs queued procrastinate jobs of one task through the registered task functions, in order, as a worker would; `advance(env, seconds)` — moves the FakeClock and runs due periodic tasks named by the caller; `approve(env, action_id)`, `edit(env, action_id, text)`, `reject(...)` thin wrappers over `press`/`deliver` using the `act` callback grammar (F0-interfaces §7) |
 
 **Red tests against F0 types.** QA-S4/QA-S5 are written before the features exist. Each scenario that cannot pass yet is marked `@pytest.mark.xfail(strict=True, reason="awaiting <WU>")`. CI stays green while it fails; when the unit makes it pass, strict xfail turns it into a CI failure, and the unit's author removes the marker in their PR. **Any unit — Junior units included — may remove the strict-xfail markers of the scenarios it turns green** (R13); removing the marker is the only edit a unit makes to Antony's scenario files. A scenario may be adjusted to the implemented API only through a QA-reviewed change that keeps its assertions.
+
+Before adding an xfail marker, run the scenario and retain its failure reason. Collection, fixtures and F0 setup must work; an import error or broken helper is not evidence of the missing feature. List xfails by scenario and WU in the QA PR. An expected failure is not a passing acceptance check; CP3/CP5 require their milestone's scenarios to pass with no remaining xfails or skips. Interleavings use explicit barriers around the fake model/sender and database commits, not wall-clock timing.
 
 ## 3. QA review checklist (every PR, WORKFLOW §6.3 step 3)
 
@@ -67,6 +71,20 @@ Post each finding as a review comment labelled **blocking** or **non-blocking** 
 - **Docs:** the ARCHITECTURE sections the spec names are updated; RG rows in the matrix updated.
 - **One fix round (P2-T18):** after the author's fix round, new non-safety findings go to the milestone's open items with evidence and a suggested fix; QA does not hold the PR for them. A broken invariant is always blocking.
 
+### 3.3 Checkpoint evidence
+
+For each checkpoint, record the reviewed commit, CI run, exact test names, result counts (including skips/xfails), and open findings on the integration issue. A PR being green while its feature scenarios are expected failures does not satisfy a release gate.
+
+| Gate | QA evidence required |
+|---|---|
+| CP1 / F0 | Both migration reversals and one Alembic head; content canaries for each deletion/retention scope; post-restore pending cancellation and executing → uncertain; unchanged ingestion/control behaviour; startup barrier reset before roles start |
+| CP2 / send path | RG-05/06/12/18/19/20, the explicit-barrier race tests, confinement tests, process-run barrier tests and late-result tests; independent QA review and TL sign-off (RG-04 follows at CP3 with S04.3) |
+| CP3 / M04 | Every §4 scenario passing without expected failures; RG-04; live checks with observed restart branch recorded; OPS-RT evidence; daily trial evidence for seven days before R1 exit |
+| CP4 / M05 catches up | Existing system-alert callers retain audit/cooldown/once-ever behaviour through notifications; uncertain alerts never resent, including after notification retention; `triage.assist_trigger` stays off during the M04 trial |
+| CP5 / M05 | Every §5 scenario passing without expected failures; live policy checks with actual settings and cap baseline; NFR-05 sample counts and p95s; five consecutive digest days; E3 result only after owner label confirmation |
+
+CI provides automated evidence; calendar-day and owner-client checks remain separate entries. A skipped live step stays pending with its automated counterpart linked, rather than becoming a live PASS.
+
 ## 4. QA-S4 — M04 acceptance scenarios
 
 Branch `qa/m04-scenarios` from `int/m04` → PR to `int/m04`. Each file below holds the listed tests; "Green by" names the unit whose code should make it pass (the xfail reason).
@@ -77,11 +95,16 @@ Branch `qa/m04-scenarios` from `int/m04` → PR to `int/m04`. Each file below ho
 |---|---|---|---|
 | `test_m04_j4_draft_approve.py` | `test_j4_draft_edit_approve_sends_exactly_the_approved_text` | Owner asks for a draft → one card (contact, triggering message, draft, sendable-until) → Edit with replacement text → new version card → Approve → exactly one `send_message` with `business_connection_id` = current connection and text == version 2; `approved_text_hash == sent_text_hash`; card ends "Sent ✓" (PRD R1 #3) | S04.2, S04.3, S04.4 |
 | | `test_j4_a_revision_instruction_creates_a_new_version_shown_for_approval` | Edit with an instruction → revision run → version 2 card; nothing sent until Approve | S04.3 |
+| | `test_approve_during_revision_sends_nothing` | Edit starts a revision held at an explicit FakeLLM barrier; an old Approve press cannot claim or send; the completed revision needs a new approval token | S04.3 |
+| | `test_a_revision_finishing_after_outdating_cannot_reactivate_the_card` | A contact message outdates the action while revision is paused; releasing the result cannot restore the card, change its text/version or send | S04.2, S04.3 |
 | | `test_j4_reject_sends_nothing_and_says_rejected` | Reject → `rejected`, no `send_message`, card says Rejected | S04.3 |
 | | `test_j4_owner_dictated_text_is_shown_exactly_with_the_resolved_recipient` | `propose_message` → card shows recipient and exact text; tool result `awaiting_approval` (R-05, RG-20) | S04.2, S04.3 |
 | `test_m04_outdating_and_expiry.py` (PRD R1 #4) | `test_a_new_contact_message_outdates_a_pending_draft` | Card → contact message → `outdated`/`new_contact_message`; Approve answers "no longer active"; no send; card offers Re-draft | S04.2, S04.3 |
 | | `test_an_owner_manual_reply_outdates_a_pending_draft` | Owner message in the chat → `outdated`/`takeover`; no send; nothing sent to the contact | S04.2 |
 | | `test_deleting_the_source_message_outdates_the_draft` | `deleted_business_messages` of the base message → `outdated`/`source_deleted` | S04.2 |
+| | `test_editing_the_source_message_outdates_the_draft` | Content-changing edit of the base message → `outdated`/`source_edited`; old token cannot send | S04.2 |
+| | `test_switching_to_ignore_cancels_a_pending_draft` | Switch the conversation to Ignore while a card is live → `cancelled`/`ignore_mode`; old token cannot send | S04.2 |
+| | `test_revoking_managed_consent_cancels_a_queued_ai_draft` | Approve an AI draft, revoke `ai_managed` before execute, then drain jobs → no business send; pending AI action cancelled; owner-dictated handling stays per S04.4 | S04.4 |
 | | `test_removing_the_reply_right_blocks_an_approved_draft` | `business_connection` update without `can_reply` after Approve but before execute → Tx A `blocked`/`rights_changed` or `outdated`; zero sends; copy-ready shown | S04.4 |
 | | `test_the_window_closing_expires_the_draft_with_copy_ready_text` | FakeClock past window close − margin → `system.expire_actions` → `expired`/`window_closed`; card has copy-ready text (copy button ≤ 256 chars) | S04.3 |
 | | `test_a_contact_message_ingested_after_approval_blocks_the_send` | Approve committed, contact message ingested before `actions.execute` runs → `outdated` (`not_stale`); zero sends | S04.4 |
@@ -119,12 +142,14 @@ Branch `qa/m05-scenarios` from `int/m05` → PR to `int/m05`. Triage responses a
 | | `test_a_keyword_monitor_fires_on_a_match_only` | Standing keyword monitor; matching and non-matching messages | S05.4 |
 | | `test_three_semantic_monitors_in_scope_make_one_evaluate_call_per_burst` | One `evaluate_monitor` parse call per burst | S05.4 |
 | | `test_monitors_ignore_ignore_mode_chats` | No match, no call | S05.4 |
+| | `test_revoked_consent_stops_a_queued_semantic_monitor_evaluation` | Defer semantic evaluation, revoke `ai_managed`, then run the job → no FakeLLM request or monitor-match alert | S05.4 |
 | | `test_a_tainted_run_cannot_create_a_monitor_without_a_tap` | `create_monitor` after an injected tool result → card only (RG-11) | S05.4 |
 | `test_m05_notification_policy.py` | `test_quiet_hours_move_non_urgent_alerts_to_the_digest` | `batched`, delivered in the next digest | S05.2, S05.3b |
 | | `test_urgent_bypasses_quiet_hours_only_when_enabled` | Off → deferred to quiet-hours end; on → immediate | S05.2 |
 | | `test_the_hourly_cap_batches_extra_standard_alerts` | Cap 2 → third `batched`/`cap` | S05.2 |
 | | `test_a_system_alert_is_delivered_during_quiet_hours_with_the_cap_reached` | `delivery_uncertain` alert immediate (IMPLEMENTATION_PLAN S05.2) | S05.2 |
 | | `test_a_duplicate_alert_is_sent_once` | Same dedupe key → one row, one send | S05.2 |
+| | `test_an_uncertain_alert_is_never_resent_after_reconciliation` | Claim commits, fake sender returns an ambiguous outcome; re-run delivery and reconciliation → `uncertain`, one sender call | S05.2 |
 | | `test_not_useful_feedback_is_recorded` | `ntf:<token>:nu` → `feedback='not_useful'` | S05.2 |
 | `test_m05_digest.py` | `test_a_digest_built_twice_for_one_period_is_delivered_once` | Two `digest.build` runs → one `digests` row `sent`, one send | S05.3b |
 | | `test_the_digest_fires_at_local_time_across_dst` | Owner in Europe/Berlin, last Sunday of October → fires at the configured local time both days | S05.3a, S05.3b |
@@ -135,6 +160,7 @@ Branch `qa/m05-scenarios` from `int/m05` → PR to `int/m05`. Triage responses a
 | | `test_a_repeated_promise_creates_one_task` | Same commitment in two triage windows → one task | S05.1 |
 | | `test_the_owners_manual_answer_closes_the_open_question` | Owner reply → triage `resolved_task_ids` → task `done`/`resolved_by_triage`, audited, notified | S05.1 |
 | | `test_triage_runs_have_no_tools_and_see_one_conversation` | RG-17, RG-09-style isolation for triage | S05.1 |
+| | `test_revoked_consent_stops_a_queued_triage_run` | Defer triage, revoke `ai_managed`, then run the job → no FakeLLM request, derived task or triage notification | S05.1 |
 | `test_m05_r1_item7.py` (PRD R1 #7 re-verified) | `test_deleting_a_conversation_removes_its_tasks_triage_and_notifications` | After `delete_conversation_data`: no task, verdict, notification or monitor naming it; other chats intact | F0, S05.1 |
 
 ## 6. Release verification (after every deploy, CP3 and CP5)
@@ -175,6 +201,7 @@ All actions run like `verify-r0`: a one-off app container with `tools/acceptance
 - Each live run: the owner's go-ahead quoted in the evidence; `--estimate-only` first; `--limit 1` trial; full run; spend recorded against the USD 2 phase cap.
 - Runs: E2 baseline (informational, after S04.2 + E2T), E3 on Luna (after S05.1 + E3T), model comparison only if Luna misses a threshold, retrieval agent-mode re-run after each `owner_request` bump (S04.3, S05.4).
 - **Pre-review** after every full run by a fresh read-only agent, in the format of `docs/evals/2026-10-26-e1-prereview-v4.md`: per flagged item — id, judge verdict, what the source supports, real/false positive, proposed label change if any; a summary of real problems; nothing counts as a gate result until the owner confirms (IMPLEMENTATION_PLAN §10.1).
+- **E3 metric review:** use only owner-confirmed bursts for the gate; report the evaluated counts and denominators. Urgent/decision recall ≥ 90 %; false-alert rate = alerted negatives / all alerted bursts ≤ 20 %; false-closure rate ≤ 10 %; resolution recall ≥ 80 %. A zero denominator makes that metric not evaluable; a zero numerator with a nonzero denominator is a real 0 %. Never manufacture a 100 % or zero-error PASS for an empty sample. Keep pre-screen and confirmed results distinct (E3 spec §B).
 - Language metrics are informational in P2 (P2-O11).
 
 ## 9. Evidence and reporting
