@@ -142,7 +142,7 @@ After a review or an eval round, the author fixes the blocking findings in **one
 
 ## 7. Integration (TL)
 
-1. **Merge into `int/*`** when: CI green on the PR's head; peer, QA and TL reviews approved; no blocking findings open; the PR is rebased on the current int branch (or merges cleanly); the PR's latest CI run tested a merge with the **current** int head — if the int branch moved since, the TL closes and reopens the PR so GitHub tests a fresh merge, and waits for green (P2-T30). Merge with a merge commit (keeps the unit's history); never squash a unit with migrations.
+1. **Merge into `int/*`** when: CI green on the PR's head (**while CI is disabled, P2-O15: the TL's local `just check` on the exact merge result is green instead**); peer, QA and TL reviews approved; no blocking findings open; the PR is rebased on the current int branch (or merges cleanly); the PR's latest CI run tested a merge with the **current** int head — if the int branch moved since, the TL closes and reopens the PR so GitHub tests a fresh merge, and waits for green (P2-T30). Merge with a merge commit (keeps the unit's history); never squash a unit with migrations.
 2. **After each merge into `int/*`:** the TL posts the merge on the integration issue; open PRs targeting that branch rebase when their author next pushes.
 3. **Conflict canary at each checkpoint:** the TL does a local trial merge of `int/m04` and `int/m05` (no push), and of each int branch with `main`; conflicts are resolved in the owning unit's next PR, never in the canary.
 4. **Int → `main`** (CP3, CP5): the TL opens the PR, CI runs the full suite, Antony runs the milestone's checklist items that need a merged build, the owner merges.
