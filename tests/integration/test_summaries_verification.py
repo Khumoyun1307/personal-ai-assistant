@@ -369,6 +369,37 @@ async def test_the_notice_names_why_a_chat_was_left_out(
     assert await summary_rows(senv) == []
 
 
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [("ignore", "set_to_ignore_during_summary"), ("bot", "bot_chat_during_summary")],
+)
+async def test_an_attention_check_of_a_chat_left_out_shows_no_question(
+    senv: Env, kind: str, reason: str
+) -> None:
+    """C1 with C3: a chat set to Ignore (or found to be a bot chat) during its
+    inline check keeps its notice, but the waiting rule leaves it out — its
+    question is never shown or citable."""
+    a, _ = await seed(senv)  # A's contact asked TEXT_A
+    fake = FakeLLM()
+    hooks = [during(ignore(senv) if kind == "ignore" else bot_chat(senv))]
+
+    def per_chat(request: Any) -> Any:
+        if "SYNTH-B" in everything(request):
+            return echo(request)
+        return hooks.pop(0)(request)
+
+    fake.parsed = [per_chat, per_chat]
+
+    result = await _attention(senv, fake)
+
+    by_id = {e["conversation_id"]: e for e in result.data["conversations"]}
+    assert by_id[a]["check"] == reason
+    assert by_id[a]["may_be_waiting"] is False
+    assert "question" not in by_id[a]
+    assert TEXT_A not in json.dumps(result.data)
+    assert all(c.conversation_id != a for c in result.citable.values())
+
+
 # ============================================================ E. mode before the call
 async def test_a_period_summary_of_an_ignored_or_bot_chat_makes_no_call(senv: Env) -> None:
     a, _ = await seed(senv)

@@ -22,7 +22,7 @@ production checks only with the owner's go-ahead.
 | Item | What | Branch | State |
 |---|---|---|---|
 | C2 | Notes do not save or load, silently; every tool failure logs a line | `m03fix/c2-notes` | fixed; draft PR, CI and the owner merge |
-| C1, P9 | "Who is waiting" misses a contact who asked last; an open request keeps "needs a reply" on | `m03fix/c1-waiting` | in progress |
+| C1, P9 | "Who is waiting" misses a contact who asked last; an open request keeps "needs a reply" on | `m03fix/c1-waiting` | fixed; draft PR, CI and the owner merge |
 | C3 | Ignore mode stores nothing new; the panel says what a mode change did | `m03fix/c3-ignore` | in progress |
 | O1 | Deleted messages are remembered and marked as deleted | — | design, waiting for the owner |
 | G1 | Stronger summary model trial | `m03fix/g1-sol-trial` | trial run; the owner decides |
@@ -230,7 +230,258 @@ clean.
 
 ## C1 and P9 — waiting contacts
 
-_Pending._
+**Cause.** The attention list had one signal for "waiting": the `needs_reply`
+of the chat's rolling summary. `get_attention_list` copied it unchanged
+(`summary_view`: `bool(summary["needs_reply"])`), sorted a `false` chat last and
+told the owner model that `needs_reply` was "a model judgement". In step 7 the
+summary was refreshed inline (incrementally: the previous summary of the
+step-4 messages, which all counted as the owner's, plus the new question) and
+said no reply was needed, so the chat came back last as "no reply needed" and
+the owner model left it out. The tool never compared the verdict with the
+summary's own open questions or requests either, which `catch_up.importance`
+already did for catch-ups (the same inconsistency as E1 c30, P9). A second,
+hidden defect: `catch_up.unanswered` sorted the oldest chats first and applied
+`limit` (default 10) in SQL, and the 8 inline checks went to the oldest chats
+too, so on a real account the newest waiting chat could be cut or left
+`not_checked`. Classification was not the cause: an away or greeting message
+(`owner_automated`) never moves `last_owner_msg_at`, and `assistant_sent`
+counts as an answer (D96).
+
+**What changed** (code, tests and docs; no prompt, output schema, stored jsonb
+or migration change):
+
+- `memory/catch_up.py` — the application's own rule, no model call:
+  `waiting_questions(session, account_id, conversation_ids)` returns, per chat,
+  the newest retained contact message sent after
+  `greatest(last_owner_msg_at, last_assistant_msg_at)` whose text or caption
+  holds a question mark outside links (`has_question`: `?` plus the full-width,
+  small, Arabic, emoji and combined forms; a link's query string is not a
+  question, but a mark written straight after a link, as in "…t.me/x?",
+  ends the sentence and counts). It reads the newest 20 contact messages after the answer, so a
+  later "rahmat" or sticker does not hide an earlier question; deleted and
+  expired rows are never evidence (D63); only Observe/Assist chats that are
+  not bot chats have questions (`ATTENTION_MODES`, shared with
+  `unanswered`), so a chat set to Ignore or found to be a bot chat during a
+  summary call shows none (C3); `Message`, `Conversation` and `Contact` are
+  all scoped to the account. `open_to_owner` and `needs_reply`
+  (P9): the model's verdict, kept on while a question, decision or request to
+  the owner (`{by: owner, status: requested}`) is open; a v1-v4 commitment
+  without `status` is a promise. `importance(..., asked_question=True)` puts a
+  chat whose contact asked after the owner's last answer under
+  `needs_attention`. `unanswered` now keeps the newest `limit` chats (still
+  returned waiting longest first), so a cap never drops the newest chat.
+- `agent/tools/common.py` `summary_view` — P9 at read time: `needs_reply` is
+  `catch_up.needs_reply` of the attribution-checked summary; when the model
+  said "no" but something is open, the reason becomes the fixed
+  `STILL_OPEN` text. This applies to `get_conversation`, catch-ups and the
+  attention list alike; the stored summary keeps the model's own verdict.
+- `agent/tools/summaries.py` `get_attention_list` — up to 100 candidates
+  (`MAX_ATTENTION_CANDIDATES`) are ranked before the limit: may be waiting or
+  needing a reply first, then not checked, then needing nothing; within a rank
+  the chats waiting longest stay first. A fresh stored summary ranks on the
+  verdict the owner will see: P9 on the attribution-checked summary (one
+  batched author lookup, `memory/summaries.py::message_directions_by_conversation`
+  via `common.summaries_authors`); a stale or missing one ranks as not
+  checked. The limit applies after ranking; what it cuts is counted
+  (`not_listed`, `not_listed_may_be_waiting`, `not_listed_not_checked`,
+  `note_not_listed`): a cut chat nobody checked is unknown, never "not
+  waiting". The inline refresh is unchanged and goes to the listed
+  stale chats in ranked order (still at most 8 calls, D62). The questions are
+  read again after the refresh, so a question deleted meanwhile is never shown.
+  Each entry gains `may_be_waiting` and, when set, `waiting_reason` (fixed
+  `MAY_BE_WAITING` text) and `question` (`message_id`, local `sent_at`, the
+  text wrapped as untrusted contact text, at most 400 characters); the
+  question is citable in the reply. The result gains `waiting_count`; the rule
+  and the tool description say that `may_be_waiting` is the application's own
+  check and that every such chat must be listed as possibly waiting, even when
+  `needs_reply` is false. One content-free log line, `attention_list_built`,
+  holds counts only (candidates, listed, waiting, may_be_waiting, not_checked,
+  inline_checks).
+- `summarize_period` — each chat gains `may_be_waiting` and, when set,
+  `waiting_reason` and the `question` (wrapped, citable), exactly as the
+  attention list shows them (one helper, `_waiting`), read after the summary
+  calls; `importance` uses it.
+- `agent/owner_texts.py` — `MAY_BE_WAITING` and `STILL_OPEN` in en, uz-Latn,
+  uz-Cyrl and ru.
+- ARCHITECTURE §7.2 (the attention list and catch-ups return a citable
+  question too), §8.2 (`summarize_period` and `get_attention_list` rows) and
+  §11.1 (the S03.7 round-3 sentence: read-time `needs_reply`, catch-up
+  `may_be_waiting` with the question).
+
+**Tests** (synthetic text, FakeLLM):
+
+- `tests/integration/test_summaries.py::test_c1_a_contact_who_asked_after_the_owners_last_answer_is_listed_first`
+  — the owner's case: an older chat (Bobur) whose question the owner answered,
+  then "rahmat"; a newer chat (Kamola) with the owner's own messages, then the
+  contact's question, "rahmat" and an away message (`is_from_offline`); a
+  FakeLLM summary that misses the question (`needs_reply=false`, no items).
+  With `limit=1` the one entry is Kamola, checked by the model as `false`,
+  `may_be_waiting` true with the fixed reason and the wrapped, citable
+  question; `waiting_count` 1, `not_listed` 1, `not_listed_may_be_waiting` 0;
+  one summary call; the `attention_list_built` line holds exactly the six
+  counts. Without a limit: Kamola, then Bobur (not waiting: answered by the
+  owner; the away message answers nothing).
+- `test_c1_the_waiting_rule_reads_captions_and_never_a_deleted_question` — a
+  photo caption with "?" counts; a deleted question and an expired (purged)
+  question are not evidence and never appear in the result; a link's "?" is
+  not a question.
+- `test_c1_a_catch_up_puts_a_chat_whose_contact_asked_last_under_needs_attention`
+  — a summary with no items and `needs_reply=false`: the chat whose contact
+  asked is `needs_attention` and `may_be_waiting`, with the question wrapped
+  and citable (the only citable entry); the other chat has no question.
+- `test_c1_the_limit_counts_cut_chats_that_may_be_waiting_or_were_not_checked`
+  — three chats (two ask "?", one says "rahmat"), no summarizer, `limit=1`:
+  the older asking chat is listed; `not_listed` 2, `not_listed_may_be_waiting`
+  1, `not_listed_not_checked` 1, and the note says both.
+- `test_c1_the_limit_ranks_a_stored_summary_on_its_checked_verdict`
+  (`request`, `legacy_v4_promise`) — a fresh stored summary with an open
+  request to the owner and `needs_reply=false` (stored as `{owner,
+  requested}`, or rewritten to a v1-v4 item without `status` citing only the
+  contact) plus a newer chat nobody checked, `limit=1`: the request chat is
+  listed with `needs_reply` true and `STILL_OPEN`; the other is counted as
+  not checked.
+- `test_c1_unanswered_keeps_the_newest_chats_under_its_cap` — three
+  unanswered chats, `unanswered(limit=2)`: the two newest, oldest first.
+- `tests/integration/test_summaries_verification.py::test_an_attention_check_of_a_chat_left_out_shows_no_question`
+  (`ignore`, `bot`) — a waiting chat set to Ignore (or marked a bot chat)
+  during its inline check keeps its notice, but shows no `may_be_waiting`, no
+  question and no citable entry; the existing
+  `test_the_notice_names_why_a_chat_was_left_out` covers the catch-up.
+- `test_p9_an_open_request_keeps_needs_reply_on_after_a_thank_you` — c30-like:
+  the SIM-card request (`{owner, requested}`), the owner's answer, "rahmat",
+  the model's `needs_reply=false`: the attention entry and `get_conversation`
+  show `needs_reply` true with the `STILL_OPEN` reason; `may_be_waiting` is
+  false (the question came before the owner's answer); the stored rolling
+  summary keeps `false`.
+- `test_another_accounts_conversation_is_not_found` (strengthened, invariant
+  12): the other account's contact asks a question; `waiting_questions` under
+  our account returns nothing for their chat (and finds it under theirs), and
+  our attention list never shows it.
+- `tests/unit/test_summary_units.py::test_p9_an_open_request_keeps_needs_reply_on`
+  (open question, decision, request and a legacy owner "promise" citing only
+  the contact turn it on; the owner's own promise, a legacy promise citing the
+  owner, the owner's request to the contact and an owner "request" citing only
+  the owner — dropped first, D96 — do not; the model's own "yes" keeps its
+  reason), `test_the_attention_rule_finds_a_question_mark_in_any_script_outside_links`
+  (19 cases: Uzbek Latin and Cyrillic, Russian, English, full-width, emoji and
+  Arabic marks, links with query strings, `t.me`, a mark straight after a
+  link or inside brackets after it, a link ending in a full stop, empty and
+  None),
+  `test_importance_puts_a_chat_whose_contact_asked_after_the_owners_answer_first`;
+  `tests/unit/test_citations.py::test_every_fixed_text_exists_in_every_supported_locale`
+  now covers the two new tables.
+- Existing tests unchanged: the attention-list and catch-up tests in
+  `test_summaries.py`, `test_summaries_review.py` (one call per stale chat; a
+  chat changed during both calls shows no deleted text, now also no deleted
+  question) and `test_summaries_verification.py` (a chat set to Ignore during
+  a catch-up shows no text, now also no question), and `test_conversation_tools.py`.
+- **Result** (dev container, after the review fixes, the six relevant files
+  `tests/unit/test_summary_units.py`, `tests/unit/test_citations.py`,
+  `tests/integration/test_summaries.py`, `test_summaries_review.py`,
+  `test_summaries_verification.py`, `test_conversation_tools.py`, `-rA`):
+  pytest exit 0, 227 passed, 0 failed, 0 errors. `ruff check` and
+  `ruff format --check` on the 9 changed Python files clean; `mypy src evals`
+  "no issues found in 148 source files"; `lint-imports` 4 kept, 0 broken.
+  The full suite and `just check` were not run (CI runs them, AGENTS §11).
+
+**Red first.** The new tests were written and run before the fix (dev
+container, only these files): 26 failed. The owner's case failed on the first
+assertion (the one entry under `limit=1` was the older chat Bobur, not
+Kamola); the edge and catch-up tests failed with `KeyError: 'may_be_waiting'`;
+the P9 integration test failed with `('model', False) == ('model', True)`; the
+cross-account test with `AttributeError: ... no attribute 'waiting_questions'`;
+the P9 unit test with `assert False is True`; the 15 rule cases with
+`AttributeError: ... no attribute 'has_question'`; the importance test with
+`TypeError: importance() got an unexpected keyword argument 'asked_question'`;
+the every-locale test (4 locales) with
+`AttributeError: ... no attribute 'MAY_BE_WAITING'`.
+
+**Review.** Two independent reviews of the uncommitted change found no
+safety-invariant problem (3b wrapping and taint, 9 consent, 12 scoping, D63,
+D62's bound, content-free log all confirmed) and these gaps, all fixed:
+(1) the pre-limit ranking read the stored summary without the attribution
+check, so a legacy v1-v4 row whose contact request was stored as the owner's
+"promise" ranked as needing nothing and could be cut uncounted — the code
+comment and this record wrongly said it could only rank a chat early; the
+ranking now uses the checked verdict (one batched author lookup); (2) the
+note about cut chats counted a cut chat nobody checked as "not waiting" —
+`not_listed_not_checked` and the note now say how many were not checked;
+(3) no test pinned the cut-waiting count, the ranking on the stored verdict
+or `unanswered`'s newest-under-cap order — three tests added; (4) catch-ups
+set `may_be_waiting` without the question that D115 names — they now carry
+the same wrapped, citable `question` as the attention list; nits: a "?"
+written straight after a link was swallowed by the link pattern (fixed, four
+unit cases), ARCHITECTURE §7.2 did not name the new citable sources (fixed),
+and this record claimed a green run that had not finished (replaced by the
+result below). Red first for the bugs (dev container, the new and changed
+tests only): 7 failed — the legacy-v4 ranking case listed the newer unchecked
+chat (`assert 22 == 21`), the `request` case and the cut-count test with
+`KeyError: 'not_listed_not_checked'`, the catch-up test with
+`KeyError: 'question'`, and three link cases with `has_question(...)` False;
+the `unanswered` order test passed (it pins behaviour this change already
+had). The first run of the six files after these fixes had one failure, an
+existing test doing its job:
+`test_summaries_verification.py::test_the_notice_names_why_a_chat_was_left_out[ignore]`
+found the catch-up's new `question` showing the text of a chat set to Ignore
+during its summary call. The same gap had existed in the attention list's
+re-read since the first build, untested and missed by both reviews: a new test,
+`test_an_attention_check_of_a_chat_left_out_shows_no_question[ignore]`,
+failed red with `may_be_waiting` `True is False` (the `bot` case passed: a
+bot chat's texts are purged). `waiting_questions` now takes only
+Observe/Assist chats that are not bot chats.
+
+**Decisions (suggested numbers):**
+
+| # | Decision | Why |
+|---|---|---|
+| D115 | **A deterministic "may be waiting" rule, and the attention list's limit after ranking.** A retained contact message after the owner's or the assistant's last message whose text or caption has a question mark outside links sets `may_be_waiting` (attention list and catch-ups), with fixed wording and the question itself (wrapped, citable); an away/greeting message answers nothing; deleted or expired messages are never evidence. Up to 100 candidates (the newest) are ranked, waiting first, before the limit, a fresh stored summary on its checked verdict (P9); the cut is counted (may be waiting / not checked). The inline refresh stays at most 8 calls (D62). Pending owner confirmation. | C1: a model's `needs_reply=false` hid a contact who asked last; PRD FR-SUM-03 asks for "R1 heuristic + model". |
+| D116 | **P9: "needs a reply" is computed when read** from the attribution-checked summary: the model's verdict, kept on while a question, decision or request to the owner is open, with the fixed `STILL_OPEN` reason. Stored summaries keep the model's own verdict; no migration. Owner confirmed P9 2026-10-27; the read-time form is the lead's. | E1 c30; step 7. |
+
+**Texts to proofread** (`agent/owner_texts.py`; English final, the others
+drafts, D98 practice; no name; the ru wording uses no gendered verb):
+
+- `MAY_BE_WAITING` — en "May be waiting for your reply: their latest messages
+  include a question that nobody has answered." / uz-Latn "Javobingizni
+  kutayotgan boʻlishi mumkin: soʻnggi xabarlarida savol bor, unga hali hech kim
+  javob bermagan." / uz-Cyrl "Жавобингизни кутаётган бўлиши мумкин: сўнгги
+  хабарларида савол бор, унга ҳали ҳеч ким жавоб бермаган." / ru "Возможно,
+  ждёт вашего ответа: в последних сообщениях собеседника есть вопрос, на
+  который ещё нет ответа."
+- `STILL_OPEN` — en "A reply is still needed: a question, decision or request
+  to you in this chat is still open." / uz-Latn "Javob hali kerak: bu chatda
+  sizga qaratilgan savol, qaror yoki iltimos hali yopilmagan." / uz-Cyrl "Жавоб
+  ҳали керак: бу чатда сизга қаратилган савол, қарор ёки илтимос ҳали
+  ёпилмаган." / ru "Ответ всё ещё нужен: в этом чате остаётся открытым вопрос,
+  решение или просьба к вам."
+
+**Open items:**
+
+- **Eval labels (harness group):** `evals/summary.py` `labelled_text` still
+  renders the stored `needs_reply`, so the judge reads "Needs a reply: no" for
+  a c30-like summary while the owner now sees "yes". Rendering it with
+  `catch_up.needs_reply` and the `STILL_OPEN` reason changes what the judges
+  read, so it needs `LABELS_VERSION` "labels.v3" (with
+  `tests/unit/test_eval_summary.py`, `tests/integration/test_eval_summary.py`
+  and `evals/README.md`); labels.v3 runs must not be compared with labels.v2
+  baselines without re-judging. Not done here (lead decision).
+- Questions without a mark (Uzbek "-mi", Russian "ли"), voice questions and
+  reactions as answers are not detected by the rule; the summary covers the
+  first, M05 triage the rest. A forwarded text containing "?" can give a false
+  "may be waiting", which the hedged wording allows.
+- `owner_request.v7` rule 6 names only `search_messages` and `get_conversation`
+  ids for citations; a `[msg:id]` of the attention list's question still
+  verifies (the executor merges every tool's citable). Saying so in the prompt
+  is a v8 change, not needed now.
+- Model-facing strings changed (the attention tool's description and rule, the
+  new fields): the owner_request agent-mode eval may shift slightly.
+- Side note, not changed: `conversations/read.py` `list_conversations(
+  awaiting_owner_reply=True)` ignores `last_assistant_msg_at` (inconsistent
+  with D96 and `unanswered`); it matters once assistant sends exist (M04).
+- Noticed, not changed: the existing ru `CITATION_REMOVED` text ends "я её
+  убрал" (a gendered verb), against D98's ru practice; for the owner's
+  proofreading.
+- Manual check: re-run owner guide step 7 on Alviro after the merge and
+  deploy (owner-only: needs the second account to send a question).
 
 ## C3 — Ignore mode
 

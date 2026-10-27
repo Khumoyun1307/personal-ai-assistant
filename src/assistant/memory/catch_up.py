@@ -12,6 +12,11 @@ Account-scoped queries plus pure functions:
   expired and deleted messages;
 - `unanswered` — attention-list candidates: the contact spoke last and
   neither the owner nor the assistant has answered since;
+- `waiting_questions` + `has_question` — the application's own "may be
+  waiting" rule, no model call (M03 fix round, C1): the contact asked a
+  question after the owner's last answer;
+- `needs_reply` + `open_to_owner` — the summary's "needs a reply", kept on
+  while a question, decision or request to the owner is open (P9);
 - `importance` — the deterministic grouping of a catch-up.
 
 Caveat sentences carry times and counts only — no names, no message text —
@@ -20,10 +25,11 @@ so they are the application's own words, not untrusted content.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, select
@@ -509,13 +515,10 @@ OTHER = "other"
 IMPORTANCE_ORDER = (NEEDS_ATTENTION, COMMITMENTS, OTHER)
 
 
-def importance(summary: Mapping[str, Any] | None, *, awaiting_owner_reply: bool) -> str:
-    """Grouping for a catch-up (FR-SUM-01): questions, decisions or requests
-    (S03.7: something the contact asked the owner to do, not yet agreed) for
-    the owner, or a reply owed, first; then commitments; then the rest. A
-    v1-v4 commitment (no `status`) is a promise."""
-    if summary is None:
-        return NEEDS_ATTENTION if awaiting_owner_reply else OTHER
+def open_to_owner(summary: Mapping[str, Any]) -> bool:
+    """A question, a decision or a request (S03.7: something the contact
+    asked the owner to do, not yet agreed) to the owner is open in the
+    summary. A v1-v4 commitment (no `status`) is a promise, not a request."""
     commitments = summary.get("commitments")
     requested = any(
         isinstance(item, Mapping)
@@ -523,12 +526,37 @@ def importance(summary: Mapping[str, Any] | None, *, awaiting_owner_reply: bool)
         and item.get("status") == "requested"
         for item in (commitments if isinstance(commitments, list) else [])
     )
-    if (
-        summary.get("open_questions_to_owner")
-        or summary.get("decisions_requested")
-        or requested
-        or (awaiting_owner_reply and summary.get("needs_reply"))
-    ):
+    return bool(
+        summary.get("open_questions_to_owner") or summary.get("decisions_requested") or requested
+    )
+
+
+def needs_reply(summary: Mapping[str, Any]) -> bool:
+    """The summary's "needs a reply", kept on while something is open to the
+    owner (owner, 2026-10-27, P9; E1 c30: a thank-you turned it off while the
+    request stayed open). Computed when read, on the attribution-checked
+    summary, so every stored v1-v7 row and every cached period summary
+    follows it without a migration, and the stored verdict stays the
+    model's own."""
+    return bool(summary.get("needs_reply")) or open_to_owner(summary)
+
+
+def importance(
+    summary: Mapping[str, Any] | None,
+    *,
+    awaiting_owner_reply: bool,
+    asked_question: bool = False,
+) -> str:
+    """Grouping for a catch-up (FR-SUM-01): questions, decisions or requests
+    for the owner, a reply owed, or a question the contact asked after the
+    owner's last answer (`waiting_questions`, C1: the application's own
+    check, whatever the summary says) first; then commitments; then the
+    rest."""
+    if asked_question:
+        return NEEDS_ATTENTION
+    if summary is None:
+        return NEEDS_ATTENTION if awaiting_owner_reply else OTHER
+    if open_to_owner(summary) or (awaiting_owner_reply and summary.get("needs_reply")):
         return NEEDS_ATTENTION
     if summary.get("commitments"):
         return COMMITMENTS
@@ -536,6 +564,11 @@ def importance(summary: Mapping[str, Any] | None, *, awaiting_owner_reply: bool)
 
 
 # ------------------------------------------------------------------ attention
+#: Chats the attention list and the waiting rule look at: an Ignore-mode chat
+#: is left out of summaries, catch-ups and the waiting list (C3).
+ATTENTION_MODES: Final = ("observe", "assist")
+
+
 @dataclass(frozen=True, slots=True)
 class Unanswered:
     conversation_id: int
@@ -554,7 +587,8 @@ async def unanswered(
 ) -> list[Unanswered]:
     """Attention-list candidates (FR-SUM-03 v1): Observe/Assist chats whose
     last message is the contact's, sent since `since`, with no answer from
-    the owner or the assistant after it. Waiting longest first."""
+    the owner or the assistant after it. Waiting longest first; past `limit`
+    the chats waiting longest are the ones left out, never the newest (C1)."""
     answered = func.greatest(Conversation.last_owner_msg_at, Conversation.last_assistant_msg_at)
     rows = (
         await session.execute(
@@ -563,16 +597,16 @@ async def unanswered(
             .where(Conversation.account_id == account_id)
             .where(Contact.account_id == account_id)
             .where(Contact.is_bot.is_(False))
-            .where(Conversation.mode.in_(("observe", "assist")))
+            .where(Conversation.mode.in_(ATTENTION_MODES))
             .where(Conversation.last_contact_msg_at.is_not(None))
             .where(Conversation.last_contact_msg_at >= since)
             .where(answered.is_(None) | (answered < Conversation.last_contact_msg_at))
-            .order_by(Conversation.last_contact_msg_at, Conversation.id)
+            .order_by(Conversation.last_contact_msg_at.desc(), Conversation.id.desc())
             .limit(limit)
         )
     ).all()
     result: list[Unanswered] = []
-    for conversation, contact in rows:
+    for conversation, contact in reversed(rows):
         answers = [
             moment
             for moment in (conversation.last_owner_msg_at, conversation.last_assistant_msg_at)
@@ -590,3 +624,109 @@ async def unanswered(
             )
         )
     return result
+
+
+# ------------------------------------------------------- may be waiting (C1)
+#: '?' serves Uzbek (Latin and Cyrillic), Russian and English alike; plus
+#: the full-width, small and Arabic forms, the emoji and the combined forms.
+QUESTION_MARKS: Final = frozenset(
+    "?"
+    "\N{FULLWIDTH QUESTION MARK}"
+    "\N{SMALL QUESTION MARK}"
+    "\N{ARABIC QUESTION MARK}"
+    "\N{BLACK QUESTION MARK ORNAMENT}"
+    "\N{WHITE QUESTION MARK ORNAMENT}"
+    "\N{DOUBLE QUESTION MARK}"
+    "\N{QUESTION EXCLAMATION MARK}"
+    "\N{EXCLAMATION QUESTION MARK}"
+    "\N{INTERROBANG}"
+)
+#: A link: its query string ("watch?v=") is not a question.
+_LINK: Final = re.compile(r"(?:\b[a-z][a-z0-9+.\-]*://|\bwww\.|\bt\.me/)\S*", re.IGNORECASE)
+#: Punctuation written straight after a link ends the sentence, not the link:
+#: "...kanalingizmi t.me/x?" asks.
+_LINK_TAIL: Final = (
+    "".join(sorted(QUESTION_MARKS)) + ".,;:!)]}\"'\N{RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK}"
+)
+#: The newest contact messages per chat that the rule reads.
+QUESTION_SCAN: Final = 20
+
+
+def _blank_link(match: re.Match[str]) -> str:
+    link = match.group()
+    return " " + link[len(link.rstrip(_LINK_TAIL)) :]
+
+
+def has_question(text: str | None) -> bool:
+    """A message's text (or caption, stored in `messages.text`) holds a
+    question mark outside links. A question written without one (Uzbek -mi,
+    Russian ли) is left to the summary."""
+    if not text:
+        return False
+    return not QUESTION_MARKS.isdisjoint(_LINK.sub(_blank_link, text))
+
+
+@dataclass(frozen=True, slots=True)
+class WaitingQuestion:
+    message_id: int
+    sent_at: datetime
+    #: CONTENT: the contact's own words. Callers wrap it as untrusted and
+    #: never log it.
+    text: str
+
+
+async def waiting_questions(
+    session: AsyncSession, account_id: int, conversation_ids: Sequence[int]
+) -> dict[int, WaitingQuestion]:
+    """Per chat, the newest retained contact message sent after the owner's
+    or the assistant's last message that `has_question` — the application's
+    own "may be waiting" check, no model call (C1).
+
+    What answers is the owner's own message or one the assistant sent (D96),
+    through the two timestamps; an away or greeting message (`owner_automated`)
+    never moves them, so it answers nothing. All contact messages after the
+    answer are read (the newest `QUESTION_SCAN`), so a later "thanks" or a
+    sticker does not hide an earlier question. A deleted or expired question
+    has no text and is never evidence (D63). A chat set to Ignore or found to
+    be a bot chat — even while a caller's summary call ran — has none (C3)."""
+    if not conversation_ids:
+        return {}
+    answered = func.greatest(Conversation.last_owner_msg_at, Conversation.last_assistant_msg_at)
+    position = (
+        func.row_number()
+        .over(
+            partition_by=Message.conversation_id,
+            order_by=(Message.sent_at.desc(), Message.id.desc()),
+        )
+        .label("position")
+    )
+    recent = (
+        select(Message.conversation_id, Message.id, Message.sent_at, Message.text, position)
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .join(Contact, Contact.id == Conversation.contact_id)
+        .where(Conversation.account_id == account_id)
+        .where(Contact.account_id == account_id)
+        .where(Contact.is_bot.is_(False))
+        .where(Conversation.mode.in_(ATTENTION_MODES))
+        .where(Message.account_id == account_id)
+        .where(Message.conversation_id.in_(list(conversation_ids)))
+        .where(Message.direction == "contact")
+        .where(Message.deleted_at.is_(None))
+        .where(Message.purged_at.is_(None))
+        .where(Message.sent_at.is_not(None))
+        .where(Message.text.is_not(None))
+        .where(answered.is_(None) | (Message.sent_at > answered))
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(recent.c.conversation_id, recent.c.id, recent.c.sent_at, recent.c.text)
+            .where(recent.c.position <= QUESTION_SCAN)
+            .order_by(recent.c.conversation_id, recent.c.position)
+        )
+    ).all()
+    found: dict[int, WaitingQuestion] = {}
+    for conversation_id, message_id, sent_at, text in rows:
+        if conversation_id not in found and has_question(text):
+            found[int(conversation_id)] = WaitingQuestion(int(message_id), sent_at, str(text))
+    return found

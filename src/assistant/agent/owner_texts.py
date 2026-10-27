@@ -11,7 +11,15 @@ change them here only.
   returned in the run, and the marker was removed (`agent/citations.py`);
 - `CHAT_ACCESS_OFF`: appended to a reply whose run needed the owner's chats
   while AI for them is off; the `/privacy managed` card follows (D104), but
-  not within a day of the owner choosing "Not now" (D110).
+  not within a day of the owner choosing "Not now" (D110);
+- `MAY_BE_WAITING`: the reason the attention list and a catch-up give for a
+  chat whose contact asked a question after the owner's last answer — the
+  application's own check, not a model's (M03 fix round, C1);
+- `STILL_OPEN`: the reason for "needs a reply" when the summary said none is
+  needed but a question, decision or request to the owner is still open (P9).
+
+The last two are drafts too (uz-Latn, uz-Cyrl, ru); they hold no name, and
+the ru wording uses no gendered verb.
 """
 
 from __future__ import annotations
@@ -66,4 +74,37 @@ CHAT_ACCESS_OFF: Final[dict[SupportedLocale, str]] = {
         "Я не могу читать ваши чаты: ИИ для подключённых чатов выключен. "
         "Чтобы включить, отправьте /privacy managed."
     ),
+}
+
+MAY_BE_WAITING: Final[dict[SupportedLocale, str]] = {
+    "en": (
+        "May be waiting for your reply: their latest messages include a question that "
+        "nobody has answered."
+    ),
+    "uz-Latn": (
+        "Javobingizni kutayotgan boʻlishi mumkin: soʻnggi xabarlarida savol bor, unga hali "
+        "hech kim javob bermagan."
+    ),
+    "uz-Cyrl": (
+        "Жавобингизни кутаётган бўлиши мумкин: сўнгги хабарларида савол бор, унга ҳали "
+        "ҳеч ким жавоб бермаган."
+    ),
+    "ru": (
+        "Возможно, ждёт вашего ответа: в последних сообщениях собеседника есть вопрос, "
+        "на который ещё нет ответа."
+    ),
+}
+
+STILL_OPEN: Final[dict[SupportedLocale, str]] = {
+    "en": (
+        "A reply is still needed: a question, decision or request to you in this chat is "
+        "still open."
+    ),
+    "uz-Latn": (
+        "Javob hali kerak: bu chatda sizga qaratilgan savol, qaror yoki iltimos hali yopilmagan."
+    ),
+    "uz-Cyrl": (
+        "Жавоб ҳали керак: бу чатда сизга қаратилган савол, қарор ёки илтимос ҳали ёпилмаган."
+    ),
+    "ru": "Ответ всё ещё нужен: в этом чате остаётся открытым вопрос, решение или просьба к вам.",
 }

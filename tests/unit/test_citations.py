@@ -101,5 +101,7 @@ def test_every_fixed_text_exists_in_every_supported_locale(locale: str) -> None:
         owner_texts.CONTACT_FALLBACK,
         owner_texts.CITATION_REMOVED,
         owner_texts.CHAT_ACCESS_OFF,
+        owner_texts.MAY_BE_WAITING,
+        owner_texts.STILL_OPEN,
     ):
         assert table[locale].strip()  # type: ignore[index]

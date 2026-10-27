@@ -32,8 +32,10 @@ from typing import Any
 
 import pytest
 from sqlalchemy import select, text
+from structlog.testing import capture_logs
 
-from assistant.agent import prompt_registry
+from assistant.agent import owner_texts, prompt_registry
+from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.agent.models import AgentRun
 from assistant.agent.summarize import SummaryStatus
 from assistant.agent.tools.conversations import GetConversationArgs, get_conversation_tool
@@ -63,6 +65,7 @@ from assistant.llm.port import (
     TextItem,
     ToolResultItem,
 )
+from assistant.memory import catch_up as waiting
 from assistant.memory.models import ConversationSummary
 from tests.fakes.channel import FakeChannel
 from tests.fakes.deletions import RecordingDeleter
@@ -346,10 +349,10 @@ async def catch_up(
     return await summarize_period_tool(ctx, arguments)
 
 
-async def attention(env: Env, fake: FakeLLM | None) -> ToolOutcome:
+async def attention(env: Env, fake: FakeLLM | None, *, limit: int | None = None) -> ToolOutcome:
     ctx = await tool_context(env, fake)
     return await get_attention_list_tool(
-        ctx, GetAttentionListArgs(active_within_days=None, limit=None)
+        ctx, GetAttentionListArgs(active_within_days=None, limit=limit)
     )
 
 
@@ -1176,6 +1179,372 @@ async def test_attention_list_without_a_summarizer_is_honest_about_unchecked_cha
     assert all((e["needs_reply"], e["check"]) == (None, "not_checked") for e in entries)
 
 
+# ============================================================ waiting contacts (C1, P9)
+async def owner_locale(env: Env) -> SupportedLocale:
+    async with env.factory() as session:
+        tag = (
+            await session.execute(
+                text("SELECT locale_pref FROM app.accounts WHERE telegram_user_id = :u"),
+                {"u": OWNER},
+            )
+        ).scalar_one()
+    return supported_locale(tag)
+
+
+async def stored_id(env: Env, chat_id: int, telegram_message_id: int) -> int:
+    return await one_id(
+        env,
+        "SELECT m.id FROM app.messages m JOIN app.conversations c ON c.id = m.conversation_id "
+        "WHERE c.business_chat_id = :c AND m.telegram_message_id = :m",
+        c=chat_id,
+        m=telegram_message_id,
+    )
+
+
+async def chat(env: Env, chat_id: int, name: str, *lines: tuple[int, int, str, int]) -> None:
+    """Messages `(telegram id, sender, text, minute)` in the chat with `chat_id`."""
+    for message_id, sender, words, minute in lines:
+        await deliver(
+            env,
+            business_message(
+                message_id=message_id,
+                from_id=sender,
+                chat_id=chat_id,
+                message_text=words,
+                first_name=name,
+                date=ts(minute),
+            ),
+        )
+
+
+def no_reply_needed(request: LLMRequest) -> dict[str, Any]:
+    """A summary that misses the contact's question (C1, step 7)."""
+    return output(
+        facts=[("Synthetic fact", shown_ids(request)[:1])],
+        needs_reply=False,
+        reason="SYNTH nothing expected",
+    )
+
+
+async def test_c1_a_contact_who_asked_after_the_owners_last_answer_is_listed_first(
+    senv: Env,
+) -> None:
+    """C1 (owner checklist step 7, failed twice): the contact asked after the
+    owner's last message, said thanks, and an away message followed; the
+    freshly refreshed summary said no reply was needed. The application's own
+    rule lists the chat as possibly waiting, with the question, first; the
+    limit applies after that ranking, not to the chats waiting longest."""
+    await connect(senv, date=ts(-60))
+    await grant_managed(senv)
+    # Bobur (older): his question was answered; his later thanks asks nothing.
+    await chat(
+        senv,
+        OTHER_CONTACT,
+        "Bobur",
+        (21, OTHER_CONTACT, "SYNTH-B Qachon kelasiz?", 0),
+        (22, OWNER, "SYNTH-B owner reply", 1),
+        (23, OTHER_CONTACT, "SYNTH-B rahmat", 2),
+    )
+    # Kamola (newer): the owner's own messages (step 4's swapped traffic), her
+    # question, her thanks, then the owner's automatic away message.
+    await chat(
+        senv,
+        CONTACT,
+        "Kamola",
+        (11, OWNER, "SYNTH-A owner words", 3),
+        (12, OWNER, "SYNTH-A owner words", 4),
+        (13, CONTACT, "SYNTH-A Ertaga kelasizmi?", 10),
+        (14, CONTACT, "SYNTH-A rahmat", 11),
+    )
+    await deliver(
+        senv,
+        business_message(
+            message_id=15,
+            from_id=OWNER,
+            message_text="SYNTH-A away",
+            first_name="Kamola",
+            date=ts(12),
+            extra={"is_from_offline": True},
+        ),
+    )
+    kamola, bobur = await conversation_id(senv, CONTACT), await conversation_id(senv, OTHER_CONTACT)
+    fake = FakeLLM()
+    fake.parsed = [no_reply_needed] * 4
+    locale = await owner_locale(senv)
+
+    with capture_logs() as logs:
+        result = await attention(senv, fake, limit=1)
+
+    [entry] = result.data["conversations"]
+    assert entry["conversation_id"] == kamola
+    assert (entry["check"], entry["needs_reply"]) == ("model", False)  # the model missed it
+    assert entry["may_be_waiting"] is True
+    assert entry["waiting_reason"] == owner_texts.MAY_BE_WAITING[locale]
+    question = entry["question"]
+    asked = await stored_id(senv, CONTACT, 13)
+    assert question["message_id"] == asked
+    assert question["text"].startswith('<untrusted source="contact" trust="untrusted">')
+    assert "SYNTH-A Ertaga kelasizmi?" in question["text"]
+    assert (result.citable[asked].conversation_id, result.citable[asked].direction) == (
+        kamola,
+        "contact",
+    )
+    assert (
+        result.data["waiting_count"],
+        result.data["not_listed"],
+        result.data["not_listed_may_be_waiting"],
+    ) == (1, 1, 0)
+    assert "1 more chat(s)" in result.data["note_not_listed"]
+    assert len(summary_requests(fake)) == 1  # only the listed chat was checked
+    [built] = [line for line in logs if line["event"] == "attention_list_built"]
+    assert {k: v for k, v in built.items() if k not in ("event", "log_level")} == {
+        "candidates": 2,
+        "listed": 1,
+        "waiting": 1,
+        "may_be_waiting": 1,
+        "not_checked": 0,
+        "inline_checks": 1,
+    }
+
+    again = await attention(senv, fake)
+
+    entries = again.data["conversations"]
+    assert [e["conversation_id"] for e in entries] == [kamola, bobur]
+    assert [e["may_be_waiting"] for e in entries] == [True, False]
+    assert "question" not in entries[1]  # answered by the owner; the away message answers nothing
+    assert "not_listed" not in again.data
+
+
+async def test_c1_the_waiting_rule_reads_captions_and_never_a_deleted_question(
+    senv: Env,
+) -> None:
+    """A caption is a message's text; a deleted or expired question is no
+    evidence (D63); a link's '?' is not a question."""
+    await connect(senv, date=ts(-60))
+    await grant_managed(senv)
+    photo = [{"file_id": "SYNTH-f", "file_unique_id": "SYNTH-u", "width": 10, "height": 10}]
+    await deliver(
+        senv,
+        business_message(
+            message_id=11,
+            message_text=None,
+            first_name="Kamola",
+            date=ts(0),
+            extra={"photo": photo, "caption": "SYNTH-A Bu qanchaga?"},
+        ),
+    )
+    await chat(
+        senv,
+        OTHER_CONTACT,
+        "Bobur",
+        (21, OTHER_CONTACT, "SYNTH-B Qachon?", 1),
+        (22, OTHER_CONTACT, "SYNTH-B https://example.com/?a=1", 2),
+    )
+    await deliver(senv, deleted_messages(chat_id=OTHER_CONTACT, message_ids=[21]))
+    await chat(senv, THIRD_CONTACT, "Dilnoza", (31, THIRD_CONTACT, "SYNTH-C Qayerdasiz?", 3))
+    async with senv.factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE app.messages SET text = NULL, search_key = NULL, purged_at = now() "
+                "WHERE telegram_message_id = 31"
+            )
+        )
+    kamola = await conversation_id(senv, CONTACT)
+    bobur = await conversation_id(senv, OTHER_CONTACT)
+    dilnoza = await conversation_id(senv, THIRD_CONTACT)
+
+    result = await attention(senv, None)
+
+    by_id = {e["conversation_id"]: e for e in result.data["conversations"]}
+    assert set(by_id) == {kamola, bobur, dilnoza}
+    assert by_id[kamola]["may_be_waiting"] is True
+    assert "SYNTH-A Bu qanchaga?" in by_id[kamola]["question"]["text"]
+    for other in (bobur, dilnoza):
+        assert by_id[other]["may_be_waiting"] is False
+        assert "question" not in by_id[other]
+    assert result.data["conversations"][0]["conversation_id"] == kamola
+    assert "SYNTH-B Qachon?" not in json.dumps(result.data)
+
+
+async def test_c1_a_catch_up_puts_a_chat_whose_contact_asked_last_under_needs_attention(
+    senv: Env,
+) -> None:
+    a, b = await seed(senv)  # A asks "...uchrashamizmi?" and is waiting; B states a fact
+    fake = FakeLLM()
+    fake.parsed = [output(), output()]  # summaries that see nothing to answer
+    locale = await owner_locale(senv)
+
+    result = await catch_up(senv, fake, since="2026-10-18 08:30", until=None)
+
+    by_id = {e["conversation_id"]: e for e in result.data["conversations"]}
+    assert (by_id[a]["importance"], by_id[a]["may_be_waiting"]) == ("needs_attention", True)
+    assert by_id[a]["waiting_reason"] == owner_texts.MAY_BE_WAITING[locale]
+    # The question itself, as the attention list shows it: wrapped, citable.
+    asked = await stored_id(senv, CONTACT, 11)
+    question = by_id[a]["question"]
+    assert question["message_id"] == asked
+    assert question["text"].startswith('<untrusted source="contact" trust="untrusted">')
+    assert TEXT_A in question["text"]
+    assert (result.citable[asked].conversation_id, result.citable[asked].direction) == (
+        a,
+        "contact",
+    )
+    assert (by_id[b]["importance"], by_id[b]["may_be_waiting"]) == ("other", False)
+    assert "question" not in by_id[b]
+    assert set(result.citable) == {asked}
+    assert [e["conversation_id"] for e in result.data["conversations"]] == [a, b]
+
+
+async def test_c1_the_limit_counts_cut_chats_that_may_be_waiting_or_were_not_checked(
+    senv: Env,
+) -> None:
+    """What the limit cuts is counted honestly: a cut chat with a question
+    may be waiting; a cut chat nobody checked is unknown, never "not waiting"."""
+    await connect(senv, date=ts(-60))
+    await grant_managed(senv)
+    await chat(senv, CONTACT, "Kamola", (11, CONTACT, "SYNTH-A Kelasizmi?", 0))
+    await chat(senv, OTHER_CONTACT, "Bobur", (21, OTHER_CONTACT, "SYNTH-B Qachon?", 1))
+    await chat(senv, THIRD_CONTACT, "Dilnoza", (31, THIRD_CONTACT, "SYNTH-C rahmat", 2))
+    kamola = await conversation_id(senv, CONTACT)
+
+    result = await attention(senv, None, limit=1)
+
+    [entry] = result.data["conversations"]
+    assert entry["conversation_id"] == kamola  # among the waiting, waiting longest
+    assert (
+        result.data["not_listed"],
+        result.data["not_listed_may_be_waiting"],
+        result.data["not_listed_not_checked"],
+    ) == (2, 1, 1)
+    note = result.data["note_not_listed"]
+    assert "2 more chat(s)" in note
+    assert "1 may be waiting" in note
+    assert "1 not checked" in note
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["request", "legacy_v4_promise"])
+async def test_c1_the_limit_ranks_a_stored_summary_on_its_checked_verdict(
+    senv: Env, legacy: bool
+) -> None:
+    """Before the limit, a fresh stored summary is ranked on the verdict the
+    owner will see: P9, on the attribution-checked summary. A v1-v4 owner
+    "promise" citing only the contact is the contact's open request (D96), so
+    that chat outranks a newer one nobody checked."""
+    await connect(senv, date=ts(-60))
+    await grant_managed(senv)
+    await chat(senv, CONTACT, "Kamola", (11, CONTACT, "SYNTH-A Hujjatlarni yuborib bering.", 0))
+    kamola = await conversation_id(senv, CONTACT)
+    fake = FakeLLM()
+
+    def asked_for_documents(request: LLMRequest) -> dict[str, Any]:
+        return {
+            **output(needs_reply=False, reason="SYNTH nothing expected"),
+            "commitments": [
+                commitment("owner", "requested", "SYNTH documents", sides(request)["CONTACT"][:1])
+            ],
+        }
+
+    fake.parsed = [asked_for_documents]
+    assert (await summarizer(senv, fake).refresh(kamola)).status is SummaryStatus.REFRESHED
+    if legacy:
+        # As a v1-v4 row was stored: the item has no status (read as a promise).
+        async with senv.factory() as session, session.begin():
+            await session.execute(
+                text(
+                    "UPDATE app.conversation_summaries SET summary = jsonb_set(summary, "
+                    "'{commitments,0}', (summary->'commitments'->0) - 'status') "
+                    "WHERE conversation_id = :c AND kind = 'rolling'"
+                ),
+                {"c": kamola},
+            )
+    await chat(senv, OTHER_CONTACT, "Bobur", (21, OTHER_CONTACT, "SYNTH-B rahmat", 5))
+    locale = await owner_locale(senv)
+
+    result = await attention(senv, None, limit=1)
+
+    [entry] = result.data["conversations"]
+    assert entry["conversation_id"] == kamola
+    assert (entry["check"], entry["needs_reply"], entry["may_be_waiting"]) == (
+        "model",
+        True,
+        False,
+    )
+    assert entry["reason"] == owner_texts.STILL_OPEN[locale]
+    assert (
+        result.data["not_listed"],
+        result.data["not_listed_may_be_waiting"],
+        result.data["not_listed_not_checked"],
+    ) == (1, 0, 1)
+
+
+async def test_c1_unanswered_keeps_the_newest_chats_under_its_cap(senv: Env) -> None:
+    """Past the cap the chats waiting longest are left out, never the newest
+    (the owner's step-7 chat); the rest still come waiting longest first."""
+    await connect(senv, date=ts(-60))
+    await grant_managed(senv)
+    await chat(senv, CONTACT, "Kamola", (11, CONTACT, "SYNTH-A one", 0))
+    await chat(senv, OTHER_CONTACT, "Bobur", (21, OTHER_CONTACT, "SYNTH-B two", 1))
+    await chat(senv, THIRD_CONTACT, "Dilnoza", (31, THIRD_CONTACT, "SYNTH-C three", 2))
+    bobur = await conversation_id(senv, OTHER_CONTACT)
+    dilnoza = await conversation_id(senv, THIRD_CONTACT)
+    account = await account_id(senv)
+
+    async with senv.factory() as session:
+        found = await waiting.unanswered(session, account, since=AT - timedelta(hours=1), limit=2)
+
+    assert [c.conversation_id for c in found] == [bobur, dilnoza]
+
+
+async def test_p9_an_open_request_keeps_needs_reply_on_after_a_thank_you(senv: Env) -> None:
+    """P9 (owner, 2026-10-27; E1 c30): the contact asked for help with a SIM
+    card, the owner answered other things, the contact said thanks, and the
+    model turned needs_reply off. The open request keeps it on. It is computed
+    when read, so the stored summary keeps the model's own verdict."""
+    await connect(senv, date=ts(-60))
+    await grant_managed(senv)
+    await chat(
+        senv,
+        CONTACT,
+        "Daniel",
+        (11, CONTACT, "SYNTH-A SIM karta olishga yordam berasizmi? Dollar olib kelaymi?", 0),
+        (12, OWNER, "SYNTH-A owner words", 5),
+        (13, CONTACT, "SYNTH-A Zo‘r, rahmat", 6),
+    )
+    daniel = await conversation_id(senv, CONTACT)
+    fake = FakeLLM()
+
+    def thanked(request: LLMRequest) -> dict[str, Any]:
+        return {
+            **output(needs_reply=False, reason="SYNTH thanked"),
+            "commitments": [
+                commitment("owner", "requested", "SYNTH SIM card", sides(request)["CONTACT"][:1])
+            ],
+        }
+
+    fake.parsed = [thanked]
+    locale = await owner_locale(senv)
+
+    result = await attention(senv, fake)
+
+    [entry] = result.data["conversations"]
+    assert entry["conversation_id"] == daniel
+    assert (entry["check"], entry["needs_reply"]) == ("model", True)
+    assert entry["reason"] == owner_texts.STILL_OPEN[locale]
+    assert entry["may_be_waiting"] is False  # the question came before the owner's answer
+    assert [c["status"] for c in entry["requests_to_owner"]] == ["requested"]
+    assert result.data["waiting_count"] == 1
+    stored = await rolling(senv, daniel)
+    assert stored is not None
+    assert stored.summary["needs_reply"] is False  # the model's own verdict, unchanged
+    ctx = await tool_context(senv, None)
+    arguments = GetConversationArgs(
+        conversation_id=daniel, contact_id=None, cursor=None, limit=None
+    )
+    view = (await get_conversation_tool(ctx, arguments)).data["summary"]
+    assert view["needs_reply"] is True
+    assert view["needs_reply_reason"] == owner_texts.STILL_OPEN[locale]
+
+
 # ============================================================ invalidation
 async def test_a_deleted_message_drops_the_summaries_that_covered_it(senv: Env) -> None:
     """PRD §20: deleted messages are not kept — not in a summary either."""
@@ -1270,7 +1639,7 @@ async def test_another_accounts_conversation_is_not_found(migrated_url: str) -> 
                 "synthetic-conn-b",
                 from_id=7000000077,
                 chat_id=7000000077,
-                message_text="OTHER-SYNTH-secret",
+                message_text="OTHER-SYNTH-secret?",
                 date=ts(1),
             ),
         )
@@ -1283,6 +1652,18 @@ async def test_another_accounts_conversation_is_not_found(migrated_url: str) -> 
             with pytest.raises(LookupError):
                 await catch_up(env, fake, since="2026-10-18 08:30", until=None, **scope)
         assert fake.requests == []
+        # Their contact's question is never evidence for this account (C1 rule).
+        their_account = await one_id(
+            env, "SELECT account_id FROM app.conversations WHERE id = :c", c=theirs
+        )
+        async with env.factory() as session:
+            assert await waiting.waiting_questions(session, await account_id(env), [theirs]) == {}
+            assert set(await waiting.waiting_questions(session, their_account, [theirs])) == {
+                theirs
+            }
+        listed = (await attention(env, None)).data["conversations"]
+        assert theirs not in {e["conversation_id"] for e in listed}
+        assert "OTHER-SYNTH" not in json.dumps(listed)
 
 
 def connection_update_for(user_id: int) -> dict[str, Any]:

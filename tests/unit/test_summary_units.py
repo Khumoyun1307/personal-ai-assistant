@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from assistant.accounts.models import Account
-from assistant.agent import prompt_registry
+from assistant.agent import owner_texts, prompt_registry
 from assistant.agent.attribution import (
     ATTRIBUTION_RULE,
     FALLBACK_NAMES,
@@ -35,6 +35,7 @@ from assistant.agent.tools.registry import CapabilityClass, default_registry
 from assistant.agent.tools.summaries import GetAttentionListArgs, SummarizePeriodArgs
 from assistant.config import Settings
 from assistant.llm.port import Provenance
+from assistant.memory import catch_up
 from assistant.memory.catch_up import GapFact, PeriodCoverage, caveats, importance
 from assistant.memory.summaries import SourceMessage, source_digest
 
@@ -462,6 +463,101 @@ def test_summary_view_validates_and_renders_a_legacy_v4_summary() -> None:
     assert "Aziza asks you to (not agreed yet)" in view["commitments"][0]["who"]
     assert "You promised Aziza" in view["commitments"][1]["who"]
     assert "who" not in view["key_facts"][0]
+
+
+def test_p9_an_open_request_keeps_needs_reply_on() -> None:
+    """P9 (owner, 2026-10-27; E1 c30): a thank-you turned "needs a reply" off
+    while the contact's SIM-card request stayed open. While a question, decision
+    or request to the owner is open in the checked summary, needs_reply stays
+    on, with our own reason instead of the model's."""
+
+    def view(**fields: Any) -> dict[str, Any]:
+        summary = _summary(needs_reply_reason="Thanked you", **fields)
+        return summary_view(summary, contact_name="Daniel", locale="en", authors=AUTHORS)
+
+    for still_open in (
+        {"commitments": [_promise("owner", [1], "requested")]},
+        {"open_questions_to_owner": [{"text": "q", "message_ids": [1]}]},
+        {"decisions_requested": [{"text": "d", "message_ids": [2]}]},
+        # A v1-v4 "promise" citing only the contact is their request (D96).
+        {"commitments": [_promise("owner", [1], None)]},
+    ):
+        opened = view(**still_open)
+        assert opened["needs_reply"] is True
+        assert opened["needs_reply_reason"] == owner_texts.STILL_OPEN["en"]
+    for closed in (
+        {"commitments": [_promise("owner", [3])]},  # the owner's own promise
+        {"commitments": [_promise("owner", [3], None)]},  # a v1-v4 item is a promise
+        {"commitments": [_promise("contact", [3], "requested")]},  # the owner asked them
+        # The owner's "request" citing only the owner is dropped first (D96).
+        {"commitments": [_promise("owner", [3], "requested")]},
+        {},
+    ):
+        kept = view(**closed)
+        assert kept["needs_reply"] is False
+        assert kept["needs_reply_reason"].startswith('<untrusted source="summary"')
+        assert "Thanked you" in kept["needs_reply_reason"]
+    # The model's own "yes" keeps its own reason.
+    yes = summary_view(
+        _summary(
+            needs_reply=True,
+            needs_reply_reason="Asked",
+            commitments=[_promise("owner", [1], "requested")],
+        ),
+        contact_name="Daniel",
+        locale="en",
+        authors=AUTHORS,
+    )
+    assert yes["needs_reply"] is True
+    assert "Asked" in yes["needs_reply_reason"]
+    # The domain rule the view applies, on its own.
+    request = {"by": "owner", "status": "requested", "text": "c", "message_ids": [1]}
+    assert catch_up.needs_reply({"needs_reply": False, "commitments": [request]}) is True
+    assert catch_up.needs_reply({"needs_reply": True}) is True
+    assert catch_up.needs_reply({"needs_reply": False, "commitments": [{"by": "owner"}]}) is False
+    assert catch_up.needs_reply({}) is False
+
+
+@pytest.mark.parametrize(
+    ("text", "asks"),
+    [
+        ("SYNTH Ertaga kelasizmi?", True),
+        ("SYNTH Эртага келасизми?", True),
+        ("SYNTH Вы придёте завтра?", True),
+        ("SYNTH Can you call me?", True),
+        ("SYNTH Kelasizmi\N{FULLWIDTH QUESTION MARK}", True),
+        ("SYNTH Kelasizmi ❓", True),
+        ("SYNTH Qachon؟", True),
+        ("SYNTH Ko'rdingizmi? https://example.com/?a=1", True),
+        # A question mark right after a link ends the sentence, not the link.
+        ("SYNTH Bu kursni ko'rdingizmi https://example.com/course?", True),
+        ("SYNTH Sizning kanalingizmi t.me/synthetic?", True),
+        ("SYNTH Shumi (https://example.com/a?)", True),
+        ("SYNTH Mana: https://example.com/watch?v=SYNTH.", False),
+        ("SYNTH Kelasizmi", False),
+        ("SYNTH rahmat!", False),
+        ("https://example.com/watch?v=SYNTH", False),
+        ("SYNTH www.example.com/?q=1", False),
+        ("SYNTH t.me/synthetic?start=1", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_the_attention_rule_finds_a_question_mark_in_any_script_outside_links(
+    text: str | None, asks: bool
+) -> None:
+    """C1: the application's own check, no model call. A question written
+    without a mark (Uzbek -mi, Russian ли) is left to the summary."""
+    assert catch_up.has_question(text) is asks
+
+
+def test_importance_puts_a_chat_whose_contact_asked_after_the_owners_answer_first() -> None:
+    """C1: the summary missed the question; the application's rule found it."""
+    for summary in ({"needs_reply": False}, None):
+        assert (
+            importance(summary, awaiting_owner_reply=True, asked_question=True) == "needs_attention"
+        )
+    assert importance({"needs_reply": False}, awaiting_owner_reply=True) == "other"
 
 
 def test_summary_view_wraps_the_who_line_as_untrusted() -> None:

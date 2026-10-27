@@ -11,11 +11,18 @@ type (`agent/summarize.py`):
   the connection, Ignore-mode and possibly paused chats, expired and deleted
   messages; delayed-only gaps are never reported). The owner-facing wording
   is the owner model's job; the caveats must all be relayed (prompt rule).
+  A chat whose contact asked after the owner's last answer is
+  `may_be_waiting`, with that question, and needs attention (C1).
 - **`get_attention_list`** — v1 (FR-SUM-03): chats where the contact wrote
-  last and nobody answered, each with the rolling summary's "needs reply"
-  verdict; a chat whose summary is stale is refreshed first — at most
-  `MAX_INLINE_CHECKS` chats, ONE summary call each (plus one retry of a
-  truncated output), never chained (M03 D62) — otherwise marked unchecked.
+  last and nobody answered, each with the application's own question rule
+  (`may_be_waiting`: the contact asked after the owner's last answer, with
+  that question; M03 fix round, C1) and the rolling summary's "needs reply"
+  verdict (kept on while something is open to the owner, P9). Waiting chats
+  are ranked first and the limit applies after ranking; what it cuts is
+  counted (`not_listed`; may be waiting, not checked). A listed chat whose
+  summary is stale is refreshed first — at most `MAX_INLINE_CHECKS` chats,
+  ONE summary call each (plus one retry of a truncated output), never
+  chained (M03 D62) — otherwise marked unchecked.
 
 A chat whose summary fails is listed as not summarized (or unchecked); it
 never aborts the other chats. A summary written from messages that changed
@@ -40,8 +47,10 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 from sqlalchemy import select
 
 from assistant.accounts.models import Account
+from assistant.agent import owner_texts
 from assistant.agent.attribution import ATTRIBUTION_RULE, check_attribution
-from assistant.agent.locales import supported_locale
+from assistant.agent.citations import CitableMessage
+from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.agent.summarize import PeriodOutcome, RefreshOutcome, SummaryStatus
 from assistant.agent.tools.common import (
     COVERAGE_RULE,
@@ -50,11 +59,13 @@ from assistant.agent.tools.common import (
     account_coverage,
     local_time,
     local_to_utc,
+    message_text,
     name,
     one,
     parse_local_moment,
     require_contacts,
     require_conversations,
+    summaries_authors,
     summary_authors,
     summary_view,
 )
@@ -83,6 +94,12 @@ MAX_PERIOD = timedelta(days=31)
 MAX_CATCH_UP_CONVERSATIONS = 15
 #: Stale chats the attention list refreshes per call (M03 D62).
 MAX_INLINE_CHECKS = 8
+#: Chats the attention list ranks before its limit applies (C1), and the
+#: largest limit the model may ask for.
+MAX_ATTENTION_CANDIDATES = 100
+MAX_ATTENTION_LIMIT = 20
+#: Characters of a waiting question shown in the attention list.
+QUESTION_LIMIT = 400
 #: Summary calls in flight at once within one tool call.
 SUMMARY_CONCURRENCY = 4
 #: An open-ended catch-up also covers messages dated this far after our clock.
@@ -194,6 +211,37 @@ _FAILED_REASONS = {
 }
 
 
+def _waiting(
+    conversation_id: int,
+    contact_name: str | None,
+    question: catch_up.WaitingQuestion | None,
+    *,
+    locale: SupportedLocale,
+    tz: str,
+) -> tuple[dict[str, Any], dict[int, CitableMessage]]:
+    """A chat's `may_be_waiting` (C1) and, when set, our own words for why and
+    the question itself — the contact's, wrapped as untrusted — which the
+    reply may cite (S03.7 B3): the fields, and the question as citable."""
+    if question is None:
+        return {"may_be_waiting": False}, {}
+    fields = {
+        "may_be_waiting": True,
+        "waiting_reason": owner_texts.MAY_BE_WAITING[locale],
+        "question": {
+            "message_id": question.message_id,
+            "sent_at": local_time(question.sent_at, tz),
+            "text": message_text(question.text, "contact", limit=QUESTION_LIMIT),
+        },
+    }
+    source = CitableMessage(
+        conversation_id=conversation_id,
+        contact_name=contact_name,
+        sent_at=question.sent_at,
+        direction="contact",
+    )
+    return fields, {question.message_id: source}
+
+
 async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> ToolOutcome:
     services = ctx.services
     now = services.clock.now()
@@ -282,6 +330,7 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
         return run
 
     outcomes = await _bounded_gather([job(item.conversation_id) for item in chosen])
+    locale = supported_locale(account.locale_pref)
     # Who wrote what each summary cites, for the read-time attribution check
     # (S03.7): each chat's own messages only.
     authors: dict[int, dict[int, str]] = {}
@@ -291,12 +340,28 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
                 authors[item.conversation_id] = await summary_authors(
                     uow.session, ctx.account_id, item.conversation_id, outcome.summary
                 )
-    locale = supported_locale(account.locale_pref)
+        # The application's own question rule (C1), read after the summary
+        # calls, so a question deleted meanwhile is not evidence (D63).
+        asked = await catch_up.waiting_questions(
+            uow.session,
+            ctx.account_id,
+            [item.conversation_id for item in chosen if item.awaiting_owner_reply],
+        )
 
     entries: list[dict[str, Any]] = []
     not_summarized: list[dict[str, Any]] = []
     notices: list[str] = []
+    citable: dict[int, CitableMessage] = {}
     for item, outcome in zip(chosen, outcomes, strict=True):
+        waits = item.conversation_id in asked
+        waiting, cites = _waiting(
+            item.conversation_id,
+            item.display_name,
+            asked.get(item.conversation_id),
+            locale=locale,
+            tz=tz,
+        )
+        citable.update(cites)
         base = {
             "conversation_id": item.conversation_id,
             "contact_id": item.contact_id,
@@ -304,6 +369,7 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
             "contact_username": name(item.username),
             "messages_in_period": item.messages_in_period,
             "awaiting_owner_reply": item.awaiting_owner_reply,
+            **waiting,
         }
         if outcome.summary is None:
             if summarizer is None:
@@ -319,7 +385,7 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
         entry = {
             **base,
             "importance": catch_up.importance(
-                checked, awaiting_owner_reply=item.awaiting_owner_reply
+                checked, awaiting_owner_reply=item.awaiting_owner_reply, asked_question=waits
             ),
             "summary": summary_view(
                 checked,
@@ -373,6 +439,7 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
             conversation_ids=frozenset(i.conversation_id for i in involved),
             contact_ids=frozenset(i.contact_id for i in involved),
         ),
+        citable=citable,
     )
 
 
@@ -399,29 +466,81 @@ class GetAttentionListArgs(BaseModel):
     active_within_days: Annotated[int | None, _bounded(1, 30)] = Field(
         description="Only chats whose contact wrote in the last N days, 1-30 (default 7), or null."
     )
-    limit: Annotated[int | None, _bounded(1, 20)] = Field(
+    limit: Annotated[int | None, _bounded(1, MAX_ATTENTION_LIMIT)] = Field(
         description="How many chats, 1-20 (default 10), or null."
     )
 
 
-_REPLY_ORDER = {True: 0, None: 1, False: 2}
+ATTENTION_RULE = (
+    "Listed: chats where the contact wrote last and neither the owner nor the assistant "
+    "answered since (an automatic away or greeting message is not an answer). Chats that "
+    "may be waiting come first; waiting_count counts them. may_be_waiting is the "
+    "application's own check, not a model's: the contact asked a question after the "
+    "owner's last answer (question is that message). List every such chat as possibly "
+    "waiting, with its waiting_reason, even when needs_reply is false. needs_reply is the "
+    "chat summary's verdict, kept true while a question, decision or request to the owner "
+    "is open; null means it could not be checked now, never that nothing is needed. A "
+    "check ending in _during_summary means the chat changed while it was being checked — "
+    "relay its notice. requests_to_owner: what the contact asked the owner to do that the "
+    "owner has not agreed to. not_listed: more such chats beyond the limit — say how many, "
+    "how many of them may be waiting and how many were not checked (unknown, never "
+    "'nothing needed')."
+)
+
+
+def _rank(needs_reply: bool | None, may_be_waiting: bool) -> int:
+    """Waiting first (the question rule or the summary's verdict), then the
+    chats that could not be checked, then the chats needing nothing."""
+    if may_be_waiting or needs_reply:
+        return 0
+    return 1 if needs_reply is None else 2
 
 
 async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) -> ToolOutcome:
     services = ctx.services
     now = services.clock.now()
     days = args.active_within_days or 7
+    limit = args.limit or 10
     async with transaction(services.session_factory) as uow:
         session = uow.session
         account = await session.get(Account, ctx.account_id)
         if account is None:
             raise NotInAccountError("account")
-        candidates = await catch_up.unanswered(
-            session, ctx.account_id, since=now - timedelta(days=days), limit=args.limit or 10
+        found = await catch_up.unanswered(
+            session,
+            ctx.account_id,
+            since=now - timedelta(days=days),
+            limit=MAX_ATTENTION_CANDIDATES,
         )
-        rolling = await summaries.rolling_summaries(
-            session, ctx.account_id, [c.conversation_id for c in candidates]
+        found_ids = [c.conversation_id for c in found]
+        rolling = await summaries.rolling_summaries(session, ctx.account_id, found_ids)
+        fresh = {
+            c.conversation_id: rolling[c.conversation_id].summary
+            for c in found
+            if not c.summary_stale and c.conversation_id in rolling
+        }
+        fresh_authors = await summaries_authors(session, ctx.account_id, fresh)
+        asked_before = await catch_up.waiting_questions(session, ctx.account_id, found_ids)
+
+    # The limit applies after ranking (C1): waiting chats first. A fresh
+    # stored summary ranks on the verdict the owner will see (`summary_view`:
+    # P9 on the attribution-checked summary; unchecked, a v1-v4 row could rank
+    # a chat late as well as early); a stale or missing one is unchecked.
+    # sorted() is stable: within a rank the chats waiting longest stay first.
+    known = {
+        conversation_id: catch_up.needs_reply(
+            check_attribution(summary, fresh_authors[conversation_id])[0]
         )
+        for conversation_id, summary in fresh.items()
+    }
+    first_rank = {
+        c.conversation_id: _rank(known.get(c.conversation_id), c.conversation_id in asked_before)
+        for c in found
+    }
+    ranked = sorted(found, key=lambda c: first_rank[c.conversation_id])
+    candidates, cut = ranked[:limit], ranked[limit:]
+    cut_waiting = sum(1 for c in cut if first_rank[c.conversation_id] == 0)
+    cut_unchecked = sum(1 for c in cut if first_rank[c.conversation_id] == 1)
 
     stale = [
         c.conversation_id for c in candidates if c.summary_stale or c.conversation_id not in rolling
@@ -475,16 +594,19 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             ).scalars()
         }
         coverage = await account_coverage(session, ctx.account_id, account.timezone)
-        authors = {
-            conversation_id: await summary_authors(
-                session, ctx.account_id, conversation_id, stored.summary
-            )
-            for conversation_id, stored in rolling.items()
-        }
+        authors = await summaries_authors(
+            session,
+            ctx.account_id,
+            {conversation_id: stored.summary for conversation_id, stored in rolling.items()},
+        )
+        # Read again after the summary calls: a question deleted or expired
+        # meanwhile must never be shown (D63).
+        asked = await catch_up.waiting_questions(session, ctx.account_id, ids)
 
     tz = account.timezone
     locale = supported_locale(account.locale_pref)
     entries: list[dict[str, Any]] = []
+    citable: dict[int, CitableMessage] = {}
     for candidate in candidates:
         stored = rolling.get(candidate.conversation_id)
         checked = (
@@ -492,6 +614,14 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             and candidate.conversation_id not in pending
             and candidate.conversation_id not in changed
         )
+        waiting, cites = _waiting(
+            candidate.conversation_id,
+            candidate.display_name,
+            asked.get(candidate.conversation_id),
+            locale=locale,
+            tz=tz,
+        )
+        citable.update(cites)
         entry: dict[str, Any] = {
             "conversation_id": candidate.conversation_id,
             "contact_id": candidate.contact_id,
@@ -505,6 +635,7 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
                 if candidate.conversation_id in changed
                 else "not_checked"
             ),
+            **waiting,
         }
         if checked and stored is not None:
             view = summary_view(
@@ -529,19 +660,14 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
                 }
             )
         entries.append(entry)
-    entries.sort(key=lambda e: _REPLY_ORDER[e["needs_reply"]])
+    entries.sort(key=lambda e: _rank(e["needs_reply"], e["may_be_waiting"]))
+    waiting_count = sum(1 for e in entries if _rank(e["needs_reply"], e["may_be_waiting"]) == 0)
 
     data: dict[str, Any] = {
         "conversations": entries,
         "count": len(entries),
-        "rule": (
-            "Listed: chats where the contact wrote last and neither the owner nor the "
-            "assistant answered since. needs_reply is a model judgement from the chat's "
-            "summary; not_checked means it could not be checked now; "
-            "a check ending in _during_summary means the chat changed while it was being "
-            "checked — relay its notice. requests_to_owner: what the contact asked the "
-            "owner to do that the owner has not agreed to."
-        ),
+        "waiting_count": waiting_count,
+        "rule": ATTENTION_RULE,
         "window_days": days,
         "timezone": tz,
         "coverage": coverage,
@@ -549,12 +675,38 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
     }
     if not entries:
         data["note"] = "No stored chat is waiting for the owner's reply in this window."
+    if cut:
+        more = f"at least {len(cut)}" if len(found) == MAX_ATTENTION_CANDIDATES else str(len(cut))
+        larger = (
+            f" A larger limit (at most {MAX_ATTENTION_LIMIT}) lists more of them."
+            if limit < MAX_ATTENTION_LIMIT
+            else ""
+        )
+        data["not_listed"] = len(cut)
+        data["not_listed_may_be_waiting"] = cut_waiting
+        # A cut chat nobody checked is unknown, never "not waiting".
+        data["not_listed_not_checked"] = cut_unchecked
+        data["note_not_listed"] = (
+            f"{more} more chat(s) where the contact wrote last are not listed (limit {limit}): "
+            f"{cut_waiting} may be waiting, {cut_unchecked} not checked (unknown, never "
+            f"'nothing needed'). Say so.{larger}"
+        )
     if changed:
         data["notices"] = [
             discard_notice(c.conversation_id, changed[c.conversation_id])
             for c in candidates
             if c.conversation_id in changed
         ]
+    # Counts only: C1 could not be diagnosed from the logs.
+    logger.info(
+        "attention_list_built",
+        candidates=len(found),
+        listed=len(entries),
+        waiting=waiting_count,
+        may_be_waiting=sum(1 for e in entries if e["may_be_waiting"]),
+        not_checked=sum(1 for e in entries if e["check"] == "not_checked"),
+        inline_checks=len(stale) if summarizer is not None else 0,
+    )
     return ToolOutcome(
         "ok",
         data,
@@ -563,15 +715,19 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             conversation_ids=frozenset(c.conversation_id for c in candidates),
             contact_ids=frozenset(c.contact_id for c in candidates),
         ),
+        citable=citable,
     )
 
 
 GET_ATTENTION_LIST = ToolDefinition(
     name="get_attention_list",
     description=(
-        "Chats waiting for the owner: the contact wrote last and nobody answered. Each "
-        "with when the contact wrote, whether a reply seems needed and why, and open "
-        "questions or decisions for the owner. Chats needing a reply come first."
+        "Chats waiting for the owner: the contact wrote last and nobody answered (an "
+        "automatic away message is not an answer). Each with when the contact wrote; "
+        "whether it may be waiting (the application's own check: a question after the "
+        "owner's last answer, with that question); whether the chat's summary says a reply "
+        "is needed and why; and open questions, decisions or requests to the owner. Chats "
+        "that may be waiting come first."
     ),
     args_model=GetAttentionListArgs,
     capability=CapabilityClass.READ,
