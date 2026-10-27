@@ -23,7 +23,7 @@ import re
 import sys
 import unicodedata
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal, Self, get_args
@@ -572,7 +572,7 @@ class E2Situation(_Strict):
         if len(holders) != 1:
             raise ValueError(f"{self.id}: the canary must appear in exactly one message")
 
-    def shown_messages(self, e1: dict[str, Conversation]) -> list[Message]:
+    def shown_messages(self, e1: Mapping[str, Conversation]) -> list[Message]:
         """The chat the drafter sees: all of a new conversation, or the E1 chat
         up to and including `cut_after`."""
         if self.conversation is not None:

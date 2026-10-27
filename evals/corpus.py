@@ -75,7 +75,8 @@ class LoadedCorpus:
 
 
 # ------------------------------------------------------------------- loading
-def _row_values(message: DatasetMessage, index: int) -> dict[str, Any]:
+def row_values(message: DatasetMessage, index: int) -> dict[str, Any]:
+    """A dataset message as ingestion stores it (`index`: its Telegram id)."""
     direction = "contact" if message.direction == "contact" else "owner_manual"
     values: dict[str, Any] = {
         "telegram_message_id": index,
@@ -143,7 +144,7 @@ async def load_corpus(
             session.add(row)
             await session.flush()
             for index, message in enumerate(conversation.messages, start=1):
-                values = _row_values(message, index)
+                values = row_values(message, index)
                 stored = Message(account_id=account.id, conversation_id=row.id, **values)
                 session.add(stored)
                 await session.flush()

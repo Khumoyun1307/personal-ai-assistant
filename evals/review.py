@@ -26,6 +26,12 @@ and carry no review state, so the owner's decisions live in a small JSON file
 - `fabrications`: conversations where the owner found a fabrication the judge
   did not flag. The judge can only pre-screen, and a conversation it did not
   flag counts as clean unless the owner lists it here.
+- `ratings` (E2, P2 spec E2 §B.3): the owner's 4-level rating of a draft,
+  `as_is` (send as is), `minor` (minor edit), `major` (major edit) or
+  `unusable`, keyed by the situation **and the draft it rated**
+  (`s001#1a2b3c4d`, `rating_key`): a re-run's different draft is unrated until
+  the owner rates it. `python -m evals review drafts --export` writes the sheet
+  with every draft's key.
 
 With no file the ledger is empty: nothing is confirmed, so no gate can pass.
 """
@@ -34,9 +40,9 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -45,6 +51,12 @@ from evals.errors import LedgerError
 Verdict = Literal["confirmed", "dismissed"]
 CoverageVerdict = Literal["covered", "missed"]
 FindingStatus = Literal["pending_owner", "confirmed", "dismissed"]
+#: The owner's draft scale (IMPLEMENTATION_PLAN §6): send as is, minor edit,
+#: major edit, unusable.
+Rating = Literal["as_is", "minor", "major", "unusable"]
+RATINGS: tuple[Rating, ...] = get_args(Rating)
+#: The ratings that count as an acceptable draft.
+ACCEPTABLE_RATINGS: frozenset[Rating] = frozenset({"as_is", "minor"})
 
 
 class _LedgerFile(BaseModel):
@@ -54,6 +66,7 @@ class _LedgerFile(BaseModel):
     findings: dict[str, Verdict] = Field(default_factory=dict)
     coverage: dict[str, CoverageVerdict] = Field(default_factory=dict)
     fabrications: list[str] = Field(default_factory=list)
+    ratings: dict[str, Rating] = Field(default_factory=dict)
 
 
 def finding_id(item_id: str, statement: str) -> str:
@@ -72,6 +85,13 @@ def coverage_key(loop_id: str, summary_text: str) -> str:
     return finding_id(loop_id, summary_text)
 
 
+def rating_key(situation_id: str, draft_text: str) -> str:
+    """The ledger key of the owner's rating of *one particular draft*: the
+    situation id plus a digest of the draft text, so a rating never carries over
+    to another run's different draft (like `coverage_key`)."""
+    return finding_id(situation_id, draft_text)
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewLedger:
     confirmed_items: frozenset[str]
@@ -81,6 +101,8 @@ class ReviewLedger:
     source: str | None = None
     #: Conversations where the owner found a fabrication the judge did not flag.
     owner_fabrications: frozenset[str] = frozenset()
+    #: E2: the owner's rating of each draft, by `rating_key`.
+    ratings: Mapping[str, Rating] = field(default_factory=dict)
 
     @classmethod
     def empty(cls) -> ReviewLedger:
@@ -107,6 +129,7 @@ class ReviewLedger:
             dict(parsed.coverage),
             path.name,
             frozenset(parsed.fabrications),
+            dict(parsed.ratings),
         )
 
     def is_confirmed(self, item_id: str) -> bool:
@@ -121,3 +144,7 @@ class ReviewLedger:
         False missed, None no verdict yet."""
         verdict = self.coverage.get(item_id)
         return None if verdict is None else verdict == "covered"
+
+    def rating(self, key: str) -> Rating | None:
+        """The owner's rating of the draft `key` names, or None if unrated."""
+        return self.ratings.get(key)
