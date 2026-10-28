@@ -56,3 +56,17 @@ The TL session (Claude Code, ultracode) runs **Neryn, Viro, Jack and Junior** as
 - **How the 2026-10-28 session ran it (reuse it):** two reusable workflow scripts, kept outside the repo (their path is in the TL's memory): `p2-unit-step` (author role agent → fresh peer or mentor reviewer → one fix round → re-check) and `p2-review-pr` (parallel independent reviewers that each post one GitHub review). Opus for Neryn, Viro, Jack and all reviewers; Sonnet for Junior. No concurrency cap (owner); each agent has its own worktree and `COMPOSE_PROJECT_NAME`, commits as `COMPOSE_PROJECT_NAME=<name> git commit` (the hook runs compose) and keeps temp files in a private folder.
 - **When agents stop mid-run** (account usage limit, network): their work stays in the unit worktree, committed or not. Relaunch the same step with "continue from the work in your worktree; read `git status`/`git diff` first; never discard it". Never delete a worktree with uncommitted work.
 - **Less overhead:** rule on the issue at once and record rulings in one batched docs PR per day; a branch merges its base only right before its own merge (freshness via P2-T30 close/reopen); one fix round, blocking findings only; whichever of a QA PR and a feature PR is ready first merges (P2-T48).
+
+## 8. State at the end of the 2026-10-28 TL session (start here)
+
+**Done.** M04 is on `main` (#125, de19e05) and **deployed to production with every new M04 flag off** (backup 20261028T184105Z first; healthy). CP2 is signed off (decisions §D). All M05 units are merged into `int/m05` (327e5d0): S05.1, S05.2, S05.2P, S05.3a, S05.3b, S05.4, E3D, E3T parts 1 and 2, QA-S5. The retrieval agent-mode re-run for `owner_request.v8` passed its pre-screen (USD 0.058; #72). No role agent is running; no unit has unpushed work.
+
+**Next, in order:**
+1. **#123 OPS-TV part 2:** Antony's fix round (the trial check failed open; TL disposition on the PR) → Neryn re-check → merge into `int/m04` → a small `int/m04` → `main` PR (the TL may merge it under P2-O13).
+2. **CP3 remainder (#69):** enable the M04 flags in order (WORKFLOW §10, `just prod-env-push` after the owner adds them) → the M04 live checklist in a production window on Alviro → the restore test (OPS-RT #66) → start the 7-day trial (#70) with the trial check running.
+3. **Priority follow-up (P2-T53):** control texts are escaped twice (names with `&`/`<` show as `&amp;amp;`); a small gateway fix unit (Neryn), plus the multi-chunk send outcome ICR.
+4. **CP4 (after CP3), Jack:** a `main` → `int/m05` sync PR: `OwnerAlerts.notify_owner` through notifications (S05.2 §3.5, system alerts take `FOR KEY SHARE`, P2-T42); `owner_request.v8` on `int/m05` → **v9** = M04's v8 + rules 18–20 (P2-T50); keep both appends in `panels.py`/`test_conversation_modes.py` (#106 vs #111); the two CP4 strict-xfail scenarios (one card per burst, the system alert) must turn green. Then CP5 (#71) and the v9 retrieval re-run.
+5. **Owner gates:** E2 ratings and E3 label confirmation plus the uz/ru dataset review (#73); the E2/E3 live runs (#72); the trials; CP6 reports (#74).
+
+**Open items** for M04.md and M05.md are in each unit PR's description and in decisions P2-T42…T54. **Workflow scripts** and the role setup: §7 above; their stable copies are in the TL's memory folder.
+
