@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
 from assistant.conversations.models import Contact, Conversation
+from assistant.core.channel import Button
 from assistant.inbox.models import ConversationTriage, Notification, Task
 from assistant.inbox.notification_types import NotificationKind
 from assistant.memory.summaries import preferred_name
@@ -37,6 +38,9 @@ class RenderedAlert:
     text: str
     #: The conversation the alert is about (its "Open chat" button), if any.
     conversation_id: int | None = None
+    #: Buttons the renderer adds after the delivery's own (ICR-4: a standing
+    #: monitor's Stop, S05.4 §3.7). Empty for every other alert.
+    extra_buttons: tuple[Button, ...] = ()
 
 
 Renderer = Callable[[AsyncSession, Notification, Account], Awaitable[RenderedAlert | None]]

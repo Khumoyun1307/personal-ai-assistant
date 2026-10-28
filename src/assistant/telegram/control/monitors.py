@@ -1,12 +1,14 @@
 """Monitor card presses: `mon:<token>:stop` (S05.4 §3.2; F0-interfaces §7).
 
-The "Monitor on" notice carries a Stop button: a `pending_inputs` card of
-kind `mon` whose `ref_id` is the monitor. A press claims the card once,
-within the pressing owner's account only — an unknown, foreign, expired or
-already pressed card is "no longer active" (§6 invariant 12) — and stops the
-monitor (`cancelled`), or says it had already ended. Database work happens
-in the press's transaction; the answer and the message edit run after its
-commit (ARCHITECTURE §6.7).
+The "Monitor on" notice and a standing monitor's alerts (ICR-4) carry a
+Stop button: a `pending_inputs` card of kind `mon` whose `ref_id` is the
+monitor. A press claims the card once, within the pressing owner's account
+only — an unknown, foreign, expired or already pressed card is "no longer
+active" (§6 invariant 12) — and stops the monitor (`cancelled`), or says it
+had already ended. The notice's text is replaced with the outcome; an
+alert keeps its text and its other buttons, and the outcome follows as a
+new message. Database work happens in the press's transaction; the answer
+and the message run after its commit (ARCHITECTURE §6.7).
 """
 
 from __future__ import annotations
@@ -42,7 +44,10 @@ async def handle_mon_press(
     if card is None or card.kind != MON_CARD or card.ref_id is None or press.op != OP_STOP:
         _after(session, gateway, press, target, None, answer=CALLBACK_EXPIRED_TEXT)
         return HandlerResult(False, "mon", None, note="no_longer_active")
-    message_id = press.message_id if press.message_id is not None else card.prompt_message_id
+    # Only the notice's own card records its message: an alert's card does
+    # not, so the alert stays as it is and the outcome is sent below it.
+    notice = card.prompt_message_id
+    message_id = notice if press.message_id in (None, notice) else None
     result = await monitors.stop(
         session, account_id=account.id, automation_id=card.ref_id, clock=clock, actor="owner"
     )

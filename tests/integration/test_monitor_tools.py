@@ -491,6 +491,44 @@ async def test_the_stop_button_works_only_for_the_owner(env: Env) -> None:
     assert len(await events(env, "monitor_stopped")) == 1
 
 
+async def test_stop_on_an_alert_keeps_the_alert_and_reports_below_it(env: Env) -> None:
+    """ICR-4: the Stop button on a standing monitor's alert stops it; the
+    alert keeps its text and its other buttons (it is never edited) and the
+    outcome follows as a new message. A second alert's Stop then says the
+    monitor had already ended."""
+    _, contact = await seed(env)
+    monitor_id = await direct_monitor(env, contact, lifecycle="standing")
+    tokens = []
+    async with transaction(env.factory) as uow:
+        for _ in range(2):  # the cards of two alerts, as the renderer makes them
+            card_id, _button = await monitors.stop_button(
+                uow.session,
+                account_id=await owner_account(env),
+                automation_id=monitor_id,
+                expires_at=None,
+                clock=env.clock,
+            )
+            card = await uow.session.get(PendingInput, card_id)
+            assert card is not None
+            tokens.append(card.token)
+    env.sender.edits.clear()
+    before = len(env.sender.sends)
+
+    await deliver(env, callback(f"mon:{tokens[0]}:stop", message_id=4242))
+    [row] = await automations(env)
+    assert row.status == "cancelled"
+    assert answers(env)[-1] == "Monitor stopped"
+    assert env.sender.edits == []
+    [report] = env.sender.sends[before:]
+    assert "Monitor stopped. It will not alert you again." in report["text"]
+
+    await deliver(env, callback(f"mon:{tokens[1]}:stop", message_id=4243))
+    assert answers(env)[-1] == "Already ended"
+    assert env.sender.edits == []
+    assert "already ended" in env.sender.sends[-1]["text"]
+    assert len(await events(env, "monitor_stopped")) == 1
+
+
 def answers(env: Env) -> list[str | None]:
     return [call["text"] for call in env.sender.answered_callbacks]
 

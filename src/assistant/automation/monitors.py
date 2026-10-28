@@ -28,7 +28,7 @@ import html
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -37,16 +37,20 @@ import pydantic
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.accounts.callbacks import encode
 from assistant.accounts.models import Account, AuditLogEntry
+from assistant.accounts.service import create_card
 from assistant.automation import repository
 from assistant.automation.models import Automation
 from assistant.automation.rules import MonitorRule
 from assistant.conversations.models import Contact, Conversation, Message
+from assistant.core.channel import Button
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
 from assistant.core.jobs import JobScheduler
+from assistant.inbox import triage_store
 from assistant.inbox.alert_texts import RenderedAlert
-from assistant.inbox.models import ConversationTriage, Notification
+from assistant.inbox.models import Notification
 from assistant.inbox.notification_types import NotificationKind, NotificationRefs, Priority
 from assistant.inbox.notifications import enqueue
 from assistant.memory.summaries import preferred_name
@@ -697,66 +701,108 @@ def _ids(refs: Mapping[str, Any], key: str) -> list[int]:
     return [i for i in value if isinstance(i, int) and not isinstance(i, bool)]
 
 
-STOP_HINT = (
-    "This monitor keeps watching. To stop it, tap Stop on its “Monitor on” message or "
-    "ask me to stop monitor {id}."
-)
+#: The Stop button keeps working this long for a monitor without an expiry.
+STOP_CARD_TTL = timedelta(days=90)
+STOP_LABEL = "Stop monitor"
 
 
-async def render_monitor_match(
-    session: AsyncSession, notification: Notification, account: Account
-) -> RenderedAlert | None:
+async def stop_button(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    automation_id: int,
+    expires_at: datetime | None,
+    clock: Clock,
+) -> tuple[int, Button]:
+    """A single-use `mon` card (`ref_id` = the monitor) and its Stop button,
+    alive until the monitor's expiry (at most `STOP_CARD_TTL`). Returns the
+    card id: a caller whose message never reached the owner removes it."""
+    now = clock.now()
+    ttl = STOP_CARD_TTL if expires_at is None else min(expires_at - now, STOP_CARD_TTL)
+    card = await create_card(
+        session,
+        account_id=account_id,
+        kind=MON_CARD,
+        clock=clock,
+        ref_id=automation_id,
+        ttl=max(ttl, timedelta(minutes=1)),
+    )
+    assert card.token is not None
+    return card.id, Button(STOP_LABEL, encode(MON_CARD, card.token, OP_STOP))
+
+
+class MonitorMatchRenderer:
     """`MONITOR_MATCH` (S05.4 §3.7): "Monitor: <interpretation> — <contact>
     wrote at <local time>", never message text. `alert_with_summary` adds
     the chat's latest triage reasons when that verdict covers the matched
-    message (no model call). None — the alert is suppressed — when the
-    monitor or the chat is gone (their data was deleted)."""
-    automation_ids = _ids(notification.refs, "automation_ids")
-    conversation_id = notification.conversation_id
-    if not automation_ids or conversation_id is None:
-        return None
-    row = await repository.get(session, account_id=account.id, automation_id=automation_ids[0])
-    rule = None if row is None else parse_rule(row.spec)
-    chat = await chat_facts(session, account_id=account.id, conversation_id=conversation_id)
-    if row is None or rule is None or chat is None:
-        return None
-    try:
-        interpretation = await describe(
-            session,
-            account_id=account.id,
-            rule=rule,
-            expires_at=row.expires_at,
-            timezone=account.timezone,
-            with_expiry=False,
-        )
-        name = (await contact_names(session, account.id, [chat.contact_id]))[chat.contact_id]
-    except NotInAccountError:
-        return None
-    message_ids = _ids(notification.refs, "message_ids")
-    sent_at = None
-    if message_ids:
-        sent_at = await session.scalar(
-            select(Message.sent_at)
-            .where(Message.account_id == account.id)
-            .where(Message.conversation_id == conversation_id)
-            .where(Message.id == max(message_ids))
-        )
-    when = f" at {local_moment(sent_at, account.timezone)}" if sent_at is not None else ""
-    lines = [
-        f"🔔 <b>Monitor:</b> {html.escape(interpretation)} — "
-        f"<b>{html.escape(name)}</b> wrote{when}."
-    ]
-    if rule.action == "alert_with_summary" and message_ids:
-        verdict = (
-            await session.execute(
-                select(ConversationTriage.covers_through_message_id, ConversationTriage.reasons)
-                .where(ConversationTriage.account_id == account.id)
-                .where(ConversationTriage.conversation_id == conversation_id)
+    message (no model call). A standing monitor that is still on gets a Stop
+    button after S05.2's own (ICR-4): its `mon` card is created here, inside
+    the delivery's claim transaction. None — the alert is suppressed — when
+    the monitor or the chat is gone (their data was deleted)."""
+
+    def __init__(self, clock: Clock) -> None:
+        self._clock = clock
+
+    async def __call__(
+        self, session: AsyncSession, notification: Notification, account: Account
+    ) -> RenderedAlert | None:
+        automation_ids = _ids(notification.refs, "automation_ids")
+        conversation_id = notification.conversation_id
+        if not automation_ids or conversation_id is None:
+            return None
+        row = await repository.get(session, account_id=account.id, automation_id=automation_ids[0])
+        rule = None if row is None else parse_rule(row.spec)
+        chat = await chat_facts(session, account_id=account.id, conversation_id=conversation_id)
+        if row is None or rule is None or chat is None:
+            return None
+        try:
+            interpretation = await describe(
+                session,
+                account_id=account.id,
+                rule=rule,
+                expires_at=row.expires_at,
+                timezone=account.timezone,
+                with_expiry=False,
             )
-        ).first()
-        if verdict is not None and verdict[0] >= max(message_ids):
-            reasons = [r for r in verdict[1] or () if isinstance(r, str) and r.strip()]
-            lines += [f"• {html.escape(reason)}" for reason in reasons]
-    if rule.lifecycle == "standing" and row.status == "active":
-        lines += ["", STOP_HINT.format(id=row.id)]
-    return RenderedAlert("\n".join(lines), conversation_id)
+            name = (await contact_names(session, account.id, [chat.contact_id]))[chat.contact_id]
+        except NotInAccountError:
+            return None
+        message_ids = _ids(notification.refs, "message_ids")
+        sent_at = None
+        if message_ids:
+            sent_at = await session.scalar(
+                select(Message.sent_at)
+                .where(Message.account_id == account.id)
+                .where(Message.conversation_id == conversation_id)
+                .where(Message.id == max(message_ids))
+            )
+        when = f" at {local_moment(sent_at, account.timezone)}" if sent_at is not None else ""
+        lines = [
+            f"🔔 <b>Monitor:</b> {html.escape(interpretation)} — "
+            f"<b>{html.escape(name)}</b> wrote{when}."
+        ]
+        if rule.action == "alert_with_summary" and message_ids:
+            verdict = (
+                await triage_store.latest(
+                    session, account_id=account.id, conversation_ids=[conversation_id]
+                )
+            ).get(conversation_id)
+            if verdict is not None and verdict.covers_through_message_id >= max(message_ids):
+                reasons = [r for r in verdict.reasons if r.strip()]
+                lines += [f"• {html.escape(reason)}" for reason in reasons]
+        extra: tuple[Button, ...] = ()
+        now = self._clock.now()
+        if (
+            rule.lifecycle == "standing"
+            and row.status == "active"
+            and (row.expires_at is None or row.expires_at > now)
+        ):
+            _, button = await stop_button(
+                session,
+                account_id=account.id,
+                automation_id=row.id,
+                expires_at=row.expires_at,
+                clock=self._clock,
+            )
+            extra = (button,)
+        return RenderedAlert("\n".join(lines), conversation_id, extra_buttons=extra)

@@ -38,7 +38,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select, text
 
-from assistant.accounts.models import AuditLogEntry
+from assistant.accounts.models import AuditLogEntry, PendingInput
 from assistant.agent import prompt_registry
 from assistant.agent.models import AgentRun
 from assistant.agent.monitor_eval import (
@@ -53,9 +53,9 @@ from assistant.automation.monitor_trigger import MonitorIngestionListener
 from assistant.automation.rules import MonitorCondition, MonitorRule, MonitorScope
 from assistant.core.jobs import MONITOR_TASK
 from assistant.db.uow import transaction
-from assistant.inbox.models import Notification
-from assistant.inbox.notification_types import NotificationKind
-from assistant.inbox.notifications import NotificationDelivery
+from assistant.inbox.models import ConversationTriage, Notification
+from assistant.inbox.notification_types import NotificationKind, NotificationRefs, Priority
+from assistant.inbox.notifications import NotificationDelivery, enqueue
 from assistant.jobs.reconcile_monitors import monitor_reconciler
 from assistant.jobs.tasks_automation import MonitorJobs
 from assistant.llm.port import LLMRequest, TextItem
@@ -366,7 +366,8 @@ def delivery(env: Env, channel: FakeChannel) -> NotificationDelivery:
         scheduler=env.scheduler,
         enabled=True,
     )
-    service.register_renderer(NotificationKind.MONITOR_MATCH, monitors.render_monitor_match)
+    renderer = monitors.MonitorMatchRenderer(env.clock)
+    service.register_renderer(NotificationKind.MONITOR_MATCH, renderer)
     return service
 
 
@@ -451,6 +452,116 @@ async def test_a_low_priority_contacts_monitor_alert_is_not_demoted(env: Env) ->
     assert (result.status, result.reason) == ("sent", None)
     assert len(channel.sends) == 1
     assert alert.conversation_id == a
+
+
+async def test_alert_with_summary_adds_the_reasons_of_a_covering_verdict(env: Env) -> None:
+    """S05.4 §3.7: `alert_with_summary` adds the chat's latest triage
+    reasons only when that verdict covers the matched message (no model
+    call); a stale verdict adds nothing. Reasons are escaped; the alert
+    never carries message text."""
+    a, _ = await setup(env)
+    kamola = await contact_id(env)
+    await monitor(
+        env,
+        "contact_replied",
+        contact_ids=[kamola],
+        contact=kamola,
+        action="alert_with_summary",
+        lifecycle="standing",
+    )
+    env.clock.advance(minutes=1)
+    await say(env, 2, "SYNTH-A javob")
+    matched = await message_id_of(env, 2)
+    async with env.factory() as session, session.begin():
+        session.add(
+            ConversationTriage(
+                account_id=await account_id(env),
+                conversation_id=a,
+                covers_through_message_id=matched,
+                needs_reply=True,
+                contains_question=False,
+                requests_decision=True,
+                urgency="high",
+                escalation_category="needs_owner",
+                reasons=["SYNTH-REASON <b>a decision</b>"],
+                prompt_version="triage.v1",
+                model="gpt-6-luna",
+            )
+        )
+    await say(env, 3, "SYNTH-A yana")
+    first, second = await alerts(env)
+    channel = FakeChannel()
+    service = delivery(env, channel)
+    assert (await service.deliver(first.id)).status == "sent"
+    assert (await service.deliver(second.id)).status == "sent"
+    covered, stale = channel.sends
+    assert "• SYNTH-REASON &lt;b&gt;a decision&lt;/b&gt;" in covered
+    assert "SYNTH-REASON" not in stale  # the verdict predates message 3
+    for sent in (covered, stale):
+        assert "javob" not in sent
+        assert "yana" not in sent
+
+
+async def test_a_standing_monitors_alert_carries_stop_and_other_alerts_are_unchanged(
+    env: Env,
+) -> None:
+    """ICR-4 (S05.4 §3.7): a standing monitor's alert has S05.2's three
+    buttons and then "Stop monitor" (its own single-use `mon` card); a
+    one-shot monitor's alert and a triage alert keep exactly S05.2's three."""
+    a, _ = await setup(env)
+    standing = await monitor(
+        env, "keywords", all_observed=True, terms=["P2KEEP"], lifecycle="standing"
+    )
+    await monitor(env, "keywords", all_observed=True, terms=["P2ONCE"])
+    env.clock.advance(minutes=1)
+    await say(env, 2, "SYNTH P2KEEP")
+    await say(env, 3, "SYNTH P2ONCE")
+    async with env.factory() as session, session.begin():
+        session.add(
+            ConversationTriage(
+                account_id=await account_id(env),
+                conversation_id=a,
+                covers_through_message_id=await message_id_of(env, 3),
+                needs_reply=True,
+                contains_question=False,
+                requests_decision=False,
+                urgency="normal",
+                escalation_category="needs_owner",
+                reasons=["SYNTH-REASON"],
+                prompt_version="triage.v1",
+                model="gpt-6-luna",
+            )
+        )
+    async with transaction(env.factory) as uow:
+        triage_alert = await enqueue(
+            uow.session,
+            account_id=await account_id(env),
+            kind=NotificationKind.TRIAGE_NEEDS_REPLY,
+            priority=Priority.HIGH,
+            dedupe_key="triage:synthetic",
+            refs=NotificationRefs(conversation_ids=(a,)),
+            clock=env.clock,
+            conversation_id=a,
+        )
+    assert triage_alert is not None
+    kept, once = await alerts(env)
+    channel = FakeChannel()
+    service = delivery(env, channel)
+    for notification_id in (kept.id, once.id, triage_alert):
+        assert (await service.deliver(notification_id)).status == "sent"
+    s052 = ["Open chat", "Useful", "Not useful"]
+    assert [[b.label for b in row] for row in channel.buttons] == [
+        [*s052, "Stop monitor"],
+        s052,
+        s052,
+    ]
+    async with env.factory() as session:
+        [card] = (
+            await session.execute(select(PendingInput).where(PendingInput.kind == "mon"))
+        ).scalars()
+    assert card.ref_id == standing
+    assert card.prompt_message_id is None  # an alert's card: the alert is never edited
+    assert channel.buttons[0][-1].callback_data == f"mon:{card.token}:stop"
 
 
 async def test_two_messages_of_one_burst_complete_a_one_shot_once(env: Env) -> None:
