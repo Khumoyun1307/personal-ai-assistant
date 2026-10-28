@@ -12,7 +12,7 @@ import html
 import json
 import re
 import unicodedata
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -22,6 +22,7 @@ from typing import Any
 import psycopg
 import pytest
 from evals import cli, live
+from evals.agent_mode import MAX_ATTEMPTS, RETRY_DELAYS
 from evals.budget import BudgetedLLMClient, CallLedger
 from evals.live import LiveConfig, LiveSetupError, ModelChoice
 from evals.report import RunMeta
@@ -85,7 +86,10 @@ def shown_ids(request: LLMRequest) -> list[int]:
 class TriageOracle(FakeLLM):
     """Plays the triage model, burst by burst in run order (bursts the product
     makes no call for are skipped). It cites messages by their position in the
-    burst and tasks by their title, as a model reading the context would."""
+    burst and tasks by their title, as a model reading the context would.
+
+    `down` bursts fail on the provider at every attempt the harness makes;
+    `flaky` bursts fail with the given errors first, then answer."""
 
     def __init__(
         self,
@@ -94,22 +98,35 @@ class TriageOracle(FakeLLM):
         *,
         refuse: Sequence[str] = (),
         down: Sequence[str] = (),
+        flaky: Mapping[str, Sequence[LLMErrorKind]] | None = None,
         usage: Usage = Usage(400, 100),  # noqa: B008  (immutable)
     ) -> None:
         super().__init__()
         self._queue = [b for b in bursts if makes_a_call(b)]
         self._answers = answers or {}
         self._refuse = set(refuse)
-        self._down = set(down)
+        self._outages = {burst_id: [LLMErrorKind.UNAVAILABLE] * MAX_ATTEMPTS for burst_id in down}
+        self._outages |= {burst_id: list(kinds) for burst_id, kinds in (flaky or {}).items()}
         self._usage = usage
-        self._position = -1
+        self._position = 0
+        #: Failed calls on the current burst.
+        self._failed = 0
+
+    def _next(self) -> None:
+        self._position += 1
+        self._failed = 0
 
     async def parse[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> ParsedResponse[T]:
         self.requests.append(request)
-        self._position += 1
         current = self._queue[self._position]
-        if current.id in self._down:
-            raise LLMError(LLMErrorKind.UNAVAILABLE)
+        outages = self._outages.get(current.id, [])
+        if self._failed < len(outages):
+            kind = outages[self._failed]
+            self._failed += 1
+            if self._failed == MAX_ATTEMPTS:  # the harness gives the burst up
+                self._next()
+            raise LLMError(kind)
+        self._next()
         if current.id in self._refuse:
             return ParsedResponse(StopReason.REFUSAL, LUNA, self._usage)
         answer = self._answers.get(current.id, Answer())
@@ -172,6 +189,16 @@ def context(
         reviews=reviews or ReviewLedger.empty(),
         limit=limit,
     )
+
+
+class Sleeps:
+    """A fake `asyncio.sleep`: records the retry delays, waits for nothing."""
+
+    def __init__(self) -> None:
+        self.delays: list[float] = []
+
+    async def __call__(self, delay: float) -> None:
+        self.delays.append(delay)
 
 
 def metric(result: Any, key: str) -> Any:
@@ -490,19 +517,59 @@ async def test_a_refusal_is_a_miss_and_an_outage_is_not_evaluated(
 ) -> None:
     bursts = [burst("b001", alert=True), burst("b002", alert=True), burst("b003", alert=True)]
     llm = TriageOracle(bursts, {"b003": Answer(alert="urgent")}, refuse=["b001"], down=["b002"])
-    result = await TriageTarget(bursts, session_factory=factory).run(context(llm))
+    sleeps = Sleeps()
+    result = await TriageTarget(bursts, session_factory=factory, sleep=sleeps).run(context(llm))
 
+    # The outage is not evaluated only after the bounded retries (the agent
+    # mode's attempts and delays); the refusal is the model's answer, not retried.
     assert result.not_evaluated == ("b002",)
     assert result.incomplete
+    assert sleeps.delays == list(RETRY_DELAYS)
+    assert len(llm.requests) == 1 + MAX_ATTEMPTS + 1
+    assert any(
+        f"unavailable through {MAX_ATTEMPTS} attempts" in note and "b002" in note
+        for note in result.notes
+    )
     refused = record(result, "b001")
     assert (refused["status"], refused["error"], refused["verdict"]) == (
         "refused",
         "refusal",
         None,
     )
+    assert refused["attempts"] == 1
     recall = metric(result, "alert_recall")
     assert (recall.all_items.numerator, recall.all_items.denominator) == (1, 2)
     assert any("b001 (refused:refusal)" in note for note in result.notes)
+
+
+async def test_an_outage_is_retried_and_a_burst_that_gets_through_is_evaluated(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A 503 and then a 429 on one burst: it is run again from a fresh account
+    after each bounded delay and scored on the attempt that got through, so one
+    transient provider error cannot void a full (paid) run."""
+    bursts = small_set()
+    flaky = {"b002": (LLMErrorKind.UNAVAILABLE, LLMErrorKind.RATE_LIMITED)}
+    llm = TriageOracle(bursts, PERFECT, flaky=flaky)
+    sleeps = Sleeps()
+    before = await leftovers(factory)
+    result = await TriageTarget(bursts, session_factory=factory, sleep=sleeps).run(context(llm))
+
+    assert result.not_evaluated == ()
+    assert not result.incomplete
+    assert sleeps.delays == list(RETRY_DELAYS[:2])
+    retried = record(result, "b002")
+    assert (retried["attempts"], retried["failed_attempts"]) == (
+        3,
+        ["llm_unavailable", "llm_rate_limited"],
+    )
+    assert (retried["status"], retried["alerts"]) == ("triaged", ["triage_decision"])
+    assert record(result, "b001")["attempts"] == 1
+    assert metric(result, "alert_recall").all_items.ratio == 1.0
+    assert any(
+        "run again after a provider outage" in note and "b002" in note for note in result.notes
+    )
+    assert await leftovers(factory) == before  # every attempt's account is gone
 
 
 async def test_an_owner_only_burst_without_open_tasks_makes_no_call(

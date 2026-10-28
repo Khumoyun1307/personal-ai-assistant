@@ -553,38 +553,54 @@ def test_the_triage_route_uses_the_triage_effort(monkeypatch: pytest.MonkeyPatch
     assert live.resolve_model("triage", None) == live.ModelChoice(LUNA, "medium")
 
 
-def test_compare_states_the_triage_model_choice(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    def triage_report(model: str, status: str, cost: str) -> Path:
-        path = tmp_path / f"{model}.json"
-        metric = {
-            "key": "alert_recall",
-            "label": "Urgent/decision recall",
-            "unit": "ratio",
-            "threshold": 0.9,
-            "gated": True,
-            "all_items": {"numerator": 9, "denominator": 10, "ratio": 0.9},
-            "prescreen_status": status,
-            "gate_status": "not evaluable",
-        }
-        report = {
-            "target": "triage",
-            "set": "triage",
-            "mode": "e3-bursts",
-            "run_date": "2026-10-28",
-            "model": model,
-            "complete": True,
-            "trial": False,
-            "dataset_files": {"e3/bursts.jsonl": "aa"},
-            "metrics": [metric],
-            "cost": {"per_model": {model: {"cost_per_100_items_usd": cost}}},
-        }
-        path.write_text(json.dumps(report), encoding="utf-8")
-        return path
+def triage_report(directory: Path, model: str, status: str, cost: str) -> Path:
+    """A full triage run's JSON report, in the shape `evals/report.py` writes."""
+    path = directory / f"{model}.json"
+    metric = {
+        "key": "alert_recall",
+        "label": "Urgent/decision recall",
+        "unit": "ratio",
+        "threshold": 0.9,
+        "gated": True,
+        "all_items": {"numerator": 9, "denominator": 10, "ratio": 0.9},
+        "prescreen_status": status,
+        "gate_status": "not evaluable",
+    }
+    report = {
+        "target": "triage",
+        "set": "triage",
+        "mode": "e3-bursts",
+        "run_date": "2026-10-28",
+        "model": model,
+        "effort": "low",
+        "complete": True,
+        "trial": False,
+        "dataset_files": {"e3/bursts.jsonl": "aa"},
+        "prompts": ["triage.v1"],
+        "metrics": [metric],
+        "cost": {"per_model": {model: {"cost_per_100_items_usd": cost}}},
+    }
+    path.write_text(json.dumps(report), encoding="utf-8")
+    return path
 
-    luna = triage_report(LUNA, "fail", "0.0600")
-    sol = triage_report("gpt-6-sol", "pass", "0.4000")
+
+def routes(monkeypatch: pytest.MonkeyPatch, **routes: str) -> None:
+    """Settings that load, with these `llm_route_<run type>_model` values."""
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        database_url="postgresql+psycopg://u:p@db:5432/a",
+        llm_default_model=LUNA,
+        **{f"llm_route_{run_type}_model": model for run_type, model in routes.items()},
+    )
+    monkeypatch.setattr(live, "_settings", lambda: settings)
+
+
+def test_compare_states_the_triage_model_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    routes(monkeypatch)
+    luna = triage_report(tmp_path, LUNA, "fail", "0.0600")
+    sol = triage_report(tmp_path, "gpt-6-sol", "pass", "0.4000")
     assert cli.main(["compare", str(luna), str(sol)]) == 0
     out = capsys.readouterr().out
     assert "Decision: propose LLM_ROUTE_TRIAGE_MODEL=gpt-6-sol" in out
@@ -593,6 +609,36 @@ def test_compare_states_the_triage_model_choice(
     sol.write_text(json.dumps(trial), encoding="utf-8")
     assert cli.main(["compare", str(luna), str(sol)]) == cli.EXIT_REFUSED
     assert "no model-choice decision" in capsys.readouterr().err
+
+
+def test_compare_takes_the_triage_routes_model_from_the_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The decision starts from the route's configured model, not from the
+    argument order: on a route already moved to Sol, a Luna-first comparison
+    is refused instead of reading "route stays on" Luna."""
+    routes(monkeypatch, triage="gpt-6-sol")
+    luna = triage_report(tmp_path, LUNA, "pass", "0.0600")
+    sol = triage_report(tmp_path, "gpt-6-sol", "pass", "0.4000")
+    assert cli.main(["compare", str(luna), str(sol)]) == cli.EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert "no model-choice decision" in err
+    assert "the route's current model gpt-6-sol" in err
+    assert cli.main(["compare", str(sol)]) == 0
+    assert "Decision: route stays on gpt-6-sol" in capsys.readouterr().out
+    # The server's route model, named explicitly, wins over this machine's settings.
+    assert cli.main(["compare", "--route-model", LUNA, str(luna), str(sol)]) == 0
+    assert f"Decision: route stays on {LUNA}" in capsys.readouterr().out
+
+
+def test_compare_without_loadable_settings_needs_the_route_model_named(
+    tmp_path: Path, no_settings: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    luna = triage_report(tmp_path, LUNA, "pass", "0.0600")
+    assert cli.main(["compare", str(luna)]) == cli.EXIT_REFUSED
+    assert "--route-model" in capsys.readouterr().err
+    assert cli.main(["compare", str(luna), "--route-model", LUNA]) == 0
+    assert f"Decision: route stays on {LUNA}" in capsys.readouterr().out
 
 
 # -------------------------------------------------------------------- reports

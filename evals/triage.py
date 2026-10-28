@@ -40,19 +40,24 @@ bursts only (`ReviewLedger.confirmed_items` = burst ids):
 
 A model failure (refusal, invalid or truncated output, a discarded verdict)
 stores nothing: it is a miss wherever a hit was needed, and listed. A provider
-outage makes the burst *not evaluated* (the run is then incomplete). A budget
-stop ends the run early (incomplete, never a gate).
+outage (`OUTAGE_ERRORS`: 429, 503, connection) is run again from a fresh
+account with the agent mode's bounded attempts and delays; a burst that never
+gets through is *not evaluated* (the run is then incomplete). A budget stop
+ends the run early (incomplete, never a gate).
 
 The model comparison (IMPLEMENTATION_PLAN §7, WORKFLOW §11): `--model` runs the
 target on another tier; `python -m evals compare` of the full runs' JSON
-reports, in the order the tiers were tried, applies the rule in
-`model_choice` and states the decision with each tier's cost per 100 bursts.
+reports, starting with the route's current model and then in the order the
+tiers were tried, applies the rule in `model_choice` and states the decision
+with each tier's cost per 100 bursts.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import secrets
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
@@ -81,7 +86,7 @@ from assistant.inbox.tasks import TaskView
 from assistant.inbox.triage_store import BURST_LIMIT, EARLIER_LIMIT, TriageRepository
 from assistant.memory.search import detect_script, guess_lang, normalize
 from assistant.memory.summaries import SourceMessage
-from evals.agent_mode import OUTAGE_ERRORS
+from evals.agent_mode import MAX_ATTEMPTS, OUTAGE_ERRORS, RETRY_DELAYS
 from evals.budget import BudgetExceededError
 from evals.corpus import scratch_database, unload_corpus
 from evals.metrics import (
@@ -271,6 +276,10 @@ class TriageRecord:
     closed: tuple[str, ...] = ()
     #: The provider was unavailable: neither a hit nor a miss.
     outage: bool = False
+    #: Runs of this burst, the first included (an outage is run again).
+    attempts: int = 1
+    #: The error class of each attempt that failed on the provider.
+    failed_attempts: tuple[str, ...] = ()
 
     @property
     def answered(self) -> bool:
@@ -322,6 +331,8 @@ class TriageRecord:
             "variant": self.burst.variant,
             "status": self.status,
             "error": self.error,
+            "attempts": self.attempts,
+            "failed_attempts": list(self.failed_attempts),
             "triage_calls": self.calls,
             "label_alert": self.burst.labels.alert,
             "alerted": self.alerted,
@@ -608,9 +619,12 @@ class TriageTarget:
         bursts: Sequence[Burst],
         *,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._bursts = list(bursts)
         self._factory = session_factory
+        #: Waits before an outage retry (injected: tests do not sleep).
+        self._sleep = sleep
 
     @property
     def label(self) -> str:
@@ -619,7 +633,7 @@ class TriageTarget:
 
     def bind(self, session_factory: async_sessionmaker[AsyncSession]) -> TriageTarget:
         """The same target over a database (the runner refuses and estimates first)."""
-        return TriageTarget(self._bursts, session_factory=session_factory)
+        return TriageTarget(self._bursts, session_factory=session_factory, sleep=self._sleep)
 
     @property
     def _database(self) -> async_sessionmaker[AsyncSession]:
@@ -714,7 +728,7 @@ class TriageTarget:
         stopped: str | None = None
         for burst in selected:
             try:
-                record = await self._evaluate(burst, processor, context)
+                record = await self._attempts(burst, processor, context)
             except BudgetExceededError as stop:
                 stopped = str(stop)
                 break
@@ -729,6 +743,20 @@ class TriageTarget:
             stopped=stopped,
             not_evaluated=not_evaluated,
         )
+
+    async def _attempts(self, burst: Burst, processor: str, context: RunContext) -> TriageRecord:
+        """One burst, run again after a provider outage like the agent mode
+        (`MAX_ATTEMPTS`, `RETRY_DELAYS`): each attempt loads a fresh account
+        and is billed. Still an outage after the last attempt: not evaluated."""
+        failed: list[str] = []
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            record = await self._evaluate(burst, processor, context)
+            if not record.outage:
+                return replace(record, attempts=attempt, failed_attempts=tuple(failed))
+            failed.append(record.error or "outage")
+            if attempt < MAX_ATTEMPTS:
+                await self._sleep(RETRY_DELAYS[attempt - 1])
+        return replace(record, attempts=MAX_ATTEMPTS, failed_attempts=tuple(failed))
 
     async def _evaluate(self, burst: Burst, processor: str, context: RunContext) -> TriageRecord:
         assert context.llm is not None
@@ -947,16 +975,24 @@ class TriageTarget:
         retried = sum(r.calls > 1 for r in records)
         if retried:
             notes.append(f"{retried} triage call(s) were truncated once and retried larger.")
+        rerun = [r.burst.id for r in records if r.attempts > 1]
+        if rerun:
+            notes.append(
+                f"{len(rerun)} burst(s) were run again after a provider outage: " + ", ".join(rerun)
+            )
         if not_evaluated:
             notes.append(
-                "not evaluated (the provider was unavailable): " + ", ".join(not_evaluated)
+                f"INCOMPLETE: {len(not_evaluated)} burst(s) not evaluated (the provider stayed "
+                f"unavailable through {MAX_ATTEMPTS} attempts; neither hits nor misses): "
+                + ", ".join(not_evaluated)
             )
         if stopped:
             notes.append(f"STOPPED EARLY: {stopped}; {len(records)} of {planned} items ran")
         notes.append(
             "Model choice (IMPLEMENTATION_PLAN §7): Luna first; a tier that misses a threshold "
             "on the pre-screen is followed by the next (Sol, then Astra). "
-            "`python -m evals compare <full runs' JSON, in tier order>` states the decision."
+            "`python -m evals compare <the route model's full run, then the next tiers' "
+            "in the order tried>` states the decision."
         )
         return TargetResult(
             target=self.name,
@@ -1018,14 +1054,49 @@ def _tier(report: Mapping[str, Any]) -> TierResult:
     return TierResult(str(report["model"]), misses, sum(costs, Decimal(0)) if costs else None)
 
 
-def model_choice(reports: Sequence[Mapping[str, Any]], *, tiers_total: int = 3) -> ModelChoice:
+def _e3_files(report: Mapping[str, Any]) -> dict[str, str]:
+    """The run's E3 dataset digests: only they decide whether two triage runs
+    measured the same thing (another set landing between them does not)."""
+    files = report.get("dataset_files") or {}
+    e3 = {name: str(digest) for name, digest in files.items() if name.startswith("e3/")}
+    if not e3:
+        raise ValueError(f"the {report.get('model')} run names no E3 dataset file")
+    return e3
+
+
+def _prompts(report: Mapping[str, Any]) -> list[str]:
+    prompts = report.get("prompts")
+    if not prompts:
+        raise ValueError(f"the {report.get('model')} run names no prompt version")
+    return sorted(str(p) for p in prompts)
+
+
+def _comparable(reports: Sequence[Mapping[str, Any]]) -> None:
+    """Runs that differ in anything but the model would credit that difference
+    to the model: refuse them (`ValueError`)."""
+    checks: tuple[tuple[str, Callable[[Mapping[str, Any]], object]], ...] = (
+        ("E3 dataset versions", _e3_files),
+        ("prompt versions", _prompts),
+        ("reasoning efforts", lambda r: r.get("effort")),
+    )
+    for what, key in checks:
+        if len({json.dumps(key(r), sort_keys=True) for r in reports}) > 1:
+            raise ValueError(f"the runs were made with different {what}")
+
+
+def model_choice(
+    reports: Sequence[Mapping[str, Any]], *, route_model: str, tiers_total: int = 3
+) -> ModelChoice:
     """The model-choice rule (IMPLEMENTATION_PLAN §7, WORKFLOW §11) over the
-    full runs' JSON reports **in the order the tiers were tried** (Luna, Sol,
-    Astra): the first tier that meets every threshold on the pre-screen is
-    the choice; a tier that misses one calls for the next. Refuses a trial,
-    an incomplete run, a run of another target or of another dataset version
-    (`ValueError`). The decision is a proposal: a route moves only with the
-    owner's approval."""
+    full runs' JSON reports: the first is the run on `route_model`, **the
+    route's current model** (from the configuration or named explicitly,
+    never from the argument order), the rest the tiers tried after it, in
+    order (Luna, Sol, Astra). The first tier that meets every threshold on
+    the pre-screen is the choice; a tier that misses one calls for the next.
+    Refuses (`ValueError`) a trial, an incomplete run, a run of another
+    target, runs that differ in E3 version, prompt versions or effort, a
+    first run on another model than the route's, and a model run twice. The
+    decision is a proposal: a route moves only with the owner's approval."""
     if not reports:
         raise ValueError("no report to decide on")
     for report in reports:
@@ -1033,8 +1104,16 @@ def model_choice(reports: Sequence[Mapping[str, Any]], *, tiers_total: int = 3) 
             raise ValueError(f"{report.get('target')!r} is not a triage run")
         if not report.get("complete") or report.get("trial"):
             raise ValueError(f"the {report.get('model')} run is not a complete full run")
-    if len({str(sorted(r["dataset_files"].items())) for r in reports}) > 1:
-        raise ValueError("the runs were made on different dataset versions")
+    _comparable(reports)
+    if reports[0].get("model") != route_model:
+        raise ValueError(
+            f"the first report must be the run on the route's current model {route_model} "
+            f"(got {reports[0].get('model')}); then the tiers in the order tried"
+        )
+    models = [str(report.get("model")) for report in reports]
+    twice = sorted({model for model in models if models.count(model) > 1})
+    if twice:
+        raise ValueError(f"the runs name {', '.join(twice)} more than once")
     tiers = tuple(_tier(report) for report in reports)
     chosen = next((tier for tier in tiers if tier.meets), None)
     if chosen is not None and chosen is tiers[0]:
@@ -1056,7 +1135,12 @@ def model_choice(reports: Sequence[Mapping[str, Any]], *, tiers_total: int = 3) 
 
 def render_choice(choice: ModelChoice) -> str:
     """The decision with each tier's quality and cost per 100 bursts."""
-    lines = ["", f"Model choice ({ROUTE} route, pre-screen, tiers in the order tried):", ""]
+    lines = [
+        "",
+        f"Model choice ({ROUTE} route, pre-screen; the route's current model first, "
+        "then the tiers in the order tried):",
+        "",
+    ]
     for tier in choice.tiers:
         cost = "n/a" if tier.cost_per_100 is None else f"${tier.cost_per_100:.4f}"
         result = "meets every threshold" if tier.meets else "misses " + "; ".join(tier.misses)

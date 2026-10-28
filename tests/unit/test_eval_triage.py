@@ -93,13 +93,17 @@ def report(
     trial: bool = False,
     files: dict[str, str] | None = None,
     cost: str | None = "0.0600",
+    prompts: Sequence[str] = ("triage.v1",),
+    effort: str | None = "low",
 ) -> dict[str, Any]:
     return {
         "target": "triage",
         "model": model,
+        "effort": effort,
         "complete": complete,
         "trial": trial,
         "dataset_files": files or {"e3/bursts.jsonl": "aa11"},
+        "prompts": list(prompts),
         "metrics": [
             {
                 "key": "alert_recall",
@@ -128,26 +132,29 @@ def report(
 
 
 def test_luna_meeting_every_threshold_keeps_the_route() -> None:
-    choice = model_choice([report(LUNA)])
+    choice = model_choice([report(LUNA)], route_model=LUNA)
     assert choice.decision.startswith(f"route stays on {LUNA}")
     assert choice.tiers[0].meets
 
 
 def test_a_miss_calls_for_the_next_tier_and_the_first_tier_that_meets_is_proposed() -> None:
     luna_misses = report(LUNA, recall="fail")
-    assert "run the next tier" in model_choice([luna_misses]).decision
+    assert "run the next tier" in model_choice([luna_misses], route_model=LUNA).decision
     # A threshold that could not be measured is not met either.
-    assert not model_choice([report(LUNA, closures="not evaluable")]).tiers[0].meets
+    unmeasured = report(LUNA, closures="not evaluable")
+    assert not model_choice([unmeasured], route_model=LUNA).tiers[0].meets
 
-    proposed = model_choice([luna_misses, report(SOL)])
+    proposed = model_choice([luna_misses, report(SOL)], route_model=LUNA)
     assert proposed.decision.startswith(f"propose LLM_ROUTE_TRIAGE_MODEL={SOL}")
     assert "owner's approval" in proposed.decision
     assert proposed.tiers[0].misses == ("Urgent/decision recall",)
 
-    assert "run the next tier" in model_choice([luna_misses, report(SOL, recall="fail")]).decision
-    astra = model_choice([luna_misses, report(SOL, recall="fail"), report(ASTRA)])
+    sol_misses = report(SOL, recall="fail")
+    assert "run the next tier" in model_choice([luna_misses, sol_misses], route_model=LUNA).decision
+    astra = model_choice([luna_misses, sol_misses, report(ASTRA)], route_model=LUNA)
     assert astra.decision.startswith(f"propose LLM_ROUTE_TRIAGE_MODEL={ASTRA}")
-    nobody = model_choice([luna_misses, report(SOL, recall="fail"), report(ASTRA, closures="fail")])
+    every = [luna_misses, sol_misses, report(ASTRA, closures="fail")]
+    nobody = model_choice(every, route_model=LUNA)
     assert nobody.decision == "no tier tried meets every threshold: the owner decides"
 
 
@@ -163,16 +170,57 @@ def test_the_choice_refuses_anything_but_complete_full_triage_runs(
     bad: dict[str, Any], reason: str
 ) -> None:
     with pytest.raises(ValueError, match=reason):
-        model_choice([bad])
+        model_choice([bad], route_model=LUNA)
 
 
-def test_the_choice_refuses_runs_on_different_dataset_versions() -> None:
-    with pytest.raises(ValueError, match="dataset versions"):
-        model_choice([report(LUNA, recall="fail"), report(SOL, files={"e3/bursts.jsonl": "bb"})])
+def test_the_choice_refuses_runs_on_different_e3_versions_and_ignores_other_datasets() -> None:
+    luna = report(LUNA, recall="fail", files={"e3/bursts.jsonl": "aa", "retrieval/q.jsonl": "r1"})
+    with pytest.raises(ValueError, match="E3 dataset versions"):
+        model_choice([luna, report(SOL, files={"e3/bursts.jsonl": "bb"})], route_model=LUNA)
+    sol = report(SOL, files={"e3/bursts.jsonl": "aa", "e3/monitor_cases.jsonl": "m2"})
+    with pytest.raises(ValueError, match="E3 dataset versions"):
+        model_choice([luna, sol], route_model=LUNA)
+    # Another dataset changed between the runs (a new set landed, CP4): E3 did not.
+    later = report(SOL, files={"e3/bursts.jsonl": "aa", "retrieval/q.jsonl": "r2", "e4/x": "x"})
+    assert model_choice([luna, later], route_model=LUNA).tiers[1].model == SOL
+    with pytest.raises(ValueError, match="names no E3 dataset file"):
+        model_choice([report(LUNA, files={"retrieval/q.jsonl": "r1"})], route_model=LUNA)
+
+
+@pytest.mark.parametrize(
+    ("sol", "reason"),
+    [
+        (report(SOL, prompts=("triage.v2",)), "different prompt versions"),
+        (report(SOL, effort="medium"), "different reasoning efforts"),
+        (report(SOL, effort=None), "different reasoning efforts"),
+        ({k: v for k, v in report(SOL).items() if k != "prompts"}, "names no prompt version"),
+    ],
+)
+def test_the_choice_refuses_runs_with_different_prompt_versions_or_effort(
+    sol: dict[str, Any], reason: str
+) -> None:
+    """A prompt bump or an effort change between the tiers would be credited
+    to the model: such runs are not comparable."""
+    with pytest.raises(ValueError, match=reason):
+        model_choice([report(LUNA, recall="fail"), sol], route_model=LUNA)
+
+
+def test_the_first_report_must_be_the_routes_current_model() -> None:
+    """The argument order is not trusted: the decision never says the route
+    "stays on" a model the route is not on."""
+    with pytest.raises(ValueError, match=f"the route's current model {LUNA}"):
+        model_choice([report(SOL), report(LUNA, recall="fail")], route_model=LUNA)
+    with pytest.raises(ValueError, match=f"the route's current model {LUNA}"):
+        model_choice([report(SOL)], route_model=LUNA)
+    with pytest.raises(ValueError, match=f"{LUNA} more than once"):
+        model_choice([report(LUNA, recall="fail"), report(LUNA)], route_model=LUNA)
+    # A route already moved to Sol: Sol is the tier the decision starts from.
+    assert model_choice([report(SOL)], route_model=SOL).decision.startswith(f"route stays on {SOL}")
 
 
 def test_the_decision_lists_each_tier_with_its_cost_per_100_bursts() -> None:
-    text = render_choice(model_choice([report(LUNA, recall="fail"), report(SOL, cost="0.4100")]))
+    tiers = [report(LUNA, recall="fail"), report(SOL, cost="0.4100")]
+    text = render_choice(model_choice(tiers, route_model=LUNA))
     assert f"- {LUNA}: misses Urgent/decision recall; cost per 100 bursts $0.0600" in text
     assert f"- {SOL}: meets every threshold; cost per 100 bursts $0.4100" in text
     assert f"Decision: propose LLM_ROUTE_TRIAGE_MODEL={SOL}" in text

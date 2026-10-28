@@ -123,17 +123,26 @@ The gate counts only owner-confirmed bursts (ledger `evals/reviews/e3.json`,
 `confirmed_items` = burst ids; a task id `b004.t1` is confirmed with its burst)
 and needs every item of a metric's set; the false-alert rate also waits for every
 burst of the set. A refused, invalid or truncated answer stores nothing and is a
-miss; a provider outage leaves the burst *not evaluated*. An owner-only burst with
-no open task gets no model call, as in the product.
+miss. A provider outage (`llm_unavailable`, `llm_rate_limited`: 503, 429,
+connection) is run again from a fresh account after 15 s and 60 s, as in the
+agent mode (at most 3 attempts, each billed); a burst that never gets through is
+*not evaluated* and the run is incomplete. An owner-only burst with no open task
+gets no model call, as in the product.
 
 **Model comparison** (mandatory for `triage`, IMPLEMENTATION_PLAN §7, WORKFLOW
 §11): Luna first (`--estimate-only`, `--limit 1`, full); if it misses any
 threshold on the pre-screen, the next tier with `--model`, and the tier after
-that only if that one misses too. `python -m evals compare <full runs' JSON
-reports, in the order tried>` prints the decision ("route stays on …" or
-"propose `LLM_ROUTE_TRIAGE_MODEL=…`", applied on the server only with the
-owner's approval) with each tier's cost per 100 bursts. Live runs are started
-by Antony or the TL with the owner's go-ahead (P2-O8 phase cap USD 2).
+that only if that one misses too. `python -m evals compare <the route model's
+full run> <the next tiers' full runs, in the order tried>` prints the decision
+("route stays on …" or "propose `LLM_ROUTE_TRIAGE_MODEL=…`", applied on the
+server only with the owner's approval) with each tier's cost per 100 bursts.
+The route's current model comes from the configuration (`LLM_ROUTE_TRIAGE_MODEL`,
+else `LLM_DEFAULT_MODEL`) or `--route-model` (name the server's when this
+machine's settings differ), never from the argument order: the first report
+must be that model's run. Runs that differ in their E3 files (`e3/` digests;
+other datasets do not matter), prompt versions or effort are not compared.
+Live runs are started by Antony or the TL with the owner's go-ahead (P2-O8
+phase cap USD 2).
 
 ## Freezing
 
@@ -173,7 +182,7 @@ python -m evals run summary --live --owner-language ru  # summaries in another o
 python -m evals run triage --estimate-only              # worst-case cost of the E3 triage run, calls nothing
 python -m evals run triage --live [--model ID]          # REAL model; owner's go-ahead + cost approval
 python -m evals compare docs/evals/<run>.json …         # quality and cost per 100 items per run
-python -m evals compare <luna>.json <sol>.json          # triage: also the model-choice decision
+python -m evals compare <luna>.json <sol>.json [--route-model ID]  # triage: also the model choice
 python -m evals cleanup [--yes]                         # list/drop throwaway databases a killed run left
 ```
 

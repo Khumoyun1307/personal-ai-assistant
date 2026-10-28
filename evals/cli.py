@@ -9,6 +9,7 @@
     python -m evals run summary --live --only c36,c28,c15   # a trial of chosen chats
     python -m evals run triage [--live] [--model ID] ...      # the product's triage over E3
     python -m evals compare docs/evals/<run>.json [...]
+    python -m evals compare <route model>.json <next tier>.json [--route-model ID]  # triage choice
     python -m evals cleanup [--yes]        # list (or drop) throwaway databases a killed run left
 
 Safe by default: `run retrieval` is the deterministic, model-free baseline, and
@@ -48,7 +49,13 @@ from evals.corpus import (
     leftover_databases,
 )
 from evals.errors import EvalsError
-from evals.live import ModelChoice, build_client, load_live_config, resolve_model
+from evals.live import (
+    LiveSetupError,
+    ModelChoice,
+    build_client,
+    load_live_config,
+    resolve_model,
+)
 from evals.metrics import OwnerLanguage
 from evals.report import RunMeta, fmt_measure, render_comparison
 from evals.retrieval import QueryVariants, RetrievalMode, RetrievalTarget, load_recorded
@@ -187,6 +194,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     compare = sub.add_parser("compare", help="compare recorded runs (quality and cost)")
     compare.add_argument("reports", nargs="+", type=Path, help="JSON reports from docs/evals/")
+    compare.add_argument(
+        "--route-model",
+        help="triage: the route's current model, whose run comes first (default: the "
+        "configured LLM_ROUTE_TRIAGE_MODEL, else LLM_DEFAULT_MODEL; name the server's "
+        "when this machine's settings differ or do not load)",
+    )
     return parser
 
 
@@ -233,7 +246,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "cleanup":
             return _cleanup(drop=args.yes)
         if args.command == "compare":
-            return _compare(args.reports)
+            return _compare(args.reports, route_model=args.route_model)
         if args.target == "summary":
             return asyncio.run(_summary(args))
         if args.target == "triage":
@@ -272,13 +285,21 @@ def _cleanup(*, drop: bool) -> int:
     return 0
 
 
-def _compare(paths: Sequence[Path]) -> int:
+def _compare(paths: Sequence[Path], *, route_model: str | None = None) -> int:
     reports = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
     sys.stdout.write(render_comparison(reports))
     if reports and all(report.get("target") == TriageTarget.name for report in reports):
-        # The E3 model comparison: the reports are the tiers in the order tried.
+        # The E3 model comparison: the route's current model comes from the
+        # configuration (or is named), never from the order of the reports.
         try:
-            choice = model_choice(reports)
+            current = resolve_model(TriageTarget.route, route_model).model
+        except LiveSetupError:
+            raise RefusedError(
+                "no model-choice decision: the triage route's current model is unknown "
+                "(the settings do not load); name it with --route-model"
+            ) from None
+        try:
+            choice = model_choice(reports, route_model=current)
         except ValueError as error:
             raise RefusedError(f"no model-choice decision: {error}") from None
         sys.stdout.write(render_choice(choice))
