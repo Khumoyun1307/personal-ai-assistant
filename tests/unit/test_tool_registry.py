@@ -183,6 +183,9 @@ async def test_the_blocked_stub_returns_no_message_data_and_makes_no_db_read_of_
         "summarize_period",
         "get_attention_list",
         "get_activity",
+        # S04.2: their results name the contact (F0-interfaces §9).
+        "propose_reply",
+        "propose_message",
     }
     assert managed <= set(stubs)
     for name in managed:

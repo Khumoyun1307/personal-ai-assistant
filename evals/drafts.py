@@ -66,6 +66,7 @@ from assistant.agent.drafting import RUN_TYPE, DraftConfig, Drafter, DraftStatus
 from assistant.conversations.models import Contact
 from assistant.conversations.models import Conversation as ConversationRow
 from assistant.conversations.models import Message as MessageRow
+from assistant.core.jobs import DraftReason
 from assistant.core.model_routes import processor_for_model
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.llm.port import (
@@ -111,7 +112,7 @@ DRAFT_PURPOSE = RUN_TYPE
 JUDGE_PURPOSE = "eval_draft_intent_screen"
 RUBRIC_ID = "draft_intent.v1"
 #: The reason the product's `Drafter` accepts for an evaluation run.
-EVAL_REASON = "eval"
+EVAL_REASON = DraftReason.EVAL
 #: Reports are `docs/evals/<date>-e2-drafts-<model>.md` (spec E2 §B.3).
 SET_NAME = "e2-drafts"
 #: A consent version label that cannot be mistaken for a real policy version.

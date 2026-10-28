@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts import preferences, service
 from assistant.accounts.models import Account
 from assistant.agent import owner_texts
-from assistant.agent.locales import supported_locale
+from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.agent.tools.common import (
     ONE_TARGET_RULE,
     ArgumentRuleError,
@@ -59,7 +59,25 @@ MODE_EFFECT = {
         "they expire), and Ignore does not hide it from answers"
     ),
     modes.MODE_OBSERVE: "new messages from this chat are saved and used again",
+    modes.MODE_ASSIST: (
+        "drafts are offered for new messages that need a reply; nothing is sent without "
+        "your approval"
+    ),
 }
+
+#: The Assist receipt (S04.2; English in P2, P2-O11): what the owner gets
+#: from the panel or the tool. `{name}` is escaped by `mode_change_text`.
+ASSIST_ON = "<b>Assist is on</b> for the chat with {name}."
+ASSIST_DRAFTS = (
+    "When new messages here need a reply, I draft one and show it to you here to approve, "
+    "edit or reject. Nothing is sent without your approval."
+)
+ASSIST_SAVED = "New messages here are saved and used, as in Observe."
+ASSIST_AI_OFF = (
+    "AI for your connected chats is off, so no drafts are made. Send /privacy managed to "
+    "turn it on."
+)
+ASSIST_UNCHANGED = "Nothing to change: the chat with {name} is already in Assist."
 #: Said with Observe only when the chat was in Ignore until now.
 OBSERVE_AFTER_IGNORE = "; messages that arrived while it was ignored were not saved"
 
@@ -87,6 +105,8 @@ async def mode_change_text(
     that mode (M03 D68). `name`: the contact's stored name, or None. Fixed
     texts only; no model is involved (`agent/owner_texts.py`)."""
     locale = supported_locale(account.locale_pref)
+    if current == modes.MODE_ASSIST:
+        return await _assist_text(session, account, locale, previous=previous, name=name)
     if previous == current:
         return owner_texts.mode_unchanged(locale, mode=current, name=name)
     ai_on = True  # only the Observe receipt depends on it
@@ -103,14 +123,38 @@ async def mode_change_text(
     )
 
 
+async def _assist_text(
+    session: AsyncSession,
+    account: Account,
+    locale: SupportedLocale,
+    *,
+    previous: str,
+    name: str | None,
+) -> str:
+    """The Assist receipt, or "nothing to change" (fixed texts, §6 invariant 11)."""
+    who = html.escape(name, quote=False) if name else owner_texts.CONTACT_FALLBACK[locale]
+    if previous == modes.MODE_ASSIST:
+        return ASSIST_UNCHANGED.format(name=who)
+    lines = [ASSIST_ON.format(name=who), "• " + ASSIST_DRAFTS, "• " + ASSIST_SAVED]
+    if previous == modes.MODE_IGNORE:
+        lines.append("• " + owner_texts.OBSERVE_GAP[locale])
+    if not (await service.active_consent(session, account.id, kind="ai_managed")).granted:
+        lines.append("• " + ASSIST_AI_OFF)
+    return "\n".join(lines)
+
+
 # ------------------------------------------------------------ set_conversation_mode
 class SetConversationModeArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     conversation_id: OptionalId = Field(description="The chat, or null to use contact_id.")
     contact_id: OptionalId = Field(description="The contact whose chat it is, or null.")
-    mode: Literal["observe", "ignore"] = Field(
-        description="observe: store and use new messages; ignore: stop storing new messages."
+    mode: Literal["observe", "ignore", "assist"] = Field(
+        description=(
+            "observe: store and use new messages; ignore: stop storing new messages; "
+            "assist: as observe, and offer a draft for the owner's approval when new "
+            "messages need a reply."
+        )
     )
 
     @model_validator(mode="after")
@@ -204,9 +248,10 @@ async def describe_mode(
 SET_CONVERSATION_MODE = ToolDefinition(
     name="set_conversation_mode",
     description=(
-        "Set one chat to observe (store and use new messages) or ignore (stop storing "
-        "new messages; what is stored stays). The owner sees it with an Undo button. "
-        "Assist mode is not available yet; chats with bots stay ignored."
+        "Set one chat to observe (store and use new messages), ignore (stop storing "
+        "new messages; what is stored stays) or assist (as observe, and offer drafts for "
+        "the owner's approval when new messages need a reply; nothing is sent without "
+        "approval). The owner sees it with an Undo button. Chats with bots stay ignored."
     ),
     args_model=SetConversationModeArgs,
     capability=CapabilityClass.CONFIGURE,
