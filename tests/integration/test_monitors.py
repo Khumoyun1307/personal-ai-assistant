@@ -30,6 +30,7 @@ the control chat (AGENTS §11).
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
@@ -377,6 +378,47 @@ async def set_mode(env: Env, conversation: int, mode: str) -> None:
             text("UPDATE app.conversations SET mode = :m WHERE id = :c"),
             {"m": mode, "c": conversation},
         )
+
+
+async def revoke(env: Env, kind: str) -> None:
+    """Revoke one consent kind, committed (`/privacy revoke` revokes both)."""
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text("UPDATE app.consents SET revoked_at = :t WHERE kind = :k AND revoked_at IS NULL"),
+            {"t": env.clock.now(), "k": kind},
+        )
+
+
+async def stop_now(env: Env, automation_id: int) -> monitors.StopResult:
+    """The owner's Stop, committed."""
+    async with transaction(env.factory) as uow:
+        return await monitors.stop(
+            uow.session,
+            account_id=await account_id(env),
+            automation_id=automation_id,
+            clock=env.clock,
+            actor="owner",
+        )
+
+
+async def wait_for_lock_waiter(env: Env, *, deadline: float = 15.0) -> None:
+    """Until a backend of this database waits on a lock (a condition, not a
+    timer; as in `test_notifications` and `test_summaries_verification`)."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + deadline
+    while True:
+        async with env.factory() as session:
+            waiting = await session.scalar(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+            )
+        if waiting:
+            return
+        if loop.time() > end:
+            raise AssertionError("no backend started waiting on a lock")
+        await asyncio.sleep(0.05)
 
 
 # ============================================================ deterministic
@@ -979,6 +1021,67 @@ async def test_without_managed_consent_no_evaluation_call_is_made(env: Env) -> N
     env.clock.advance(minutes=5)
     async with env.factory() as session:
         assert await monitor_reconciler()(session, env.clock.now()) == []
+
+
+async def revoked_mid_call(env: Env, kind: str) -> tuple[int, int, FakeLLM]:
+    """A semantic monitor and a matching message; the model's answer is a
+    match, returned after `kind` was revoked and committed while the call
+    was in flight. Returns the chat, the monitor and the fake."""
+    a, _ = await setup(env)
+    watched = await monitor(env, "semantic", conversation_ids=[a], description="a new price")
+    env.clock.advance(minutes=1)
+    await say(env, 2, "SYNTH narx o'zgardi")
+
+    async def revoke_then_match(request: LLMRequest) -> dict[str, Any]:
+        await revoke(env, kind)
+        return match_all(request)
+
+    fake = FakeLLM()
+    fake.parsed = [revoke_then_match]
+    return a, watched, fake
+
+
+async def state(env: Env, conversation: int, automation_id: int) -> tuple[str, int, bool]:
+    """(the monitor's status, its alerts, whether the chat's flag is kept)."""
+    row = await automation(env, automation_id)
+    assert row is not None
+    return row.status, len(await alerts(env)), await flag(env, conversation) is not None
+
+
+@pytest.mark.parametrize("kind", ["ai_managed", "ai_control"])
+async def test_consent_revoked_during_the_evaluation_applies_nothing(env: Env, kind: str) -> None:
+    """Invariant 9 / FR-ONB-06 (Antony and Jack on #116, blocking): consent
+    revoked while the call is in flight. The call itself was allowed, but
+    its answer must not take effect: the effects re-check both consents
+    under the §9.4 locks — no completion, no alert, the flag kept for a
+    re-grant — and the run closes as not succeeded (as triage's effects,
+    `inbox/triage_store.py`)."""
+    a, watched, fake = await revoked_mid_call(env, kind)
+    outcome = await evaluator(env, fake).evaluate(a)
+    assert (outcome.status, outcome.calls, outcome.alerts) == (MonitorEvalStatus.NO_CONSENT, 1, 0)
+    assert await state(env, a, watched) == ("active", 0, True)
+    [run] = await evaluate_runs(env)
+    assert (run.status, run.error_class) == ("failed", "discarded:no_consent")
+
+
+async def test_a_match_discarded_for_revoked_consent_fires_once_consent_returns(
+    env: Env,
+) -> None:
+    """The recovery side: while consent stays revoked, the kept flag makes no
+    call; once the owner grants `ai_managed` again, the next evaluation
+    reads the same burst and the match fires, once."""
+    a, watched, fake = await revoked_mid_call(env, "ai_managed")
+    assert (await evaluator(env, fake).evaluate(a)).status is MonitorEvalStatus.NO_CONSENT
+    assert (await evaluator(env, fake).evaluate(a)).status is MonitorEvalStatus.NO_CONSENT
+    assert len(fake.requests) == 1  # no call while revoked
+
+    await grant_managed(env)
+    fake.parsed = [match_all]
+    outcome = await evaluator(env, fake).evaluate(a)
+    assert (outcome.status, outcome.alerts) == (MonitorEvalStatus.EVALUATED, 1)
+    assert shown_new(fake.requests[-1]) == [await message_id_of(env, 2)]
+    assert await state(env, a, watched) == ("completed", 1, False)
+    assert [run.status for run in await evaluate_runs(env)] == ["failed", "succeeded"]
 
 
 async def test_a_deleted_chat_removes_its_monitors_and_suppresses_pending_alerts(
