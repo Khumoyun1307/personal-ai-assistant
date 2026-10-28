@@ -145,8 +145,6 @@ _HARNESS_ERRORS = frozenset(
 _ID_SLACK_CHARS = 500
 _SYNTHETIC_OWNER_ID = 7_000_000_095
 _SYNTHETIC_CONTACT_ID = 3_000_001
-#: A model-choice decision names the setting a route change would use.
-_ROUTE_SETTING = f"LLM_ROUTE_{ROUTE.upper()}_MODEL"
 
 
 class _FixedClock:
@@ -1023,9 +1021,38 @@ async def isolated_triage(base_url: str, target: TriageTarget) -> AsyncIterator[
 
 # ------------------------------------------------------------- model choice
 @dataclass(frozen=True, slots=True)
+class Comparison:
+    """What one model comparison compares: the full runs of one target, whose
+    route's model is `LLM_ROUTE_<ROUTE>_MODEL`, over the dataset files whose
+    digests must agree (IMPLEMENTATION_PLAN §7: the `triage` and the
+    `evaluate_monitor` routes)."""
+
+    target: str
+    route: str
+    #: Manifest names of the files the runs measured; a name ending in "/" is a folder.
+    datasets: tuple[str, ...]
+    #: What the cost is given per 100 of.
+    items: str
+
+    @property
+    def setting(self) -> str:
+        """The setting a route change would use."""
+        return f"LLM_ROUTE_{self.route.upper()}_MODEL"
+
+    def measured(self, name: str) -> bool:
+        return any(name.startswith(d) if d.endswith("/") else name == d for d in self.datasets)
+
+
+#: The triage comparison: every E3 file counts (part 1, P2-T43).
+TRIAGE_COMPARISON = Comparison(
+    target=TriageTarget.name, route=ROUTE, datasets=("e3/",), items="bursts"
+)
+
+
+@dataclass(frozen=True, slots=True)
 class TierResult:
     model: str
-    #: Labels of the gated metrics whose pre-screen did not pass.
+    #: Labels of the metrics with a threshold whose pre-screen did not pass.
     misses: tuple[str, ...]
     cost_per_100: Decimal | None
 
@@ -1038,13 +1065,16 @@ class TierResult:
 class ModelChoice:
     tiers: tuple[TierResult, ...]
     decision: str
+    comparison: Comparison = TRIAGE_COMPARISON
 
 
 def _tier(report: Mapping[str, Any]) -> TierResult:
+    """A tier misses every threshold its pre-screen did not pass: a gated one
+    (triage) or a bar that is only the model choice's (the monitors')."""
     misses = tuple(
         str(m["label"])
         for m in report["metrics"]
-        if m["threshold"] is not None and m["gated"] and m["prescreen_status"] != "pass"
+        if m["threshold"] is not None and m["prescreen_status"] != "pass"
     )
     costs = [
         Decimal(row["cost_per_100_items_usd"])
@@ -1054,11 +1084,12 @@ def _tier(report: Mapping[str, Any]) -> TierResult:
     return TierResult(str(report["model"]), misses, sum(costs, Decimal(0)) if costs else None)
 
 
-def _e3_files(report: Mapping[str, Any]) -> dict[str, str]:
-    """The run's E3 dataset digests: only they decide whether two triage runs
-    measured the same thing (another set landing between them does not)."""
+def _e3_files(report: Mapping[str, Any], comparison: Comparison) -> dict[str, str]:
+    """The digests of the E3 files the comparison measured: only they decide
+    whether two runs measured the same thing (another set landing between
+    them does not)."""
     files = report.get("dataset_files") or {}
-    e3 = {name: str(digest) for name, digest in files.items() if name.startswith("e3/")}
+    e3 = {name: str(digest) for name, digest in files.items() if comparison.measured(name)}
     if not e3:
         raise ValueError(f"the {report.get('model')} run names no E3 dataset file")
     return e3
@@ -1071,11 +1102,11 @@ def _prompts(report: Mapping[str, Any]) -> list[str]:
     return sorted(str(p) for p in prompts)
 
 
-def _comparable(reports: Sequence[Mapping[str, Any]]) -> None:
+def _comparable(reports: Sequence[Mapping[str, Any]], comparison: Comparison) -> None:
     """Runs that differ in anything but the model would credit that difference
     to the model: refuse them (`ValueError`)."""
     checks: tuple[tuple[str, Callable[[Mapping[str, Any]], object]], ...] = (
-        ("E3 dataset versions", _e3_files),
+        ("E3 dataset versions", lambda r: _e3_files(r, comparison)),
         ("prompt versions", _prompts),
         ("reasoning efforts", lambda r: r.get("effort")),
     )
@@ -1085,26 +1116,31 @@ def _comparable(reports: Sequence[Mapping[str, Any]]) -> None:
 
 
 def model_choice(
-    reports: Sequence[Mapping[str, Any]], *, route_model: str, tiers_total: int = 3
+    reports: Sequence[Mapping[str, Any]],
+    *,
+    route_model: str,
+    tiers_total: int = 3,
+    comparison: Comparison = TRIAGE_COMPARISON,
 ) -> ModelChoice:
     """The model-choice rule (IMPLEMENTATION_PLAN §7, WORKFLOW §11) over the
-    full runs' JSON reports: the first is the run on `route_model`, **the
-    route's current model** (from the configuration or named explicitly,
-    never from the argument order), the rest the tiers tried after it, in
-    order (Luna, Sol, Astra). The first tier that meets every threshold on
-    the pre-screen is the choice; a tier that misses one calls for the next.
-    Refuses (`ValueError`) a trial, an incomplete run, a run of another
-    target, runs that differ in E3 version, prompt versions or effort, a
-    first run on another model than the route's, and a model run twice. The
-    decision is a proposal: a route moves only with the owner's approval."""
+    full runs' JSON reports of the comparison's target (triage by default):
+    the first is the run on `route_model`, **the route's current model**
+    (from the configuration or named explicitly, never from the argument
+    order), the rest the tiers tried after it, in order (Luna, Sol, Astra).
+    The first tier that meets every threshold on the pre-screen is the
+    choice; a tier that misses one calls for the next. Refuses (`ValueError`)
+    a trial, an incomplete run, a run of another target, runs that differ in
+    the measured E3 files, prompt versions or effort, a first run on another
+    model than the route's, and a model run twice. The decision is a
+    proposal: a route moves only with the owner's approval."""
     if not reports:
         raise ValueError("no report to decide on")
     for report in reports:
-        if report.get("target") != TriageTarget.name:
-            raise ValueError(f"{report.get('target')!r} is not a triage run")
+        if report.get("target") != comparison.target:
+            raise ValueError(f"{report.get('target')!r} is not a {comparison.target} run")
         if not report.get("complete") or report.get("trial"):
             raise ValueError(f"the {report.get('model')} run is not a complete full run")
-    _comparable(reports)
+    _comparable(reports, comparison)
     if reports[0].get("model") != route_model:
         raise ValueError(
             f"the first report must be the run on the route's current model {route_model} "
@@ -1120,7 +1156,7 @@ def model_choice(
         decision = f"route stays on {chosen.model} (it meets every threshold on the pre-screen)"
     elif chosen is not None:
         decision = (
-            f"propose {_ROUTE_SETTING}={chosen.model}: the first tier tried that meets every "
+            f"propose {comparison.setting}={chosen.model}: the first tier tried that meets every "
             "threshold on the pre-screen; applied on the server only with the owner's approval"
         )
     elif len(tiers) < tiers_total:
@@ -1130,30 +1166,34 @@ def model_choice(
         )
     else:
         decision = "no tier tried meets every threshold: the owner decides"
-    return ModelChoice(tiers, decision)
+    return ModelChoice(tiers, decision, comparison)
 
 
 def render_choice(choice: ModelChoice) -> str:
-    """The decision with each tier's quality and cost per 100 bursts."""
+    """The decision with each tier's quality and cost per 100 items."""
+    comparison = choice.comparison
     lines = [
         "",
-        f"Model choice ({ROUTE} route, pre-screen; the route's current model first, "
+        f"Model choice ({comparison.route} route, pre-screen; the route's current model first, "
         "then the tiers in the order tried):",
         "",
     ]
     for tier in choice.tiers:
         cost = "n/a" if tier.cost_per_100 is None else f"${tier.cost_per_100:.4f}"
         result = "meets every threshold" if tier.meets else "misses " + "; ".join(tier.misses)
-        lines.append(f"- {tier.model}: {result}; cost per 100 bursts {cost}")
+        lines.append(f"- {tier.model}: {result}; cost per 100 {comparison.items} {cost}")
     lines += ["", f"Decision: {choice.decision}", ""]
     return "\n".join(lines)
 
 
 __all__ = [
     "ALERT_KINDS",
+    "EVAL_POLICY_VERSION",
     "ROUTE",
     "SET_NAME",
+    "TRIAGE_COMPARISON",
     "TRIAGE_PURPOSE",
+    "Comparison",
     "ModelChoice",
     "StoredVerdict",
     "TaskTouch",
@@ -1162,7 +1202,9 @@ __all__ = [
     "TriageTarget",
     "isolated_triage",
     "makes_a_call",
+    "message_values",
     "model_choice",
+    "rate_metric",
     "render_choice",
     "triage_metrics",
 ]
