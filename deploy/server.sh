@@ -126,16 +126,31 @@ case "$action" in
     stamp="$(basename "$dump" .dump.age)" # 20261022T020000Z
     taken_at="${stamp:0:4}-${stamp:4:2}-${stamp:6:2}T${stamp:9:2}:${stamp:11:2}:${stamp:13:2}Z"
     db_client dropdb --if-exists restore_test
+    # Also remove the scratch database if decrypt, post-restore or a gate fails.
+    trap 'db_client dropdb --if-exists restore_test; echo "restore_test dropped"' EXIT
     db_client createdb restore_test
     printf '%s\n' "$identity" | compose exec -T backup restore.sh "$dump" restore_test
     unset identity
-    # post-restore against the scratch database: the URL is derived inside
-    # the container from its own DATABASE_URL, so the password never passes
-    # through this shell. --no-deps: no migrate run, no poller, no sends.
-    # shellcheck disable=SC2016  # expanded inside the app container
-    compose run --rm --no-deps -T app sh -c \
-      'DATABASE_URL="${DATABASE_URL%/*}/restore_test" exec python -m assistant post-restore --backup-taken-at "$0"' \
+    # Select the scratch database structurally inside the container, preserving
+    # driver/query/credentials privately. Shell suffix slicing is unsafe when
+    # query values contain slashes. --no-deps: no migrate, poller or sends.
+    compose run --rm --no-deps -T \
+      -v "$(pwd)/tools/acceptance:/app/tools/acceptance:ro" \
+      app python -m tools.acceptance.scratch_restore post-restore \
       "$taken_at"
+    since="$(date -u -d "$taken_at 2 days ago" +%Y-%m-%dT%H:%M:%SZ)"
+    # Only read-only verification code is mounted. No app/poller/worker starts;
+    # every URL is derived inside the one-off container and targets scratch.
+    compose run --rm --no-deps -T \
+      -v "$(pwd)/tools/acceptance:/app/tools/acceptance:ro" \
+      app python -m tools.acceptance.scratch_restore release
+    compose run --rm --no-deps -T \
+      -v "$(pwd)/tools/acceptance:/app/tools/acceptance:ro" \
+      app python -m tools.acceptance.scratch_restore actions \
+      "$since"
+    compose run --rm --no-deps -T \
+      -v "$(pwd)/tools/acceptance:/app/tools/acceptance:ro" \
+      app python -m tools.acceptance.scratch_restore restore-check
     echo "dump: $(basename "$dump") ($(compose exec -T backup stat -c %s "$dump" | tr -d '\r') bytes), taken $taken_at"
     for table in messages conversations accounts coverage_gaps; do
       printf 'restore_test app.%s rows: %s\n' "$table" \
@@ -143,8 +158,7 @@ case "$action" in
     done
     printf 'restore gap row: %s\n' \
       "$(db_client psql -d restore_test -tAc "SELECT kind || '/' || certainty FROM app.coverage_gaps ORDER BY id DESC LIMIT 1" | tr -d '\r[:space:]')"
-    db_client dropdb restore_test
-    echo "restore_test dropped"
+    echo "restore verification passed"
     ;;
   restore)
     require_data_volume

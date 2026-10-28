@@ -35,12 +35,34 @@ creates `restore_test`, pipes the identity into
 against the scratch database in a one-off app container (`--no-deps`; the
 scratch URL is derived **inside** the container from its own `DATABASE_URL`,
 so the password never passes through the operator's shell), prints the dump
-name and size, row counts and the newest coverage-gap row
-(`restore/possible`), then drops `restore_test`.
+name and size, row counts and the newest coverage-gap row (`restore/possible`).
+It also runs the P2 release and action views (actions since two days before
+the dump), followed by a read-only restore gate. All verifier mounts are
+read-only and all commands derive the scratch URL inside the container.
+The scratch database is dropped on success **and on failure**.
+All four commands use `tools.acceptance.scratch_restore`: SQLAlchemy replaces
+only the URL's database component with `restore_test`, preserving driver,
+credentials and query options even when query values contain slashes. URLs
+with alternate `dbname`/`database` query selectors or unsupported shapes are
+rejected before post-restore can run. The launcher never prints the URL.
 
-Record in the milestone report: dump file, size, row counts, and that the
-`restore` gap row exists. This is the "backup restored into an isolated
-database" check.
+Pass requires `pending_actions=0` (proposed, awaiting approval, revising,
+approved, scheduled and executing), `pending_jobs=0` (todo and doing),
+`restore_notice_pending=yes`, `restore_notice_valid=yes`, and
+`restore_verification=PASS`. A nonzero count or a missing/malformed notice
+exits 1. Empty action tables and notices with no affected actions are valid.
+The output groups fixed `state_reason` codes (`restored_from_backup` for
+cancelled/uncertain actions) and prints only numeric account/action ids and
+derived cancelled/uncertain counts from the notice; it never dumps notice JSON.
+
+Record in the milestone report: dump file, size, row counts, zero-count
+gates, restore gap, notice counts/action ids, and `restore_test dropped`.
+For the planned P2 live test, leave a synthetic draft awaiting approval,
+take the backup, then approve it before running this test. Check its id is
+cancelled in scratch and still succeeded once on production afterwards.
+Every production command needs the owner's separate go-ahead. Delete the
+age identity from the laptop at the end. Offline tests do not complete this
+live acceptance requirement.
 
 ## B. A real restore
 

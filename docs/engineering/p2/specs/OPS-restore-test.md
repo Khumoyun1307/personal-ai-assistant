@@ -4,7 +4,7 @@
 |---|---|
 | **Owner** | Antony (script, evidence) + TL (server commands) · **Peer review** Neryn · **Owner** go-ahead, age key on the laptop for the run, client taps |
 | **Size** | S (one small `deploy/server.sh` change + one live run) |
-| **Branch** | `ops/restore-test-p2` from `int/m04` → PR to `int/m04` (the script change); the run itself happens after CP3 |
+| **Branch** | `ops/p2-restore-verification` from `main` → PR to `main` (post-release routing, TL ruling on #66, 2026-10-28; M04 already shipped). Original pre-release route: `ops/restore-test-p2` → `int/m04`. The live run remains separately owner-approved after CP3 |
 | **Depends on** | F0 (post-restore step 2 for actions), S04.4 (sends), CP3 (M04 on production with `actions.send` on) |
 | **Normative inputs** | IMPLEMENTATION_PLAN §6 acceptance (restore test, NFR-09), ARCHITECTURE §15.6, `deploy/runbooks/restore.md` §A, `deploy/server.sh restore-test`, PRD NFR-09 |
 
