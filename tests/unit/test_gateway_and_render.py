@@ -6,6 +6,8 @@ and the mis-routing failure the typed targets exist to prevent.
 
 from __future__ import annotations
 
+import html
+
 import pytest
 
 from assistant.telegram.errors import ErrorClass
@@ -82,6 +84,87 @@ def test_ampersands_in_plain_text_are_escaped() -> None:
     assert sanitize("Tom & Jerry") == "Tom &amp; Jerry"
 
 
+@pytest.mark.parametrize(
+    "literal",
+    [
+        "Tom & Jerry < 3 > 2",
+        "&amp; &lt; &quot; &#60; &#x3c; &madeup;",
+        '<b>contact</b> <a href="https://synthetic.example">link</a>',
+        "<script>synthetic</script>",
+    ],
+)
+def test_preescaped_untrusted_content_is_literal_after_one_escape(literal: str) -> None:
+    encoded = escape(literal)
+    assert sanitize(encoded) == encoded
+    assert html.unescape(sanitize(encoded)) == literal
+    assert render_control_message(f"<b>Name</b>: {encoded}") == [f"<b>Name</b>: {encoded}"]
+
+
+def test_escaped_contact_tags_are_never_restored_as_application_markup() -> None:
+    encoded = '&lt;b&gt;contact&lt;/b&gt; &lt;a href="https://synthetic.example"&gt;link&lt;/a&gt;'
+    assert sanitize(encoded) == encoded
+    assert "<a" not in sanitize(encoded)
+    assert "<b>" not in sanitize(encoded)
+
+
+def test_application_link_preserves_escaped_url_and_label() -> None:
+    text = '<a href="https://synthetic.example/?a=1&amp;b=2">Tom &amp; Jerry</a>'
+    assert sanitize(text) == text
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        '<a href="javascript:synthetic">',
+        '<a href="https://synthetic.example" onclick="synthetic">',
+        '<b class="synthetic">',
+        '<script src="https://synthetic.example">',
+    ],
+)
+def test_unsupported_tag_attributes_and_links_stay_literal(tag: str) -> None:
+    assert sanitize(tag) == escape(tag)
+
+
+@pytest.mark.parametrize(
+    "pair",
+    [
+        '<a href="javascript:synthetic">label</a>',
+        '<a href="https://synthetic.example" onclick="synthetic">label</a>',
+        '<b class="synthetic">label</b>',
+        '<b>label</b class="synthetic">',
+        '<a href="https://synthetic.example">label</a href="synthetic">',
+        '<b class="synthetic">label</b class="synthetic">',
+        "<a>label</a>",
+    ],
+)
+def test_rejected_pairs_escape_both_sides_even_within_valid_markup(pair: str) -> None:
+    assert sanitize(pair) == escape(pair)
+    assert sanitize(f"<i>before {pair} after</i>") == f"<i>before {escape(pair)} after</i>"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            '<b>outer <b class="synthetic">inner</b> end</b>',
+            '<b>outer &lt;b class="synthetic"&gt;inner&lt;/b&gt; end</b>',
+        ),
+        (
+            '<b class="synthetic">outer <i>inner</i> end</b>',
+            '&lt;b class="synthetic"&gt;outer <i>inner</i> end&lt;/b&gt;',
+        ),
+        ("<b><i>crossed</b></i>", "<b>&lt;i&gt;crossed</b>&lt;/i&gt;"),
+        ("<b>unclosed", "&lt;b&gt;unclosed"),
+        ("orphan</b>", "orphan&lt;/b&gt;"),
+        ("<b><i>valid</i></b>", "<b><i>valid</i></b>"),
+    ],
+)
+def test_nested_and_malformed_pairs_preserve_only_balanced_supported_tags(
+    text: str, expected: str
+) -> None:
+    assert sanitize(text) == expected
+
+
 def test_short_messages_are_not_split() -> None:
     assert split_message("hello") == ["hello"]
 
@@ -130,6 +213,71 @@ async def test_a_long_message_is_sent_as_several(
     result = await gateway.send_text(CONTROL, "word " * 2000)
     assert len(sender.sends) > 1
     assert result.ok
+    assert result.message_id == 1000 + len(sender.sends)
+    assert result.error_code is None
+    assert not result.delivery_uncertain
+
+
+@pytest.mark.parametrize("delivered", [1, 2])
+@pytest.mark.parametrize(
+    "error",
+    [
+        telegram_error("Too Many Requests", status_code=429, retry_after=7),
+        telegram_error("Bad Request: synthetic refusal", status_code=400),
+        telegram_error("Forbidden: bot was blocked by the user", status_code=403),
+        network_error("synthetic reset"),
+    ],
+)
+async def test_partial_control_delivery_is_uncertain_and_never_retried(
+    gateway: OutboundGateway, sender: FakeTelegramSender, error: Exception, delivered: int
+) -> None:
+    async def fail_after_delivered_chunks() -> None:
+        if len(sender.sends) == delivered:
+            sender.fail_with = error
+
+    sender.on_call = fail_after_delivered_chunks
+    result = await gateway.send_text(CONTROL, "word " * 4000, keyboard={"synthetic": True})
+    assert result.error_class is ErrorClass.AMBIGUOUS
+    assert (result.ok, result.delivery_uncertain) == (False, True)
+    assert result.error_code == "partial_delivery"
+    assert result.message_id is None  # no identity for the complete logical message/card
+    assert result.retry_after is None  # never invites replay of earlier chunks
+    assert len(sender.sends) == delivered + 1
+    assert all(call["reply_markup"] is None for call in sender.sends)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected", "uncertain", "retry_after"),
+    [
+        (
+            telegram_error("Too Many Requests", status_code=429, retry_after=7),
+            ErrorClass.RATE_LIMITED,
+            False,
+            7,
+        ),
+        (
+            telegram_error("Bad Request: synthetic refusal", status_code=400),
+            ErrorClass.BAD_REQUEST,
+            False,
+            None,
+        ),
+        (network_error("synthetic reset"), ErrorClass.TRANSIENT, True, None),
+    ],
+)
+async def test_first_chunk_failure_keeps_single_call_classification(
+    gateway: OutboundGateway,
+    sender: FakeTelegramSender,
+    error: Exception,
+    expected: ErrorClass,
+    uncertain: bool,
+    retry_after: int | None,
+) -> None:
+    sender.fail_with = error
+    result = await gateway.send_text(CONTROL, "word " * 2000)
+    assert result.error_class is expected
+    assert result.delivery_uncertain is uncertain
+    assert result.retry_after == retry_after
+    assert len(sender.sends) == 1
 
 
 async def test_the_keyboard_goes_on_the_last_chunk_only(

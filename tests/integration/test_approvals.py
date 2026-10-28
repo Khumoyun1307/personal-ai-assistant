@@ -9,6 +9,7 @@ Telegram transport and the model are fake; every text is synthetic.
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -16,14 +17,18 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import service
 from assistant.accounts.callbacks import parse
-from assistant.accounts.models import Account, ControlTurn, PendingInput
+from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, PendingInput
+from assistant.actions import lifecycle
 from assistant.actions.executor import ActionExecutor
 from assistant.actions.models import Action
 from assistant.conversations.models import Conversation
+from assistant.core.delivery import ErrorClass
 from assistant.db.uow import transaction
 from assistant.inbox.notify import OwnerAlerts
 from assistant.llm.port import LLMRequest
@@ -38,6 +43,7 @@ from assistant.telegram.control.approvals import (
     ANSWER_SENDING,
     DRAFT_EDIT,
     RETIRED_CARD_TEXT,
+    ApprovalCards,
 )
 from assistant.telegram.control.handlers import CALLBACK_EXPIRED_TEXT
 from assistant.telegram.gateway import OutboundGateway
@@ -541,6 +547,313 @@ async def test_a_long_revision_is_approvable_only_after_its_full_text_reached_th
     assert (await s.action(row.id)).state == "succeeded"
 
 
+def fresh_cards(s: Scenario) -> ApprovalCards:
+    config = s.wiring.actions_config
+    assert config is not None
+    return ApprovalCards(
+        session_factory=s.env.factory,
+        gateway=OutboundGateway(s.env.sender, s.env.clock, sleep=FakeSleep()),
+        clock=s.env.clock,
+        config=config,
+    )
+
+
+async def test_uncertain_full_text_is_not_replayed_by_a_fresh_presenter(s: Scenario) -> None:
+    """A later 429 cannot replay an already delivered prefix after restart."""
+    before = len(s.env.sender.sends)
+
+    async def fail_second_chunk() -> None:
+        if len(s.env.sender.sends) == before + 1:
+            s.env.sender.fail_with = telegram_error(
+                "Too Many Requests", status_code=429, retry_after=3
+            )
+
+    s.env.sender.on_call = fail_second_chunk
+    row = await s.seed(text="&" * 3500)
+    s.env.sender.on_call = None
+    s.env.sender.fail_with = None
+    assert len(s.env.sender.sends) == before + 2
+    assert (row.state, row.card_message_id, row.card_state) == ("awaiting_approval", None, None)
+    cards = fresh_cards(s)
+    result = await cards.present(row.id)
+    assert result is not None
+    assert (result.error_class, result.error_code) == (
+        ErrorClass.AMBIGUOUS,
+        "presentation_uncertain",
+    )
+    assert len(s.env.sender.sends) == before + 2
+    assert await cards.sync_cards() == 0
+    async with s.env.factory() as session:
+        marker = await session.scalar(
+            select(AuditLogEntry).where(
+                AuditLogEntry.account_id == row.account_id,
+                AuditLogEntry.subject_id == row.id,
+                AuditLogEntry.event == "approval_card_presentation_claimed",
+            )
+        )
+    assert marker is not None
+    assert marker.details == {"version": row.version}
+    assert marker.actor == "system"
+    assert (await s.action(row.id)).state == "awaiting_approval"
+
+
+@pytest.mark.parametrize("marker_scope", ["same", "old_version", "foreign_account"])
+async def test_card_delivery_marker_is_account_and_version_fenced(
+    s: Scenario, marker_scope: str
+) -> None:
+    row = await s.seed()
+    marker_account = row.account_id
+    async with transaction(s.env.factory) as uow:
+        if marker_scope == "foreign_account":
+            other, _ = await service.get_or_create_account(
+                uow.session, telegram_user_id=7000000079, clock=s.env.clock
+            )
+            marker_account = other.id
+        uow.session.add(
+            AuditLogEntry(
+                account_id=marker_account,
+                at=s.env.clock.now(),
+                actor="system",
+                event="approval_card_presentation_claimed",
+                subject_type="action",
+                subject_id=row.id,
+                details={
+                    "version": row.version - 1 if marker_scope == "old_version" else row.version
+                },
+            )
+        )
+        await uow.session.execute(
+            update(Action)
+            .where(Action.id == row.id)
+            .values(
+                card_message_id=None,
+                card_state=None,
+                created_at=s.env.clock.now() - timedelta(minutes=1),
+            )
+        )
+    before = len(s.env.sender.sends)
+    done = await fresh_cards(s).sync_cards()
+    assert done == (0 if marker_scope == "same" else 1)
+    assert len(s.env.sender.sends) == before + (0 if marker_scope == "same" else 1)
+    after = await s.action(row.id)
+    assert after.state == "awaiting_approval"
+    assert (after.card_state is None) is (marker_scope == "same")
+
+
+async def unshown_action(s: Scenario, **fields: Any) -> Action:
+    row = await s.seed(**fields)
+    async with transaction(s.env.factory) as uow:
+        await uow.session.execute(
+            update(Action)
+            .where(Action.id == row.id)
+            .values(
+                card_message_id=None,
+                card_state=None,
+            )
+        )
+    return await s.action(row.id)
+
+
+async def test_concurrent_and_stale_presenters_cannot_send_another_card(s: Scenario) -> None:
+    row = await unshown_action(s)
+    one, two = fresh_cards(s), fresh_cards(s)
+    view = await one._prepare(row.id)
+    assert view is not None
+    before = len(s.env.sender.sends)
+
+    async def no_lock_across_telegram() -> None:
+        async with s.env.factory() as session:
+            await session.execute(
+                select(Action.id).where(Action.id == row.id).with_for_update(nowait=True)
+            )
+
+    s.env.sender.on_call = no_lock_across_telegram
+    results = await asyncio.gather(one._send_new(view), two._send_new(view))
+    assert sum(result is not None and result.ok for result in results) == 1
+    assert len(s.env.sender.sends) == before + 1
+    await fresh_cards(s)._send_new(view)  # stale view after the first card was recorded
+    assert len(s.env.sender.sends) == before + 1
+
+
+@pytest.mark.parametrize("late_outcome", ["success", "definite_failure"])
+async def test_inflight_old_presentation_cannot_record_or_resolve_over_a_new_version(
+    s: Scenario, late_outcome: str
+) -> None:
+    row = await unshown_action(s)
+    old_cards = fresh_cards(s)
+    old_view = await old_cards._prepare(row.id)
+    assert old_view is not None
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def suspend_claimed_old_send() -> None:
+        s.env.sender.on_call = None
+        entered.set()
+        await release.wait()
+        if late_outcome == "definite_failure":
+            s.env.sender.fail_with = telegram_error(
+                "Bad Request: synthetic refusal", status_code=400
+            )
+
+    s.env.sender.on_call = suspend_claimed_old_send
+    old_task = asyncio.create_task(old_cards._send_new(old_view))
+    try:
+        await entered.wait()
+        async with s.env.factory() as session:
+            old_claim = await session.scalar(
+                select(AuditLogEntry.id)
+                .where(
+                    AuditLogEntry.account_id == row.account_id,
+                    AuditLogEntry.subject_type == "action",
+                    AuditLogEntry.subject_id == row.id,
+                    AuditLogEntry.event == approvals.PRESENTATION_CLAIMED,
+                )
+                .order_by(AuditLogEntry.id.desc())
+                .limit(1)
+            )
+        assert old_claim is not None
+        # Advance the version through real lifecycle transitions while the
+        # committed old claim is suspended outside every database lock.
+        async with transaction(s.env.factory) as uow:
+            assert row.approval_token is not None
+            editing = await lifecycle.start_edit(
+                uow.session,
+                account_id=row.account_id,
+                token=row.approval_token,
+                now=s.env.clock.now(),
+            )
+            assert editing == row.version
+            revised = await lifecycle.apply_new_version(
+                uow.session,
+                account_id=row.account_id,
+                action_id=row.id,
+                expected_version=row.version,
+                text="Synthetic newer version.",
+                draft_run_id=None,
+                draft_flags=None,
+                shown_through_message_id=row.shown_through_message_id,
+                base_message_id=row.base_message_id,
+                now=s.env.clock.now(),
+            )
+            assert revised.status is lifecycle.VersionStatus.APPLIED
+        new_result = await fresh_cards(s).present(row.id)
+        assert new_result is not None
+        assert new_result.ok  # the unresolved old-version claim cannot block it
+        newer = await s.action(row.id)
+        assert newer.card_message_id == new_result.message_id
+        assert newer.card_state == "awaiting_approval"
+        assert newer.version == row.version + 1
+    finally:
+        release.set()
+        old_result = await old_task
+        s.env.sender.fail_with = None
+        s.env.sender.on_call = None
+
+    after = await s.action(row.id)
+    assert (after.version, after.state, after.card_message_id, after.card_state, after.text) == (
+        newer.version,
+        newer.state,
+        newer.card_message_id,
+        newer.card_state,
+        newer.text,
+    )
+    assert old_result is not None
+    assert old_result.ok is (late_outcome == "success")
+    async with s.env.factory() as session:
+        resolutions = list(
+            await session.scalars(
+                select(AuditLogEntry.details)
+                .where(
+                    AuditLogEntry.account_id == row.account_id,
+                    AuditLogEntry.subject_type == "action",
+                    AuditLogEntry.subject_id == row.id,
+                    AuditLogEntry.event == approvals.PRESENTATION_RESOLVED,
+                )
+                .order_by(AuditLogEntry.id)
+            )
+        )
+    assert [details for details in resolutions if details["claim_id"] == old_claim] == (
+        []
+        if late_outcome == "success"
+        else [{"version": row.version, "claim_id": old_claim, "outcome": "not_delivered"}]
+    )
+    new_resolutions = [details for details in resolutions if details["version"] == newer.version]
+    assert len(new_resolutions) == 1
+    assert new_resolutions[0]["outcome"] == "shown"
+    assert new_resolutions[0]["claim_id"] != old_claim
+    before = len(s.env.sender.sends)
+    await fresh_cards(s)._send_new(old_view)
+    assert len(s.env.sender.sends) == before
+
+
+async def test_full_text_success_then_card_refusal_never_replays_full_text(s: Scenario) -> None:
+    before = len(s.env.sender.sends)
+
+    async def refuse_keyboard() -> None:
+        # The full text has no keyboard; the actual approval card does.
+        if len(s.env.sender.sends) > before:
+            s.env.sender.fail_with = telegram_error(
+                "Bad Request: synthetic refusal", status_code=400
+            )
+
+    s.env.sender.on_call = refuse_keyboard
+    row = await s.seed(text="x" * 3950)
+    s.env.sender.on_call = None
+    s.env.sender.fail_with = None
+    assert len(s.env.sender.sends) == before + 2
+    assert s.env.sender.sends[-1]["reply_markup"] is not None
+    assert row.card_message_id is None
+    result = await fresh_cards(s).present(row.id)
+    assert result is not None
+    assert result.delivery_uncertain
+    assert len(s.env.sender.sends) == before + 2
+
+
+@pytest.mark.parametrize("fail_phase", ["claim", "record"])
+async def test_presentation_commit_failure_never_replays_delivered_content(
+    s: Scenario, monkeypatch: pytest.MonkeyPatch, fail_phase: str
+) -> None:
+    row = await unshown_action(s)
+    before = len(s.env.sender.sends)
+    original_commit = AsyncSession.commit
+    commits_until_failure = 2 if fail_phase == "claim" else 0
+
+    async def commit(session: AsyncSession) -> None:
+        nonlocal commits_until_failure
+        if commits_until_failure:
+            commits_until_failure -= 1
+            if not commits_until_failure:
+                raise OperationalError("synthetic commit", None, RuntimeError("synthetic"))
+        await original_commit(session)
+
+    async def fail_record_commit() -> None:
+        nonlocal commits_until_failure
+        commits_until_failure = 1
+
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    if fail_phase == "record":
+        s.env.sender.on_call = fail_record_commit
+    with pytest.raises(OperationalError):
+        await fresh_cards(s).present(row.id)
+    s.env.sender.on_call = None
+    monkeypatch.setattr(AsyncSession, "commit", original_commit)
+    assert len(s.env.sender.sends) == before + (fail_phase == "record")
+    after = await s.action(row.id)
+    assert (after.state, after.card_message_id, after.card_state) == (
+        "awaiting_approval",
+        None,
+        None,
+    )
+    result = await fresh_cards(s).present(row.id)
+    assert result is not None
+    if fail_phase == "record":
+        assert result.delivery_uncertain
+        assert len(s.env.sender.sends) == before + 1
+    else:
+        assert result.ok  # the claim never committed, so no earlier I/O is possible
+        assert len(s.env.sender.sends) == before + 1
+
+
 async def test_a_new_version_never_extends_the_cards_expiry(s: Scenario) -> None:
     expires = s.env.clock.now() + timedelta(minutes=20)
     row = await s.seed(expires_at=expires)
@@ -791,6 +1104,8 @@ async def test_state_changes_go_through_s04_1_transitions_only(s: Scenario) -> N
     await press(s, button_token(s, await s.action(row.id), "cx"), "cx")
     await press_action(s, row.id, "rj")
     assert await s.events(row.id) == [
+        "approval_card_presentation_claimed",
+        "approval_card_presentation_resolved",
         "action_revision_requested",
         "action_edited",
         "action_revision_requested",
@@ -799,7 +1114,11 @@ async def test_state_changes_go_through_s04_1_transitions_only(s: Scenario) -> N
     ]
     second = await s.seed()
     await press_action(s, second.id, "ok")
-    assert await s.events(second.id) == ["action_approved"]
+    assert await s.events(second.id) == [
+        "approval_card_presentation_claimed",
+        "approval_card_presentation_resolved",
+        "action_approved",
+    ]
     # The module writes no state of its own: no `state=` in any UPDATE.
     tree = ast.parse(inspect.getsource(approvals))
     for node in ast.walk(tree):

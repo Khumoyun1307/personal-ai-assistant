@@ -212,6 +212,10 @@ class OutboundGateway:
             markup = keyboard if index == len(chunks) - 1 else None
             result = await self._send_one(target, chunk, markup)
             if not result.ok:
+                if index:
+                    # Some of this logical message is already visible. Even
+                    # a definite refusal now must not invite a whole replay.
+                    return SendResult(ErrorClass.AMBIGUOUS, error_code="partial_delivery")
                 return result
         return result
 
