@@ -34,18 +34,23 @@ from assistant.agent.tools.registry import (
 )
 from assistant.config import Settings
 from assistant.core.routing import Route
+from assistant.db.uow import transaction
+from assistant.inbox.notification_types import NotificationKind, NotificationRefs, Priority
+from assistant.inbox.notifications import NotificationDelivery, enqueue
 from assistant.inbox.processor import DeterministicError
 from assistant.jobs.app import build_app
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.metering import MeteredLLMClient
 from assistant.llm.port import LLMError, LLMErrorKind
 from assistant.observability.logging import configure_logging, get_logger
+from assistant.telegram.control.agent_channel import GatewayControlChannel
+from assistant.telegram.gateway import OutboundGateway
 from assistant.telegram.ingress.poller import Poller
 from assistant.telegram.ingress.ports import TelegramTransientError
 from tests.fakes.channel import FakeChannel
-from tests.fakes.clock import FakeClock
+from tests.fakes.clock import FakeClock, FakeSleep
 from tests.fakes.llm import FakeLLM, text_response, tool_response
-from tests.fakes.sender import telegram_error
+from tests.fakes.sender import network_error, telegram_error
 from tests.fakes.telegram import FakeUpdateSource
 from tests.integration.agent_env import NOTE_FLAG, PRODUCTION_FLAGS, SET_NOTE
 from tests.integration.business_env import (
@@ -60,6 +65,7 @@ from tests.integration.business_env import (
     private_message,
     run_deletion_jobs,
 )
+from tests.integration.p2_factories import seed_triage
 
 pytestmark = pytest.mark.integration
 
@@ -404,3 +410,59 @@ async def test_every_tool_call_that_does_not_succeed_logs_one_content_free_line(
     assert (lines[4]["exc_type"], lines[5]["exc_type"]) == ("NotInAccountError", "KeyError")
     _assert_clean(output, caplog.records)
     assert DAY_CANARY not in output
+
+
+async def test_a_failed_alert_delivery_logs_no_content(
+    env: Env,
+    json_logs: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """S05.2 (RG-10): an alert whose rendered text carries the canary — the
+    contact's name and the verdict's reason — fails once with a Telegram 400
+    that echoes it and once with a network error; neither leaves it in a log."""
+    caplog.set_level(logging.DEBUG)
+    await connect(env)
+    await grant_managed(env)
+    await deliver(env, business_message(message_id=1, message_text="synthetic", first_name=CANARY))
+    async with env.factory() as session, session.begin():
+        conversation = (
+            await session.execute(text("SELECT id, account_id FROM app.conversations"))
+        ).one()
+        await seed_triage(
+            session,
+            account_id=conversation.account_id,
+            conversation_id=conversation.id,
+            urgency="urgent",
+            escalation_category="urgent_decision",
+            reasons=[f"reason {CANARY}"],
+        )
+    delivery = NotificationDelivery(
+        session_factory=env.factory,
+        channel=GatewayControlChannel(OutboundGateway(env.sender, env.clock, sleep=FakeSleep())),
+        clock=env.clock,
+        scheduler=env.scheduler,  # type: ignore[arg-type]
+        enabled=True,
+    )
+    failures = (
+        telegram_error(f"Bad Request: can't parse entities: {CANARY}", status_code=400),
+        network_error(f"Request timeout error {CANARY}"),
+    )
+    for i, failure in enumerate(failures):
+        async with transaction(env.factory) as uow:
+            notification = await enqueue(
+                uow.session,
+                account_id=conversation.account_id,
+                kind=NotificationKind.TRIAGE_URGENT,
+                priority=Priority.URGENT,
+                dedupe_key=f"hygiene:{i}",
+                refs=NotificationRefs(conversation_ids=(conversation.id,)),
+                clock=env.clock,
+                conversation_id=conversation.id,
+            )
+        assert notification is not None
+        env.sender.fail_with = failure
+        result = await delivery.deliver(notification)
+        env.sender.fail_with = None
+        assert result.status in ("retry", "uncertain")
+    assert any(CANARY in call["text"] for call in env.sender.sends)  # it was rendered
+    _assert_clean(json_logs.readouterr().out, caplog.records)

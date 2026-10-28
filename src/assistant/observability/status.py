@@ -11,7 +11,7 @@ times and ids only. The report therefore never taints a run and needs no
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -29,6 +29,7 @@ from assistant.conversations.coverage import (
 )
 from assistant.conversations.models import Conversation, CoverageGap
 from assistant.conversations.service import PAUSE_INGEST_ERROR
+from assistant.inbox.notifications import NotificationCounts, notification_counts
 from assistant.inbox.processor import inbox_backlog_for
 from assistant.inbox.watchdog import poller_heartbeat_at
 
@@ -100,6 +101,17 @@ class StatusReport:
     autonomy: AutonomyStatus
     inbox: InboxStatus
     budget: BudgetStatus
+    #: M05 alerts (S05.2 §3.8): counts by state, never content.
+    notifications: NotificationCounts = field(default_factory=NotificationCounts)
+
+    @property
+    def notifications_line(self) -> str:
+        """The `/status` line for alerts (S05.2 §3.8)."""
+        n = self.notifications
+        return (
+            f"Alerts: {n.queued} queued, {n.deferred} held for quiet hours, "
+            f"{n.batched} waiting for the digest, {n.uncertain_24h} uncertain (24 h)"
+        )
 
     @property
     def coverage_caveat(self) -> str | None:
@@ -271,6 +283,7 @@ async def build_status(
         ),
         inbox=inbox,
         budget=budget,
+        notifications=await notification_counts(session, account_id=account_id, now=now),
     )
 
 

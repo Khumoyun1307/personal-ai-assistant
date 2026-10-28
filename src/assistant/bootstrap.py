@@ -11,7 +11,7 @@ import contextlib
 import functools
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -36,10 +36,12 @@ from assistant.core.routing import Route
 from assistant.core.supervisor import Role, Supervisor
 from assistant.db.advisory_lock import NAMESPACE_INBOX, NAMESPACE_POLLER, AdvisoryLock
 from assistant.db.engine import build_engine, build_session_factory
+from assistant.inbox.notifications import NTF_CARD, NotificationDelivery
 from assistant.inbox.notify import OwnerAlerts
 from assistant.inbox.processor import InboxProcessor
 from assistant.jobs.app import QUEUE_SYSTEM, QUEUES, build_app, run_queue_worker
 from assistant.jobs.reconcile import Reconciler
+from assistant.jobs.reconcile_inbox import notification_reconciler
 from assistant.jobs.scheduler import ProcrastinateScheduler
 from assistant.jobs.tasks import JobHandlers, register_tasks
 from assistant.jobs.tasks_actions import ActionsJobHandlers
@@ -56,6 +58,7 @@ from assistant.process import InboxRole, PollerRole, WorkerRole, worker_heartbea
 from assistant.telegram.business import BusinessPipeline
 from assistant.telegram.connections import AiogramConnectionLookup, ConnectionRegistry
 from assistant.telegram.control.agent_channel import GatewayControlChannel
+from assistant.telegram.control.alerts import handle_ntf_press
 from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.inbox_handlers import ControlInboxHandlers, RefusalLimiter
 from assistant.telegram.control.routes import ControlRoutes
@@ -254,6 +257,23 @@ def _wire_m05(
 ) -> None:
     """M05 units add their adapters and listeners here after F0 (`llm` as
     in `_wire_m04`)."""
+    # S05.2: delivery, its reconciler and the alert cards are always wired;
+    # flag `notifications.deliver` decides whether standard alerts go out
+    # (they wait in `queued` while it is off; system alerts never wait).
+    notifications_on = "notifications.deliver" in settings.feature_flags
+    wiring.notifications_enabled = notifications_on
+    delivery = NotificationDelivery(
+        session_factory=session_factory,
+        channel=channel,
+        clock=clock,
+        scheduler=scheduler,
+        enabled=notifications_on,
+    )
+    wiring.inbox = InboxJobHandlers(notifications=delivery)
+    wiring.reconcilers.append(notification_reconciler(enabled=notifications_on))
+    wiring.routes = replace(
+        wiring.routes, callbacks={**wiring.routes.callbacks, NTF_CARD: handle_ntf_press}
+    )
 
 
 class InstanceAlreadyRunningError(RuntimeError):
