@@ -93,10 +93,12 @@ class MonitorView:
 
     def covers(self, sent_at: datetime | None) -> bool:
         """A message counts only from the monitor's confirmation on (TL
-        decision, S05.4 §3.3). Fail closed: never confirmed, never fires."""
-        return (
-            self.confirmed_at is not None and sent_at is not None and sent_at >= self.confirmed_at
-        )
+        decision, S05.4 §3.3), at Telegram's precision: message dates are
+        whole seconds, so a reply sent in the second of the tap counts.
+        Fail closed: never confirmed, never fires."""
+        if self.confirmed_at is None or sent_at is None:
+            return False
+        return sent_at >= self.confirmed_at.replace(microsecond=0)
 
 
 def parse_rule(spec: Mapping[str, Any] | None) -> MonitorRule | None:

@@ -51,7 +51,9 @@ READ_FLAGS = frozenset(
     }
 )
 NOTE_FLAG = "tool.test_set_note"
-ALL_FLAGS = READ_FLAGS | {NOTE_FLAG}
+#: The S05.4 monitor tools (P2-T41).
+MONITOR_FLAGS = frozenset({"tool.create_monitor", "tool.list_monitors", "tool.stop_monitor"})
+ALL_FLAGS = READ_FLAGS | {NOTE_FLAG} | MONITOR_FLAGS
 #: The S03.3 memory, preference and mode tools (not in ALL_FLAGS, so the
 #: S03.1/S03.2 tests keep the tool offer they were written against).
 MEMORY_FLAGS = frozenset(

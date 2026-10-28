@@ -23,6 +23,8 @@ from assistant.agent.monitor_schemas import (
 )
 from assistant.agent.tools.common import ArgumentRuleError
 from assistant.agent.tools.registry import strict_schema
+from assistant.automation.monitors import MonitorView
+from assistant.automation.rules import MonitorRule
 
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
 
@@ -163,6 +165,42 @@ def test_expires_at_parses_in_the_owner_timezone_and_must_be_future() -> None:
     for malformed in ("tomorrow", "2026-10-28T09:30", "28.10.2026 09:30"):
         with pytest.raises(ValidationError):
             CreateMonitorArgs.model_validate(args(expires_at=malformed))
+
+
+def test_a_message_from_the_confirmation_second_counts() -> None:
+    """Telegram dates are whole seconds: a reply sent in the second the owner
+    confirmed (dated at the start of that second) still counts; a message
+    from an earlier second never does (S05.4 §3.3)."""
+    confirmed = datetime(2026, 10, 27, 12, 0, 0, 700_000, tzinfo=UTC)
+    view = MonitorView(
+        automation_id=1,
+        account_id=1,
+        status="active",
+        rule=MonitorRule.model_validate(
+            {
+                "scope": {"all_observed": True},
+                "condition": {"kind": "keywords", "terms": ["P2KEY"]},
+                "action": "alert",
+                "lifecycle": "standing",
+            }
+        ),
+        confirmed_at=confirmed,
+        expires_at=None,
+        created_at=confirmed,
+    )
+    assert view.covers(datetime(2026, 10, 27, 12, 0, 0, tzinfo=UTC))
+    assert view.covers(datetime(2026, 10, 27, 12, 0, 1, tzinfo=UTC))
+    assert not view.covers(datetime(2026, 10, 27, 11, 59, 59, tzinfo=UTC))
+    assert not view.covers(None)
+    assert not MonitorView(
+        automation_id=1,
+        account_id=1,
+        status="active",
+        rule=view.rule,
+        confirmed_at=None,
+        expires_at=None,
+        created_at=confirmed,
+    ).covers(confirmed)
 
 
 def test_one_shot_defaults_to_thirty_days() -> None:

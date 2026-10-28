@@ -49,7 +49,15 @@ from assistant.telegram.control.monitors import handle_mon_press
 from assistant.telegram.control.routes import ControlRoutes
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response, tool_response
-from tests.integration.agent_env import READ_FLAGS, applier, args, ask, one_id, runtime
+from tests.integration.agent_env import (
+    MONITOR_FLAGS,
+    READ_FLAGS,
+    applier,
+    args,
+    ask,
+    one_id,
+    runtime,
+)
 from tests.integration.business_env import (
     CONTACT,
     OWNER,
@@ -67,7 +75,6 @@ from tests.integration.business_env import (
 
 pytestmark = pytest.mark.integration
 
-MONITOR_FLAGS = frozenset({"tool.create_monitor", "tool.list_monitors", "tool.stop_monitor"})
 FLAGS = READ_FLAGS | MONITOR_FLAGS
 OTHER_OWNER = 7000000002
 FORWARD = {"forward_origin": {"type": "hidden_user", "date": T_BASE, "sender_user_name": "N"}}
@@ -204,7 +211,8 @@ async def test_create_monitor_always_asks_for_confirmation_and_creates_nothing_b
     _, result = await ask_create(env, contact, channel)
     assert result["status"] == "awaiting_confirmation"
     assert await automations(env) == []
-    [card] = channel.sends
+    card, reply = channel.sends  # the card, then the run's own reply
+    assert reply == "It waits for your confirmation."
     assert "Confirm a change?" in card
     assert "Alert you once when Kamola writes (ends after 30 days)" in card
     assert "Nothing has been changed yet." in card
