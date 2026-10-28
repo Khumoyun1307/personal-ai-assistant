@@ -9,7 +9,10 @@ import pytest
 
 from assistant import bootstrap
 from assistant.config import ConfigError, Settings
+from assistant.inbox.notifications import NTF_CARD, NotificationDelivery
 from assistant.llm.consent import ConsentGatedLLMClient
+from assistant.telegram.control.alerts import handle_ntf_press
+from tests.fakes.channel import FakeChannel
 from tests.fakes.clock import FakeClock
 from tests.fakes.llm import FakeLLM
 
@@ -66,3 +69,29 @@ def test_an_injected_llm_is_used_as_is(clean_env: None) -> None:
     )
 
     assert runtime._llm is fake
+
+
+@pytest.mark.parametrize("flags", ["", "notifications.deliver"])
+def test_m05_wires_notification_delivery_its_reconciler_and_the_alert_cards(
+    clean_env: None, flags: str
+) -> None:
+    """S05.2 in `_wire_m05`: the `notify.deliver` handler, its reconciler and
+    the `ntf` card route are always wired; flag `notifications.deliver`
+    decides whether standard alerts go out (system alerts never wait)."""
+    wiring = bootstrap._PhaseWiring()
+    bootstrap._wire_m05(
+        wiring,
+        settings=settings(feature_flags=flags),
+        session_factory=None,  # type: ignore[arg-type]
+        gateway=None,  # type: ignore[arg-type]
+        channel=FakeChannel(),
+        clock=FakeClock(),
+        scheduler=None,  # type: ignore[arg-type]
+        llm=None,
+        roles=frozenset({"worker"}),
+    )
+    assert wiring.inbox is not None
+    assert isinstance(wiring.inbox.notifications, NotificationDelivery)
+    assert wiring.notifications_enabled is bool(flags)
+    assert wiring.routes.callbacks[NTF_CARD] is handle_ntf_press
+    assert len(wiring.reconcilers) == 1
