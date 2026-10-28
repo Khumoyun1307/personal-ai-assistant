@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts import service
 from assistant.accounts.callbacks import parse
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, PendingInput
+from assistant.actions import lifecycle
 from assistant.actions.executor import ActionExecutor
 from assistant.actions.models import Action
 from assistant.conversations.models import Conversation
@@ -672,6 +673,117 @@ async def test_concurrent_and_stale_presenters_cannot_send_another_card(s: Scena
     assert len(s.env.sender.sends) == before + 1
     await fresh_cards(s)._send_new(view)  # stale view after the first card was recorded
     assert len(s.env.sender.sends) == before + 1
+
+
+@pytest.mark.parametrize("late_outcome", ["success", "definite_failure"])
+async def test_inflight_old_presentation_cannot_record_or_resolve_over_a_new_version(
+    s: Scenario, late_outcome: str
+) -> None:
+    row = await unshown_action(s)
+    old_cards = fresh_cards(s)
+    old_view = await old_cards._prepare(row.id)
+    assert old_view is not None
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def suspend_claimed_old_send() -> None:
+        s.env.sender.on_call = None
+        entered.set()
+        await release.wait()
+        if late_outcome == "definite_failure":
+            s.env.sender.fail_with = telegram_error(
+                "Bad Request: synthetic refusal", status_code=400
+            )
+
+    s.env.sender.on_call = suspend_claimed_old_send
+    old_task = asyncio.create_task(old_cards._send_new(old_view))
+    try:
+        await entered.wait()
+        async with s.env.factory() as session:
+            old_claim = await session.scalar(
+                select(AuditLogEntry.id)
+                .where(
+                    AuditLogEntry.account_id == row.account_id,
+                    AuditLogEntry.subject_type == "action",
+                    AuditLogEntry.subject_id == row.id,
+                    AuditLogEntry.event == approvals.PRESENTATION_CLAIMED,
+                )
+                .order_by(AuditLogEntry.id.desc())
+                .limit(1)
+            )
+        assert old_claim is not None
+        # Advance the version through real lifecycle transitions while the
+        # committed old claim is suspended outside every database lock.
+        async with transaction(s.env.factory) as uow:
+            assert row.approval_token is not None
+            editing = await lifecycle.start_edit(
+                uow.session,
+                account_id=row.account_id,
+                token=row.approval_token,
+                now=s.env.clock.now(),
+            )
+            assert editing == row.version
+            revised = await lifecycle.apply_new_version(
+                uow.session,
+                account_id=row.account_id,
+                action_id=row.id,
+                expected_version=row.version,
+                text="Synthetic newer version.",
+                draft_run_id=None,
+                draft_flags=None,
+                shown_through_message_id=row.shown_through_message_id,
+                base_message_id=row.base_message_id,
+                now=s.env.clock.now(),
+            )
+            assert revised.status is lifecycle.VersionStatus.APPLIED
+        new_result = await fresh_cards(s).present(row.id)
+        assert new_result is not None
+        assert new_result.ok  # the unresolved old-version claim cannot block it
+        newer = await s.action(row.id)
+        assert newer.card_message_id == new_result.message_id
+        assert newer.card_state == "awaiting_approval"
+        assert newer.version == row.version + 1
+    finally:
+        release.set()
+        old_result = await old_task
+        s.env.sender.fail_with = None
+        s.env.sender.on_call = None
+
+    after = await s.action(row.id)
+    assert (after.version, after.state, after.card_message_id, after.card_state, after.text) == (
+        newer.version,
+        newer.state,
+        newer.card_message_id,
+        newer.card_state,
+        newer.text,
+    )
+    assert old_result is not None
+    assert old_result.ok is (late_outcome == "success")
+    async with s.env.factory() as session:
+        resolutions = list(
+            await session.scalars(
+                select(AuditLogEntry.details)
+                .where(
+                    AuditLogEntry.account_id == row.account_id,
+                    AuditLogEntry.subject_type == "action",
+                    AuditLogEntry.subject_id == row.id,
+                    AuditLogEntry.event == approvals.PRESENTATION_RESOLVED,
+                )
+                .order_by(AuditLogEntry.id)
+            )
+        )
+    assert [details for details in resolutions if details["claim_id"] == old_claim] == (
+        []
+        if late_outcome == "success"
+        else [{"version": row.version, "claim_id": old_claim, "outcome": "not_delivered"}]
+    )
+    new_resolutions = [details for details in resolutions if details["version"] == newer.version]
+    assert len(new_resolutions) == 1
+    assert new_resolutions[0]["outcome"] == "shown"
+    assert new_resolutions[0]["claim_id"] != old_claim
+    before = len(s.env.sender.sends)
+    await fresh_cards(s)._send_new(old_view)
+    assert len(s.env.sender.sends) == before
 
 
 async def test_full_text_success_then_card_refusal_never_replays_full_text(s: Scenario) -> None:

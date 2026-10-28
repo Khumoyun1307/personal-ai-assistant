@@ -125,6 +125,46 @@ def test_unsupported_tag_attributes_and_links_stay_literal(tag: str) -> None:
     assert sanitize(tag) == escape(tag)
 
 
+@pytest.mark.parametrize(
+    "pair",
+    [
+        '<a href="javascript:synthetic">label</a>',
+        '<a href="https://synthetic.example" onclick="synthetic">label</a>',
+        '<b class="synthetic">label</b>',
+        '<b>label</b class="synthetic">',
+        '<a href="https://synthetic.example">label</a href="synthetic">',
+        '<b class="synthetic">label</b class="synthetic">',
+        "<a>label</a>",
+    ],
+)
+def test_rejected_pairs_escape_both_sides_even_within_valid_markup(pair: str) -> None:
+    assert sanitize(pair) == escape(pair)
+    assert sanitize(f"<i>before {pair} after</i>") == f"<i>before {escape(pair)} after</i>"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            '<b>outer <b class="synthetic">inner</b> end</b>',
+            '<b>outer &lt;b class="synthetic"&gt;inner&lt;/b&gt; end</b>',
+        ),
+        (
+            '<b class="synthetic">outer <i>inner</i> end</b>',
+            '&lt;b class="synthetic"&gt;outer <i>inner</i> end&lt;/b&gt;',
+        ),
+        ("<b><i>crossed</b></i>", "<b>&lt;i&gt;crossed</b>&lt;/i&gt;"),
+        ("<b>unclosed", "&lt;b&gt;unclosed"),
+        ("orphan</b>", "orphan&lt;/b&gt;"),
+        ("<b><i>valid</i></b>", "<b><i>valid</i></b>"),
+    ],
+)
+def test_nested_and_malformed_pairs_preserve_only_balanced_supported_tags(
+    text: str, expected: str
+) -> None:
+    assert sanitize(text) == expected
+
+
 def test_short_messages_are_not_split() -> None:
     assert split_message("hello") == ["hello"]
 

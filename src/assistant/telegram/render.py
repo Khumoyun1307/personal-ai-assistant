@@ -49,14 +49,48 @@ def sanitize(text: str) -> str:
     unescape the input: `&lt;b&gt;` is literal content, not application markup.
     Bare ampersands and angle brackets in application text are still safe.
     """
+    matches = list(_RAW_TAG_RE.finditer(text))
+    tags = _paired_tags(matches)
     parts: list[str] = []
     start = 0
-    for match in _RAW_TAG_RE.finditer(text):
+    for match, tag in zip(matches, tags, strict=True):
         parts.append(_escape_text(text[start : match.start()]))
-        parts.append(_sanitize_tag(match))
+        parts.append(tag)
         start = match.end()
     parts.append(_escape_text(text[start:]))
     return "".join(parts)
+
+
+def _paired_tags(matches: list[re.Match[str]]) -> list[str]:
+    """Keep markup only when both sides form an accepted, nested pair.
+
+    Default literal tokens also cover orphan/unclosed tags. Per-name stacks
+    find a closer's opening without rescanning deep malformed nesting; any
+    crossed openings stay literal rather than leave active unmatched tags.
+    """
+    rendered = [escape(match.group(0)) for match in matches]
+    candidates = [_sanitize_tag(match) for match in matches]
+    stack: list[int] = []
+    by_name: dict[str, list[int]] = {}
+    for index, match in enumerate(matches):
+        name = match.group(2).lower()
+        if not match.group(1):
+            stack.append(index)
+            by_name.setdefault(name, []).append(index)
+            continue
+        openings = by_name.get(name)
+        if not openings:
+            continue
+        opening = openings[-1]
+        while stack:
+            popped = stack.pop()
+            by_name[matches[popped].group(2).lower()].pop()
+            if popped == opening:
+                break
+        if candidates[opening].startswith("<") and candidates[index].startswith("<"):
+            rendered[opening] = candidates[opening]
+            rendered[index] = candidates[index]
+    return rendered
 
 
 def _escape_text(text: str) -> str:
@@ -75,6 +109,8 @@ def _sanitize_tag(match: re.Match[str]) -> str:
     if tag not in ALLOWED_TAGS:
         return escape(match.group(0))
     if not attributes:
+        if tag == "a" and not closing:
+            return escape(match.group(0))
         return f"<{closing}{tag}>"
     # Only application HTTP(S) links with exactly one quoted href are allowed.
     href = _HREF_RE.fullmatch(attributes) if tag == "a" and not closing else None

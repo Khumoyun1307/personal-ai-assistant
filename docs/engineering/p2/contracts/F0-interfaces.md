@@ -166,6 +166,8 @@ Execution-phase outcome → state (S04.4 applies it in Tx A): failed `no_takeove
 
 Control HTML callers escape untrusted fields once (`telegram.render.escape`) before adding application markup. The gateway preserves existing Telegram entities without interpreting escaped tags as markup; bare special characters and unsupported tags/attributes/links are escaped. Application links accept a single quoted HTTP(S) `href` only. Approval cards additionally keep their existing visible escapes for hidden/bidi characters and tag-shaped content, then HTML-escape their protected fields once (including literal entity-looking strings).
 
+Tag acceptance is pair-consistent: both opening and closing tokens must be supported and form a nested pair before either remains active. Denied attributes on either side make that pair literal; orphan/unclosed/crossed tokens stay literal. Valid surrounding or nested application pairs remain active, and escaped contact tags are never treated as token syntax.
+
 **`actions/ports.py` (F0):**
 ```python
 class BusinessSender(Protocol):  # implemented by telegram/gateway.py OutboundGateway (S04.4)
