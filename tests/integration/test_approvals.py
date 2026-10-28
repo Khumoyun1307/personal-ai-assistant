@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import inspect
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 
@@ -25,6 +26,7 @@ from assistant.actions.models import Action
 from assistant.conversations.models import Conversation
 from assistant.db.uow import transaction
 from assistant.inbox.notify import OwnerAlerts
+from assistant.llm.port import LLMRequest
 from assistant.telegram.business_targets import BusinessTargetResolver
 from assistant.telegram.control import approvals
 from assistant.telegram.control.agent_channel import GatewayControlChannel
@@ -35,15 +37,18 @@ from assistant.telegram.control.approvals import (
     ANSWER_REDRAFTING,
     ANSWER_SENDING,
     DRAFT_EDIT,
+    RETIRED_CARD_TEXT,
 )
 from assistant.telegram.control.handlers import CALLBACK_EXPIRED_TEXT
 from assistant.telegram.gateway import OutboundGateway
 from tests.fakes.clock import FakeSleep
+from tests.fakes.sender import telegram_error
 from tests.integration.business_env import (
     OTHER_CONTACT,
     OWNER,
     business_message,
     callback,
+    conversation,
     deliver,
     private_message,
 )
@@ -407,6 +412,133 @@ async def test_a_too_long_replacement_stays_revising_and_asks_again(s: Scenario)
     await owner_writes(s, "Synthetic short enough.")
     await run_queued(s, "replies.revise")
     assert (await s.action(row.id)).text == "Synthetic short enough."
+
+
+async def test_an_old_too_long_revision_never_replaces_a_newer_chats_edit_question(
+    s: Scenario,
+) -> None:
+    """QA B3 (#120): while chat A's revision runs, the owner opens Edit on
+    chat B. A's result is too long to send; asking A again must not take
+    the owner's next message away from B. A goes back to its card instead."""
+    await deliver(
+        s.env,
+        business_message(
+            from_id=OTHER_CONTACT,
+            chat_id=OTHER_CONTACT,
+            message_id=201,
+            date=s.date,
+            message_text="Synthetic second contact's question.",
+        ),
+    )
+    other = await conversation(s.env, chat_id=OTHER_CONTACT)
+    assert other is not None
+    second = replace(s, conversation_id=other.id)
+    first_card = await s.seed(approval_token="QAolder123")
+    second_card = await second.seed(approval_token="QAnewer123")
+    newer_question: list[tuple[int, int | None]] = []
+    # Within the draft validator's code-point limit, over Telegram's UTF-16 one.
+    model_revision = "Synthetic-" + "x" * 3990 + "\U0001f600" * 50
+    assert len(model_revision) == 4050
+    assert len(model_revision.encode("utf-16-le")) // 2 == 4100
+
+    async def open_the_second_edit_while_the_first_call_is_in_flight(
+        _request: LLMRequest,
+    ) -> dict[str, Any]:
+        await press_action(second, second_card.id, "ed")
+        [question] = await edit_inputs(s)
+        assert question.ref_id == second_card.id
+        newer_question.append((question.id, question.ref_id))
+        return draft_result(text=model_revision, revision_kind="instruction")
+
+    s.fake.parsed.append(open_the_second_edit_while_the_first_call_is_in_flight)
+    await start_edit(s, first_card, "Make the synthetic reply warmer.")
+    assert await run_queued(s, "replies.revise", limit=1) == 1
+    # B's question is still the open one.
+    questions = await edit_inputs(s)
+    assert [(question.id, question.ref_id) for question in questions] == newer_question
+    assert (await second.action(second_card.id)).state == "revising"
+    # A is back on its card (same version, a new token), and the owner is told.
+    first_after = await s.action(first_card.id)
+    assert (first_after.state, first_after.version, first_after.text) == (
+        "awaiting_approval",
+        1,
+        DRAFT,
+    )
+    assert first_after.approval_token not in {None, first_card.approval_token}
+    assert first_after.revision_turn_id is None
+    assert "too long (4100 characters; the limit is 4096)" in s.control_text()
+    assert button_token(s, first_after, "ok") == first_after.approval_token
+    # The owner's next message answers B, not A.
+    s.fake.parsed.append(draft_result(text="unused", revision_kind="replacement"))
+    await owner_writes(s, "Synthetic text for the second chat.")
+    assert await run_queued(s, "replies.revise") == 1
+    assert (await second.action(second_card.id)).text == "Synthetic text for the second chat."
+    assert (await s.action(first_card.id)).text == DRAFT
+
+
+async def test_a_long_revision_is_approvable_only_after_its_full_text_reached_the_owner(
+    s: Scenario,
+) -> None:
+    """QA B1 (#120), FR-DRF-03, P2-T08: a long new version moves its text
+    above a new card. If that text cannot be sent, no card may offer the new
+    version's Approve; the sync presents text and card again, in that order."""
+    row = await s.seed()
+    suffix = "SYNTHETIC-UNSEEN-REVISION-SUFFIX"
+    long_text = "SYNTHETIC " + "x" * 3870 + suffix
+    s.fake.parsed.append(draft_result(text=long_text, revision_kind="instruction"))
+    await start_edit(s, row, "Synthetic: write the expanded version.")
+    refusal = telegram_error("Bad Request: synthetic refusal", status_code=400)
+    calls = 0
+
+    async def only_the_full_text_fails() -> None:
+        nonlocal calls
+        calls += 1
+        s.env.sender.fail_with = refusal if calls == 1 else None
+
+    s.env.sender.on_call = only_the_full_text_fails
+    before = len(s.env.sender.sends)
+    assert await run_queued(s, "replies.revise") == 1
+    s.env.sender.on_call = None
+    s.env.sender.fail_with = None
+    revised = await s.action(row.id)
+    assert (revised.state, revised.version, revised.text) == ("awaiting_approval", 2, long_text)
+    token = revised.approval_token
+    assert token
+
+    def offered(calls: list[dict[str, Any]]) -> list[int]:
+        return [n for n, call in enumerate(calls) if token in str(call.get("reply_markup"))]
+
+    # Nothing that reached the owner offers the new version's Approve; the
+    # old card says the new version could not be shown.
+    assert offered(s.env.sender.sends) == []
+    assert offered(s.env.sender.edits) == []
+    [failed_text] = s.env.sender.sends[before:]
+    assert suffix in failed_text["text"]
+    notice = s.env.sender.edits[-1]
+    assert notice["message_id"] == row.card_message_id
+    assert "could not be shown" in notice["text"]
+    assert notice["reply_markup"] is None
+    # A press on a stale card button finds nothing to approve.
+    await press(s, row.approval_token or "", "ok")
+    assert (await s.action(row.id)).state == "awaiting_approval"
+    # The sync presents the version: its full text first, then the card.
+    first_good = len(s.env.sender.sends)
+    await advance(s, 60, periodic=("system.sync_action_cards",))
+    shown = await s.action(row.id)
+    sent = s.env.sender.sends[first_good:]
+    assert len(sent) == 2
+    assert sent[0]["reply_markup"] is None
+    assert suffix in "".join(call["text"] for call in sent[:1])
+    assert offered(sent) == [1]
+    assert shown.card_message_id not in {None, row.card_message_id}
+    assert shown.card_state == "awaiting_approval"
+    assert s.env.sender.edits[-1]["message_id"] == row.card_message_id
+    assert s.env.sender.edits[-1]["text"] == RETIRED_CARD_TEXT
+    # Approving now sends exactly the version the owner was shown.
+    await press(s, token, "ok")
+    assert await run_execute_jobs(s) == 1
+    assert s.env.sender.plain_sends[-1]["text"] == long_text
+    assert (await s.action(row.id)).state == "succeeded"
 
 
 async def test_a_new_version_never_extends_the_cards_expiry(s: Scenario) -> None:

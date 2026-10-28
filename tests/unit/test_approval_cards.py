@@ -17,6 +17,7 @@ import pytest
 from assistant.accounts.callbacks import MAX_CALLBACK_DATA_BYTES, new_token, parse
 from assistant.actions.states import ActionOrigin, ActionState, StateReason
 from assistant.telegram.control.approvals import (
+    CARD_BUDGET,
     COPY_TEXT_MAX,
     PREVIEW_CHARS,
     ApprovalCardView,
@@ -224,6 +225,38 @@ def test_line_breaks_in_the_text_and_the_excerpts_reach_telegram_as_line_breaks(
     blocked = shown(render_card(in_state(ActionState.BLOCKED, text=long_text)).text)
     assert "Copy the text above" in blocked
     assert copies(card_keyboard(in_state(ActionState.BLOCKED, text=long_text))) == []
+
+
+def test_a_card_is_one_gateway_chunk_however_heavy_its_content() -> None:
+    """QA B2 (#120): escaping can make content several times longer, and an
+    edit keeps only the gateway's first chunk — so the whole card, buttons'
+    state included, must always be one chunk."""
+    heavy = ("&" * 300,) * 3
+    card = render_card(view(excerpts=heavy))
+    chunks = render_control_message(card.text)
+    assert len(chunks) == 1, [len(chunk) for chunk in chunks]
+    [text] = chunks
+    # The short draft stays on its card; the contact's words are shortened.
+    assert card.full_text is None
+    assert f"<blockquote>{TEXT}</blockquote>" in text
+    assert "› <i>&amp;&amp;" in text  # noqa: RUF001
+    assert "Draft — awaiting your approval" in text
+    assert ops(card.keyboard) == ["ok", "ed", "rj"]
+    # The worst content allowed: a long text of escapes, a name of escapes
+    # and three 300-character excerpts of escapes, in every state.
+    worst = {
+        "contact_name": "‮" * 128,
+        "excerpts": ("\U000e0001" * 300,) * 3,
+    }
+    for text_value in ("&" * 5000, "\U000e0001" * 5000, "x" * 3900):
+        for state in ActionState:
+            rendered = render_card(in_state(state, text=text_value, **worst))
+            parts = render_control_message(rendered.text)
+            assert len(parts) == 1, (state, len(text_value), [len(part) for part in parts])
+            assert len(parts[0]) <= CARD_BUDGET
+            assert "📝" in parts[0]
+            if rendered.full_text is not None:
+                assert "Full text in the message above" in parts[0]
 
 
 def test_an_approved_card_with_sending_off_says_so_and_never_sending() -> None:

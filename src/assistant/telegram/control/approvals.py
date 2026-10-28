@@ -17,6 +17,8 @@ control chat (AGENTS §7).
 - **The card is eventually true**: every later state change is shown by an
   edit after its commit, and `system.sync_action_cards` edits any card whose
   `card_state` differs from the action's state (and presents a lost card).
+  A card is always one gateway chunk, and a long version is approvable only
+  on a card sent right below its own full text (`_show`, `_record`).
 - **Copy-ready** (FR-DRF-06): a card that cannot be sent offers the exact
   text through a `copy_text` button (Bot API `CopyTextButton`, 1-256
   characters, docs-checked 2026-10-28 at
@@ -43,7 +45,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup
-from sqlalchemy import case, delete, select, tuple_, update
+from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import service
@@ -113,6 +115,16 @@ PREVIEW_CHARS = 600
 CARD_BUDGET = MAX_MESSAGE_CHARS - 96
 EXCERPTS = 3
 EXCERPT_CHARS = 300
+#: When escaping makes a card too long (QA B2): the contact's words are
+#: shortened step by step — as loaded, all at 100 characters, the newest at
+#: 100, none — and then the preview of a text above the card.
+_EXCERPT_STEPS: tuple[tuple[int, int | None], ...] = (
+    (EXCERPTS, None),
+    (EXCERPTS, 100),
+    (1, 100),
+    (0, 0),
+)
+_PREVIEW_STEPS = (PREVIEW_CHARS, 200, 0)
 #: How long the Edit question waits for the owner's message, at most.
 EDIT_INPUT_TTL = timedelta(hours=1)
 #: The sync presents a live card that has none only after this long: the
@@ -139,8 +151,21 @@ REVISION_TOO_LONG_TEXT = (
     "Send a shorter one, or tap Cancel edit."
 )
 REVISION_EMPTY_TEXT = "That text is empty. Send the new text, or tap Cancel edit."
+#: The same, when another question was opened meanwhile (QA B3): the draft
+#: goes back to its card rather than taking that question's place.
+REVISION_TOO_LONG_BACK_TEXT = (
+    "That text is too long ({length} characters; the limit is {limit}), so the "
+    "draft is unchanged. Tap Edit on its card to try again."
+)
+REVISION_EMPTY_BACK_TEXT = "That text is empty, so the draft is unchanged."
 REVISION_TIMED_OUT_TEXT = "Revising the draft took too long; it is unchanged."
 RETIRED_CARD_TEXT = "📝 This draft was revised — see the new card below."
+#: The card of a version whose full text could not be sent (QA B1): it
+#: offers no Approve for text the owner has not seen.
+NOT_SHOWN_TEXT = (
+    "⚠️ The current text ({length} characters) could not be shown here, so it "
+    "cannot be approved yet. Nothing is sent without your approval."
+)
 
 _HEADERS = {
     "dictated": "📝 <b>Message you dictated</b> — check the recipient and the text",
@@ -498,12 +523,37 @@ class RenderedCard:
     full_text: str | None = None
 
 
-def _compose(view: ApprovalCardView, body: str, *, copy_note: str | None) -> str:
+def _cut_excerpts(excerpts: tuple[str, ...], count: int, chars: int | None) -> tuple[str, ...]:
+    """The newest `count` excerpts, each cut to `chars` (None: as loaded)."""
+    kept = excerpts[-count:] if count else ()
+    if chars is None:
+        return kept
+    return tuple(text if len(text) <= chars else text[:chars].rstrip() + "…" for text in kept)
+
+
+def _name_line(view: ApprovalCardView) -> str:
     name = shown(view.contact_name, one_line=True) if view.contact_name else "this contact"
-    parts = [_header(view), "", f"To: <b>{name}</b>"]
+    return f"To: <b>{name}</b>"
+
+
+def _compose(
+    view: ApprovalCardView,
+    body: str,
+    *,
+    copy_note: str | None,
+    excerpts: tuple[str, ...] | None = None,
+) -> str:
+    """One card. `excerpts`: the contact's words to show (default: all
+    loaded); fewer than loaded are marked as left out."""
+    shown_excerpts = view.excerpts if excerpts is None else excerpts
+    parts = [_header(view), "", _name_line(view)]
     if view.excerpts:
         parts += ["", "Answering (their words):"]
-        for excerpt in view.excerpts:
+        if not shown_excerpts:
+            parts.append("› … (too long to show here)")  # noqa: RUF001
+        elif len(shown_excerpts) < len(view.excerpts):
+            parts.append("› …")  # noqa: RUF001
+        for excerpt in shown_excerpts:
             parts += _their_words(excerpt)
     parts += ["", body]
     warnings = _warnings(view)
@@ -523,13 +573,41 @@ def _compose(view: ApprovalCardView, body: str, *, copy_note: str | None) -> str
     return "\n".join(parts)
 
 
+def _fits(card: str) -> bool:
+    """One gateway chunk after the sanitizer's escaping (an edit keeps only
+    the first chunk, so a card never spans two)."""
+    return len(sanitize(card)) <= CARD_BUDGET
+
+
+def _fitted(view: ApprovalCardView, body: str, copy_note: str | None) -> str | None:
+    """The card with `body`, the contact's words shortened only as far as
+    it takes to fit; None if even without them it does not fit."""
+    for count, chars in _EXCERPT_STEPS:
+        excerpts = _cut_excerpts(view.excerpts, count, chars)
+        card = _compose(view, body, copy_note=copy_note, excerpts=excerpts)
+        if _fits(card):
+            return card
+    return None
+
+
+def _preview_body(text: str, chars: int) -> str:
+    above = f"Full text in the message above ({len(text)} characters)"
+    if chars == 0:
+        return f"{above}."
+    preview = shown(text[:chars].rstrip()) + "…"
+    return f"{above}. The start:\n<blockquote>{preview}</blockquote>"
+
+
 def render_card(view: ApprovalCardView, *, timezone: str | None = None) -> RenderedCard:
     """The card's text (control-chat HTML) and buttons for the view's state.
 
-    `timezone` overrides the account's (for tests and previews). A text too
-    long for one card moves to a message of its own sent first; the card
-    keeps its first 600 characters. The approval still binds to the stored
-    version, and the executor sends exactly the stored text.
+    `timezone` overrides the account's (for tests and previews). The card is
+    always one gateway chunk (QA B2): the text stays on the card when it
+    fits there (the contact's words shortened if needed); otherwise it moves
+    to a message of its own sent first, and the card keeps a preview of its
+    start (600 characters, less if escaping needs it). The approval still
+    binds to the stored version, and the executor sends exactly the stored
+    text.
     """
     if timezone is not None:
         view = replace(view, timezone=timezone)
@@ -539,19 +617,29 @@ def render_card(view: ApprovalCardView, *, timezone: str | None = None) -> Rende
     if needs_copy_note and not _copyable(view.text):
         copy_note = "Copy the text above to send it yourself."
     if view.text is None:
-        return RenderedCard(
-            _compose(view, "<i>(The text is no longer stored.)</i>", copy_note=None), keyboard
-        )
-    full = _compose(view, f"<blockquote>{shown(view.text)}</blockquote>", copy_note=copy_note)
-    if len(sanitize(full)) <= CARD_BUDGET:
-        return RenderedCard(full, keyboard)
-    preview = shown(view.text[:PREVIEW_CHARS].rstrip()) + "…"
-    body = (
-        f"Full text in the message above ({len(view.text)} characters). The start:\n"
-        f"<blockquote>{preview}</blockquote>"
-    )
+        body = "<i>(The text is no longer stored.)</i>"
+        card = _fitted(view, body, None) or _compose(view, body, copy_note=None, excerpts=())
+        return RenderedCard(card, keyboard)
+    inline = _fitted(view, f"<blockquote>{shown(view.text)}</blockquote>", copy_note)
+    if inline is not None:
+        return RenderedCard(inline, keyboard)
     full_text = f"📝 Full text ({len(view.text)} characters):\n\n{shown(view.text)}"
-    return RenderedCard(_compose(view, body, copy_note=copy_note), keyboard, full_text)
+    for chars in _PREVIEW_STEPS:
+        fitted = _fitted(view, _preview_body(view.text, chars), copy_note)
+        if fitted is not None:
+            return RenderedCard(fitted, keyboard, full_text)
+    # Only a name far beyond Telegram's limits gets here: the smallest card.
+    body = _preview_body(view.text, 0)
+    return RenderedCard(_compose(view, body, copy_note=copy_note, excerpts=()), keyboard, full_text)
+
+
+def render_not_shown(view: ApprovalCardView) -> str:
+    """The card while its current text could not be sent above it (QA B1):
+    who it is for and why it cannot be approved — no buttons, no text."""
+    length = len(view.text or "")
+    return "\n".join(
+        [_header(view), "", _name_line(view), "", NOT_SHOWN_TEXT.format(length=length)]
+    )
 
 
 # ------------------------------------------------------------ helpers
@@ -695,39 +783,40 @@ class ApprovalCards:
             return replace(view, card_token=token)
 
     async def present(self, action_id: int) -> SendResult | None:
-        """A new card for the action (an existing card is edited instead)."""
+        """A new card for the action (an existing card is shown again, as by
+        the sync)."""
         view = await self._prepare(action_id)
         if view is None:
             return None
         if view.card_message_id is not None:
-            return await self._edit(view)
+            return await self._show(view)
         return await self._send_new(view)
 
     async def sync(self, action_id: int) -> SendResult | None:
-        """Show the action's current state on its card, in place."""
+        """Show the action's current state and version on its card."""
         view = await self._prepare(action_id)
         if view is None:
             return None
         if view.card_message_id is None:
             # Never shown (its presentation failed): a live card is shown now.
             return await self._send_new(view) if view.state in LIVE_CARD else None
-        return await self._edit(view)
+        return await self._show(view)
 
     async def show_new_version(self, action_id: int) -> SendResult | None:
-        """A revised version: edited in place, or — when its text moves above
-        the card — a new card below that text, the old card retired, so
-        "full text in the message above" stays true."""
-        view = await self._prepare(action_id)
-        if view is None:
-            return None
-        if view.card_message_id is None or render_card(view).full_text is None:
-            return await self.sync(action_id)
-        old = view.card_message_id
-        result = await self._send_new(view)
-        target = self._target(view)
-        if old is not None and target is not None and result is not None and result.ok:
-            await self._gateway.edit_control_text(target, old, RETIRED_CARD_TEXT)
-        return result
+        """A revised version (its commit cleared `card_state`): shown by the
+        sync's rule, so a long one gets its full text and a new card."""
+        return await self.sync(action_id)
+
+    async def _show(self, view: ApprovalCardView) -> SendResult | None:
+        """An existing card shows the view. Edited in place — unless the
+        view's text goes above the card and the card does not show this
+        version yet (`card_state` NULL: never recorded for it, or cleared by
+        a new version). Then the full text and a new card are sent, in that
+        order, and the old card retired: a card offers Approve for a long
+        version only right below that version's full text (QA B1)."""
+        if view.card_state is None and render_card(view).full_text is not None:
+            return await self._send_new(view, replacing=view.card_message_id)
+        return await self._edit(view)
 
     def _target(self, view: ApprovalCardView) -> ControlChat | None:
         if view.control_chat_id is None:
@@ -735,7 +824,12 @@ class ApprovalCards:
             return None
         return ControlChat(account_id=view.account_id, chat_id=view.control_chat_id)
 
-    async def _send_new(self, view: ApprovalCardView) -> SendResult | None:
+    async def _send_new(
+        self, view: ApprovalCardView, *, replacing: int | None = None
+    ) -> SendResult | None:
+        """A new card (after its full text, if any). `replacing`: the card it
+        takes over from, retired once the new one is recorded, or — when the
+        full text cannot be sent — told that this text cannot be approved."""
         target = self._target(view)
         if target is None:
             return None
@@ -743,21 +837,33 @@ class ApprovalCards:
         if card.full_text is not None:
             first = await self._gateway.send_text(target, card.full_text)
             if not first.ok:
-                # The card would point at a message that is not there; a
-                # live card is presented by the sync instead.
-                logger.warning(
-                    "approval_card_not_sent", action_id=view.action_id, error=first.error_class
-                )
+                # No card may point at a message that is not there: the sync
+                # tries again (counted, like a failed edit).
+                self._count_failure(view, "approval_card_not_sent", first)
+                if replacing is not None:
+                    await self._gateway.edit_control_text(target, replacing, render_not_shown(view))
                 return first
         result = await self._gateway.send_text(target, card.text, keyboard=card.keyboard)
-        if result.ok and result.message_id is not None:
-            await self._record(view, message_id=result.message_id)
-            logger.info("approval_card_sent", action_id=view.action_id, state=view.state.value)
-        else:
-            logger.warning(
-                "approval_card_not_sent", action_id=view.action_id, error=result.error_class
-            )
+        if not result.ok or result.message_id is None:
+            self._count_failure(view, "approval_card_not_sent", result)
+            return result
+        self._failures.pop(view.action_id, None)
+        recorded = await self._record(view, message_id=result.message_id)
+        logger.info("approval_card_sent", action_id=view.action_id, state=view.state.value)
+        if recorded and replacing is not None and replacing != result.message_id:
+            await self._gateway.edit_control_text(target, replacing, RETIRED_CARD_TEXT)
         return result
+
+    def _count_failure(self, view: ApprovalCardView, event: str, result: SendResult) -> None:
+        """One more failure to show this action's card in this state; the
+        sync stops trying after `SYNC_MAX_FAILURES` (until the state moves)."""
+        shown_before, failed = self._failures.get(view.action_id, (view.state, 0))
+        failures = failed + 1 if shown_before is view.state else 1
+        self._failures[view.action_id] = (view.state, failures)
+        if failures >= SYNC_MAX_FAILURES:
+            logger.error("approval_card_sync_gave_up", action_id=view.action_id, failures=failures)
+            return
+        logger.warning(event, action_id=view.action_id, error=result.error_class, failures=failures)
 
     async def _edit(self, view: ApprovalCardView) -> SendResult | None:
         target = self._target(view)
@@ -784,33 +890,32 @@ class ApprovalCards:
             self._failures.pop(view.action_id, None)
             await self._record(view, message_id=view.card_message_id)
             return result
-        shown_before, failed = self._failures.get(view.action_id, (view.state, 0))
-        failures = failed + 1 if shown_before is view.state else 1
-        self._failures[view.action_id] = (view.state, failures)
-        if failures >= SYNC_MAX_FAILURES:
-            logger.error("approval_card_sync_gave_up", action_id=view.action_id, failures=failures)
-        else:
-            logger.warning(
-                "approval_card_edit_failed",
-                action_id=view.action_id,
-                error=result.error_class,
-                failures=failures,
-            )
+        self._count_failure(view, "approval_card_edit_failed", result)
         return result
 
-    async def _record(self, view: ApprovalCardView, *, message_id: int) -> None:
-        """The card shows `view.state`; a newer version than the one shown
-        leaves `card_state` NULL, so the sync shows it next minute."""
+    async def _record(self, view: ApprovalCardView, *, message_id: int) -> bool:
+        """The card `message_id` shows `view` (its version and state). Bound
+        to the version (QA B1): a presenter that rendered an older version
+        records nothing, so it never overwrites the pointer to a newer
+        version's card; the sync shows the current version instead. If it
+        drew over the current card, that card is marked for the sync."""
+        mine = (Action.id == view.action_id, Action.account_id == view.account_id)
         async with transaction(self._sf) as uow:
-            await uow.session.execute(
+            result = await uow.session.execute(
                 update(Action)
-                .where(Action.id == view.action_id, Action.account_id == view.account_id)
-                .values(
-                    card_message_id=message_id,
-                    card_state=case((Action.version == view.version, view.state.value), else_=None),
-                )
+                .where(*mine, Action.version == view.version)
+                .values(card_message_id=message_id, card_state=view.state.value)
                 .execution_options(synchronize_session=False)
             )
+            if getattr(result, "rowcount", 0):
+                return True
+            await uow.session.execute(
+                update(Action)
+                .where(*mine, Action.card_message_id == message_id)
+                .values(card_state=None)
+                .execution_options(synchronize_session=False)
+            )
+        return False
 
     # ---------------------------------------------------------- presses
     async def handle_press(
@@ -1165,6 +1270,11 @@ class ApprovalCards:
             Action.card_message_id.is_not(None),
             Action.card_state.is_distinct_from(Action.state),
         )
+        lost_cards = select(Action.id).where(
+            Action.card_message_id.is_(None),
+            Action.state.in_([state.value for state in LIVE_CARD]),
+            Action.created_at < now - PRESENT_GRACE,
+        )
         given_up = [
             (action_id, state.value)
             for action_id, (state, failures) in self._failures.items()
@@ -1173,23 +1283,14 @@ class ApprovalCards:
         if given_up:
             # A card given up on in its current state takes no batch slot;
             # once its action reaches another state it is tried again.
-            stale_cards = stale_cards.where(tuple_(Action.id, Action.state).not_in(given_up))
+            not_given_up = tuple_(Action.id, Action.state).not_in(given_up)
+            stale_cards = stale_cards.where(not_given_up)
+            lost_cards = lost_cards.where(not_given_up)
         async with self._sf() as session:
             unsynced = list(
                 await session.scalars(stale_cards.order_by(Action.id).limit(SYNC_BATCH))
             )
-            unshown = list(
-                await session.scalars(
-                    select(Action.id)
-                    .where(
-                        Action.card_message_id.is_(None),
-                        Action.state.in_([state.value for state in LIVE_CARD]),
-                        Action.created_at < now - PRESENT_GRACE,
-                    )
-                    .order_by(Action.id)
-                    .limit(SYNC_BATCH)
-                )
-            )
+            unshown = list(await session.scalars(lost_cards.order_by(Action.id).limit(SYNC_BATCH)))
         done = 0
         for action_id in unsynced:
             await self.sync(action_id)
@@ -1405,6 +1506,15 @@ class RevisionJob:
                 await self._ask_again(session, before, action_id, text, status, now)
                 return status.value
             if status is lifecycle.VersionStatus.APPLIED:
+                # The card shows the previous version now: until the new one
+                # is presented (a long one with its full text above a new
+                # card), it counts as not shown (QA B1). Card bookkeeping only.
+                await session.execute(
+                    update(Action)
+                    .where(Action.id == action_id, Action.account_id == before.account_id)
+                    .values(card_state=None)
+                    .execution_options(synchronize_session=False)
+                )
 
                 async def show(_: async_sessionmaker[AsyncSession]) -> None:
                     await self._cards.show_new_version(action_id)
@@ -1423,7 +1533,40 @@ class RevisionJob:
         now: datetime,
     ) -> None:
         """R7: the row stays `revising`, no version is made (nothing over
-        4096 characters ever becomes approvable); the owner is asked again."""
+        4096 characters ever becomes approvable); the owner is asked again —
+        unless another question was opened meanwhile (another card's Edit):
+        that one keeps the owner's next message, and this card goes back to
+        its version instead (QA B3)."""
+        account_id = before.account_id
+        length = lifecycle.utf16_len(text)
+        empty = status is lifecycle.VersionStatus.EMPTY
+        open_question = await service.get_pending_input(
+            session, account_id=account_id, clock=self._clock
+        )
+        if open_question is not None and not (
+            open_question.kind == DRAFT_EDIT and open_question.ref_id == action_id
+        ):
+            token = await lifecycle.revision_failed(
+                session,
+                account_id=account_id,
+                action_id=action_id,
+                expected_version=before.version,
+                now=now,
+            )
+            if token is None:  # pragma: no cover - the row is locked and revising
+                return
+            back = (
+                REVISION_EMPTY_BACK_TEXT
+                if empty
+                else REVISION_TOO_LONG_BACK_TEXT.format(length=length, limit=MAX_TEXT_LENGTH)
+            )
+
+            async def back_to_card(_: async_sessionmaker[AsyncSession]) -> None:
+                await self._cards.notify(account_id, back)
+                await self._cards.sync(action_id)
+
+            after_commit(session, back_to_card)
+            return
         await lifecycle.set_revision_turn(
             session,
             account_id=before.account_id,
@@ -1442,12 +1585,9 @@ class RevisionJob:
         )
         message = (
             REVISION_EMPTY_TEXT
-            if status is lifecycle.VersionStatus.EMPTY
-            else REVISION_TOO_LONG_TEXT.format(
-                length=lifecycle.utf16_len(text), limit=MAX_TEXT_LENGTH
-            )
+            if empty
+            else REVISION_TOO_LONG_TEXT.format(length=length, limit=MAX_TEXT_LENGTH)
         )
-        account_id = before.account_id
 
         async def announce(_: async_sessionmaker[AsyncSession]) -> None:
             await self._cards.notify(account_id, message)
