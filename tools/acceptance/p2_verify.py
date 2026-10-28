@@ -135,7 +135,10 @@ def open_database(url: str) -> Iterator[psycopg.Connection[Any]]:
     with (
         psycopg.connect(
             url.replace("postgresql+psycopg://", "postgresql://", 1),
-            options="-c default_transaction_read_only=on",
+            options=(
+                "-c default_transaction_read_only=on "
+                "-c statement_timeout=10000 -c lock_timeout=1000"
+            ),
         ) as conn,
         conn.transaction(),
     ):
@@ -331,8 +334,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     tasks(conn, args.since)
                 case "digests":
                     digests(conn, args.since)
-    except psycopg.Error as error:
-        # Driver messages may include connection details or SQL values.
+    except Exception as error:
+        # This CLI boundary must hide content even from an unexpected failure.
         print(f"verification_failed type={type(error).__name__}", file=sys.stderr)
         return 1
     return 0

@@ -6,13 +6,17 @@ import asyncio
 import importlib
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import psycopg
 import pytest
 from sqlalchemy import text
 
+from assistant.actions.lifecycle import text_hash, transition
+from assistant.actions.states import ActionState, StateReason
 from assistant.db.uow import transaction
+from assistant.inbox.models import Digest
 from assistant.privacy.content_columns import CONTENT_COLUMNS
 from tests.integration.business_env import Env, business_message, deliver
 from tests.integration.p2_factories import seed_account, seed_action, seed_conversation
@@ -55,6 +59,49 @@ async def test_release_prints_flag_names_and_no_other_setting(env: Env, migrated
 async def test_every_mode_is_content_free(env: Env, migrated_url: str) -> None:
     seeded = await seed(env)
     async with transaction(env.factory) as uow:
+        chat = await seed_conversation(uow.session, account_id=seeded.account_id)
+        action = await seed_action(
+            uow.session, account_id=seeded.account_id, conversation_id=chat.id, text=CANARY
+        )
+        action_id = action.id
+        attempt_id = "ac72541741ae4efaba274b71f4f57ef6"
+        token = "QAseed1234"
+        for before, after, values in (
+            (ActionState.PROPOSED, ActionState.AWAITING_APPROVAL, {"approval_token": token}),
+            (
+                ActionState.AWAITING_APPROVAL,
+                ActionState.APPROVED,
+                {"approved_text_hash": text_hash(CANARY)},
+            ),
+            (ActionState.APPROVED, ActionState.EXECUTING, {"attempt_id": attempt_id}),
+            (
+                ActionState.EXECUTING,
+                ActionState.SUCCEEDED,
+                {"sent_text_hash": text_hash(CANARY), "telegram_message_id": 1234},
+            ),
+        ):
+            assert await transition(
+                uow.session,
+                account_id=seeded.account_id,
+                action_id=action_id,
+                from_state=before,
+                to_state=after,
+                reason=StateReason.SENT if after is ActionState.SUCCEEDED else None,
+                now=env.clock.now(),
+                token=token if after is ActionState.APPROVED else None,
+                values=values,
+                details={"note": CANARY},
+            )
+        uow.session.add(
+            Digest(
+                account_id=seeded.account_id,
+                period_start=env.clock.now() - timedelta(days=1),
+                period_end=env.clock.now(),
+                status="sent",
+                sent_at=env.clock.now(),
+            )
+        )
+        await uow.session.flush()
         for table, column in sorted(CONTENT_COLUMNS):
             if column == "search_tsv":
                 continue  # generated from search_key
@@ -70,9 +117,6 @@ async def test_every_mode_is_content_free(env: Env, migrated_url: str) -> None:
                 text(f'UPDATE app."{table}" SET "{column}" = {value}'),  # noqa: S608 - registry identifiers
                 {"canary": CANARY},
             )
-        action_id = await uow.session.scalar(
-            text("SELECT min(id) FROM app.actions WHERE account_id = :a"), {"a": seeded.account_id}
-        )
     assert await hits(env, CANARY) == {f"{t}.{c}" for t, c in CONTENT_COLUMNS}
     for args in (
         ("release",),
@@ -86,6 +130,30 @@ async def test_every_mode_is_content_free(env: Env, migrated_url: str) -> None:
         result = await run(migrated_url, *args)
         assert result.returncode == 0, result.stderr
         assert CANARY not in result.stdout + result.stderr
+        expected_row = {
+            "release": "state=",
+            "actions": "action=",
+            "action": f"action={action_id} event=action_claimed",
+            "script": "found=",
+            "notifications": "notification=",
+            "tasks": "task=",
+            "digests": "digest=",
+        }[args[0]]
+        assert expected_row in result.stdout
+        if args[0] == "actions":
+            [sent] = [
+                line
+                for line in result.stdout.splitlines()
+                if line.startswith(f"action={action_id} ")
+            ]
+            assert "hash_match=yes telegram_id=yes attempts=1" in sent
+        if args[0] == "action":
+            assert "attempt_id=ac725417-41ae-4efa-ba27-4b71f4f57ef6" in result.stdout
+            assert "event=action_approved" in result.stdout
+            assert "event=action_succeeded" in result.stdout
+        if args[0] == "digests":
+            assert "status=sent" in result.stdout
+            assert f"sent_utc={env.clock.now().isoformat()}" in result.stdout
 
 
 async def test_script_mode_reports_found_missing_and_unexpected_numbers_only(
@@ -118,6 +186,8 @@ async def test_modes_run_read_only(migrated_url: str) -> None:
         with verifier.open_database(migrated_url) as conn:
             assert conn.execute("SHOW transaction_read_only").fetchone()[0] == "on"
             assert conn.execute("SHOW default_transaction_read_only").fetchone()[0] == "on"
+            assert conn.execute("SHOW statement_timeout").fetchone()[0] == "10s"
+            assert conn.execute("SHOW lock_timeout").fetchone()[0] == "1s"
             with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
                 conn.execute("CREATE TABLE app.qa_should_never_exist (id bigint)")
 
