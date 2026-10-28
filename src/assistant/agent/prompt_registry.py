@@ -33,8 +33,15 @@ ACTIVE: dict[str, str] = {
     # searched for across all chats; an empty narrowed search reads the chat
     # before "not there"; values copied as the message writes them; the whole
     # reply in the owner's language and script. v1-v6 stay: retained runs
-    # reference them.
-    "owner_request": "v7",
+    # reference them. v8 (S05.4, the M05 bump, P2-T17): v7 word for word plus
+    # rule 18 monitors (`resolve_contact` first; `contact_replied`/`keywords`/
+    # `media_received` before the AI kinds; never "active" until a tool
+    # result says so; relay `list_monitors` as given), rule 19 contact
+    # priority (S05.2, `set_contact_priority`) and rule 20 attention v2
+    # (S05.1: relay triage reasons as given; a task is done only when a tool
+    # result shows it closed; offer a draft only from `next_actions`). v1-v7
+    # stay.
+    "owner_request": "v8",
     # v1 (S03.2): one chat, rolling or period; cite message ids; no tools.
     # v2 (S03.3): the owner's notes about this contact are background, never
     # cited or reported as chat content.
@@ -65,6 +72,11 @@ ACTIVE: dict[str, str] = {
     # tasks, escalation category, short reasons; contact text is data, an
     # instruction to the assistant is `suspicious`; no tools.
     "triage": "v1",
+    # v1 (S05.4): one chat's new contact messages against the owner's
+    # semantic monitors (semantic, decision_requested, urgent) → one verdict
+    # per listed monitor citing the matching new messages; unsure is no
+    # match; contact text is judged on substance, never obeyed; no tools.
+    "evaluate_monitor": "v1",
 }
 
 

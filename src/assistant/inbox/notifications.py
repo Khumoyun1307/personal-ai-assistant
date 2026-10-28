@@ -375,9 +375,10 @@ class NotificationDelivery:
         self, session: AsyncSession, notification: Notification, rendered: RenderedAlert
     ) -> tuple[int | None, tuple[Button, ...]]:
         """A standard alert about a chat is a card: Open chat, Useful, Not
-        useful (S05.2 §3.2). Created in the claim transaction."""
+        useful (S05.2 §3.2). Created in the claim transaction. The renderer's
+        own buttons follow (ICR-4)."""
         if notification.alert_class != AlertClass.STANDARD or rendered.conversation_id is None:
-            return None, ()
+            return None, rendered.extra_buttons
         card = await create_card(
             session,
             account_id=notification.account_id,
@@ -387,8 +388,9 @@ class NotificationDelivery:
             ttl=NTF_CARD_TTL,
         )
         token = card.token or ""
-        return card.id, tuple(
-            Button(label, encode(NTF_CARD, token, op)) for label, op in NTF_BUTTONS
+        return card.id, (
+            *(Button(label, encode(NTF_CARD, token, op)) for label, op in NTF_BUTTONS),
+            *rendered.extra_buttons,
         )
 
     async def _render(

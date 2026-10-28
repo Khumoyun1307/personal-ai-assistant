@@ -346,6 +346,7 @@ def default_registry() -> ToolRegistry:
     )
     from assistant.agent.tools.memory import FORGET, LIST_MEMORIES, REMEMBER
     from assistant.agent.tools.modes import SET_CONVERSATION_MODE, UPDATE_PREFERENCES
+    from assistant.agent.tools.monitors import CREATE_MONITOR, LIST_MONITORS, STOP_MONITOR
     from assistant.agent.tools.priority import SET_CONTACT_PRIORITY
     from assistant.agent.tools.search import SEARCH_MESSAGES
     from assistant.agent.tools.status import GET_STATUS
@@ -369,6 +370,9 @@ def default_registry() -> ToolRegistry:
             DELETE_CONTACT_DATA,
             DELETE_EVERYTHING,
             SET_CONTACT_PRIORITY,
+            CREATE_MONITOR,
+            LIST_MONITORS,
+            STOP_MONITOR,
         ]
     )
 

@@ -8,12 +8,17 @@ from typing import Any
 import pytest
 
 from assistant import bootstrap
+from assistant.agent.monitor_eval import MonitorEvaluator
+from assistant.automation.monitor_trigger import MonitorIngestionListener
+from assistant.automation.monitors import MON_CARD, MonitorMatchRenderer
 from assistant.config import ConfigError, Settings
+from assistant.inbox.notification_types import NotificationKind
 from assistant.inbox.notifications import NTF_CARD, NotificationDelivery
 from assistant.inbox.triage_trigger import TriageIngestionListener
 from assistant.jobs.tasks_inbox import TriageJob
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.telegram.control.alerts import handle_ntf_press
+from assistant.telegram.control.monitors import handle_mon_press
 from tests.fakes.channel import FakeChannel
 from tests.fakes.clock import FakeClock
 from tests.fakes.llm import FakeLLM
@@ -133,3 +138,44 @@ def test_m05_wires_triage_only_while_its_flag_is_on(
     assert len(wiring.reconcilers) == (2 if listener else 1)
     assert wiring.inbox is not None
     assert isinstance(wiring.inbox.triage, TriageJob) is job
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        ("", []),
+        ("monitors.run", [MonitorIngestionListener]),
+        # Registered LAST, after triage (F0-interfaces §5: actions -> triage -> monitors).
+        ("monitors.run,triage.run", [TriageIngestionListener, MonitorIngestionListener]),
+    ],
+)
+def test_m05_wires_monitors_and_matches_only_with_the_flag(
+    clean_env: None, flags: str, expected: list[type]
+) -> None:
+    """S05.4 in `_wire_m05`: the `MONITOR_MATCH` renderer, the Stop button
+    and the hourly expiry are always wired; the listener (last), the
+    evaluation job and its reconciler only with flag `monitors.run`."""
+    wiring = bootstrap._PhaseWiring()
+    bootstrap._wire_m05(
+        wiring,
+        settings=settings(feature_flags=flags),
+        session_factory=None,  # type: ignore[arg-type]
+        gateway=None,  # type: ignore[arg-type]
+        channel=FakeChannel(),
+        clock=FakeClock(),
+        scheduler=None,  # type: ignore[arg-type]
+        llm=FakeLLM(),  # type: ignore[arg-type]
+        roles=frozenset({"worker"}),
+    )
+    assert wiring.routes.callbacks[MON_CARD] is handle_mon_press
+    assert wiring.inbox is not None
+    assert wiring.inbox.notifications is not None
+    renderers = wiring.inbox.notifications._renderers
+    assert isinstance(renderers[NotificationKind.MONITOR_MATCH], MonitorMatchRenderer)
+    assert wiring.automation is not None
+    assert wiring.automation.monitors is not None
+    assert [type(listener) for listener in wiring.listeners] == expected
+    monitors_on = "monitors.run" in flags
+    assert isinstance(wiring.automation.monitors.evaluator, MonitorEvaluator) is monitors_on
+    # The notification reconciler, then triage's and the monitors' own.
+    assert len(wiring.reconcilers) == 1 + ("triage.run" in flags) + monitors_on
