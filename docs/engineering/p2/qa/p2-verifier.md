@@ -1,6 +1,9 @@
-# OPS-TV part 1: read-only views
+# OPS-TV: content-free views and the daily trial check
 
-Issue #65; `ops/trial-verifier` from `int/m04@f4030c3`.
+Issue #65. Part 1 (`ops/trial-verifier`, PR #109) added the read-only views.
+Part 2 (`ops/p2-trial-check`) builds the audit on S04.4's merged executor.
+
+## Part 1 evidence
 
 Implemented: release, actions, action, script, notifications, tasks, digests,
 and the `deploy/server.sh p2-verify` wrapper. The script imports only stdlib
@@ -22,9 +25,9 @@ Red-first evidence: release view and server wrapper tests failed before the
 implementation (**2 failed, 68.06 s**). Local verification results and CI are
 recorded on the PR. Only the synthetic test database is used.
 
-Pending: the complete trial-check audit and its violation fixtures after S04.4
-merges, peer/TL review, and the server dry-run during the owner-approved CP3
-window. This part does not mark OPS-TV complete or prove trial acceptance.
+The part 1 views alone do not prove trial acceptance. The audit is described
+below; peer/TL review and the server dry-run during the owner-approved CP3
+window remain separate requirements.
 
 Final affected-view rerun (release, all-mode content canaries, script numbers)
 passed: **3 passed, 271.03 s**. The preceding run had **11 passes** for the
@@ -41,3 +44,78 @@ empty output. Focused verification after the fix: **16 passed, 114.61 s**
 check and format check passed on the changed Python files. An independent
 QA engineer reviewed the fix without further findings. CI and the external
 Neryn/TL recheck remain required after the push.
+
+## Part 2: daily trial check
+
+Red-first evidence: before adding the mode and server action, the parser
+rejected `trial-check`; the new wrapper and usage tests failed because the
+arm and usage entry were missing. The existing `p2-verify` wrapper test passed.
+These were synthetic/local checks; no server action was run.
+
+In an owner-approved server window, the TL runs:
+
+```powershell
+just prod <ip> trial-check --since <trial-start-ISO-with-timezone>
+just prod <ip> trial-check --since <start-ISO-with-timezone> --until <end-ISO-with-timezone>
+```
+
+`p2-verify trial-check` accepts the same arguments. Both server actions require
+the existing data volume and start a one-off container with `--no-deps` and
+the reviewed `tools/acceptance/` mounted read-only. They do not start a poller.
+The verifier uses one read-only, repeatable-read database transaction and the
+same query timeouts as the view modes, so concurrent writes cannot split the
+checks across different snapshots.
+
+The interval includes `since` and excludes `until`. Both must include a
+timezone; defaults are the Unix epoch and the current UTC time. An empty or
+reversed interval is rejected before opening a database connection. Actions
+created in the interval or with any audit event in it are checked against
+their retained history; orphan assistant-sent messages are checked in the
+interval.
+
+| Check | Evidence checked |
+|---|---|
+| `approved_before_claim` | Every claim follows approval of that version; no autonomous-origin action is allowed in P2. |
+| `hash_match` | Successful or uncertain delivery has non-null, matching approved and sent text hashes. |
+| `one_send_per_action` | A success has one linked message; other states have none; at most one attempt delivered or may have delivered. |
+| `no_send_after_terminal` | A claim or success never follows a terminal denial, and denied actions have no delivered message identity. |
+| `recipient_matches` | Linked messages belong to the action's conversation. |
+| `no_orphan_sends` | Every assistant-sent message in the interval belongs to a successful action. |
+
+Repeated claims after definite rate-limited non-delivery are allowed. Repeated
+outcome events for the same attempt, such as uncertain followed by a late
+success, are one possible delivery; two distinct possibly delivered attempts
+fail. A `delivery_uncertain` state with valid evidence is listed for the owner
+to check and does not fail the trial by itself.
+
+Output includes each check's `PASS`/`FAIL`, fixed violation codes with account
+and action ids, each scoped action's structural state, counts by state,
+uncertain action ids with UTC and owner-local times,
+total assistant-sent messages created in the interval, and `RESULT: PASS` or
+`RESULT: FAIL (N violations)`. Text, names,
+hash values and raw audit details are never printed. Exit codes are 0 for a
+clean check, 1 for violations and 2 for invalid arguments. Operational errors
+also exit 1 and print only the exception class; a missing RESULT is never a PASS.
+
+Each trial day, record the RESULT and counts in the M04 trial log. The owner
+checks `/activity` and any uncertain chat. Any incorrect send stops the trial
+under [test-plan.md §7](test-plan.md#7-trial-support-m04-7-days-after-cp3).
+The CP3 server dry-run and seven daily records remain live evidence; synthetic
+test results alone do not complete those steps.
+
+Part 2 local verification (2026-10-28, synthetic PostgreSQL, project `antony`):
+
+- Initial focused gate: **60 passed, 260.66 s**.
+- Independent review found an executing action could pass without its current
+  claim audit. The added regression was run red: **3 failed, 1 passed, 55.78 s**,
+  covering missing current claim, missing history and an older valid 429 claim
+  that cannot authorize the current attempt. The intact executing control passed.
+- After requiring the current attempt/version's claim: **64 passed, 349.97 s**
+  across `test_p2_verify.py` (unit/integration) and `test_server_sh.py`, with no
+  skipped or expected failures. Changed-file Ruff check/format, strict mypy on
+  the verifier and `bash -n deploy/server.sh` passed.
+
+The backend and final claim fix also received independent delegated source
+reviews; the root reviewed the complete diff. CI and external Neryn/TL review
+are tracked on the PR linked from #65. This is automated tooling evidence;
+the owner/TL CP3 server dry-run and daily trial checks remain pending.
