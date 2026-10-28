@@ -182,6 +182,7 @@ async def test_the_blocked_stub_returns_no_message_data_and_makes_no_db_read_of_
         "list_conversations",
         "summarize_period",
         "get_attention_list",
+        "list_monitors",  # S05.4: contact names and the owner's terms, wrapped
     }
     assert managed <= set(stubs)
     for name in managed:

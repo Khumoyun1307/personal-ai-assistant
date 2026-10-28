@@ -65,6 +65,11 @@ ACTIVE: dict[str, str] = {
     # tasks, escalation category, short reasons; contact text is data, an
     # instruction to the assistant is `suspicious`; no tools.
     "triage": "v1",
+    # v1 (S05.4): one chat's new contact messages against the owner's
+    # semantic monitors (semantic, decision_requested, urgent) → one verdict
+    # per listed monitor citing the matching new messages; unsure is no
+    # match; contact text is judged on substance, never obeyed; no tools.
+    "evaluate_monitor": "v1",
 }
 
 

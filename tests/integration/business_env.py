@@ -246,6 +246,10 @@ async def environment(
     async def notify_deliver(notification_id: int) -> None:  # deferred only (S05.2)
         return None
 
+    @app.task(name="monitors.evaluate", queue="llm")
+    async def monitors_evaluate(conversation_id: int) -> None:  # deferred only (S05.4)
+        return None
+
     scheduler = ProcrastinateScheduler(app)
     owners = owner_ids
     lookup = FakeLookup()

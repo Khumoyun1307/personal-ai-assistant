@@ -54,6 +54,11 @@ class Source(StrEnum):
     """A task's title (S05.1): model-written from a contact's message, so it
     may carry an injection forward."""
 
+    MONITOR_SPEC = "monitor_spec"
+    """A stored monitor's terms or description (S05.4): the owner confirmed
+    them, but they were written in a run that may have read other people's
+    text, and they may carry names."""
+
 
 OPEN_TAG = '<untrusted source="{source}" trust="untrusted">'
 CLOSE_TAG = "</untrusted>"
