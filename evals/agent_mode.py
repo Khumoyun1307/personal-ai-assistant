@@ -151,6 +151,7 @@ PRODUCTION_FLAGS = frozenset(
         "tool.delete_conversation_data",
         "tool.delete_contact_data",
         "tool.delete_everything",
+        "tool.set_contact_priority",
     }
 )
 #: A consent version label that cannot be mistaken for a real policy version.

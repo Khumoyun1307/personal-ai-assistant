@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import preferences
 from assistant.accounts.models import Account, AuditLogEntry
-from assistant.conversations import modes
+from assistant.conversations import modes, priority
 from assistant.core.clock import Clock
 from assistant.memory import items
 
@@ -35,6 +35,7 @@ UNDOABLE_EVENTS = frozenset(
         items.EVENT_MEMORY_FORGOTTEN,
         modes.EVENT_MODE_CHANGED,
         preferences.EVENT_PREFERENCES_CHANGED,
+        priority.EVENT_PRIORITY_CHANGED,
     }
 )
 
@@ -111,6 +112,8 @@ async def undo(
             )
     elif entry.event == modes.EVENT_MODE_CHANGED:
         done = await _undo_mode(session, account_id, entry, clock)
+    elif entry.event == priority.EVENT_PRIORITY_CHANGED:
+        done = await _undo_priority(session, account_id, entry, clock)
     elif entry.event == preferences.EVENT_PREFERENCES_CHANGED:
         account = await session.get(Account, account_id)
         if account is not None:
@@ -155,5 +158,30 @@ async def _undo_mode(
             expect=str(after),
         )
     except LookupError, modes.ModeError:
+        return False
+    return change.changed
+
+
+async def _undo_priority(
+    session: AsyncSession, account_id: int, entry: AuditLogEntry, clock: Clock
+) -> bool:
+    """Back to the old priority, only while the contact still has the one
+    this change set (S05.2 §3.6, the S03.3 rule)."""
+    details = entry.details or {}
+    before, after = details.get("old"), details.get("new")
+    if entry.subject_id is None or before not in priority.PRIORITIES:
+        return False
+    try:
+        change = await priority.set_priority(
+            session,
+            account_id=account_id,
+            contact_id=entry.subject_id,
+            priority=str(before),
+            actor="owner",
+            clock=clock,
+            details={"undo_of": entry.id},
+            expect=str(after),
+        )
+    except LookupError, priority.PriorityError:
         return False
     return change.changed
