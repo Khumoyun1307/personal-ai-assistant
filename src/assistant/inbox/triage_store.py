@@ -36,6 +36,7 @@ from assistant.inbox.models import ConversationTriage
 from assistant.inbox.notification_types import NotificationKind, NotificationRefs, Priority
 from assistant.inbox.notifications import enqueue
 from assistant.inbox.tasks import TaskView
+from assistant.inbox.triage_trigger import TRIGGER_DIRECTIONS
 from assistant.memory import summaries
 from assistant.memory.summaries import SourceMessage, StoreResult
 from assistant.memory.summaries import _changed_source as changed_source
@@ -520,9 +521,15 @@ async def _contact_wrote(
 async def _settle_flag(
     session: AsyncSession, conversation: Conversation, through: int | None
 ) -> None:
-    """Clear `pending_triage_at` when nothing arrived after `through`;
-    otherwise move it to the first message after it (the summaries' rule:
-    the wait counts from what triage has not seen)."""
+    """Clear `pending_triage_at` when nothing a run could read arrived after
+    `through`; otherwise move it to the first such message (the summaries'
+    rule: the wait counts from what triage has not seen).
+
+    Only retained messages from a direction that sets the flag count: a
+    deleted or content-less message (a location, a poll) is never shown, so
+    it would keep the flag forever and the reconciler would re-create the job
+    every minute (Viro on #92); an automatic message is read with the next
+    burst, as when it arrives outside a run."""
     if conversation.pending_triage_at is None:
         return
     if through is None:  # nothing was ever there to triage
@@ -530,7 +537,7 @@ async def _settle_flag(
         return
     conversation.pending_triage_at = await session.scalar(
         select(func.min(Message.created_at))
-        .where(Message.account_id == conversation.account_id)
-        .where(Message.conversation_id == conversation.id)
+        .where(*retained(conversation.account_id, conversation.id))
+        .where(Message.direction.in_([d.value for d in TRIGGER_DIRECTIONS]))
         .where(Message.id > through)
     )
