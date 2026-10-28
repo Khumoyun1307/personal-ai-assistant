@@ -28,6 +28,15 @@ class DraftContext:
     shown_through_message_id: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class DraftRevision:
+    """A revision's inputs (P2-T08): the card's current text, written by the
+    assistant from chat content, and the owner's own revision message."""
+
+    current_text: str
+    owner_message: str
+
+
 def build_draft_reply(
     *,
     prompt: Prompt,
@@ -39,9 +48,12 @@ def build_draft_reply(
     contact_name: str | None = None,
     guidance: str | None = None,
     run_tainted: bool = False,
+    revision: DraftRevision | None = None,
 ) -> DraftContext:
     if guidance is not None and run_tainted:
         raise ValueError("tainted runs cannot supply draft guidance")
+    if guidance is not None and revision is not None:
+        raise ValueError("a revision takes the owner's message, not guidance")
     preferences = current(account)
     profile = [
         "Owner profile:",
@@ -79,6 +91,25 @@ def build_draft_reply(
         items.append(
             TextItem(
                 "user", "Owner instruction for this draft:\n" + guidance, Provenance.OWNER_CONTROL
+            )
+        )
+    if revision is not None:
+        current_draft = wrap(revision.current_text, Source.DRAFT)
+        items.append(
+            TextItem(
+                "user",
+                "This is a revision. The current draft, written by the assistant from this "
+                f"chat:\n{current_draft}",
+                Provenance.MANAGED,
+            )
+        )
+        items.append(
+            TextItem(
+                "user",
+                "The owner's revision message (the owner's own words: either the new reply "
+                "itself or an instruction for rewriting the current draft):\n"
+                + revision.owner_message,
+                Provenance.OWNER_CONTROL,
             )
         )
     items.append(TextItem("user", f"Current time: {now.isoformat()}", Provenance.OWNER_CONTROL))

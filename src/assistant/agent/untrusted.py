@@ -50,6 +50,10 @@ class Source(StrEnum):
     (the owner confirmed it on a card, S03.3, M03 D70): the words may be
     someone else's."""
 
+    DRAFT = "draft"
+    """A draft reply written by the assistant from chat content (S04.2): it
+    may restate a contact's text, so a revision reads it as data."""
+
 
 OPEN_TAG = '<untrusted source="{source}" trust="untrusted">'
 CLOSE_TAG = "</untrusted>"
