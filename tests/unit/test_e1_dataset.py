@@ -268,7 +268,7 @@ def test_no_apostrophe_queries_contain_no_apostrophes() -> None:
 def test_manifest_matches_the_dataset_files() -> None:
     assert manifest.problems() == []
     names = {p.relative_to(manifest.DATASETS).as_posix() for p in manifest.frozen_files()}
-    assert names == {"e1/conversations.jsonl", "retrieval/queries.jsonl"}
+    assert names == {"e1/conversations.jsonl", "e2/situations.jsonl", "retrieval/queries.jsonl"}
 
 
 def test_dataset_files_are_nfc_and_lf() -> None:
