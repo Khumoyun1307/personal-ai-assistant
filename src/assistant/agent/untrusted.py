@@ -54,6 +54,10 @@ class Source(StrEnum):
     """A task's title (S05.1): model-written from a contact's message, so it
     may carry an injection forward."""
 
+    TRIAGE_REASON = "triage_reason"
+    """A triage verdict's short reason (S05.1 attention v2): model-written
+    from a contact's messages, so it may carry an injection forward."""
+
 
 OPEN_TAG = '<untrusted source="{source}" trust="untrusted">'
 CLOSE_TAG = "</untrusted>"
