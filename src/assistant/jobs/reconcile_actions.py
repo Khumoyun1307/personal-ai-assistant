@@ -1,7 +1,5 @@
-"""M04 reconcilers (F0-interfaces §6.3; ARCHITECTURE §12.4).
-
-Domain rows are the source of truth and jobs are triggers (AGENTS §13). These
-live in the jobs adapter because they read procrastinate's own table.
+"""M04 reconcilers (F0-interfaces §6.3; ARCHITECTURE §12.4): domain rows are
+the truth, jobs are triggers (AGENTS §13).
 
 `unqueued_executions` (S04.4): an `approved` action that is due (no
 `retry_at` ahead) and has had no change for a few seconds, with no
@@ -27,6 +25,8 @@ after that message it is re-deferred once (a second job for the same turn is
 never made); after thirty minutes the revision is given up: back to the same
 version's card, the owner told. An action in `revising` with no message yet
 expires normally (`system.expire_actions`).
+
+These live in the jobs adapter because they read procrastinate's own table.
 """
 
 from __future__ import annotations
@@ -50,19 +50,10 @@ from assistant.core.jobs import (
 )
 from assistant.jobs.reconcile import DeferRequest
 
+# ------------------------------------------------------------- S04.4 execution
 #: Do not race the defer that normally follows an approval's commit.
 EXECUTE_GRACE = timedelta(seconds=10)
 EXECUTE_BATCH = 500
-
-#: Do not race a defer that is happening right now.
-DRAFT_GRACE = timedelta(seconds=30)
-DRAFT_BATCH = 500
-
-#: A revision's job is re-deferred this long after the owner's message ...
-REVISE_REDEFER_AFTER = timedelta(minutes=5)
-#: ... and the revision given up after this long.
-REVISE_GIVE_UP_AFTER = timedelta(minutes=30)
-REVISE_BATCH = 200
 
 _UNQUEUED_EXECUTIONS = text(
     """
@@ -81,6 +72,26 @@ _UNQUEUED_EXECUTIONS = text(
     LIMIT :limit
     """
 )
+
+
+async def unqueued_executions(session: AsyncSession, now: datetime) -> list[DeferRequest]:
+    """`actions.execute` defers for approved actions whose job was lost."""
+    rows = await session.execute(
+        _UNQUEUED_EXECUTIONS,
+        {
+            "now": now,
+            "older_than": now - EXECUTE_GRACE,
+            "task": EXECUTE_TASK,
+            "limit": EXECUTE_BATCH,
+        },
+    )
+    return [DeferRequest(EXECUTE_TASK, {"action_id": int(row[0])}) for row in rows.all()]
+
+
+# ----------------------------------------------------------------- S04.2 drafts
+#: Do not race a defer that is happening right now.
+DRAFT_GRACE = timedelta(seconds=30)
+DRAFT_BATCH = 500
 
 _CLEAR_STRAY_FLAGS = text(
     """
@@ -114,20 +125,6 @@ _UNQUEUED_DRAFTS = text(
     LIMIT :limit
     """
 )
-
-
-async def unqueued_executions(session: AsyncSession, now: datetime) -> list[DeferRequest]:
-    """`actions.execute` defers for approved actions whose job was lost."""
-    rows = await session.execute(
-        _UNQUEUED_EXECUTIONS,
-        {
-            "now": now,
-            "older_than": now - EXECUTE_GRACE,
-            "task": EXECUTE_TASK,
-            "limit": EXECUTE_BATCH,
-        },
-    )
-    return [DeferRequest(EXECUTE_TASK, {"action_id": int(row[0])}) for row in rows.all()]
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +168,13 @@ class UnqueuedDrafts:
             )
         return requests
 
+
+# -------------------------------------------------------------- S04.3 revisions
+#: A revision's job is re-deferred this long after the owner's message ...
+REVISE_REDEFER_AFTER = timedelta(minutes=5)
+#: ... and the revision given up after this long.
+REVISE_GIVE_UP_AFTER = timedelta(minutes=30)
+REVISE_BATCH = 200
 
 _UNFINISHED_REVISIONS = text(
     """
