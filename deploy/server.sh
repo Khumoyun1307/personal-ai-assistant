@@ -20,6 +20,7 @@
 #                                    (deploy/sql/nfr04.sql; timings only)
 #   deploy/server.sh verify-r0 ARGS  tools/acceptance/verify_r0.py in a one-off
 #                                    app container (prints numbers/states only)
+#   deploy/server.sh p2-verify ARGS  P2 read-only views (ids/states/times only)
 #
 # Every compose call passes `--env-file .env`: the project directory is
 # deploy/, so the root .env would otherwise not be used for interpolation.
@@ -227,8 +228,14 @@ case "$action" in
       -v "$(pwd)/tools/acceptance:/app/tools/acceptance:ro" \
       app python tools/acceptance/verify_r0.py "$@"
     ;;
+  p2-verify)
+    require_data_volume
+    compose run --rm --no-deps -T \
+      -v "$(pwd)/tools/acceptance:/app/tools/acceptance:ro" \
+      app python tools/acceptance/p2_verify.py "$@"
+    ;;
   *)
-    echo "usage: deploy/server.sh deploy|status|logs [N]|backup|nfr04 [DAYS]|verify-r0 ARGS" >&2
+    echo "usage: deploy/server.sh deploy|status|logs [N]|backup|nfr04 [DAYS]|verify-r0 ARGS|p2-verify ARGS" >&2
     exit 2
     ;;
 esac

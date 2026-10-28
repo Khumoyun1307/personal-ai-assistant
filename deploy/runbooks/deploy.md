@@ -47,6 +47,15 @@ Rules:
   the owner's message to the finished reply, the p95 limit and a verdict.
   It reads `deploy/sql/nfr04.sql` in a read-only transaction: timings, run
   types, statuses and tool names only, never a content column.
+- **P2 verification views.** `just prod <ip> p2-verify release` reports the
+  schema, flag names and action counts. Other modes are `actions --since
+  <ISO timestamp with timezone>`, `action <id>`, `script P2-4 --expect 401-409`,
+  `notifications`, `tasks` and `digests` (the last two and notifications also
+  accept `--since`). The one-off container mounts the verifier read-only;
+  one read-only transaction returns ids, states, counts and times. SQL extracts
+  script numbers without returning message text. These views do not certify
+  send safety: audit-based `trial-check` follows S04.4 integration. Run only
+  in the planned owner-approved server window.
 - A `backup_upload_stale` alert means dumps are produced but no longer reach
   B2: run `just prod-backup <ip>` and read its log lines (`off-site sync of
   … failed` / `… refused`); see `restore.md` §C for the delete guard —
