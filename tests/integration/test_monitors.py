@@ -30,6 +30,7 @@ the control chat (AGENTS §11).
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
@@ -53,8 +54,14 @@ from assistant.automation.monitor_trigger import MonitorIngestionListener
 from assistant.automation.rules import MonitorCondition, MonitorRule, MonitorScope
 from assistant.core.jobs import MONITOR_TASK
 from assistant.db.uow import transaction
+from assistant.inbox.alert_texts import RenderedAlert
 from assistant.inbox.models import ConversationTriage, Notification
-from assistant.inbox.notification_types import NotificationKind, NotificationRefs, Priority
+from assistant.inbox.notification_types import (
+    AlertClass,
+    NotificationKind,
+    NotificationRefs,
+    Priority,
+)
 from assistant.inbox.notifications import NotificationDelivery, enqueue
 from assistant.jobs.reconcile_monitors import monitor_reconciler
 from assistant.jobs.tasks_automation import MonitorJobs
@@ -379,6 +386,47 @@ async def set_mode(env: Env, conversation: int, mode: str) -> None:
         )
 
 
+async def revoke(env: Env, kind: str) -> None:
+    """Revoke one consent kind, committed (`/privacy revoke` revokes both)."""
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text("UPDATE app.consents SET revoked_at = :t WHERE kind = :k AND revoked_at IS NULL"),
+            {"t": env.clock.now(), "k": kind},
+        )
+
+
+async def stop_now(env: Env, automation_id: int) -> monitors.StopResult:
+    """The owner's Stop, committed."""
+    async with transaction(env.factory) as uow:
+        return await monitors.stop(
+            uow.session,
+            account_id=await account_id(env),
+            automation_id=automation_id,
+            clock=env.clock,
+            actor="owner",
+        )
+
+
+async def wait_for_lock_waiter(env: Env, *, deadline: float = 15.0) -> None:
+    """Until a backend of this database waits on a lock (a condition, not a
+    timer; as in `test_notifications` and `test_summaries_verification`)."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + deadline
+    while True:
+        async with env.factory() as session:
+            waiting = await session.scalar(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+            )
+        if waiting:
+            return
+        if loop.time() > end:
+            raise AssertionError("no backend started waiting on a lock")
+        await asyncio.sleep(0.05)
+
+
 # ============================================================ deterministic
 async def test_notify_me_when_daniel_replies_fires_exactly_once(env: Env) -> None:
     """PRD R2 #4: "notify me when Kamola replies" — two replies, one alert,
@@ -507,7 +555,9 @@ async def test_a_standing_monitors_alert_carries_stop_and_other_alerts_are_uncha
 ) -> None:
     """ICR-4 (S05.4 §3.7): a standing monitor's alert has S05.2's three
     buttons and then "Stop monitor" (its own single-use `mon` card); a
-    one-shot monitor's alert and a triage alert keep exactly S05.2's three."""
+    one-shot monitor's alert and a triage alert keep exactly S05.2's three;
+    a system alert (no `ntf` card: the other branch ICR-4 edited, Jack on
+    #116) still has no buttons at all."""
     a, _ = await setup(env)
     standing = await monitor(
         env, "keywords", all_observed=True, terms=["P2KEEP"], lifecycle="standing"
@@ -544,16 +594,37 @@ async def test_a_standing_monitors_alert_carries_stop_and_other_alerts_are_uncha
             conversation_id=a,
         )
     assert triage_alert is not None
+    async with transaction(env.factory) as uow:
+        system_alert = await enqueue(
+            uow.session,
+            account_id=await account_id(env),
+            kind=NotificationKind.SYSTEM,
+            priority=Priority.HIGH,
+            dedupe_key="system:synthetic",
+            refs=NotificationRefs(conversation_ids=(a,)),
+            clock=env.clock,
+            alert_class=AlertClass.SYSTEM,
+            conversation_id=a,
+        )
+    assert system_alert is not None
+
+    async def render_system(session: Any, notification: Notification, account: Any) -> Any:
+        # S05.2 has no built-in system renderer yet (CP4); this one names a
+        # chat, so only the alert class keeps the `ntf` card off.
+        return RenderedAlert("SYNTH system notice", a)
+
     kept, once = await alerts(env)
     channel = FakeChannel()
     service = delivery(env, channel)
-    for notification_id in (kept.id, once.id, triage_alert):
+    service.register_renderer(NotificationKind.SYSTEM, render_system)
+    for notification_id in (kept.id, once.id, triage_alert, system_alert):
         assert (await service.deliver(notification_id)).status == "sent"
     s052 = ["Open chat", "Useful", "Not useful"]
     assert [[b.label for b in row] for row in channel.buttons] == [
         [*s052, "Stop monitor"],
         s052,
         s052,
+        [],
     ]
     async with env.factory() as session:
         [card] = (
@@ -880,6 +951,85 @@ async def test_standing_monitors_keep_firing_and_stop_on_stop(env: Env) -> None:
     assert row.status == "cancelled"
 
 
+async def test_an_alert_queued_before_stop_is_not_delivered_after_it(env: Env) -> None:
+    """Invariant 11 (Antony and Jack on #116): the Stop receipt says the
+    monitor "will not alert you again", so an alert queued before the Stop
+    (held by quiet hours, or not yet delivered) is suppressed at delivery.
+    A one-shot monitor is `completed` by its match, not cancelled: its
+    queued alert is still delivered."""
+    await setup(env)
+    standing = await monitor(
+        env, "keywords", all_observed=True, terms=["P2KEEP"], lifecycle="standing"
+    )
+    once = await monitor(env, "keywords", all_observed=True, terms=["P2ONCE"])
+    env.clock.advance(minutes=1)
+    await say(env, 2, "SYNTH P2KEEP")
+    await say(env, 3, "SYNTH P2ONCE")
+    queued = {n.refs["automation_ids"][0]: n.id for n in await alerts(env)}
+    assert await stop_now(env, standing) is monitors.StopResult.STOPPED
+    assert await stop_now(env, once) is monitors.StopResult.ALREADY_ENDED
+
+    channel = FakeChannel()
+    service = delivery(env, channel)
+    stopped = await service.deliver(queued[standing])
+    assert (stopped.status, stopped.reason) == ("suppressed", "source_deleted")
+    assert (await service.deliver(queued[once])).status == "sent"
+    [sent] = channel.sends
+    assert "P2ONCE" in sent
+
+
+async def test_a_monitor_stopped_during_the_evaluation_does_not_fire(env: Env) -> None:
+    """Jack on #116: the owner stops a semantic monitor while its evaluation
+    is in flight; the answer still matches it, but the effects re-read the
+    monitor under the locks: no alert, the monitor stays cancelled, and the
+    burst counts as evaluated."""
+    a, _ = await setup(env)
+    watched = await monitor(env, "semantic", conversation_ids=[a], description="a new price")
+    env.clock.advance(minutes=1)
+    await say(env, 2, "SYNTH narx o'zgardi")
+
+    async def stop_then_match(request: LLMRequest) -> dict[str, Any]:
+        assert await stop_now(env, watched) is monitors.StopResult.STOPPED
+        return match_all(request)
+
+    fake = FakeLLM()
+    fake.parsed = [stop_then_match]
+    outcome = await evaluator(env, fake).evaluate(a)
+    assert (outcome.status, outcome.calls, outcome.alerts) == (MonitorEvalStatus.EVALUATED, 1, 0)
+    assert await alerts(env) == []
+    row = await automation(env, watched)
+    assert row is not None
+    assert row.status == "cancelled"
+    assert await flag(env, a) is None
+
+
+async def test_two_transactions_complete_a_one_shot_once(env: Env) -> None:
+    """Jack and Antony on #116: two separate transactions race to complete
+    one one-shot monitor. The second blocks on the row lock and, once the
+    first commits, finds it no longer active: exactly one completion."""
+    await setup(env)
+    watched = await monitor(env, "keywords", all_observed=True, terms=["P2KEY"])
+    owner = await account_id(env)
+
+    async def complete() -> bool:
+        async with transaction(env.factory) as uow:
+            return await monitors.complete_one_shot(
+                uow.session, account_id=owner, automation_id=watched, now=env.clock.now()
+            )
+
+    async with env.factory() as first, first.begin():
+        assert await monitors.complete_one_shot(
+            first, account_id=owner, automation_id=watched, now=env.clock.now()
+        )
+        second = asyncio.create_task(complete())
+        await wait_for_lock_waiter(env)
+        assert not second.done()
+    assert await second is False
+    row = await automation(env, watched)
+    assert row is not None
+    assert row.status == "completed"
+
+
 async def test_the_reconciler_recovers_a_lost_evaluation(env: Env) -> None:
     a, _ = await setup(env)
     await monitor(env, "semantic", all_observed=True, description="anything")
@@ -979,6 +1129,67 @@ async def test_without_managed_consent_no_evaluation_call_is_made(env: Env) -> N
     env.clock.advance(minutes=5)
     async with env.factory() as session:
         assert await monitor_reconciler()(session, env.clock.now()) == []
+
+
+async def revoked_mid_call(env: Env, kind: str) -> tuple[int, int, FakeLLM]:
+    """A semantic monitor and a matching message; the model's answer is a
+    match, returned after `kind` was revoked and committed while the call
+    was in flight. Returns the chat, the monitor and the fake."""
+    a, _ = await setup(env)
+    watched = await monitor(env, "semantic", conversation_ids=[a], description="a new price")
+    env.clock.advance(minutes=1)
+    await say(env, 2, "SYNTH narx o'zgardi")
+
+    async def revoke_then_match(request: LLMRequest) -> dict[str, Any]:
+        await revoke(env, kind)
+        return match_all(request)
+
+    fake = FakeLLM()
+    fake.parsed = [revoke_then_match]
+    return a, watched, fake
+
+
+async def state(env: Env, conversation: int, automation_id: int) -> tuple[str, int, bool]:
+    """(the monitor's status, its alerts, whether the chat's flag is kept)."""
+    row = await automation(env, automation_id)
+    assert row is not None
+    return row.status, len(await alerts(env)), await flag(env, conversation) is not None
+
+
+@pytest.mark.parametrize("kind", ["ai_managed", "ai_control"])
+async def test_consent_revoked_during_the_evaluation_applies_nothing(env: Env, kind: str) -> None:
+    """Invariant 9 / FR-ONB-06 (Antony and Jack on #116, blocking): consent
+    revoked while the call is in flight. The call itself was allowed, but
+    its answer must not take effect: the effects re-check both consents
+    under the §9.4 locks — no completion, no alert, the flag kept for a
+    re-grant — and the run closes as not succeeded (as triage's effects,
+    `inbox/triage_store.py`)."""
+    a, watched, fake = await revoked_mid_call(env, kind)
+    outcome = await evaluator(env, fake).evaluate(a)
+    assert (outcome.status, outcome.calls, outcome.alerts) == (MonitorEvalStatus.NO_CONSENT, 1, 0)
+    assert await state(env, a, watched) == ("active", 0, True)
+    [run] = await evaluate_runs(env)
+    assert (run.status, run.error_class) == ("failed", "discarded:no_consent")
+
+
+async def test_a_match_discarded_for_revoked_consent_fires_once_consent_returns(
+    env: Env,
+) -> None:
+    """The recovery side: while consent stays revoked, the kept flag makes no
+    call; once the owner grants `ai_managed` again, the next evaluation
+    reads the same burst and the match fires, once."""
+    a, watched, fake = await revoked_mid_call(env, "ai_managed")
+    assert (await evaluator(env, fake).evaluate(a)).status is MonitorEvalStatus.NO_CONSENT
+    assert (await evaluator(env, fake).evaluate(a)).status is MonitorEvalStatus.NO_CONSENT
+    assert len(fake.requests) == 1  # no call while revoked
+
+    await grant_managed(env)
+    fake.parsed = [match_all]
+    outcome = await evaluator(env, fake).evaluate(a)
+    assert (outcome.status, outcome.alerts) == (MonitorEvalStatus.EVALUATED, 1)
+    assert shown_new(fake.requests[-1]) == [await message_id_of(env, 2)]
+    assert await state(env, a, watched) == ("completed", 1, False)
+    assert [run.status for run in await evaluate_runs(env)] == ["failed", "succeeded"]
 
 
 async def test_a_deleted_chat_removes_its_monitors_and_suppresses_pending_alerts(

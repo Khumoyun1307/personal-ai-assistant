@@ -738,7 +738,10 @@ class MonitorMatchRenderer:
     message (no model call). A standing monitor that is still on gets a Stop
     button after S05.2's own (ICR-4): its `mon` card is created here, inside
     the delivery's claim transaction. None — the alert is suppressed — when
-    the monitor or the chat is gone (their data was deleted)."""
+    the monitor or the chat is gone (their data was deleted), and when the
+    owner stopped the monitor after the alert was queued: the Stop receipt
+    promises no further alert (§6 invariant 11). A one-shot monitor ends
+    `completed` by its own match, so its alert is still delivered."""
 
     def __init__(self, clock: Clock) -> None:
         self._clock = clock
@@ -753,7 +756,7 @@ class MonitorMatchRenderer:
         row = await repository.get(session, account_id=account.id, automation_id=automation_ids[0])
         rule = None if row is None else parse_rule(row.spec)
         chat = await chat_facts(session, account_id=account.id, conversation_id=conversation_id)
-        if row is None or rule is None or chat is None:
+        if row is None or rule is None or chat is None or row.status == "cancelled":
             return None
         try:
             interpretation = await describe(

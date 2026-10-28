@@ -28,8 +28,11 @@ substance, never obeyed (the prompt's rule; the citation rule bounds what
 any answer can do).
 
 **Effects** (a short transaction, account `FOR SHARE` then conversation `FOR
-UPDATE`, ARCHITECTURE §9.4): the monitors are re-read (one stopped, expired
-or out of scope meanwhile never fires) and the cited messages re-checked
+UPDATE`, ARCHITECTURE §9.4): consent is re-checked as before the call (both
+kinds, naming the processor) — revoked while the model ran, the answer
+changes nothing, the flag is kept and the run closes `failed`/
+`discarded:no_consent` (FR-ONB-06); the monitors are re-read (one stopped,
+expired or out of scope meanwhile never fires) and the cited messages re-checked
 (deleted or edited since → not cited); each match is recorded like a
 deterministic one (`automation.monitors.record_match`, deduplicated per
 monitor and newest cited message). Then the flag: cleared when no contact
@@ -102,6 +105,8 @@ EARLIER_LIMIT = 10
 _REPEATING_ERRORS = frozenset(
     {"refusal", "content_filter", "invalid_output", "max_tokens", "stop_other"}
 )
+#: The run's `error_class` when consent was revoked during the call (triage's).
+_DISCARDED_NO_CONSENT = "discarded:no_consent"
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,7 +480,10 @@ class MonitorEvaluator:
                     shown={m.message_id: m.content_hash for m in burst.new},
                     through=through,
                 )
-                await self._close_run(uow.session, prepared, "succeeded", None)
+                if alerts is None:
+                    await self._close_run(uow.session, prepared, "failed", _DISCARDED_NO_CONSENT)
+                else:
+                    await self._close_run(uow.session, prepared, "succeeded", None)
         except _CallFailedError as failure:
             await self._finish_run(prepared, failure.run_status, failure.error_class)
             if failure.error_class in _REPEATING_ERRORS:
@@ -486,6 +494,15 @@ class MonitorEvaluator:
         except BaseException as error:
             await self._fail_run(prepared, error)
             raise
+        if alerts is None:
+            logger.warning(
+                "monitor_run_not_succeeded",
+                account_id=account_id,
+                run_id=run_id,
+                status="failed",
+                error_class=_DISCARDED_NO_CONSENT,
+            )
+            return MonitorEvalOutcome(MonitorEvalStatus.NO_CONSENT, account_id, calls, through)
         logger.info(
             "monitor_evaluated",
             conversation_id=conversation_id,
@@ -510,15 +527,22 @@ class MonitorEvaluator:
         matched: Mapping[int, tuple[int, ...]],
         shown: Mapping[int, str | None],
         through: int,
-    ) -> int:
-        """The effects transaction: re-read monitors and cited messages under
-        the §9.4 locks, record each match, settle the flag."""
+    ) -> int | None:
+        """The effects transaction: re-check consent and re-read monitors and
+        cited messages under the §9.4 locks, record each match, settle the
+        flag. None when consent was revoked while the model ran: nothing is
+        applied and the flag is kept."""
         await session.execute(
             select(Account.id).where(Account.id == account_id).with_for_update(read=True)
         )
         conversation = await summaries.lock_conversation(session, account_id, conversation_id)
         if conversation is None:
             return 0
+        if not await self._managed_ok(session, account_id):
+            # Revocation takes effect at once (FR-ONB-06, §6 invariant 9): an
+            # answer computed under the old consent changes nothing. The
+            # flag stays; the reconciler skips the chat until a re-grant.
+            return None
         alerts = 0
         if matched:
             now = self._clock.now()
