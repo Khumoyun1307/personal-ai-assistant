@@ -4,6 +4,10 @@
 
 ## A. Regression tests RG-01…RG-21
 
+QA-S5 scenario evidence and marker-removal ownership are tracked in
+[m05-scenarios.md](m05-scenarios.md). Expected failures remain pending;
+scenario implementation alone does not make an RG row green.
+
 | RG | Guards (AGENTS §6) | First slice (§10) | P2 unit | Planned P2 tests (file::name) | Status |
 |---|---|---|---|---|---|
 | RG-01 | Owner messages never trigger drafts | S04.2 | S04.2; extended S05.1 (triage trigger) | `tests/integration/test_drafting.py::test_rg01_owner_messages_never_trigger_drafts`; `tests/scenarios/test_m04_assist_bursts.py::test_owner_messages_never_trigger_drafts`; `tests/integration/test_assist_trigger_switch.py::test_owner_messages_never_trigger_drafts_in_either_mode` | planned |

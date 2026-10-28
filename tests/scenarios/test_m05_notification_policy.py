@@ -27,7 +27,6 @@ async def test_quiet_hours_move_non_urgent_alerts_to_the_digest(m05: M05Scenario
     assert len(m05.env.sender.sends) == 1
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.2")
 async def test_urgent_bypasses_quiet_hours_only_when_enabled(m05: M05Scenario) -> None:
     await m05.preferences(quiet_hours="00:00-23:59", urgent_bypass=False)
     await m05.alert(priority="urgent")
@@ -45,7 +44,6 @@ async def test_urgent_bypasses_quiet_hours_only_when_enabled(m05: M05Scenario) -
     assert len(m05.env.sender.sends) == 1
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.2")
 async def test_the_hourly_cap_batches_extra_standard_alerts(m05: M05Scenario) -> None:
     await m05.preferences(quiet_hours="off", alert_cap_per_hour=2)
     for i in range(3):
@@ -63,17 +61,34 @@ async def test_the_hourly_cap_batches_extra_standard_alerts(m05: M05Scenario) ->
 async def test_a_system_alert_is_delivered_during_quiet_hours_with_the_cap_reached(
     m05: M05Scenario,
 ) -> None:
+    from assistant.db.uow import transaction
+    from tests.integration.p2_factories import seed_action
+
     await m05.preferences(quiet_hours="off", alert_cap_per_hour=1)
     await m05.alert(key="fill-cap")
     await run_queued(m05, "notify.deliver")
     await m05.preferences(quiet_hours="00:00-23:59")
-    await m05.alert(key="system", kind="system", priority="urgent", alert_class="system")
+    async with transaction(m05.env.factory) as uow:
+        action = await seed_action(
+            uow.session,
+            account_id=m05.account_id,
+            conversation_id=m05.conversation_id,
+            state="delivery_uncertain",
+            created_at=m05.env.clock.now(),
+            updated_at=m05.env.clock.now(),
+        )
+    await m05.alert(
+        key="system",
+        kind="system",
+        priority="urgent",
+        alert_class="system",
+        action_ids=(action.id,),
+    )
     await run_queued(m05, "notify.deliver")
     assert [r.status for r in await m05.rows(Notification)] == ["sent", "sent"]
     assert len(m05.env.sender.sends) == 2
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.2")
 async def test_a_duplicate_alert_is_sent_once(m05: M05Scenario) -> None:
     await m05.preferences(quiet_hours="off")
     await m05.alert(key="same")
@@ -84,7 +99,6 @@ async def test_a_duplicate_alert_is_sent_once(m05: M05Scenario) -> None:
     assert len(m05.env.sender.sends) == 1
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.2")
 async def test_an_uncertain_alert_is_never_resent_after_reconciliation(m05: M05Scenario) -> None:
     await m05.preferences(quiet_hours="off")
     identity = await m05.alert()
@@ -100,7 +114,6 @@ async def test_an_uncertain_alert_is_never_resent_after_reconciliation(m05: M05S
     assert len(m05.env.sender.sends) == 1
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.2")
 async def test_not_useful_feedback_is_recorded(m05: M05Scenario) -> None:
     from tests.integration.business_env import live_card
 

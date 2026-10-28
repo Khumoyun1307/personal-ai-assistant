@@ -229,6 +229,7 @@ class M05Scenario:
         priority: str = "high",
         alert_class: str = "standard",
         conversation_id: int | None = None,
+        action_ids: tuple[int, ...] = (),
     ) -> int | None:
         from assistant.inbox.notification_types import (
             AlertClass,
@@ -264,6 +265,7 @@ class M05Scenario:
                 refs=NotificationRefs(
                     conversation_ids=(conv,),
                     contact_ids=(self.contact_id,),
+                    action_ids=action_ids,
                     alert_kind="delivery_uncertain" if kind == "system" else None,
                 ),
                 clock=self.env.clock,

@@ -46,3 +46,16 @@ owner card and preserves the other chat's task, verdict, alert and monitor.
 
 Only synthetic data in compose project `antony` is used. No live API calls,
 production/server action or eval spend.
+
+## S05.2 integrated during this unit
+
+The integration base advanced to `ca624a8` when #87 merged. The first PR CI
+run [40637332291](https://github.com/Khumoyun1307/personal-ai-assistant/actions/runs/40637332291)
+then reported exactly five strict XPASS cases: urgent bypass, hourly cap,
+duplicate alert, ambiguous delivery/reconciliation and feedback. Their complete
+bodies passed; no assertion was weakened. Their markers have been removed.
+The integration-base update preserves the already pushed history.
+
+The unit now expects **8 passing checks / 18 strict expected failures**.
+The quiet-hour-to-digest case still awaits S05.3b; the system-alert migration
+still awaits CP4. Full verification after marker removal belongs to CI.
