@@ -95,8 +95,8 @@ open tasks triage already knows, a burst of new messages, and the labels a
 careful human gives the burst (`Burst` in `evals/schema.py`, which checks every
 §A layout rule at load: ids, citations, sides, chronology, the `alert` rule,
 every open task in exactly one of `resolved_tasks`/`unresolved_tasks`, `values`
-as literal substrings). `monitor_cases.jsonl` (30 cases) is for the
-`evaluate_monitor` comparison, whose target comes with S05.4.
+as literal substrings). `monitor_cases.jsonl` (30 cases, `MonitorCase`) is for
+the `evaluate_monitor` target and its model comparison (below).
 
 **The triage target** (`evals/triage.py`, `python -m evals run triage`) runs the
 product's `Triager` exactly as shipped (active `triage` prompt, `TriageResult`
@@ -144,6 +144,49 @@ other datasets do not matter), prompt versions or effort are not compared.
 Live runs are started by Antony or the TL with the owner's go-ahead (P2-O8
 phase cap USD 2).
 
+**The `evaluate_monitor` target** (`evals/monitors.py`, `python -m evals run
+monitors`; E3T part 2, P2-T43) runs the product's `MonitorEvaluator` exactly as
+shipped (active `evaluate_monitor` prompt, `MonitorVerdicts` schema, no tools,
+the deterministic validation, the route's model or `--model`, the
+`LLM_EVALUATE_MONITOR_EFFORT` setting) and its effects (a match is recorded and
+enqueues one `monitor_match` notification), per case under its own throwaway
+account in a throwaway database: consents naming the model's processor, the
+owner language of the case's variant (a mixed chat's owner writes Russian
+descriptions in v1, so `ru`) and the E3 timezone, the chat in Observe, the burst
+stored as ingestion stores it (received when sent) with the chat's monitor flag
+raised at its first contact message, and the case's monitors as the owner's
+confirmed semantic monitors of that chat (`automation.monitors.create`,
+confirmed an hour before the burst). The clock is a minute after the newest
+message. One call per case evaluates all its monitors (the product's one call
+per burst). The `monitor_match` notifications are read back (nothing is
+delivered), then the account is deleted.
+
+| Metric (per monitor, item `<case>.<monitor id>`) | Definition | Bar for the model choice |
+|---|---|---|
+| Accuracy | the monitor fired exactly when labelled matching | ≥ 90 % |
+| False-match rate | of the monitors that fired, the share labelled not matching | ≤ 10 % |
+| Informational | match recall; negatives matched (labelled not matching that fired); per variant | — |
+
+The two thresholds are the bar for the model choice (TL decision, spec E3 §B:
+informational), compared on the pre-screen, not an owner-confirmed release gate:
+the report shows them with gate `info` (owner-confirmed cases, ledger
+`evals/reviews/e3.json` with case ids, are counted for information). Failures
+are handled as for triage: a refused, invalid or truncated answer fires nothing
+(a miss wherever a match was needed); an outage is retried (at most 3 attempts)
+and otherwise *not evaluated*; a budget stop ends the run early. A case with no
+contact message gets no model call, as in the product.
+
+**Model comparison for `evaluate_monitor`** follows the same procedure on
+`monitor_cases.jsonl`: `python -m evals compare <the route model's full monitors
+run> <the next tiers' full runs, in the order tried>` prints the decision
+("route stays on …" or "propose `LLM_ROUTE_EVALUATE_MONITOR_MODEL=…`") with each
+tier's cost per 100 cases. The route's current model comes from
+`LLM_ROUTE_EVALUATE_MONITOR_MODEL` (else `LLM_DEFAULT_MODEL`) or `--route-model`;
+only the monitor cases' digest must agree between the runs (a change to
+`bursts.jsonl` does not matter here), with the same prompt and effort. A triage
+run and a monitor run are two routes: `compare` lists them side by side but
+decides nothing.
+
 ## Freezing
 
 `datasets/MANIFEST.sha256` holds the SHA-256 of every `*.jsonl` under
@@ -181,8 +224,10 @@ python -m evals run summary --live                      # REAL model; owner's go
 python -m evals run summary --live --owner-language ru  # summaries in another owner language (default uz-Latn)
 python -m evals run triage --estimate-only              # worst-case cost of the E3 triage run, calls nothing
 python -m evals run triage --live [--model ID]          # REAL model; owner's go-ahead + cost approval
+python -m evals run monitors --estimate-only            # worst-case cost of the E3 monitor run, calls nothing
+python -m evals run monitors --live [--model ID]        # REAL model; owner's go-ahead + cost approval
 python -m evals compare docs/evals/<run>.json …         # quality and cost per 100 items per run
-python -m evals compare <luna>.json <sol>.json [--route-model ID]  # triage: also the model choice
+python -m evals compare <luna>.json <sol>.json [--route-model ID]  # triage or monitors: also the model choice
 python -m evals cleanup [--yes]                         # list/drop throwaway databases a killed run left
 ```
 
