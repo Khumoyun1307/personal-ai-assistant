@@ -9,9 +9,13 @@ lists and the `set_conversation_mode` tool:
   cleared, so no summary job picks the chat up.
 - **Observe**: storage and processing resume. Retained content that the
   rolling summary has not seen is flagged for a refresh.
+- **Assist** (M04, P2-T11): Observe, plus a draft offered for approval when
+  new messages need a reply. Leaving it clears the pending-draft flag.
 
-`assist` arrives with drafts (M04); Delegate is never a stored mode. A chat
-with a bot stays in Ignore (FR-OBS-04). The change takes the conversation
+Switching to Ignore also cancels the chat's pending actions (ARCHITECTURE
+§9.4: `awaiting_approval`/`revising`/`approved` → `cancelled`, reason
+`ignore_mode`) in the same transaction. Delegate is never a stored mode. A
+chat with a bot stays in Ignore (FR-OBS-04). The change takes the conversation
 row lock (§9.4: ingestion holds it too, so a message is stored entirely
 before or entirely after the switch) and writes one content-free audit row,
 which is what a one-tap Undo reverses.
@@ -26,6 +30,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry
+from assistant.actions.lifecycle import cancel_pending
+from assistant.actions.states import StateReason
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
@@ -33,8 +39,10 @@ from assistant.memory import summaries
 
 MODE_OBSERVE = "observe"
 MODE_IGNORE = "ignore"
-#: What the owner can choose now (`assist`: M04).
-SETTABLE_MODES = (MODE_OBSERVE, MODE_IGNORE)
+MODE_ASSIST = "assist"
+#: What the owner can choose for a chat. The default for new chats stays
+#: Observe/Ignore (`accounts/preferences.py::SETTABLE_DEFAULT_MODES`, P2-T11).
+SETTABLE_MODES = (MODE_OBSERVE, MODE_IGNORE, MODE_ASSIST)
 
 EVENT_MODE_CHANGED = "conversation_mode_changed"
 
@@ -125,7 +133,7 @@ async def set_mode(
     NotInAccountError: not this account's conversation. ModeError: a mode that
     cannot be chosen, or a bot chat leaving Ignore."""
     if mode not in SETTABLE_MODES:
-        raise ModeError("chats can be set to observe or ignore")
+        raise ModeError("chats can be set to observe, ignore or assist")
     conversation = (
         await session.execute(
             select(Conversation)
@@ -147,9 +155,20 @@ async def set_mode(
     now = clock.now()
     conversation.mode = mode
     conversation.updated_at = now
+    if previous == MODE_ASSIST:
+        # No proactive draft for a chat that left Assist (S04.2 §3.7).
+        conversation.pending_draft_at = None
     if mode == MODE_IGNORE:
-        # Nothing more is processed for the chat: no summary job picks it up.
+        # Nothing more is processed for the chat: no summary job picks it up,
+        # and nothing drafted for it can still be approved or sent.
         conversation.pending_ai_since = None
+        await cancel_pending(
+            session,
+            account_id=account_id,
+            conversation_ids=[conversation.id],
+            reason=StateReason.IGNORE_MODE,
+            now=now,
+        )
     elif conversation.pending_ai_since is None and await has_unsummarized_content(
         session, account_id, conversation.id
     ):

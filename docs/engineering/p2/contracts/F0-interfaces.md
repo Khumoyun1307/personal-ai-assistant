@@ -160,6 +160,14 @@ Execution-phase outcome → state (S04.4 applies it in Tx A): failed `no_takeove
 
 **`core/delivery.py` (F0, P2-T03):** `ErrorClass` (every current member, including `OK`, `RATE_LIMITED`, `WINDOW_CLOSED`, `PEER_UNAVAILABLE`, `CONNECTION_INVALID`, `CHAT_UNREACHABLE`, `FORBIDDEN`, `BAD_REQUEST`, `CONFLICT`, `AMBIGUOUS`, `TRANSIENT` — move the enum unchanged) and `SendResult` (unchanged fields and properties `ok`, `delivery_uncertain`) move here; `telegram/errors.py` and `telegram/gateway.py` re-export them so existing imports and tests keep working.
 
+**Control aggregate correction (P2-T53, [ICR-5 / #131](https://github.com/Khumoyun1307/personal-ai-assistant/issues/131), 2026-10-28):** `send_text(ControlChat, ...)` returns the last chunk's result only when every chunk succeeds. A first-chunk failure retains its single-call classification. Any later failure after a delivered chunk returns `SendResult(AMBIGUOUS, error_code="partial_delivery")`, with `message_id=None` and `retry_after=None`: the logical message was not fully delivered, its prefix must not be replayed automatically, and a prefix identity must not be mistaken for a complete card. Keyboard stays on the last chunk. Existing port fields and business semantics are unchanged.
+
+`GatewayControlChannel` propagates this as `Delivery(ok=False, uncertain=True)`. `OwnerAlerts` treats an audit-recorded uncertain outcome as settled within its existing dedupe/cooldown (P2-T24 pulled forward into #131); definite non-delivery may retry. CP4 separately adds notification-row routing and claims for system-alert crash/concurrency protection.
+
+Control HTML callers escape untrusted fields once (`telegram.render.escape`) before adding application markup. The gateway preserves existing Telegram entities without interpreting escaped tags as markup; bare special characters and unsupported tags/attributes/links are escaped. Application links accept a single quoted HTTP(S) `href` only. Approval cards additionally keep their existing visible escapes for hidden/bidi characters and tag-shaped content, then HTML-escape their protected fields once (including literal entity-looking strings).
+
+Tag acceptance is pair-consistent: both opening and closing tokens must be supported and form a nested pair before either remains active. Denied attributes on either side make that pair literal; orphan/unclosed/crossed tokens stay literal. Valid surrounding or nested application pairs remain active, and escaped contact tags are never treated as token syntax.
+
 **`actions/ports.py` (F0):**
 ```python
 class BusinessSender(Protocol):  # implemented by telegram/gateway.py OutboundGateway (S04.4)
@@ -470,6 +478,15 @@ M04 — the transition primitive writes exactly one event per applied transition
 | `delivery_uncertain → succeeded` / `failed` | `action_late_result` |
 
 Other M04 events: `assistant_message_deleted`, `draft_skipped` and `draft_failed` (`subject_type = 'conversation'`), `autonomy_paused`, `autonomy_resumed`, `connection_marked_stale` (`subject_type = 'connection'`); existing `takeover_detected`, `source_edited_after_action` (ARCHITECTURE §6.5). M05: `task_created`, `task_closed`, `triage_completed` (counts only), `monitor_created`, `monitor_matched`, `monitor_completed`, `monitor_stopped`, `digest_sent`, `contact_priority_changed`, `automation_invalid` (a stored rule that no longer validates; the automation is paused).
+
+**Approval presentation claims (ICR-5 / #131):** these are control delivery bookkeeping, never business-action state transitions. Both use `actor="system"`, the action's `account_id`, `subject_type="action"` and `subject_id=action.id`:
+
+| Event | Content-free details |
+|---|---|
+| `approval_card_presentation_claimed` | `{"version": <action version>}` |
+| `approval_card_presentation_resolved` | `{"version": <action version>, "claim_id": <claimed audit row id>, "outcome": "shown" or "not_delivered"}` |
+
+Before sending any new presentation (full text plus card), a short transaction locks the account's action, checks the view's version/state/card pointer/card state, checks for unresolved same-account/action/version claims in a fresh statement after locking, and commits a claim. No lock spans Telegram I/O. An unresolved claim blocks automatic presentation replay, including after a crash or fresh process; sync excludes it. `shown` is written only in the same transaction that truthfully records the complete card. `not_delivered` is allowed only for a definite first-send refusal before any full text/chunk was delivered. Successful full text followed by any card failure is partial/uncertain and leaves the claim unresolved; it cannot replay the full text. Claim commit failure prevents I/O; final record/resolution commit failure preserves the unresolved claim. A different action/version is independent. No action state or card-shown field is falsified. Audit retention (one year) exceeds a live action's maximum lifetime; normal audit retention/deletion applies, with no new content class.
 
 ## 12. File and section ownership (after CP1)
 

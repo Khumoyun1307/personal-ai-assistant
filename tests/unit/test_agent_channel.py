@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from assistant.telegram.control.agent_channel import GatewayControlChannel
 from assistant.telegram.gateway import OutboundGateway
 from tests.fakes.clock import FakeClock, FakeSleep
@@ -94,3 +96,26 @@ async def test_a_network_error_or_server_error_is_uncertain() -> None:
         delivery = await channel.send(account_id=1, chat_id=55, text="x")
 
         assert (delivery.ok, delivery.uncertain) == (False, True)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        telegram_error("Too Many Requests", status_code=429, retry_after=3),
+        telegram_error("Bad Request: synthetic refusal", status_code=400),
+        network_error("synthetic reset"),
+    ],
+)
+async def test_partial_control_reply_is_reported_uncertain_without_replay(error: Exception) -> None:
+    sender = FakeTelegramSender()
+
+    async def fail_second_chunk() -> None:
+        if len(sender.sends) == 1:
+            sender.fail_with = error
+
+    sender.on_call = fail_second_chunk
+    channel = GatewayControlChannel(OutboundGateway(sender, FakeClock(), sleep=FakeSleep()))
+    delivery = await channel.send(account_id=1, chat_id=55, text="word " * 2000)
+    assert (delivery.ok, delivery.uncertain, delivery.error) == (False, True, "ambiguous")
+    assert delivery.message_id is None
+    assert len(sender.sends) == 2

@@ -125,7 +125,8 @@ def _with(base: dict[str, Any], **changes: Any) -> dict[str, Any]:
         ),
         (SetConversationModeArgs, {"conversation_id": None, "contact_id": None, "mode": "ignore"}),
         (SetConversationModeArgs, {"conversation_id": 1, "contact_id": 2, "mode": "ignore"}),
-        (SetConversationModeArgs, {"conversation_id": 1, "contact_id": None, "mode": "assist"}),
+        # Assist is settable from S04.2 (P2-T11); Delegate is never a stored mode.
+        (SetConversationModeArgs, {"conversation_id": 1, "contact_id": None, "mode": "delegate"}),
         (SetConversationModeArgs, {"conversation_id": 0, "contact_id": None, "mode": "ignore"}),
     ],
 )

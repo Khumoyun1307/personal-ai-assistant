@@ -38,9 +38,12 @@ from assistant.inbox.models import InboundUpdate
 from assistant.inbox.notify import ALERT_TEXT, AlertKind, OwnerAlerts
 from assistant.inbox.watchdog import check_ingestion
 from assistant.privacy.retention import sweep_all, sweep_inbound_payloads
+from assistant.telegram.control.agent_channel import GatewayControlChannel
+from assistant.telegram.gateway import OutboundGateway
 from assistant.telegram.ingress.writer import write_state
 from tests.fakes.channel import FakeChannel
-from tests.fakes.clock import FakeClock
+from tests.fakes.clock import FakeClock, FakeSleep
+from tests.fakes.sender import FakeTelegramSender, telegram_error
 
 pytestmark = pytest.mark.integration
 
@@ -107,6 +110,54 @@ async def update_row(
 
 
 # ---------------------------------------------------------------- watchdog
+@pytest.mark.parametrize("cooldown", [None, timedelta(hours=1)])
+async def test_recorded_partial_alert_is_not_replayed_on_retrigger(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock, cooldown: timedelta | None
+) -> None:
+    account_id = await owner(factory, clock)
+    sender = FakeTelegramSender()
+
+    async def fail_second_chunk() -> None:
+        if len(sender.sends) == 1:
+            sender.fail_with = telegram_error("Too Many Requests", status_code=429, retry_after=3)
+
+    sender.on_call = fail_second_chunk
+    alerts = OwnerAlerts(
+        factory, GatewayControlChannel(OutboundGateway(sender, clock, sleep=FakeSleep())), clock
+    )
+    values = {"body": "synthetic " * 1000}
+    first = await alerts.notify_owner(
+        account_id,
+        AlertKind.CONNECTION_CHANGE,
+        dedupe_key="synthetic-partial",
+        cooldown=cooldown,
+        **values,
+    )
+    assert (first.sent, first.uncertain, first.reason) == (False, True, "uncertain")
+    assert len(sender.sends) == 2
+    sender.on_call = None
+    sender.fail_with = None
+    repeated = await alerts.notify_owner(
+        account_id,
+        AlertKind.CONNECTION_CHANGE,
+        dedupe_key="synthetic-partial",
+        cooldown=cooldown,
+        **values,
+    )
+    assert (repeated.sent, repeated.reason) == (False, "duplicate")
+    assert len(sender.sends) == 2
+    # Existing cooldown behavior stays intact: a new daily/hourly cycle may alert.
+    clock.advance(hours=2)
+    later = await alerts.notify_owner(
+        account_id,
+        AlertKind.CONNECTION_CHANGE,
+        dedupe_key="synthetic-partial",
+        cooldown=cooldown,
+        **values,
+    )
+    assert later.sent is (cooldown is not None)
+
+
 async def test_a_stale_heartbeat_alerts_the_owner_once_per_cooldown(
     factory: async_sessionmaker[AsyncSession], clock: FakeClock
 ) -> None:

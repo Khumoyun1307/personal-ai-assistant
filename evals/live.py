@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from openai import AsyncOpenAI
 from pydantic import SecretStr, ValidationError
 
+from assistant.agent.drafting import DraftConfig
 from assistant.config import Settings
 from assistant.core.model_routes import processor_for_model
 from assistant.llm.openai_adapter import OpenAIClient
@@ -61,6 +62,11 @@ def _settings() -> Settings:
         ) from None
 
 
+#: Routes whose effort is the product's fixed default, not a setting: drafting
+#: (S04.2) sends `DraftConfig.effort`.
+_FIXED_EFFORTS: dict[str, str | None] = {"draft_reply": DraftConfig(model="").effort}
+
+
 def resolve_model(route: str, override: str | None) -> ModelChoice:
     """The model for `route`: the override, else the configured route model."""
     try:
@@ -68,7 +74,7 @@ def resolve_model(route: str, override: str | None) -> ModelChoice:
     except LiveSetupError:
         if override is None:
             raise
-        return ModelChoice(override, None)
+        return ModelChoice(override, _FIXED_EFFORTS.get(route))
     model = override or settings.model_routes.model_for(route)
     # The effort the product sends on that route, so the evaluation measures what runs.
     efforts = {
@@ -76,6 +82,7 @@ def resolve_model(route: str, override: str | None) -> ModelChoice:
         "summarize": settings.llm_summarize_effort,
         "triage": settings.llm_triage_effort,
         "evaluate_monitor": settings.llm_evaluate_monitor_effort,
+        **_FIXED_EFFORTS,
     }
     return ModelChoice(model, efforts.get(route))
 
