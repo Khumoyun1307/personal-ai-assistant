@@ -704,7 +704,8 @@ async def test_every_mode_is_content_free(env: Env, migrated_url: str) -> None:
     assert await hits(env, CANARY) == {f"{t}.{c}" for t, c in CONTENT_COLUMNS}
     for args in (
         ("release",),
-        ("trial-check",),
+        # Cover the fixed synthetic fixture dates without reading wall-clock time.
+        ("trial-check", "--until", "2100-01-01T00:00:00Z"),
         ("actions",),
         ("action", str(action_id)),
         ("script", "P2-4", "--expect", "1-3"),

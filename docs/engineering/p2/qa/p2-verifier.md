@@ -114,6 +114,8 @@ Part 2 local verification (2026-10-28, synthetic PostgreSQL, project `antony`):
   across `test_p2_verify.py` (unit/integration) and `test_server_sh.py`, with no
   skipped or expected failures. Changed-file Ruff check/format, strict mypy on
   the verifier and `bash -n deploy/server.sh` passed.
+- The all-mode canary's trial interval was then made explicit over the fixed
+  synthetic dates, removing its wall-clock dependency: **1 passed, 102.44 s**.
 
 The backend and final claim fix also received independent delegated source
 reviews; the root reviewed the complete diff. CI and external Neryn/TL review
