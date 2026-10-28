@@ -8,12 +8,14 @@
     python -m evals run summary [--owner-language uz-Latn|uz-Cyrl|ru|en] [--live] ...
     python -m evals run summary --live --only c36,c28,c15   # a trial of chosen chats
     python -m evals run triage [--live] [--model ID] ...      # the product's triage over E3
+    python -m evals run monitors [--live] [--model ID] ...    # evaluate_monitor over E3's cases
     python -m evals compare docs/evals/<run>.json [...]
-    python -m evals compare <route model>.json <next tier>.json [--route-model ID]  # triage choice
+    python -m evals compare <route model>.json <next tier>.json [--route-model ID]  # model choice
     python -m evals cleanup [--yes]        # list (or drop) throwaway databases a killed run left
 
 Safe by default: `run retrieval` is the deterministic, model-free baseline, and
-`run summary` and `run triage` (which always call a model) refuse without `--live`. Any run
+`run summary`, `run triage` and `run monitors` (which always call a model) refuse without
+`--live`. Any run
 that calls a model refuses without `--live`, refuses when the worst-case cost
 exceeds the cap, and stops mid-run before overspending. See `evals/README.md`
 "Running". Exit codes: 0 done, 2 refused or misconfigured, 4 stopped early or
@@ -57,6 +59,8 @@ from evals.live import (
     resolve_model,
 )
 from evals.metrics import OwnerLanguage
+from evals.monitors import MONITOR_COMPARISON, MonitorTarget, isolated_monitors
+from evals.monitors import SET_NAME as MONITORS_SET_NAME
 from evals.report import RunMeta, fmt_measure, render_comparison
 from evals.retrieval import QueryVariants, RetrievalMode, RetrievalTarget, load_recorded
 from evals.review import ReviewLedger
@@ -68,11 +72,27 @@ from evals.runner import (
     require_live,
     run_target,
 )
-from evals.schema import E3_PATH, Burst, load_e1, load_e3, load_queries
+from evals.schema import (
+    E3_MONITORS_PATH,
+    E3_PATH,
+    Burst,
+    MonitorCase,
+    load_e1,
+    load_e3,
+    load_monitor_cases,
+    load_queries,
+)
 from evals.summary import SummaryTarget, isolated_summary
 from evals.targets import EvalTarget, RunContext, TargetResult
 from evals.triage import SET_NAME as TRIAGE_SET_NAME
-from evals.triage import TriageTarget, isolated_triage, model_choice, render_choice
+from evals.triage import (
+    TRIAGE_COMPARISON,
+    Comparison,
+    TriageTarget,
+    isolated_triage,
+    model_choice,
+    render_choice,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_DIR = REPO / "docs" / "evals"
@@ -82,6 +102,11 @@ EXIT_REFUSED = 2
 #: could not evaluate (the provider stayed unavailable): its report was written,
 #: but the run failed.
 EXIT_INCOMPLETE = 4
+#: The model comparisons `compare` decides (IMPLEMENTATION_PLAN §7), by target.
+COMPARISONS: dict[str, Comparison] = {
+    TRIAGE_COMPARISON.target: TRIAGE_COMPARISON,
+    MONITOR_COMPARISON.target: MONITOR_COMPARISON,
+}
 
 
 def exit_code(result: TargetResult) -> int:
@@ -114,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("verify", help="check the datasets against the frozen manifest")
 
     run = sub.add_parser("run", help="run a target and record the result")
-    run.add_argument("target", choices=["retrieval", "summary", "triage"])
+    run.add_argument("target", choices=["retrieval", "summary", "triage", "monitors"])
     run.add_argument(
         "--mode",
         choices=[m.value for m in RetrievalMode] + ["both"],
@@ -177,8 +202,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=_ids,
         metavar="ID,ID,...",
         help=(
-            "summary and triage: evaluate only these conversations or bursts (e.g. "
-            "c36,c28,c15 or b001,b002), in set order: a trial run, never a gate"
+            "summary, triage and monitors: evaluate only these conversations, bursts or cases "
+            "(e.g. c36,c28,c15, b001,b002 or m001,m002), in set order: a trial run, never a gate"
         ),
     )
     run.add_argument("--estimate-only", action="store_true", help="print the cost and stop")
@@ -196,9 +221,9 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("reports", nargs="+", type=Path, help="JSON reports from docs/evals/")
     compare.add_argument(
         "--route-model",
-        help="triage: the route's current model, whose run comes first (default: the "
-        "configured LLM_ROUTE_TRIAGE_MODEL, else LLM_DEFAULT_MODEL; name the server's "
-        "when this machine's settings differ or do not load)",
+        help="triage or monitors: the route's current model, whose run comes first (default: "
+        "the configured LLM_ROUTE_TRIAGE_MODEL or LLM_ROUTE_EVALUATE_MONITOR_MODEL, else "
+        "LLM_DEFAULT_MODEL; name the server's when this machine's settings differ or do not load)",
     )
     return parser
 
@@ -251,6 +276,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return asyncio.run(_summary(args))
         if args.target == "triage":
             return asyncio.run(_triage(args))
+        if args.target == "monitors":
+            return asyncio.run(_monitors(args))
         return asyncio.run(_retrieval(args))
     except EvalsError as error:  # the tool's own, explainable failures; a bug keeps its traceback
         return _refuse(str(error))
@@ -288,18 +315,21 @@ def _cleanup(*, drop: bool) -> int:
 def _compare(paths: Sequence[Path], *, route_model: str | None = None) -> int:
     reports = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
     sys.stdout.write(render_comparison(reports))
-    if reports and all(report.get("target") == TriageTarget.name for report in reports):
-        # The E3 model comparison: the route's current model comes from the
-        # configuration (or is named), never from the order of the reports.
+    targets = {report.get("target") for report in reports}
+    comparison = COMPARISONS.get(str(targets.pop())) if len(targets) == 1 else None
+    if comparison is not None:
+        # An E3 model comparison (triage or evaluate_monitor): the route's
+        # current model comes from the configuration (or is named), never
+        # from the order of the reports.
         try:
-            current = resolve_model(TriageTarget.route, route_model).model
+            current = resolve_model(comparison.route, route_model).model
         except LiveSetupError:
             raise RefusedError(
-                "no model-choice decision: the triage route's current model is unknown "
-                "(the settings do not load); name it with --route-model"
+                f"no model-choice decision: the {comparison.route} route's current model is "
+                "unknown (the settings do not load); name it with --route-model"
             ) from None
         try:
-            choice = model_choice(reports, route_model=current)
+            choice = model_choice(reports, route_model=current, comparison=comparison)
         except ValueError as error:
             raise RefusedError(f"no model-choice decision: {error}") from None
         sys.stdout.write(render_choice(choice))
@@ -458,10 +488,81 @@ async def _triage(args: argparse.Namespace) -> int:
     return exit_code(outcome.result)
 
 
+def _cases() -> list[MonitorCase]:
+    """E3's monitor cases, or a clean refusal while they do not load."""
+    try:
+        return load_monitor_cases()
+    except FileNotFoundError:
+        raise RefusedError(f"E3 is not authored: {E3_MONITORS_PATH.name} does not exist") from None
+    except ValueError:
+        # Not the message: a validation error can echo dataset text.
+        raise RefusedError(
+            "E3's monitor cases do not pass their integrity checks; run "
+            "`just test tests/unit/test_e3_dataset.py`"
+        ) from None
+
+
+async def _monitors(args: argparse.Namespace) -> int:
+    """The `evaluate_monitor` target: the product's `MonitorEvaluator` and its
+    effects over E3's monitor cases, one throwaway account per case in a
+    throwaway database. It always calls a model, so every guard applies.
+    Each case's owner language follows its variant (`--owner-language` does
+    not apply)."""
+    _require_recorded(args)
+    if args.calibrate_from is not None:
+        raise RefusedError("--calibrate-from is only for retrieval --mode agent")
+    digests = ensure_frozen()
+    cap, prices = _cap(args.budget_usd), _prices(args.price)
+    reviews = _reviews(args.reviews, "e3")
+    target = MonitorTarget(_cases())
+    if args.only is not None:
+        try:
+            target.named(args.only, limit=args.limit)
+        except ValueError as error:
+            raise RefusedError(f"--only: {error}") from None
+    (choice,) = _guard([target], [target.label], args, cap, prices, reviews)
+    if args.estimate_only:
+        return 0
+    assert choice is not None  # the monitor target always uses a model
+    live_client = build_client(load_live_config(target.route, args.model))
+    run_date = args.date or SystemClock().now().date()
+    out_dir = None if args.no_write else args.out_dir
+    ledger = CallLedger()
+    llm = BudgetedLLMClient(live_client, cap_usd=cap, overrides=prices, ledger=ledger)
+    context = RunContext(
+        llm=llm,
+        model=choice.model,
+        effort=choice.effort,
+        reviews=reviews,
+        limit=args.limit,
+        only=args.only,
+    )
+    meta = RunMeta(
+        run_date=run_date,
+        set_name=MONITORS_SET_NAME,
+        mode=target.label,
+        model=choice.model,
+        live=True,
+        effort=choice.effort,
+        dataset_files=digests,
+        cap_usd=cap,
+        reviews=reviews,
+    )
+    async with isolated_monitors(eval_database_url(), target) as bound:
+        try:
+            outcome = await run_target(bound, context, meta=meta, ledger=ledger, out_dir=out_dir)
+        except BaseException:
+            if ledger.entries:
+                _refuse(f"the run failed after spending ${ledger.spent:.4f} of ${cap}")
+            raise
+    _print_outcome(f"monitors ({target.label})", outcome, ledger=ledger, cap=cap, spent=True)
+    return exit_code(outcome.result)
+
+
 async def _retrieval(args: argparse.Namespace) -> int:
     _require_recorded(args)
     if args.only is not None:
-        raise RefusedError("--only is only for the summary and triage targets")
+        raise RefusedError("--only is only for the summary, triage and monitors targets")
     digests = ensure_frozen()
     cap, prices = _cap(args.budget_usd), _prices(args.price)
     reviews = _reviews(args.reviews, "retrieval")
