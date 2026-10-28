@@ -127,6 +127,8 @@ def render_digest(content: DigestContent) -> str:
         f"📋 <b>Digest</b> · {_when(content.period_start, zone)} to "
         f"{_when(content.period_end, zone)}"
     ]
+    if content.due_late_at is not None:
+        lines.append(f"⏰ Late: this digest was due at {_when(content.due_late_at, zone)}.")
 
     def section(title: str, body: list[str]) -> None:
         if body:

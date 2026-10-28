@@ -631,6 +631,30 @@ async def mark_fired(
     return changed.first() is not None
 
 
+async def runs_late(
+    session: AsyncSession, *, account_id: int, kind: str, occurrence_at: datetime, now: datetime
+) -> bool:
+    """Whether `occurrence_at` is a scheduled occurrence of one of this
+    account's `kind` automations that is being acted on late: claimed with
+    the `late` note, or acted on more than the grace after its time. The
+    owner is told (FR-FUP-08: "fires late (with a note)")."""
+    row = (
+        await session.execute(
+            select(AutomationOccurrence.note_code)
+            .join(Automation, Automation.id == AutomationOccurrence.automation_id)
+            .where(AutomationOccurrence.account_id == account_id)
+            .where(Automation.account_id == account_id)
+            .where(Automation.kind == kind)
+            .where(AutomationOccurrence.occurrence_at == occurrence_at)
+            .where(AutomationOccurrence.status.in_(("claimed", "fired")))
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return False  # not a scheduled occurrence (e.g. `/digest`)
+    return row.note_code == Note.LATE.value or now - occurrence_at > GRACE
+
+
 # ------------------------------------------------------------ restores
 async def skip_for_restore(session: AsyncSession, now: datetime) -> dict[int, int]:
     """Post-restore step 4 (ARCHITECTURE §15.6; S05.3b §3.7), in the

@@ -21,7 +21,8 @@ it (`mark_digested`) — the at-most-once claim, committed before the send
 (same pattern as notifications, P2-T25). After the send: `sent`; a definite
 failure → `failed`, its alerts unlinked so the next digest carries them; an
 ambiguous outcome stays `uncertain` and is never resent (§6 invariant 6
-spirit). `building` is never committed.
+spirit). `building` is never committed. A scheduled digest that goes out
+late says when it was due (FR-FUP-08).
 
 The digest goes only to the owner's control chat (`ControlChannel`). Its
 "Open: <contact>" buttons are `pending_inputs` cards of kind `dg` (`ref_id`
@@ -33,7 +34,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Collection, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select, update
@@ -43,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from assistant.accounts.callbacks import encode
 from assistant.accounts.models import Account, AuditLogEntry, PendingInput
 from assistant.accounts.service import create_card
+from assistant.automation import schedules
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.channel import Button, ControlChannel, Delivery
 from assistant.core.clock import Clock
@@ -162,6 +164,9 @@ class DigestContent:
     caveats: tuple[str, ...] = ()
     #: The batched alerts this digest carries (marked digested at the claim).
     covered_notification_ids: frozenset[int] = field(default_factory=frozenset)
+    #: Set when a scheduled digest goes out late: the time it was due
+    #: (FR-FUP-08 — late, with a note; set by `DigestDelivery`).
+    due_late_at: datetime | None = None
 
     @property
     def quiet(self) -> bool:
@@ -195,6 +200,7 @@ class DigestContent:
             "deletions": sum(d.total for d in self.deletions) + len(self.owner_deletions),
             "caveats": len(self.caveats),
             "quiet": self.quiet,
+            "late": self.due_late_at is not None,
         }
 
 
@@ -602,6 +608,14 @@ class DigestDelivery:
             content = await build_digest(
                 session, account_id=account_id, period_start=period_start, period_end=period_end
             )
+            if await schedules.runs_late(
+                session,
+                account_id=account_id,
+                kind=schedules.DIGEST_KIND,
+                occurrence_at=period_end,
+                now=now,
+            ):
+                content = replace(content, due_late_at=period_end)
             text = self._render(content)
             # The at-most-once claim (§3.5 step 3): committed before the send.
             await session.execute(

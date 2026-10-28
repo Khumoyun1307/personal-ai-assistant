@@ -53,6 +53,7 @@ from assistant.telegram.control.digest import (
 )
 from assistant.telegram.control.routes import ControlRoutes
 from tests.fakes.channel import FakeChannel
+from tests.fakes.clock import FakeClock
 from tests.integration.business_env import (
     CONTACT,
     OWNER,
@@ -355,6 +356,7 @@ async def test_the_digest_lists_batched_alerts_due_commitments_and_closed_tasks(
         "deletions": 0,
         "caveats": 1,
         "quiet": False,
+        "late": False,
     }
 
 
@@ -377,6 +379,41 @@ async def test_an_open_contact_commitment_due_today_appears_in_the_digest(env: E
     assert (
         "• Hujjatlarni yuboradi — Sardor promised, due 18 Oct 15:00 (overdue)" in channel.sends[0]
     )
+
+
+async def test_a_digest_that_fires_late_says_so(env: Env) -> None:
+    """FR-FUP-08: scheduled work fires late with a note. A digest claimed
+    late (the assistant was not running at its time) still goes out and
+    says when it was due; an on-time one says nothing of the kind."""
+    account_id = await owner(env)
+    async with env.factory() as session, session.begin():
+        account = await session.get(Account, account_id)
+        assert account is not None
+        await ensure_digest_schedule(session, account, FakeClock(EVENING - timedelta(hours=1)))
+        late = await reconcile_due(session, EVENING + timedelta(minutes=40), digest_enabled=True)
+    assert [d.occurrence_at for d in late.claimed] == [EVENING]
+    channel = FakeChannel()
+    env.clock.set(EVENING + timedelta(minutes=41))
+    assert (await build(env, channel, account_id)).status == "sent"
+    assert channel.sends[0].split("\n")[1] == "⏰ Late: this digest was due at 18 Oct 21:00."
+
+    tomorrow = EVENING + timedelta(days=1)
+    async with env.factory() as session, session.begin():
+        on_time = await reconcile_due(
+            session, tomorrow + timedelta(seconds=30), digest_enabled=True
+        )
+    assert [d.occurrence_at for d in on_time.claimed] == [tomorrow]
+    await build(env, channel, account_id, tomorrow)
+    assert "Late:" not in channel.sends[1]
+    async with env.factory() as session:
+        audits = list(
+            await session.scalars(
+                select(AuditLogEntry.details)
+                .where(AuditLogEntry.event == "digest_sent")
+                .order_by(AuditLogEntry.id)
+            )
+        )
+    assert [details["late"] for details in audits] == [True, False]
 
 
 async def test_a_quiet_day_digest_says_so(env: Env) -> None:
