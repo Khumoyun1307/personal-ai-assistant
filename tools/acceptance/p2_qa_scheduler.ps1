@@ -14,6 +14,7 @@ param(
     [ValidateRange(1, 86400)][int]$IntervalSeconds = 300,
     [ValidateRange(1, 86400)][int]$RetrySeconds = 300,
     [string]$CodexPath = 'codex.exe',
+    [string]$ReviewedCommit,
     [switch]$Start,
     [switch]$ConfirmWorkerStopped
 )
@@ -93,6 +94,54 @@ function Get-QAHash([string]$Value) {
     finally { $hash.Dispose() }
 }
 
+function Get-QAFileHash([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($hash.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+    finally { $hash.Dispose(); $stream.Dispose() }
+}
+
+function Get-QAControlFiles($Options) {
+    if (-not (Get-QAValue $Options 'ControlRoot')) { throw 'control_root_required' }
+    $paths = [ordered]@{
+        controller = 'tools/acceptance/p2_qa_scheduler.ps1'
+        prompt = 'docs/engineering/p2/qa/p2-self-check-prompt.md'
+        schema = 'tools/acceptance/p2_qa_result.schema.json'
+    }
+    foreach ($name in $paths.Keys) {
+        [pscustomobject]@{ name = $name; path = [IO.Path]::GetFullPath((Join-Path $Options.ControlRoot $paths[$name])) }
+    }
+}
+
+function New-QAIntegrityPin($Options, [string]$Commit) {
+    if ($Commit -cnotmatch '^[a-f0-9]{40}$') { throw 'reviewed_commit_required' }
+    $controls = @(Get-QAControlFiles $Options | ForEach-Object {
+        [pscustomobject]@{ name = $_.name; path = $_.path; sha256 = Get-QAFileHash $_.path }
+    })
+    return @{ version = 1; reviewed_commit = $Commit; workspace = $Options.Workspace; controls = $controls }
+}
+
+function Test-QAIntegrity($Options) {
+    try {
+        $path = Join-Path $Options.StateDirectory 'integrity.json'
+        if (-not [IO.File]::Exists($path) -or (Get-Item -LiteralPath $path).Length -gt 16384) { return $false }
+        $pin = [IO.File]::ReadAllText($path) | ConvertFrom-Json
+        if ((@($pin.PSObject.Properties.Name | Sort-Object) -join ',') -ne 'controls,reviewed_commit,version,workspace') { return $false }
+        if ($pin.version -ne 1 -or $pin.reviewed_commit -cnotmatch '^[a-f0-9]{40}$' -or $pin.workspace -ne $Options.Workspace) { return $false }
+        if ($pin.controls -isnot [array] -or $pin.controls.Count -ne 3) { return $false }
+        foreach ($expected in @(Get-QAControlFiles $Options)) {
+            if ($expected.name -eq 'controller' -and $Options.ControllerPath -ne $expected.path) { return $false }
+            $found = @($pin.controls | Where-Object { $_.name -ceq $expected.name })
+            if ($found.Count -ne 1) { return $false }
+            $control = $found[0]
+            if ((@($control.PSObject.Properties.Name | Sort-Object) -join ',') -ne 'name,path,sha256') { return $false }
+            if ($control.path -ne $expected.path -or $control.sha256 -cnotmatch '^[a-f0-9]{64}$') { return $false }
+            if ((Get-QAFileHash $expected.path) -cne $control.sha256) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
 function Write-QAJson([string]$Path, $Value) {
     $temporary = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
     try {
@@ -164,6 +213,14 @@ function Get-QASnapshot {
     function Add-Entry([string]$Id, $Value) {
         $entries.Add([pscustomobject][ordered]@{ id = $Id; hash = Get-QAHash ($Value | ConvertTo-Json -Depth 25 -Compress) })
     }
+    function Add-CIEntry([string]$Id, $Value, [bool]$Pending) {
+        # A rerun may temporarily replace its completed row with a queued row.
+        # Keep the acknowledged terminal fingerprint until conclusions are ready.
+        $previous = @(Get-QAValue $State 'acknowledged_entries' @() | Where-Object { $_.id -eq $Id })
+        if ($Pending -and $previous.Count -eq 1) {
+            $entries.Add([pscustomobject][ordered]@{ id = $Id; hash = $previous[0].hash })
+        } else { Add-Entry $Id $Value }
+    }
     function Add-Notes([string]$Prefix, $Notes) {
         foreach ($note in @($Notes)) {
             if ((Get-QAValue (Get-QAValue $note 'user') 'login') -ne $script:QAOwner) { continue }
@@ -181,9 +238,17 @@ function Get-QASnapshot {
         if ($queued -or $owned) {
             Add-Entry ('pr:' + $pr.number) @($pr.head.sha, $pr.base.sha, $pr.base.ref, $labels)
             $checks = & $Gh ($root + '/commits/' + $pr.head.sha + '/check-runs?per_page=100') $false
-            Add-Entry ('ci:' + $pr.number) @(@($checks.check_runs | Sort-Object id | ForEach-Object { @($_.id, $_.name, $_.status, $_.conclusion) }))
+            $runs = @($checks.check_runs)
+            $completed = @($runs | Where-Object { $_.status -eq 'completed' -and $_.conclusion })
+            $pending = $runs.Count -eq 0 -or $completed.Count -ne $runs.Count
+            $conclusions = @($completed | Sort-Object id | ForEach-Object { @($_.id, $_.name, $_.conclusion) })
+            Add-CIEntry ('ci:' + $pr.number) $conclusions $pending
             $statuses = & $Gh ($root + '/commits/' + $pr.head.sha + '/status?per_page=100') $false
-            Add-Entry ('status:' + $pr.number) @($statuses.state, @($statuses.statuses | Sort-Object context | ForEach-Object { @($_.context, $_.state) }))
+            $contexts = @($statuses.statuses)
+            $terminal = @($contexts | Where-Object { $_.state -in @('success', 'failure', 'error') })
+            $pending = $contexts.Count -eq 0 -or $terminal.Count -ne $contexts.Count
+            $conclusions = @($terminal | Sort-Object context | ForEach-Object { @($_.context, $_.state) })
+            Add-CIEntry ('status:' + $pr.number) $conclusions $pending
         }
         if ($queued -or $owned) {
             # Author units need CI/fix feedback; feature units need same-head QA requests.
@@ -226,8 +291,9 @@ function Test-QAResult($Result, [string]$CheckId) {
 }
 
 function Invoke-QAWorker($Options, [string]$CheckId, [scriptblock]$OnStarted) {
-    $promptPath = Join-Path $Options.Workspace 'docs/engineering/p2/qa/p2-self-check-prompt.md'
-    $schema = Join-Path $Options.Workspace 'tools/acceptance/p2_qa_result.schema.json'
+    if (-not (Test-QAIntegrity $Options)) { throw 'worker_integrity_failed' }
+    $promptPath = Join-Path $Options.ControlRoot 'docs/engineering/p2/qa/p2-self-check-prompt.md'
+    $schema = Join-Path $Options.ControlRoot 'tools/acceptance/p2_qa_result.schema.json'
     $prompt = [IO.File]::ReadAllText($promptPath)
     if (-not [IO.File]::Exists($schema)) { throw 'missing_worker_schema' }
     foreach ($pair in @(@('WORKSPACE', $Options.Workspace), @('COMPOSE_PROJECT', 'antony-scheduled'), @('CHECK_ID', $CheckId), @('STATE_DIRECTORY', $Options.StateDirectory))) {
@@ -235,7 +301,8 @@ function Invoke-QAWorker($Options, [string]$CheckId, [scriptblock]$OnStarted) {
     }
     $resultPath = Join-Path $Options.StateDirectory ('result-' + $CheckId + '.json')
     try {
-        $arguments = @('exec', '--approve-for-me', '--cd', $Options.Workspace, '--color', 'never', '--output-schema', $schema, '--output-last-message', $resultPath, '-')
+        # Explicit equivalent of --approve-for-me; its shorthand conflicts with -s.
+        $arguments = @('exec', '-s', 'workspace-write', '--ignore-user-config', '--ignore-rules', '--strict-config', '--ephemeral', '-c', 'approval_policy="on-request"', '-c', 'approvals_reviewer="auto_review"', '--cd', $Options.Workspace, '--color', 'never', '--output-schema', $schema, '--output-last-message', $resultPath, '-')
         $run = Invoke-QANative $Options.CodexPath $arguments $Options.Workspace -InputText $prompt -OnStarted $OnStarted
         if ($run.exit_code -ne 0 -or -not [IO.File]::Exists($resultPath)) { throw 'worker_process_failed' }
         if ((Get-Item -LiteralPath $resultPath).Length -gt 65536) { throw 'worker_result_too_large' }
@@ -245,6 +312,29 @@ function Invoke-QAWorker($Options, [string]$CheckId, [scriptblock]$OnStarted) {
     } finally { if ([IO.File]::Exists($resultPath)) { [IO.File]::Delete($resultPath) } }
 }
 
+function Reset-QAWorkerFailures($Options, $State) {
+    $State.consecutive_worker_failures = 0
+    if ((Get-QAValue $State 'phase') -in @('paused', 'paused_after_failures')) { $State.phase = 'resumed' }
+    Write-QAJson (Join-Path $Options.StateDirectory 'state.json') $State
+    [IO.File]::Delete((Join-Path $Options.StateDirectory 'resume'))
+}
+
+function Resume-QAController($Options) {
+    # The owner can resume while a worker runs without racing its state writes.
+    # Clear current requests here, never later: a newer Pause/Stop must win.
+    foreach ($name in @('stop', 'pause')) { [IO.File]::Delete((Join-Path $Options.StateDirectory $name)) }
+    [IO.File]::WriteAllText((Join-Path $Options.StateDirectory 'resume'), '')
+    $lock = Open-QALock $Options.StateDirectory
+    if ($null -eq $lock) { return 'resume_requested' }
+    try { Reset-QAWorkerFailures $Options (Get-QAState $Options.StateDirectory); return 'resumed_not_started' }
+    finally { $lock.Dispose() }
+}
+
+function Set-QAAutomaticPause($Options, $State, [string]$Phase) {
+    [IO.File]::WriteAllText((Join-Path $Options.StateDirectory 'pause'), '')
+    $State.phase = $Phase
+}
+
 function Invoke-QAController {
     param($Options, [switch]$Once,
         [scriptblock]$Snapshot = { param($options, $state) Get-QASnapshot $options $state },
@@ -252,6 +342,7 @@ function Invoke-QAController {
         [scriptblock]$Now = { [DateTimeOffset]::UtcNow },
         [scriptblock]$Sleep = { param($seconds) Start-Sleep -Milliseconds ([int]($seconds * 1000)) },
         [scriptblock]$WorkerAlive = { param($state) Test-QAWorkerAlive $state },
+        [scriptblock]$Integrity = { param($options) Test-QAIntegrity $options },
         [int]$MaxIterations = 0)
     Initialize-QADirectory $Options.StateDirectory
     $lock = Open-QALock $Options.StateDirectory
@@ -263,15 +354,18 @@ function Invoke-QAController {
         $iteration = 0
         while ($MaxIterations -eq 0 -or $iteration -lt $MaxIterations) {
             $iteration++
+            if (Test-Path -LiteralPath (Join-Path $Options.StateDirectory 'resume')) { Reset-QAWorkerFailures $Options $state }
             if (Test-Path -LiteralPath (Join-Path $Options.StateDirectory 'stop')) {
                 $state.phase = 'stopped'
                 Write-QAJson (Join-Path $Options.StateDirectory 'state.json') $state
                 return 'stopped'
             }
             if (Test-Path -LiteralPath (Join-Path $Options.StateDirectory 'pause')) {
-                $state.phase = 'paused'
-                Write-QAJson (Join-Path $Options.StateDirectory 'state.json') $state
-                if ($Once) { return 'paused' }
+                if ((Get-QAValue $state 'phase') -notin @('paused', 'paused_after_failures', 'integrity_failed')) {
+                    $state.phase = 'paused'
+                    Write-QAJson (Join-Path $Options.StateDirectory 'state.json') $state
+                }
+                if ($Once) { return $state.phase }
                 & $Sleep 5
                 continue
             }
@@ -293,6 +387,14 @@ function Invoke-QAController {
             if ((Test-Path -LiteralPath (Join-Path $Options.StateDirectory 'stop')) -or (Test-Path -LiteralPath (Join-Path $Options.StateDirectory 'pause'))) { continue }
             $delay = $Options.IntervalSeconds
             if ($snapshotValue.fingerprint -ne (Get-QAValue $state 'acknowledged_fingerprint')) {
+                $validControls = $false
+                try { $validControls = [bool](& $Integrity $Options) } catch { $validControls = $false }
+                if (-not $validControls) {
+                    Set-QAAutomaticPause $Options $state 'integrity_failed'
+                    Write-QAJson (Join-Path $Options.StateDirectory 'state.json') $state
+                    if ($Once) { return 'integrity_failed' }
+                    continue
+                }
                 $id = [guid]::NewGuid().ToString('N')
                 $state.phase = 'launching'
                 $state.check_id = $id
@@ -315,10 +417,19 @@ function Invoke-QAController {
                     $state.acknowledged_fingerprint = $snapshotValue.fingerprint
                     $state.acknowledged_entries = $snapshotValue.entries
                     $state.phase = $result.status
+                    $state.consecutive_worker_failures = 0
                     $state.reviewed_count = @($result.reviewed_heads).Count
                     $state.posted_count = @($result.posted_urls).Count
                     $state.ignored_urls = @(@(Get-QAValue $state 'ignored_urls' @()) + @($result.posted_urls) | Sort-Object -Unique)
-                } catch { $state.phase = 'worker_failed'; $delay = $Options.RetrySeconds }
+                } catch {
+                    if ($_.Exception.Message -eq 'worker_integrity_failed') { Set-QAAutomaticPause $Options $state 'integrity_failed' }
+                    else {
+                        $state.phase = 'worker_failed'
+                        $state.consecutive_worker_failures = [int](Get-QAValue $state 'consecutive_worker_failures' 0) + 1
+                        if ($state.consecutive_worker_failures -ge 3) { Set-QAAutomaticPause $Options $state 'paused_after_failures' }
+                    }
+                    $delay = $Options.RetrySeconds
+                }
                 finally { $state.worker_pid = $null; $state.worker_started_utc = $null; $state.launch_id = $null }
             } else { $state.phase = 'idle' }
             $state.last_finished_utc = (& $Now).ToString('o')
@@ -349,39 +460,82 @@ function New-QAOptions([string]$SelectedWorkspace, [string]$SelectedState, [int]
         if ((Get-QAGitRoot $SelectedWorkspace) -ne $SelectedWorkspace -or $SelectedWorkspace -eq $commonRoot -or -not [IO.File]::Exists((Join-Path $SelectedWorkspace '.git'))) { throw 'dedicated_worktree_required' }
         if ((Get-QAGitRoot $SelectedWorkspace -Common) -ne $commonGit) { throw 'workspace_repository_mismatch' }
     }
-    return @{ Workspace = $SelectedWorkspace; StateDirectory = [IO.Path]::GetFullPath($SelectedState); IntervalSeconds = $Interval; RetrySeconds = $Retry; CodexPath = $Executable }
+    return @{ Workspace = $SelectedWorkspace; StateDirectory = [IO.Path]::GetFullPath($SelectedState); IntervalSeconds = $Interval; RetrySeconds = $Retry; CodexPath = $Executable; ControlRoot = $controllerRoot; ControllerPath = $script:QAControllerPath }
 }
 
-function Install-QATask($Options, [switch]$StartNow) {
-    $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-File', $script:QAControllerPath, 'Run', '-Workspace', $Options.Workspace, '-StateDirectory', $Options.StateDirectory, '-IntervalSeconds', [string]$Options.IntervalSeconds, '-RetrySeconds', [string]$Options.RetrySeconds, '-CodexPath', $Options.CodexPath)
+function Assert-QAInstallCheckout {
+    param($Options, [string]$Commit,
+        [scriptblock]$Git = { param($arguments, $directory) Invoke-QANative 'git.exe' (@('-C', $directory) + $arguments) $directory -Capture })
+    if ($Commit -cnotmatch '^[a-f0-9]{40}$') { throw 'reviewed_commit_required' }
+    $root = [IO.Path]::GetFullPath($Options.ControlRoot)
+    $workerRoot = [IO.Path]::GetFullPath($Options.Workspace).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if ($root -eq $Options.Workspace -or $root.StartsWith($workerRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'controls_must_be_outside_worker' }
+    if (-not [IO.File]::Exists((Join-Path $root '.git'))) { throw 'dedicated_control_worktree_required' }
+    if ($Options.ControllerPath -ne (Join-Path $root 'tools/acceptance/p2_qa_scheduler.ps1')) { throw 'controller_path_mismatch' }
+    $check = & $Git @('rev-parse', '--show-toplevel') $root
+    if ($check.exit_code -ne 0 -or [IO.Path]::GetFullPath($check.output.Trim()) -ne $root) { throw 'control_root_mismatch' }
+    $check = & $Git @('rev-parse', 'HEAD') $root
+    if ($check.exit_code -ne 0 -or $check.output.Trim() -cne $Commit) { throw 'reviewed_commit_mismatch' }
+    $check = & $Git @('symbolic-ref', '-q', 'HEAD') $root
+    if ($check.exit_code -ne 1) { throw 'detached_control_checkout_required' }
+    $check = & $Git @('status', '--porcelain', '--untracked-files=all') $root
+    if ($check.exit_code -ne 0 -or $check.output.Trim()) { throw 'clean_control_checkout_required' }
+}
+
+function Install-QATask($Options, [switch]$StartNow, [string]$Commit) {
+    $lock = Open-QALock $Options.StateDirectory
+    if ($null -eq $lock) { throw 'controller_running_during_install' }
+    try {
+        $state = Get-QAState $Options.StateDirectory
+        if ((Test-QAWorkerAlive $state) -or (Get-QAValue $state 'launch_id')) { throw 'worker_recovery_required_before_install' }
+        Assert-QAInstallCheckout $Options $Commit
+        $Options.CodexPath = (Get-Command $Options.CodexPath -CommandType Application -ErrorAction Stop).Source
+        Write-QAJson (Join-Path $Options.StateDirectory 'integrity.json') (New-QAIntegrityPin $Options $Commit)
+        if (-not (Test-QAIntegrity $Options)) { throw 'install_integrity_failed' }
+        Register-QATask $Options
+    } finally { $lock.Dispose() }
+    # Starting while the installer holds the lease would make the new Run fail.
+    if ($StartNow) { Start-ScheduledTask -TaskName $script:QATaskName -ErrorAction Stop }
+}
+
+function Register-QATask($Options) {
+    $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-File', $Options.ControllerPath, 'Run', '-Workspace', $Options.Workspace, '-StateDirectory', $Options.StateDirectory, '-IntervalSeconds', [string]$Options.IntervalSeconds, '-RetrySeconds', [string]$Options.RetrySeconds, '-CodexPath', $Options.CodexPath)
     $action = New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'powershell.exe') -Argument (($arguments | ForEach-Object { ConvertTo-QANativeArgument $_ }) -join ' ')
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
     $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -DisallowHardTerminate -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskName $script:QATaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Self-paced P2 Antony QA; one worker, five minutes after completion.' -Force | Out-Null
-    if ($StartNow) { Start-ScheduledTask -TaskName $script:QATaskName }
+}
+
+function Get-QACommandExitCode([string]$Action, $Result) {
+    if ($Action -in @('Run', 'Once', 'Recover', 'Uninstall') -and [string]$Result -in @('already_running', 'worker_still_running', 'recovery_required', 'github_failed', 'worker_failed', 'paused_after_failures', 'integrity_failed', 'stop_requested_retry_uninstall_after_worker_finishes')) { return 1 }
+    return 0
 }
 
 function Invoke-QAMain {
     if ($Command -in @('Run', 'Once', 'Install') -and -not $Workspace) { throw 'explicit_workspace_required' }
     if ($Start -and $Command -ne 'Install') { throw 'start_only_with_install' }
+    if ($ReviewedCommit -and $Command -ne 'Install') { throw 'reviewed_commit_only_with_install' }
     $options = New-QAOptions $Workspace $StateDirectory $IntervalSeconds $RetrySeconds $CodexPath
     Initialize-QADirectory $options.StateDirectory
     switch ($Command) {
         'Run' { Invoke-QAController $options }
         'Once' { Invoke-QAController $options -Once }
-        'Install' { Install-QATask $options -StartNow:$Start; 'installed' }
+        'Install' { Install-QATask $options -StartNow:$Start -Commit $ReviewedCommit; 'installed' }
         'Status' {
             $state = Get-QAState $options.StateDirectory
             $lock = Open-QALock $options.StateDirectory
             $active = $null -eq $lock
             if ($lock) { $lock.Dispose() }
-            @{ controller_running = $active; worker_running = (Test-QAWorkerAlive $state); paused = (Test-Path -LiteralPath (Join-Path $options.StateDirectory 'pause')); stop_requested = (Test-Path -LiteralPath (Join-Path $options.StateDirectory 'stop')); state = $state } | ConvertTo-Json -Depth 15
+            $workerActive = Test-QAWorkerAlive $state
+            $elapsed = 0
+            if ($workerActive -and (Get-QAValue $state 'worker_started_utc')) { $elapsed = [Math]::Max(0, ([DateTimeOffset]::UtcNow - [DateTimeOffset]::Parse($state.worker_started_utc)).TotalSeconds) }
+            @{ controller_running = $active; worker_running = $workerActive; worker_elapsed_seconds = [int][Math]::Floor($elapsed); worker_overdue = $workerActive -and $elapsed -gt 7200; paused = (Test-Path -LiteralPath (Join-Path $options.StateDirectory 'pause')); stop_requested = (Test-Path -LiteralPath (Join-Path $options.StateDirectory 'stop')); state = $state } | ConvertTo-Json -Depth 15
         }
         'Stop' { [IO.File]::WriteAllText((Join-Path $options.StateDirectory 'stop'), ''); 'stop_requested' }
         'Pause' { [IO.File]::WriteAllText((Join-Path $options.StateDirectory 'pause'), ''); 'pause_requested' }
-        'Resume' { foreach ($name in @('stop', 'pause')) { $path = Join-Path $options.StateDirectory $name; if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) } }; 'resumed_not_started' }
+        'Resume' { Resume-QAController $options }
         'Recover' {
             if (-not $ConfirmWorkerStopped) { throw 'confirm_worker_stopped_required' }
             $lock = Open-QALock $options.StateDirectory
@@ -410,6 +564,10 @@ function Invoke-QAMain {
 
 if ($MyInvocation.InvocationName -ne '.') {
     $ErrorActionPreference = 'Stop'
-    try { Invoke-QAMain }
+    try {
+        $result = Invoke-QAMain
+        $result
+        exit (Get-QACommandExitCode $Command $result)
+    }
     catch { [Console]::Error.WriteLine('scheduler_failed type=' + $_.Exception.GetType().Name); exit 1 }
 }
