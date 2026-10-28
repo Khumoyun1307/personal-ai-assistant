@@ -3,6 +3,9 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
+#: Bot API sendMessage text limit: 1-4096 characters (core.telegram.org/bots/api#sendmessage).
+MAX_TEXT_LENGTH = 4096
+
 
 class ErrorClass(StrEnum):
     OK = "ok"
