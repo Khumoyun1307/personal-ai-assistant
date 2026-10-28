@@ -87,6 +87,9 @@ CI provides automated evidence; calendar-day and owner-client checks remain sepa
 
 ## 4. QA-S4 — M04 acceptance scenarios
 
+Implementation and automated evidence: [m04-scenarios.md](m04-scenarios.md).
+Strict expected failures remain pending acceptance, even when their PR is green.
+
 Branch `qa/m04-scenarios` from `int/m04` → PR to `int/m04`. Each file below holds the listed tests; "Green by" names the unit whose code should make it pass (the xfail reason).
 
 **Shared scripts.** A draft-run response is a `fake.parsed` dict with the `DraftResult` fields of the S04.2 spec, e.g. `{"needs_reply": True, "text": "P2 synthetic draft A", "confidence": "medium", "uses_only_permitted_information": True, "sensitive_topic": False, "makes_commitment": False, "should_escalate": False, … "language": "en"}` (exact field set per the S04.2 spec; P2-T08 revision fields included). An owner request that proposes a reply is `fake.queue(tool_response(("c1", "propose_reply", args(conversation_id=…))), text_response("Draft ready for your approval."))`. Telegram outcomes are scripted on `env.sender.fail_with` (`telegram_error(400, "Bad Request: PEER_ID_INVALID")`, `network_error()`, a 429 with `retry_after`). Contact and owner messages use `business_message(from_id=CONTACT|OWNER, date=T_BASE+n, message_text="P2 synthetic …")`.
