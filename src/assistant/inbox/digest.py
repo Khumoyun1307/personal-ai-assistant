@@ -18,16 +18,21 @@ lock (§9.4: the account before its notifications, as alert delivery): the
 and any row already ending at `period_end` makes this a no-op), the content
 built, the row set `uncertain` and the batched alerts it carries linked to
 it (`mark_digested`) — the at-most-once claim, committed before the send
-(same pattern as notifications, P2-T25). After the send: `sent`; a definite
-failure → `failed`, its alerts unlinked so the next digest carries them; an
-ambiguous outcome stays `uncertain` and is never resent (§6 invariant 6
-spirit). `building` is never committed. A scheduled digest that goes out
-late says when it was due (FR-FUP-08).
+(same pattern as notifications, P2-T25). A scheduled digest first re-checks
+its occurrence's deadlines: one whose job waited past them sends nothing
+and claims no row (AGENTS §13). A long digest goes out as several messages,
+each exactly one Telegram message (`DigestRenderer`). After the send: every
+part arrived → `sent`; nothing could have arrived (the first part refused)
+→ `failed`, its alerts unlinked so the next digest carries them; an
+ambiguous part, or a part refused after earlier ones arrived (`partial`),
+stays `uncertain` with its alerts linked and is never resent (§6
+invariants 6 and 11). `building` is never committed. A scheduled digest
+that goes out late says when it was due (FR-FUP-08).
 
 The digest goes only to the owner's control chat (`ControlChannel`). Its
 "Open: <contact>" buttons are `pending_inputs` cards of kind `dg` (`ref_id`
 = the conversation; the `ntf` kind's `ref_id` is a notification, and a
-waiting chat may have none), at most five, on the last chunk.
+waiting chat may have none), at most five, on the last part.
 """
 
 from __future__ import annotations
@@ -479,7 +484,10 @@ async def _owner_deletions(
 
 
 # ------------------------------------------------------------ delivery
-DigestRenderer = Callable[[DigestContent], str]
+#: The digest as its control-chat messages, in order. Each part must be ONE
+#: Telegram message after the gateway's sanitising (the gateway never splits
+#: it again), so `DigestDelivery` knows exactly which parts reached the owner.
+DigestRenderer = Callable[[DigestContent], list[str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -489,6 +497,29 @@ class DigestResult:
     status: str
     digest_id: int | None = None
     reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Sent:
+    """What one delivery reached: the message ids of the parts that arrived,
+    in order, and the failure that stopped the rest (None: all arrived)."""
+
+    parts: int
+    message_ids: tuple[int | None, ...]
+    failure: Delivery | None = None
+
+    @property
+    def complete(self) -> bool:
+        return self.failure is None
+
+    @property
+    def uncertain(self) -> bool:
+        return self.failure is not None and self.failure.uncertain
+
+    @property
+    def buttons_may_show(self) -> bool:
+        """The buttons ride on the last part: shown, or maybe shown."""
+        return self.complete or (self.uncertain and len(self.message_ids) == self.parts - 1)
 
 
 def button_label(name: str | None) -> str:
@@ -583,7 +614,7 @@ class DigestDelivery:
             )
             if timing is schedules.Timing.LATE:
                 content = replace(content, due_late_at=period_end)
-            text = self._render(content)
+            parts = self._render(content)
             # The at-most-once claim (§3.5 step 3): committed before the send.
             await session.execute(
                 update(Digest)
@@ -600,18 +631,36 @@ class DigestDelivery:
             card_ids, buttons = await self._buttons(session, account_id, content)
             chat_id = account.control_chat_id
 
-        delivery = await self._channel.send(
-            account_id=account_id, chat_id=chat_id, text=text, buttons=buttons
-        )
-        result = await self._record(digest_id, account_id, content, delivery, card_ids)
+        sent = await self._send(account_id, chat_id, parts, buttons)
+        result = await self._record(digest_id, account_id, content, sent, card_ids)
         logger.info(
             "digest_delivered",
             account_id=account_id,
             digest_id=digest_id,
             status=result.status,
+            reason=result.reason,
+            parts=sent.parts,
+            parts_shown=len(sent.message_ids),
             **content.counts(),
         )
         return result
+
+    async def _send(
+        self, account_id: int, chat_id: int, parts: Sequence[str], buttons: Sequence[Button]
+    ) -> _Sent:
+        """One message per part, in order, the buttons on the last; the first
+        failure stops the rest. Each part is one Telegram message (the
+        renderer's contract), so what reached the owner is known exactly."""
+        shown: list[int | None] = []
+        for index, part in enumerate(parts):
+            last = index == len(parts) - 1
+            delivery = await self._channel.send(
+                account_id=account_id, chat_id=chat_id, text=part, buttons=buttons if last else ()
+            )
+            if not delivery.ok:
+                return _Sent(len(parts), tuple(shown), delivery)
+            shown.append(delivery.message_id)
+        return _Sent(len(parts), tuple(shown))
 
     async def _buttons(
         self, session: AsyncSession, account_id: int, content: DigestContent
@@ -638,9 +687,15 @@ class DigestDelivery:
         digest_id: int,
         account_id: int,
         content: DigestContent,
-        delivery: Delivery,
+        sent: _Sent,
         card_ids: Sequence[int],
     ) -> DigestResult:
+        """The outcome, honestly (§6 invariant 11): every part arrived →
+        `sent`; nothing could have arrived → `failed`, its alerts unlinked
+        for the next digest; anything else — an ambiguous part, or a part
+        refused after earlier ones arrived — stays `uncertain` with its
+        alerts linked (some text is, or may be, on the owner's screen; never
+        resent, §6 invariant 6)."""
         now = self._clock.now()
         async with transaction(self._session_factory) as uow:
             session = uow.session
@@ -660,21 +715,23 @@ class DigestDelivery:
                 if card_ids
                 else []
             )
-            if delivery.ok:
+            if sent.complete:
                 for card in cards:
-                    card.prompt_message_id = delivery.message_id
-            elif not delivery.uncertain:
-                for card in cards:  # definitely not on screen
+                    card.prompt_message_id = sent.message_ids[-1] if sent.message_ids else None
+            elif not sent.buttons_may_show:
+                for card in cards:  # their part is definitely not on screen
                     await session.delete(card)
             if digest is None:  # the account's data was deleted meanwhile
                 return DigestResult(
-                    "sent" if delivery.ok else "uncertain", digest_id, "row_deleted"
+                    "sent" if sent.complete else "uncertain", digest_id, "row_deleted"
                 )
             digest.updated_at = now
-            if delivery.ok:
+            # The digest's own message is its first part: the header and any
+            # late note (the cards remember the last, which has the buttons).
+            digest.message_id = sent.message_ids[0] if sent.message_ids else None
+            if sent.complete:
                 digest.status = "sent"
                 digest.sent_at = now
-                digest.message_id = delivery.message_id
                 session.add(
                     AuditLogEntry(
                         account_id=account_id,
@@ -687,7 +744,11 @@ class DigestDelivery:
                     )
                 )
                 return DigestResult("sent", digest_id)
-            if delivery.uncertain:
+            if sent.message_ids:
+                # Part of it is on screen: never "not delivered", and its
+                # alerts are not released into another digest.
+                return DigestResult("uncertain", digest_id, "partial")
+            if sent.uncertain:
                 return DigestResult("uncertain", digest_id, "ambiguous")
             digest.status = "failed"
             # The next digest carries these alerts instead.

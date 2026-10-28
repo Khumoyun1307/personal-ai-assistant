@@ -46,14 +46,17 @@ from assistant.core.jobs import DIGEST_TASK
 from assistant.inbox.digest import DIGEST_CARD, DigestDelivery, DigestResult
 from assistant.inbox.models import Digest, Notification
 from assistant.privacy.deletion import delete_conversation_data, delete_everything
+from assistant.telegram.control.agent_channel import GatewayControlChannel
 from assistant.telegram.control.digest import (
     handle_digest_command,
     handle_digest_press,
     render_digest,
 )
 from assistant.telegram.control.routes import ControlRoutes
+from assistant.telegram.gateway import OutboundGateway
 from tests.fakes.channel import FakeChannel
-from tests.fakes.clock import FakeClock
+from tests.fakes.clock import FakeClock, FakeSleep
+from tests.fakes.sender import FakeTelegramSender, telegram_error
 from tests.integration.business_env import (
     CONTACT,
     OWNER,
@@ -573,6 +576,114 @@ async def test_a_new_digest_starts_where_the_last_sent_one_ended(env: Env) -> No
         "covered"
     )
     assert len(channel.sends) == 3
+
+
+async def long_digest(env: Env, account_id: int, chats: int = 30) -> list[int]:
+    """Batched alerts in enough chats, with long reasons, that the digest
+    needs more than one Telegram message. Returns the alert ids."""
+    alerts = []
+    for index in range(chats):
+        where = await chat(
+            env,
+            account_id,
+            f"Synthetic contact {index:02d}",
+            reasons=[f"Synthetic reason {index:02d}: " + "lorem ipsum dolor " * 10],
+        )
+        created = EVENING - timedelta(hours=5) + timedelta(minutes=index)
+        alerts.append(await batched(env, where, created=created))
+    return alerts
+
+
+def production_channel(refuse_send: int) -> tuple[FakeTelegramSender, GatewayControlChannel]:
+    """The production control adapter over the gateway; Telegram refuses
+    (400) the `refuse_send`-th message and every one after it."""
+    sender = FakeTelegramSender()
+
+    async def refuse() -> None:
+        if len(sender.sends) + 1 >= refuse_send:
+            sender.fail_with = telegram_error("Bad Request: synthetic refusal", status_code=400)
+
+    sender.on_call = refuse
+    return sender, GatewayControlChannel(OutboundGateway(sender, FakeClock(), sleep=FakeSleep()))
+
+
+async def test_a_digest_cut_off_after_its_first_part_is_uncertain_and_keeps_its_alerts(
+    env: Env,
+) -> None:
+    """QA B3, through the production adapter: a digest longer than one
+    Telegram message goes out in parts; the first arrives, Telegram refuses
+    the second. Text is on the owner's screen, so the digest is `uncertain`
+    (`partial`), never `failed`: its alerts stay linked, so no later digest
+    repeats them (at most once; invariant 11)."""
+    account_id = await owner(env)
+    alerts = await long_digest(env, account_id)
+    sender, adapter = production_channel(refuse_send=2)
+    env.clock.set(EVENING + timedelta(seconds=20))
+    delivery = DigestDelivery(
+        session_factory=env.factory, channel=adapter, clock=env.clock, render=render_digest
+    )
+    result = await delivery.build(account_id, EVENING)
+
+    assert (result.status, result.reason) == ("uncertain", "partial")
+    assert len(sender.sends) == 2
+    first = sender.sends[0]
+    assert first["text"].startswith("📋 <b>Digest</b>")
+    assert first["text"].endswith("(continued in the next message)")
+    assert first["reply_markup"] is None  # the buttons ride on the last part
+    [row] = await digests(env, account_id)
+    assert (row.status, row.message_id, row.sent_at) == ("uncertain", 1001, None)
+    assert {(await notification(env, alert)).digest_id for alert in alerts} == {row.id}
+    assert await _cards(env) == []  # their part never arrived
+
+    channel = FakeChannel()
+    assert (await build(env, channel, account_id, EVENING + timedelta(days=1))).status == "sent"
+    assert "Needs you" not in channel.sends[-1]
+
+
+async def test_a_long_digest_refused_at_its_first_part_is_failed_and_releases_its_alerts(
+    env: Env,
+) -> None:
+    """Nothing reached the owner: `failed`, and the next digest carries the
+    alerts (the control for the partial case above)."""
+    account_id = await owner(env)
+    alerts = await long_digest(env, account_id)
+    sender, adapter = production_channel(refuse_send=1)
+    env.clock.set(EVENING + timedelta(seconds=20))
+    delivery = DigestDelivery(
+        session_factory=env.factory, channel=adapter, clock=env.clock, render=render_digest
+    )
+    result = await delivery.build(account_id, EVENING)
+
+    assert (result.status, result.reason) == ("failed", "not_delivered")
+    assert len(sender.sends) == 1
+    [row] = await digests(env, account_id)
+    assert (row.status, row.message_id) == ("failed", None)
+    assert {(await notification(env, alert)).digest_id for alert in alerts} == {None}
+    assert await _cards(env) == []
+
+
+async def test_a_long_digest_is_sent_in_parts_with_the_buttons_on_the_last(env: Env) -> None:
+    account_id = await owner(env)
+    await long_digest(env, account_id)
+    sender, adapter = production_channel(refuse_send=99)
+    env.clock.set(EVENING + timedelta(seconds=20))
+    delivery = DigestDelivery(
+        session_factory=env.factory, channel=adapter, clock=env.clock, render=render_digest
+    )
+    assert (await delivery.build(account_id, EVENING)).status == "sent"
+    assert len(sender.sends) >= 2
+    *earlier, last = sender.sends
+    assert all(call["reply_markup"] is None for call in earlier)
+    assert all(call["text"].endswith("(continued in the next message)") for call in earlier)
+    assert last["reply_markup"] is not None
+    assert not last["text"].endswith("(continued in the next message)")
+    shown = "\n".join(call["text"] for call in sender.sends)
+    assert all(f"Synthetic contact {index:02d}" in shown for index in range(30))
+    [row] = await digests(env, account_id)
+    # The digest's message is its first part (its header and any late note);
+    # the cards remember the last one, which carries their buttons.
+    assert (row.status, row.message_id) == ("sent", 1001)
+    assert {card.prompt_message_id for card in await _cards(env)} == {1000 + len(sender.sends)}
 
 
 async def test_batched_alerts_appear_in_one_digest_only(env: Env) -> None:

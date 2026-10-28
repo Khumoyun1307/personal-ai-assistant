@@ -1,10 +1,11 @@
 """The digest in the control chat: rendering, `/digest` and its "Open"
 buttons (S05.3b §3.4, §3.6; P2-T20; F0-interfaces §7).
 
-- `render_digest` turns `inbox.digest.DigestContent` into the message: HTML
-  with every contact name, reason and title escaped, times in the owner's
-  timezone, English fixed texts (P2-O11); the gateway splits it and puts the
-  buttons on the last chunk.
+- `render_digest` turns `inbox.digest.DigestContent` into its messages:
+  HTML with every contact name, reason and title escaped, times in the
+  owner's timezone, English fixed texts (P2-O11); a long digest is several
+  parts, each exactly one Telegram message, sent in order with the buttons
+  on the last.
 - `/digest` (a `ControlRoutes` command) defers `digest.build` for the period
   ending now, rounded down to the minute — a double tap within the minute is
   one digest; it works whether or not flag `digest.daily` is on.
@@ -48,10 +49,13 @@ from assistant.telegram.control.handlers import (
 )
 from assistant.telegram.control.panels import Screen, panel_screen
 from assistant.telegram.gateway import ControlChat, OutboundGateway
+from assistant.telegram.render import render_control_message
 
 logger = get_logger(__name__)
 
 QUIET_DAY_TEXT = "Quiet day — nothing needs you."
+#: Ends every part of a digest but the last.
+CONTINUED_TEXT = "(continued in the next message)"
 NOT_AVAILABLE_TEXT = "The digest is not available right now. Please try again later."
 SET_UP_FIRST_TEXT = "Send /start to finish setting me up first."
 OPENING_TEXT = "Opening the chat"
@@ -119,9 +123,21 @@ def _owner_deleted(deletion: OwnerDeletion, zone: ZoneInfo) -> str:
     return f"• At your request, at {_when(deletion.at, zone)}: {scope}{count}"
 
 
-def render_digest(content: DigestContent) -> str:
-    """The digest message (S05.3b §3.4). Names, reasons and titles are the
-    ones the product already shows, escaped; never message text."""
+def render_digest(content: DigestContent) -> list[str]:
+    """The digest's messages (S05.3b §3.4), in order — usually one. Names,
+    reasons and titles are the ones the product already shows, escaped;
+    never message text.
+
+    Each part is exactly one Telegram message after the gateway's
+    sanitising, so the gateway never splits it again and `DigestDelivery`
+    knows which parts reached the owner (QA B3 on #117: a refused second
+    chunk must not make a digest whose first chunk arrived "not
+    delivered"). Every part but the last ends with `CONTINUED_TEXT`, so a
+    digest cut short shows that it is."""
+    return _parts(_lines(content))
+
+
+def _lines(content: DigestContent) -> list[str]:
     zone = _zone(content.timezone)
     lines = [
         f"📋 <b>Digest</b> · {_when(content.period_start, zone)} to "
@@ -176,7 +192,31 @@ def render_digest(content: DigestContent) -> str:
     section("Coverage", [f"• {html.escape(caveat)}" for caveat in content.caveats])
     if content.quiet:
         lines.extend(("", QUIET_DAY_TEXT))
-    return "\n".join(lines)
+    return lines
+
+
+def _fits(lines: list[str]) -> bool:
+    """One Telegram message after the gateway's sanitising, with room for
+    the continuation line."""
+    return len(render_control_message("\n".join((*lines, CONTINUED_TEXT)))) <= 1
+
+
+def _parts(lines: list[str]) -> list[str]:
+    """Whole lines packed greedily into parts. A single line too long for
+    one message on its own (the fields are short; not expected) is a part of
+    its own, which the gateway would then cut."""
+    parts: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if current and not _fits([*current, line]):
+            parts.append(current)
+            current = []
+        if line or current:  # a part never starts with a blank line
+            current.append(line)
+    if current or not parts:
+        parts.append(current)
+    texts = ["\n".join(part).strip("\n") for part in parts]
+    return [f"{text}\n{CONTINUED_TEXT}" for text in texts[:-1]] + texts[-1:]
 
 
 # ------------------------------------------------------------ /digest
