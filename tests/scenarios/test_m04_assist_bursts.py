@@ -56,7 +56,6 @@ async def test_a_burst_in_an_assist_chat_produces_one_card(p2: Scenario) -> None
     assert p2.business_sends() == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2")
 async def test_no_card_when_the_draft_says_no_reply_is_needed(p2: Scenario) -> None:
     await assist(p2)
     p2.fake.parsed.append(draft_result(needs_reply=False, skip_reason="no_reply_needed", text=""))
@@ -79,7 +78,6 @@ async def test_no_card_when_the_draft_says_no_reply_is_needed(p2: Scenario) -> N
     assert p2.business_sends() == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2")
 async def test_owner_messages_never_trigger_drafts(p2: Scenario) -> None:
     await assist(p2)
     await deliver(
