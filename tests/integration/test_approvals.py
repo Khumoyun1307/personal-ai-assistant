@@ -272,6 +272,27 @@ async def test_approve_with_sending_off_answers_approved_sending_is_off_never_se
         assert answers(off) == [ANSWER_APPROVED_SENDING_OFF]
         assert ANSWER_SENDING not in answers(off)
 
+        def card_texts() -> list[str]:
+            return [
+                str(edit["text"])
+                for edit in off.env.sender.edits
+                if edit["message_id"] == row.card_message_id
+            ]
+
+        # The card edited after the press says so too (spec §3.3, R17).
+        assert (await off.action(row.id)).state == "approved"
+        assert card_texts()
+        assert "Approved — sending is off" in card_texts()[-1]
+        # So does any redraw before the executor runs (the sync job's path).
+        assert off.wiring.approval_cards is not None
+        await off.wiring.approval_cards.sync(row.id)
+        assert "Approved — sending is off" in card_texts()[-1]
+        await run_queued(off, "actions.execute")
+        final = await off.action(row.id)
+        assert (final.state, final.state_reason) == ("blocked", "sending_disabled")
+        assert "Not sendable</b> — sending is turned off" in card_texts()[-1]
+        assert not [text for text in card_texts() if ANSWER_SENDING in text]
+
 
 async def test_approve_during_revising_is_rejected(s: Scenario) -> None:
     row = await s.seed()
@@ -659,9 +680,11 @@ async def test_a_lost_card_of_another_account_is_never_shown_to_this_owner(
     row = await s.seed()
     async with s.env.factory() as session:
         view = await approvals.load_card_view(
-            session, account_id=s.account_id + 999, action_id=row.id
+            session, account_id=s.account_id + 999, action_id=row.id, sending_enabled=True
         )
-        mine = await approvals.load_card_view(session, account_id=s.account_id, action_id=row.id)
+        mine = await approvals.load_card_view(
+            session, account_id=s.account_id, action_id=row.id, sending_enabled=True
+        )
         account = await session.get(Account, s.account_id)
     assert view is None
     assert mine is not None

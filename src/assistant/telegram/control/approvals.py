@@ -24,10 +24,12 @@ control chat (AGENTS §7).
   text shown.
 - **Content on the card** (names, the contact's words, the draft) is shown
   literally: invisible and bidi characters are made visible as on the S03.1
-  confirmation card, and a piece of content shaped like one of Telegram's
-  tags is defused, so it can never become markup. The gateway's sanitizer is
-  the one HTML escape (`telegram/render.py`); escaping here as well would
-  show the owner `&amp;` instead of the `&` that will be sent.
+  confirmation card (a line break stays one, except in a name; every line of
+  the contact's words is marked as theirs), and a piece of content shaped
+  like one of Telegram's tags is defused, so it can never become markup.
+  The gateway's sanitizer is the one HTML escape (`telegram/render.py`);
+  escaping here as well would show the owner `&amp;` instead of the `&` that
+  will be sent.
 
 Logs carry ids, states and codes only (AGENTS §9).
 """
@@ -215,6 +217,9 @@ class ApprovalCardView:
     window_end: datetime | None
     timezone: str
     control_chat_id: int | None
+    #: `ActionsConfig.sending_enabled`: with sending off an approved card
+    #: says so, never "Sending…" (spec §3.3, decisions R17).
+    sending_enabled: bool
     #: The live `act` card's token (Cancel edit / Re-draft), if one exists.
     card_token: str | None = None
     #: Re-draft was pressed: the card keeps its state and offers copy only.
@@ -228,9 +233,10 @@ class ApprovalCardView:
 
 
 async def load_card_view(
-    session: AsyncSession, *, account_id: int, action_id: int
+    session: AsyncSession, *, account_id: int, action_id: int, sending_enabled: bool
 ) -> ApprovalCardView | None:
-    """The card's view of one action of this account, or None."""
+    """The card's view of one action of this account, or None.
+    `sending_enabled` is the presenter's `ActionsConfig.sending_enabled`."""
     row = (
         await session.execute(
             select(Action, Conversation.last_contact_msg_at, Contact, Account)
@@ -283,6 +289,7 @@ async def load_card_view(
         window_end=None if window is None else window - SAFETY_MARGIN,
         timezone=account.timezone,
         control_chat_id=account.control_chat_id,
+        sending_enabled=sending_enabled,
         card_token=token,
     )
 
@@ -336,10 +343,30 @@ def _defuse(match: re.Match[str]) -> str:
     return "\\u003c" + match.group(0)[1:]
 
 
-def shown(text: str) -> str:
+def shown(text: str, *, one_line: bool = False) -> str:
     """Content as the owner must see it: hidden and bidi characters visible
-    (as on S03.1 cards), and nothing that could turn into markup."""
-    return _TAG_SHAPED.sub(_defuse, render_description(text))
+    (as on S03.1 cards), and nothing that could turn into markup.
+
+    A line break stays a line break — the card shows the exact text
+    (FR-DRF-03), and "copy the text above" must copy it (FR-DRF-06) — except
+    in a `one_line` field (a name), where it is made visible like any other
+    control character. Every other control character (`\\r`, `\\t`, …) stays
+    a visible escape."""
+    if one_line:
+        visible = render_description(text)
+    else:
+        visible = "\n".join(render_description(line) for line in text.split("\n"))
+    return _TAG_SHAPED.sub(_defuse, visible)
+
+
+def _their_words(excerpt: str) -> list[str]:
+    """One excerpt of the contact's words, every line marked as theirs, so a
+    line break in them can never start what looks like a card line of its
+    own ("Sendable until …", a state line)."""
+    return [
+        f"› <i>{shown(line)}</i>" if line else "›"  # noqa: RUF001
+        for line in excerpt.split("\n")
+    ]
 
 
 def _copyable(text: str | None) -> bool:
@@ -411,6 +438,10 @@ def state_line(view: ApprovalCardView) -> str:
         if view.revision_turn_id is None:
             return f"✏️ Editing — {ANSWER_EDIT}"
         return REVISING_TEXT
+    if state is ActionState.APPROVED and not view.sending_enabled:
+        # Nothing can be sent: never "Sending…" (R17); the executor's Tx A
+        # then ends it `blocked`/`sending_disabled` with copy-ready text.
+        return f"<b>{ANSWER_APPROVED_SENDING_OFF}</b>"
     if state is ActionState.SUCCEEDED:
         sent_at = view.executed_at
         when = "" if sent_at is None else " " + _clock_time(sent_at, view.timezone)
@@ -467,11 +498,12 @@ class RenderedCard:
 
 
 def _compose(view: ApprovalCardView, body: str, *, copy_note: str | None) -> str:
-    name = shown(view.contact_name) if view.contact_name else "this contact"
+    name = shown(view.contact_name, one_line=True) if view.contact_name else "this contact"
     parts = [_header(view), "", f"To: <b>{name}</b>"]
     if view.excerpts:
         parts += ["", "Answering (their words):"]
-        parts += [f"› <i>{shown(excerpt)}</i>" for excerpt in view.excerpts]  # noqa: RUF001
+        for excerpt in view.excerpts:
+            parts += _their_words(excerpt)
     parts += ["", body]
     warnings = _warnings(view)
     if warnings:
@@ -638,7 +670,12 @@ class ApprovalCards:
             )
             if account_id is None:
                 return None
-            view = await load_card_view(session, account_id=account_id, action_id=action_id)
+            view = await load_card_view(
+                session,
+                account_id=account_id,
+                action_id=action_id,
+                sending_enabled=self._config.sending_enabled,
+            )
             if view is None or not _needs_card_token(view):
                 return view
             token = await ensure_card_token(

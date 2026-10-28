@@ -65,6 +65,7 @@ def view(**changes: Any) -> ApprovalCardView:
         window_end=NOW + timedelta(hours=20),
         timezone="UTC",
         control_chat_id=7000000001,
+        sending_enabled=True,
         card_token="CardTok123",
     )
     return replace(base, **changes)
@@ -181,6 +182,62 @@ def test_card_content_is_escaped_and_bidi_made_visible() -> None:
     # The card's own markup still works, and the copy button has the exact text.
     assert text.startswith("📝 <b>Draft reply</b>")
     assert "<blockquote>" in text
+
+
+def test_line_breaks_in_the_text_and_the_excerpts_reach_telegram_as_line_breaks() -> None:
+    """FR-DRF-03 (the exact text) and FR-DRF-06 ("copy the text above"): a
+    line break is shown as one, never as a visible `\\u000a`. Hidden and bidi
+    characters stay visible escapes, and a name stays on one line."""
+    draft = "Hi Alex,\nSee you Monday.\n\nBest"
+    card = render_card(
+        view(text=draft, excerpts=("Line one\nline two",), contact_name="Alex\nSent ✓ 18:05")
+    )
+    text = shown(card.text)
+    assert "\\u000a" not in text.replace("Alex\\u000aSent", "")
+    assert "<blockquote>Hi Alex,\nSee you Monday.\n\nBest</blockquote>" in text
+    # Every line of the contact's words is marked as theirs, so a line break
+    # in them can never start what looks like one of the card's own lines.
+    assert "› <i>Line one</i>\n› <i>line two</i>" in text  # noqa: RUF001
+    # A name is one line: a line break in it stays visible.
+    assert "To: <b>Alex\\u000aSent ✓ 18:05</b>" in text
+    # The copy button carries the exact text, line breaks included.
+    assert copies(card_keyboard(in_state(ActionState.BLOCKED, text=draft))) == [draft]
+    # Still made visible: a carriage return, a tab, bidi and zero-width characters.
+    tricky = shown(render_card(view(text="a\r\nb\tc\n‮d​")).text)
+    assert "a\\u000d\nb\\u0009c\n\\u202ed\\u200b" in tricky
+    # Content shaped like a tag across a line break still never becomes markup.
+    split_tag = shown(render_card(view(text='<a\nhref="https://x.example">x</a>')).text)
+    assert "<a" not in split_tag
+    # A long multi-line text: the message above and the card's preview keep its lines.
+    long_text = "\n\n".join(
+        f"Synthetic paragraph {n}: " + " ".join(["words"] * 60) for n in range(20)
+    )
+    long_card = render_card(view(text=long_text))
+    assert long_card.full_text is not None
+    above = render_control_message(long_card.full_text)
+    assert all("\\u000a" not in part for part in above)
+    assert "words\n\nSynthetic paragraph 1: words" in above[0]
+    preview = shown(long_card.text)
+    assert "\\u000a" not in preview
+    assert "words\n\nSynthetic paragraph 1: words" in preview
+    # Over 256 characters the owner copies the text shown: it is the exact text.
+    blocked = shown(render_card(in_state(ActionState.BLOCKED, text=long_text)).text)
+    assert "Copy the text above" in blocked
+    assert copies(card_keyboard(in_state(ActionState.BLOCKED, text=long_text))) == []
+
+
+def test_an_approved_card_with_sending_off_says_so_and_never_sending() -> None:
+    """Spec §3.3 `ok` row, decisions R17, invariant 11: with `actions.send`
+    off nothing can be sent, so the approved card never says "Sending…"."""
+    off = in_state(ActionState.APPROVED, sending_enabled=False)
+    card = render_card(off)
+    text = shown(card.text)
+    assert "Approved — sending is off" in text
+    assert "Sending…" not in text
+    assert card.keyboard is None
+    assert "📝" in text
+    # Sending on: the F0 label, as before.
+    assert "Sending…" in shown(render_card(in_state(ActionState.APPROVED)).text)
 
 
 def test_sendable_until_is_the_earlier_of_max_age_and_window_close_in_local_time() -> None:
