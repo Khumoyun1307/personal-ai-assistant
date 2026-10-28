@@ -58,8 +58,9 @@ async def activity_tool(p2: Scenario) -> list[dict[str, Any]]:
 
 async def test_activity_lists_every_send_with_its_authorization(p2: Scenario) -> None:
     ids = await activity_mix(p2)
+    start = len(p2.env.sender.sends)
     await deliver(p2.env, private_message(OWNER, "/activity today"))
-    rendered = p2.control_text()
+    rendered = "\n".join(s["text"] for s in p2.env.sender.sends[start:])
     for state in ids:
         assert f"P2 outcome {state}." in rendered
     entries = await activity_tool(p2)
@@ -79,8 +80,9 @@ async def test_drafts_and_sends_are_never_shown_alike(p2: Scenario) -> None:
     assert entries[ids["delivery_uncertain"]]["group"] == "uncertain"
     assert entries[ids["blocked"]]["group"] == "blocked"
     assert entries[ids["rejected"]]["group"] == "not_sent"
+    start = len(p2.env.sender.sends)
     await deliver(p2.env, private_message(OWNER, "/activity today"))
-    rendered = p2.control_text().lower()
+    rendered = "\n".join(s["text"] for s in p2.env.sender.sends[start:]).lower()
     assert "uncertain" in rendered
     assert "awaiting" in rendered
     assert "not sendable" in rendered or "blocked" in rendered

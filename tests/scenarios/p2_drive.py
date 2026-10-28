@@ -163,7 +163,7 @@ class Scenario:
                     "created_at": self.env.clock.now(),
                     "updated_at": self.env.clock.now(),
                     "expires_at": self.env.clock.now() + timedelta(hours=1),
-                    "approval_token": "synthetic-token" if state == "awaiting_approval" else None,
+                    "approval_token": "QAseed1234" if state == "awaiting_approval" else None,
                     "approved_text_hash": hashlib.sha256(
                         str(fields.get("text", DRAFT)).encode()
                     ).hexdigest()
@@ -225,7 +225,32 @@ class Scenario:
         return int(self.env.clock.now().timestamp())
 
     def business_sends(self) -> list[dict[str, Any]]:
-        return [s for s in self.env.sender.sends if s["business_connection_id"] is not None]
+        # Include every transport recording, including future plain send/edit
+        # methods. A new adapter method must not make negative assertions blind.
+        return [
+            call
+            for recording in vars(self.env.sender).values()
+            if isinstance(recording, list)
+            for call in recording
+            if isinstance(call, dict) and call.get("business_connection_id") is not None
+        ]
+
+    def final_card(self, row: Action) -> dict[str, Any]:
+        edits = [e for e in self.env.sender.edits if e["message_id"] == row.card_message_id]
+        assert edits, "the transition must update the displayed approval card"
+        return edits[-1]
+
+    def card_buttons(self, row: Action) -> list[dict[str, Any]]:
+        markup = self.final_card(row)["reply_markup"]
+        if hasattr(markup, "model_dump"):
+            markup = markup.model_dump()
+        assert isinstance(markup, dict), "the final card must have buttons"
+        return [button for line in markup["inline_keyboard"] for button in line]
+
+    def assert_copy_ready(self, row: Action) -> None:
+        assert any(
+            (b.get("copy_text") or {}).get("text") == row.text for b in self.card_buttons(row)
+        )
 
     def control_text(self) -> str:
         return "\n".join(
@@ -293,6 +318,8 @@ async def m04_environment(url: str, *, flags: frozenset[str] = FLAGS) -> AsyncIt
             heartbeat_url=None,
             data_deleter=RequestedDeletions(env.factory, env.clock, channel),
             actions=wiring.actions,
+            inbox=wiring.inbox,
+            automation=wiring.automation,
             reconcilers=tuple(wiring.reconcilers),
         )
         register_tasks(app, handlers)
@@ -383,7 +410,8 @@ async def run_queued(s: Scenario, task_name: str, *, limit: int | None = None) -
                 text("UPDATE procrastinate.procrastinate_jobs SET status = 'doing' WHERE id = :id"),
                 {"id": job_id},
             )
-        assert task_name in s.app.tasks, f"queued task has no production registration: {task_name}"
+        if task_name not in s.app.tasks:
+            raise RuntimeError(f"queued task has no production registration: {task_name}")
         try:
             await s.app.tasks[task_name].func(**payload)
         except BaseException:
@@ -405,7 +433,8 @@ async def run_queued(s: Scenario, task_name: str, *, limit: int | None = None) -
                 {"id": job_id},
             )
         completed += 1
-        assert completed < 100, f"unbounded job drain: {task_name}"
+        if completed >= 100:
+            raise RuntimeError(f"unbounded job drain: {task_name}")
     return completed
 
 

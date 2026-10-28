@@ -1,7 +1,5 @@
 """R1 #9: durable send identity, including echo-before-result and zero ids."""
 
-from typing import Any
-
 import pytest
 from sqlalchemy import select
 
@@ -73,19 +71,9 @@ async def test_an_echo_processed_first_merges_into_the_sent_record(p2: Scenario)
 
 
 @pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
-async def test_two_zero_id_sends_in_one_chat_both_succeed(
-    p2: Scenario,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    original = p2.env.sender.send_message
-
-    async def zero_id(**kwargs: Any) -> dict[str, Any]:
-        result = await original(**kwargs)
-        if kwargs.get("business_connection_id"):
-            result["message_id"] = 0
-        return result
-
-    monkeypatch.setattr(p2.env.sender, "send_message", zero_id)
+async def test_two_zero_id_sends_in_one_chat_both_succeed(p2: Scenario) -> None:
+    # S04.4's plain transport fake consumes these exact ids, including zero.
+    p2.env.sender.plain_script = [0, 0]
     ids = []
     for _ in range(2):
         row = await p2.seed(state="approved")

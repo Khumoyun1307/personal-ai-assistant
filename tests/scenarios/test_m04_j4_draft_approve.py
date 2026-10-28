@@ -34,12 +34,18 @@ async def test_j4_draft_edit_approve_sends_exactly_the_approved_text(p2: Scenari
     assert row.expires_at is not None
     assert row.expires_at.strftime("%H:%M") in p2.control_text()
     assert row.card_message_id is not None
-    p2.fake.parsed.append(draft_result(text=REPLACEMENT, revision_kind="replacement"))
+    p2.fake.parsed.append(
+        draft_result(
+            text="P2 model text must not replace the owner's words.", revision_kind="replacement"
+        )
+    )
     await edit(p2, row.id, REPLACEMENT)
     assert await run_queued(p2, "replies.revise") == 1
     revised = await p2.action(row.id)
     assert revised.version == 2
     assert revised.text == REPLACEMENT
+    assert revised.approval_token != row.approval_token
+    assert REPLACEMENT in p2.final_card(revised)["text"]
     assert p2.business_sends() == []
     await approve(p2, row.id)
     assert await run_queued(p2, "actions.execute") == 1

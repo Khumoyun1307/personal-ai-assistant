@@ -17,7 +17,8 @@ async def test_an_owner_message_dated_after_the_base_but_ingested_late_blocks_th
         p2.env, business_message(from_id=OWNER, chat_id=CONTACT, message_id=102, date=p2.date + 1)
     )
     await p2.execute(row.id)
-    assert (await p2.action(row.id)).state == "outdated"
+    changed = await p2.action(row.id)
+    assert (changed.state, changed.state_reason) == ("outdated", "takeover")
     assert p2.business_sends() == []
 
 

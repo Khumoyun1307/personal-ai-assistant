@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from assistant.accounts.models import Account
-from assistant.agent.models import ToolConfirmation
+from assistant.agent.models import AgentRun, ToolConfirmation
 from tests.integration.business_env import OWNER, deliver, private_message
 from tests.scenarios.p2_drive import Scenario, run_queued, tool_outputs
 
@@ -45,6 +45,10 @@ async def test_a_model_resume_call_never_resumes(p2: Scenario, tainted: bool) ->
     await p2.owner("resume_autonomy", forwarded=tainted)
     assert await paused(p2)
     async with p2.env.factory() as session:
+        runs = list(
+            await session.scalars(select(AgentRun).where(AgentRun.account_id == p2.account_id))
+        )
+        assert runs[-1].tainted is tainted
         confirmations = list(
             await session.scalars(
                 select(ToolConfirmation).where(ToolConfirmation.account_id == p2.account_id)

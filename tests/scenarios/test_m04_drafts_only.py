@@ -18,6 +18,7 @@ async def test_with_sending_off_approve_ends_blocked_with_copy_ready_text(
         await run_queued(s, "actions.execute")
         final = await s.action(row.id)
         assert (final.state, final.state_reason) == ("blocked", "sending_disabled")
-        assert row.text in s.control_text()
+        s.assert_copy_ready(final)
+        assert "sending is turned off" in s.final_card(final)["text"].lower()
         assert "sending is off" in str(s.env.sender.answered_callbacks).lower()
         assert s.business_sends() == []

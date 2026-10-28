@@ -39,7 +39,7 @@ async def queued_drafts(p2: Scenario) -> int:
         )
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2/S04.3")
 async def test_a_burst_in_an_assist_chat_produces_one_card(p2: Scenario) -> None:
     await assist(p2)
     p2.fake.parsed.append(draft_result())
@@ -52,7 +52,7 @@ async def test_a_burst_in_an_assist_chat_produces_one_card(p2: Scenario) -> None
     [row] = await p2.rows()
     assert row.state == "awaiting_approval"
     assert row.card_message_id is not None
-    assert len([r for r in p2.fake.requests if r.run_type == "draft_reply"]) == 1
+    assert len([r for r in p2.fake.requests if r.purpose == "draft_reply"]) == 1
     assert p2.business_sends() == []
 
 

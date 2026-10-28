@@ -43,7 +43,8 @@ async def test_a_restart_between_claim_and_send_is_uncertain_and_never_resent(p2
         await p2.execute(row.id)
     p2.env.sender.on_call = None
     assert p2.business_sends() == []
-    await advance(p2, 61, periodic=("system.mark_uncertain",))
+    threshold = p2.wiring.actions_config.mark_uncertain_after.total_seconds()
+    await advance(p2, threshold + 1, periodic=("system.mark_uncertain",))
     assert (await p2.action(row.id)).state == "delivery_uncertain"
     await p2.handlers.reconcile_pending()
     await run_queued(p2, "actions.execute")
@@ -100,7 +101,8 @@ async def test_a_late_result_after_mark_uncertain_settles_to_succeeded(p2: Scena
             return
         entered = True
         assert (await p2.action(row.id)).state == "executing"
-        await advance(p2, 61, periodic=("system.mark_uncertain",))
+        threshold = p2.wiring.actions_config.mark_uncertain_after.total_seconds()
+        await advance(p2, threshold + 1, periodic=("system.mark_uncertain",))
         assert (await p2.action(row.id)).state == "delivery_uncertain"
 
     p2.env.sender.on_call = late_transport

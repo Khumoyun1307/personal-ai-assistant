@@ -71,3 +71,21 @@ plus the independent live-window, restore and trial evidence.
 Only `assistant_test` in compose project `antony` and synthetic fixtures are
 used. No real provider, Telegram, production/server action or eval spend is
 part of this unit.
+
+## Peer-review fix round
+
+The first Neryn/Viro reviews found harness and assertion defects that the
+original strict markers hid. Those original red runs do not establish the
+approval or final-card parts of the journeys. The fix round uses a parser-valid
+seed token, observes every fake transport recording (including plain sends),
+scripts zero ids through the plain transport, reads `LLMRequest.purpose`,
+revokes through the owner command, and advances beyond the configured uncertainty
+threshold. Copy and Re-draft assertions inspect the final card's buttons;
+activity assertions inspect only the new command reply. Driver guard failures
+raise RuntimeError, so xfail cannot absorb them.
+
+Relevant rerun: driver, activity and outdating files — **8 passed, 9 xfailed**,
+171.09 s. This includes independent checks that plain sends/edits are observed
+and the initial transcript cannot satisfy final-card assertions. Full marked
+execution belongs to CI. Per-scenario removal ownership is in regression-matrix
+§D; no feature acceptance is claimed while a marker remains.
