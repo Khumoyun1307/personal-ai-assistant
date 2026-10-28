@@ -108,9 +108,12 @@ def report(
     cost: str | None = "0.0100",
     prompts: Sequence[str] = ("evaluate_monitor.v1",),
     effort: str | None = "low",
+    refused: int = 0,
+    cases: int = 30,
 ) -> dict[str, Any]:
     """A full monitor run's JSON report: its two thresholds are the model-choice
-    bar, not an owner-confirmed gate (`gated: false`)."""
+    bar, not an owner-confirmed gate (`gated: false`). Its first `refused` of
+    `cases` cases were refused (the product's `refused` status)."""
     return {
         "target": target,
         "model": model,
@@ -143,6 +146,10 @@ def report(
             },
         ],
         "cost": {"per_model": {model: {"cost_per_100_items_usd": cost}}},
+        "details": [
+            {"id": f"m{n:03d}", "status": "refused" if n <= refused else "evaluated"}
+            for n in range(1, cases + 1)
+        ],
     }
 
 
@@ -168,6 +175,29 @@ def test_the_monitor_choice_uses_its_bar_and_names_the_evaluate_monitor_route() 
     sol_misses = report(SOL, accuracy="fail")
     astra = choose([luna_misses, sol_misses, report(ASTRA)])
     assert astra.decision.startswith(f"propose LLM_ROUTE_EVALUATE_MONITOR_MODEL={ASTRA}")
+
+
+def test_the_monitor_choice_reports_each_models_refusals() -> None:
+    """P2-T51: a refused case fires nothing, so it reads right for every
+    monitor labelled not matching. The comparison shows how many cases each
+    model refused, so a model that refuses a lot cannot look accurate on the
+    negatives unnoticed."""
+    choice = choose([report(LUNA, accuracy="fail", refused=4), report(SOL, cost="0.0700")])
+    assert [tier.refusals for tier in choice.tiers] == [4, 0]
+    text = render_choice(choice)
+    assert (
+        f"- {LUNA}: misses Monitor accuracy; cost per 100 cases $0.0100; refused 4 of 30 cases"
+    ) in text
+    assert (
+        f"- {SOL}: meets every threshold; cost per 100 cases $0.0700; refused 0 of 30 cases"
+    ) in text
+    # The count is the decision's context, not a threshold: a tier that
+    # refuses some cases and still meets the bar is chosen.
+    assert choose([report(LUNA, refused=2)]).decision.startswith(f"route stays on {LUNA}")
+    # A run that lists no per-case results cannot show its refusals.
+    without = {key: value for key, value in report(LUNA).items() if key != "details"}
+    with pytest.raises(ValueError, match=f"the {LUNA} run lists no per-item results"):
+        choose([without])
 
 
 def test_the_monitor_choice_compares_only_the_monitor_cases() -> None:

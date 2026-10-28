@@ -1033,6 +1033,10 @@ class Comparison:
     datasets: tuple[str, ...]
     #: What the cost is given per 100 of.
     items: str
+    #: The product's run status of a refused item (a refusal or the provider's
+    #: content filter): it fires and closes nothing, so it reads right wherever
+    #: nothing was needed; each tier's count is shown beside its quality (P2-T51).
+    refused_status: str
 
     @property
     def setting(self) -> str:
@@ -1045,7 +1049,11 @@ class Comparison:
 
 #: The triage comparison: every E3 file counts (part 1, P2-T43).
 TRIAGE_COMPARISON = Comparison(
-    target=TriageTarget.name, route=ROUTE, datasets=("e3/",), items="bursts"
+    target=TriageTarget.name,
+    route=ROUTE,
+    datasets=("e3/",),
+    items="bursts",
+    refused_status=TriageStatus.REFUSED.value,
 )
 
 
@@ -1055,6 +1063,9 @@ class TierResult:
     #: Labels of the metrics with a threshold whose pre-screen did not pass.
     misses: tuple[str, ...]
     cost_per_100: Decimal | None
+    #: Items the model refused, of the items the run evaluated (P2-T51).
+    refusals: int
+    items: int
 
     @property
     def meets(self) -> bool:
@@ -1068,9 +1079,15 @@ class ModelChoice:
     comparison: Comparison = TRIAGE_COMPARISON
 
 
-def _tier(report: Mapping[str, Any]) -> TierResult:
+def _tier(report: Mapping[str, Any], comparison: Comparison) -> TierResult:
     """A tier misses every threshold its pre-screen did not pass: a gated one
-    (triage) or a bar that is only the model choice's (the monitors')."""
+    (triage) or a bar that is only the model choice's (the monitors'). Its
+    refusals are counted from the per-item results, which every full run
+    writes; a report without them cannot show them, so it is refused."""
+    details = report.get("details")
+    if not isinstance(details, list):
+        raise ValueError(f"the {report.get('model')} run lists no per-item results")
+    refusals = sum(1 for item in details if item.get("status") == comparison.refused_status)
     misses = tuple(
         str(m["label"])
         for m in report["metrics"]
@@ -1081,7 +1098,13 @@ def _tier(report: Mapping[str, Any]) -> TierResult:
         for row in report["cost"]["per_model"].values()
         if row["cost_per_100_items_usd"] is not None
     ]
-    return TierResult(str(report["model"]), misses, sum(costs, Decimal(0)) if costs else None)
+    return TierResult(
+        model=str(report["model"]),
+        misses=misses,
+        cost_per_100=sum(costs, Decimal(0)) if costs else None,
+        refusals=refusals,
+        items=len(details),
+    )
 
 
 def _e3_files(report: Mapping[str, Any], comparison: Comparison) -> dict[str, str]:
@@ -1131,7 +1154,8 @@ def model_choice(
     choice; a tier that misses one calls for the next. Refuses (`ValueError`)
     a trial, an incomplete run, a run of another target, runs that differ in
     the measured E3 files, prompt versions or effort, a first run on another
-    model than the route's, and a model run twice. The decision is a
+    model than the route's, a model run twice, and a run without per-item
+    results (its refusals are reported, P2-T51). The decision is a
     proposal: a route moves only with the owner's approval."""
     if not reports:
         raise ValueError("no report to decide on")
@@ -1150,7 +1174,7 @@ def model_choice(
     twice = sorted({model for model in models if models.count(model) > 1})
     if twice:
         raise ValueError(f"the runs name {', '.join(twice)} more than once")
-    tiers = tuple(_tier(report) for report in reports)
+    tiers = tuple(_tier(report, comparison) for report in reports)
     chosen = next((tier for tier in tiers if tier.meets), None)
     if chosen is not None and chosen is tiers[0]:
         decision = f"route stays on {chosen.model} (it meets every threshold on the pre-screen)"
@@ -1170,7 +1194,7 @@ def model_choice(
 
 
 def render_choice(choice: ModelChoice) -> str:
-    """The decision with each tier's quality and cost per 100 items."""
+    """The decision with each tier's quality, cost per 100 items and refusals."""
     comparison = choice.comparison
     lines = [
         "",
@@ -1181,7 +1205,10 @@ def render_choice(choice: ModelChoice) -> str:
     for tier in choice.tiers:
         cost = "n/a" if tier.cost_per_100 is None else f"${tier.cost_per_100:.4f}"
         result = "meets every threshold" if tier.meets else "misses " + "; ".join(tier.misses)
-        lines.append(f"- {tier.model}: {result}; cost per 100 {comparison.items} {cost}")
+        lines.append(
+            f"- {tier.model}: {result}; cost per 100 {comparison.items} {cost}; "
+            f"refused {tier.refusals} of {tier.items} {comparison.items}"
+        )
     lines += ["", f"Decision: {choice.decision}", ""]
     return "\n".join(lines)
 

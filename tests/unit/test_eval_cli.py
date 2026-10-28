@@ -589,8 +589,9 @@ def test_the_triage_route_uses_the_triage_effort(monkeypatch: pytest.MonkeyPatch
     assert live.resolve_model("triage", None) == live.ModelChoice(LUNA, "medium")
 
 
-def triage_report(directory: Path, model: str, status: str, cost: str) -> Path:
-    """A full triage run's JSON report, in the shape `evals/report.py` writes."""
+def triage_report(directory: Path, model: str, status: str, cost: str, *, refused: int = 0) -> Path:
+    """A full triage run's JSON report over 10 bursts, in the shape
+    `evals/report.py` writes; the first `refused` bursts were refused."""
     path = directory / f"{model}.json"
     metric = {
         "key": "alert_recall",
@@ -615,6 +616,10 @@ def triage_report(directory: Path, model: str, status: str, cost: str) -> Path:
         "prompts": ["triage.v1"],
         "metrics": [metric],
         "cost": {"per_model": {model: {"cost_per_100_items_usd": cost}}},
+        "details": [
+            {"id": f"b{n:03d}", "status": "refused" if n <= refused else "triaged"}
+            for n in range(1, 11)
+        ],
     }
     path.write_text(json.dumps(report), encoding="utf-8")
     return path
@@ -677,8 +682,11 @@ def test_compare_without_loadable_settings_needs_the_route_model_named(
     assert f"Decision: route stays on {LUNA}" in capsys.readouterr().out
 
 
-def monitor_report(directory: Path, model: str, status: str, cost: str) -> Path:
-    """A full monitor run's JSON report: its bar is ungated (spec: informational)."""
+def monitor_report(
+    directory: Path, model: str, status: str, cost: str, *, refused: int = 0
+) -> Path:
+    """A full monitor run's JSON report over 10 cases: its bar is ungated
+    (spec: informational); the first `refused` cases were refused."""
     path = directory / f"monitors-{model}.json"
     report = json.loads(triage_report(directory, model, status, cost).read_text(encoding="utf-8"))
     report |= {
@@ -687,6 +695,10 @@ def monitor_report(directory: Path, model: str, status: str, cost: str) -> Path:
         "mode": "e3-monitor-cases",
         "dataset_files": {"e3/monitor_cases.jsonl": "m1"},
         "prompts": ["evaluate_monitor.v1"],
+        "details": [
+            {"id": f"m{n:03d}", "status": "refused" if n <= refused else "evaluated"}
+            for n in range(1, 11)
+        ],
     }
     report["metrics"][0] |= {"key": "monitor_accuracy", "label": "Monitor accuracy", "gated": False}
     path.write_text(json.dumps(report), encoding="utf-8")
@@ -699,12 +711,16 @@ def test_compare_states_the_monitor_model_choice_from_the_monitor_route(
     """The `evaluate_monitor` route's current model comes from its own setting;
     the triage route's does not matter."""
     routes(monkeypatch, triage="gpt-6-sol")
-    luna = monitor_report(tmp_path, LUNA, "fail", "0.0100")
+    luna = monitor_report(tmp_path, LUNA, "fail", "0.0100", refused=2)
     sol = monitor_report(tmp_path, "gpt-6-sol", "pass", "0.0700")
     assert cli.main(["compare", str(luna), str(sol)]) == 0
     out = capsys.readouterr().out
     assert "Model choice (evaluate_monitor route" in out
-    assert f"- {LUNA}: misses Monitor accuracy; cost per 100 cases $0.0100" in out
+    # Each model's refusals stand beside its quality (P2-T51).
+    assert (
+        f"- {LUNA}: misses Monitor accuracy; cost per 100 cases $0.0100; refused 2 of 10 cases"
+    ) in out
+    assert "- gpt-6-sol: meets every threshold; cost per 100 cases $0.0700; refused 0 of 10" in out
     assert "Decision: propose LLM_ROUTE_EVALUATE_MONITOR_MODEL=gpt-6-sol" in out
 
     routes(monkeypatch, evaluate_monitor="gpt-6-sol")

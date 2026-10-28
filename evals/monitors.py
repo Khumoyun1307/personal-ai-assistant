@@ -157,9 +157,15 @@ _BAR_NOTE = (
 )
 
 #: The comparison `python -m evals compare` applies to full monitor runs: only
-#: the monitor cases' digest must agree (the bursts do not matter here).
+#: the monitor cases' digest must agree (the bursts do not matter here). A
+#: refused case fires nothing, so it reads right for every monitor labelled not
+#: matching: each model's refusal count is shown beside its bar (P2-T51).
 MONITOR_COMPARISON = Comparison(
-    target=SET_NAME, route=ROUTE, datasets=("e3/monitor_cases.jsonl",), items="cases"
+    target=SET_NAME,
+    route=ROUTE,
+    datasets=("e3/monitor_cases.jsonl",),
+    items="cases",
+    refused_status=MonitorEvalStatus.REFUSED.value,
 )
 
 

@@ -135,7 +135,11 @@ threshold on the pre-screen, the next tier with `--model`, and the tier after
 that only if that one misses too. `python -m evals compare <the route model's
 full run> <the next tiers' full runs, in the order tried>` prints the decision
 ("route stays on …" or "propose `LLM_ROUTE_TRIAGE_MODEL=…`", applied on the
-server only with the owner's approval) with each tier's cost per 100 bursts.
+server only with the owner's approval) with each tier's cost per 100 bursts and
+its refusal count (bursts the product recorded as `refused`: a refusal or the
+provider's content filter; P2-T51). A refused burst alerts and closes nothing,
+so it reads right wherever nothing was needed: the count shows a model whose
+quality leans on refusing. It informs the decision; it is not a threshold.
 The route's current model comes from the configuration (`LLM_ROUTE_TRIAGE_MODEL`,
 else `LLM_DEFAULT_MODEL`) or `--route-model` (name the server's when this
 machine's settings differ), never from the argument order: the first report
@@ -180,7 +184,10 @@ contact message gets no model call, as in the product.
 `monitor_cases.jsonl`: `python -m evals compare <the route model's full monitors
 run> <the next tiers' full runs, in the order tried>` prints the decision
 ("route stays on …" or "propose `LLM_ROUTE_EVALUATE_MONITOR_MODEL=…`") with each
-tier's cost per 100 cases. The route's current model comes from
+tier's cost per 100 cases and its refusal count (P2-T51): a refused case fires
+nothing, so it reads right for every monitor labelled not matching, and the
+count keeps a model that refuses a lot from looking accurate on the negatives.
+The route's current model comes from
 `LLM_ROUTE_EVALUATE_MONITOR_MODEL` (else `LLM_DEFAULT_MODEL`) or `--route-model`;
 only the monitor cases' digest must agree between the runs (a change to
 `bursts.jsonl` does not matter here), with the same prompt and effort. A triage
