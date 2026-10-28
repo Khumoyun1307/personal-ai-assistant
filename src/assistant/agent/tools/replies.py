@@ -206,6 +206,7 @@ async def _result(
     *,
     reused: bool = False,
     guidance_ignored: bool = False,
+    replaced: bool = False,
 ) -> ToolOutcome:
     """The tool's result for one action. `reused`: this call created
     nothing — the action came from an earlier call of this run or this owner
@@ -234,6 +235,9 @@ async def _result(
         data["reused"] = True
     if guidance_ignored:
         data["guidance_ignored"] = GUIDANCE_IGNORED
+    if replaced:
+        # One card per chat: this proposal outdated the chat's earlier card.
+        data["replaced_earlier_card"] = True
     return ToolOutcome(
         status,
         data,
@@ -318,6 +322,7 @@ async def propose_reply_tool(ctx: ToolContext, args: ProposeReplyArgs) -> ToolOu
                     proposal.action_id,
                     reused=proposal.reused,
                     guidance_ignored=ignored,
+                    replaced=proposal.superseded_action_id is not None,
                 )
         # The chat moved on while the model wrote: draft once more (§3.5 step 4).
     return _not_drafted(target, "chat_changed", guidance_ignored=ignored)
@@ -354,7 +359,12 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
             return _not_available(refused)
         assert not isinstance(proposal, Stale)  # a dictated text is never stale
         return await _result(
-            uow.session, ctx.account_id, target, proposal.action_id, reused=proposal.reused
+            uow.session,
+            ctx.account_id,
+            target,
+            proposal.action_id,
+            reused=proposal.reused,
+            replaced=proposal.superseded_action_id is not None,
         )
 
 

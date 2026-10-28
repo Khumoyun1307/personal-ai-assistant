@@ -33,8 +33,14 @@ ACTIVE: dict[str, str] = {
     # searched for across all chats; an empty narrowed search reads the chat
     # before "not there"; values copied as the message writes them; the whole
     # reply in the owner's language and script. v1-v6 stay: retained runs
-    # reference them.
-    "owner_request": "v7",
+    # reference them. v8 (S04.3, the M04 bump, P2-T17): v7 plus replies to
+    # chats through `propose_reply`/`propose_message` (dictated words passed
+    # exactly; an ambiguous recipient asked about, never guessed), a propose
+    # result relayed as it is and never as a send, one card per chat, the
+    # kill switch (`pause_autonomy`; resuming only by /resume or the card) and
+    # "what did you send/draft" through `get_activity`; rule 3 and the Assist
+    # sentence of rule 13 changed to match. v1-v7 stay.
+    "owner_request": "v8",
     # v1 (S03.2): one chat, rolling or period; cite message ids; no tools.
     # v2 (S03.3): the owner's notes about this contact are background, never
     # cited or reported as chat content.

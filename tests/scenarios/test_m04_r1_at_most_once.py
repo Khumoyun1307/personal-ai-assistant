@@ -13,7 +13,6 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.parametrize("one_batch", [False, True])
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.3/S04.4")
 async def test_a_double_tap_on_approve_sends_once(p2: Scenario, one_batch: bool) -> None:
     row = await p2.seed()
     taps = [callback(f"act:{row.approval_token}:ok") for _ in range(2)]

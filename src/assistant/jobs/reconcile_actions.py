@@ -18,20 +18,36 @@ re-checks): without consent the flag simply waits. A flag found on a chat
 that left Assist, or while the trigger is off, is cleared here, in the
 reconciling transaction, so it is never re-deferred every cycle.
 
-Lives in the jobs adapter because it reads procrastinate's own table.
+`UnfinishedRevisions` (S04.3 §3.4): an action in `revising` whose owner
+message is recorded (`revision_turn_id`) but whose `replies.revise` job is
+neither queued nor running lost its job, or the job crashed. Five minutes
+after that message it is re-deferred once (a second job for the same turn is
+never made); after thirty minutes the revision is given up: back to the same
+version's card, the owner told. An action in `revising` with no message yet
+expires normally (`system.expire_actions`).
+
+These live in the jobs adapter because they read procrastinate's own table.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Protocol
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.actions.config import ActionsConfig
 from assistant.agent.drafting import draft_consent_ok
-from assistant.core.jobs import DRAFT_TASK, EXECUTE_TASK, DraftReason, draft_queueing_lock
+from assistant.core.jobs import (
+    DRAFT_TASK,
+    EXECUTE_TASK,
+    REVISE_TASK,
+    DraftReason,
+    draft_queueing_lock,
+    revise_queueing_lock,
+)
 from assistant.jobs.reconcile import DeferRequest
 
 # ------------------------------------------------------------- S04.4 execution
@@ -150,4 +166,82 @@ class UnqueuedDrafts:
                     queueing_lock=draft_queueing_lock(int(conversation_id)),
                 )
             )
+        return requests
+
+
+# -------------------------------------------------------------- S04.3 revisions
+#: A revision's job is re-deferred this long after the owner's message ...
+REVISE_REDEFER_AFTER = timedelta(minutes=5)
+#: ... and the revision given up after this long.
+REVISE_GIVE_UP_AFTER = timedelta(minutes=30)
+REVISE_BATCH = 200
+
+_UNFINISHED_REVISIONS = text(
+    """
+    SELECT a.id, a.account_id, a.version, a.revision_turn_id, t.created_at,
+           (SELECT count(*) FROM procrastinate.procrastinate_jobs AS j
+            WHERE j.task_name = :task
+              AND j.args ->> 'action_id' = a.id::text
+              AND j.args ->> 'turn_id' = a.revision_turn_id::text) AS jobs
+    FROM app.actions AS a
+    JOIN app.control_turns AS t
+      ON t.id = a.revision_turn_id AND t.account_id = a.account_id
+    WHERE a.state = 'revising'
+      AND a.revision_turn_id IS NOT NULL
+      AND t.created_at < :older_than
+      AND NOT EXISTS (
+          SELECT 1 FROM procrastinate.procrastinate_jobs AS j
+          WHERE j.task_name = :task
+            AND j.args ->> 'action_id' = a.id::text
+            AND j.status IN ('todo', 'doing')
+      )
+    ORDER BY a.id
+    LIMIT :limit
+    """
+)
+
+
+class RevisionSettler(Protocol):
+    """`telegram/control/approvals.py::ApprovalCards.give_up_revision`."""
+
+    async def give_up_revision(
+        self, session: AsyncSession, *, account_id: int, action_id: int, version: int, now: datetime
+    ) -> bool: ...
+
+
+@dataclass(frozen=True, slots=True)
+class UnfinishedRevisions:
+    """A `Reconciler`, built once in `_wire_m04` with the approval cards."""
+
+    cards: RevisionSettler
+
+    async def __call__(self, session: AsyncSession, now: datetime) -> list[DeferRequest]:
+        rows = (
+            await session.execute(
+                _UNFINISHED_REVISIONS,
+                {
+                    "task": REVISE_TASK,
+                    "older_than": now - REVISE_REDEFER_AFTER,
+                    "limit": REVISE_BATCH,
+                },
+            )
+        ).all()
+        requests: list[DeferRequest] = []
+        for action_id, account_id, version, turn_id, asked_at, jobs in rows:
+            if asked_at < now - REVISE_GIVE_UP_AFTER:
+                await self.cards.give_up_revision(
+                    session,
+                    account_id=int(account_id),
+                    action_id=int(action_id),
+                    version=int(version),
+                    now=now,
+                )
+            elif int(jobs) < 2:
+                requests.append(
+                    DeferRequest(
+                        REVISE_TASK,
+                        {"action_id": int(action_id), "turn_id": int(turn_id)},
+                        queueing_lock=revise_queueing_lock(int(action_id)),
+                    )
+                )
         return requests

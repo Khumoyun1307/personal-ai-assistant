@@ -7,7 +7,6 @@ from tests.scenarios.p2_drive import FLAGS, approve, m04_environment, run_queued
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2/S04.3/S04.4")
 async def test_with_sending_off_approve_ends_blocked_with_copy_ready_text(
     migrated_url: str,
 ) -> None:

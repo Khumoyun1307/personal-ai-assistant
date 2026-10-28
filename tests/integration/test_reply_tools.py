@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import func, select, text, update
+from structlog.testing import capture_logs
 
 from assistant.accounts.models import Account
 from assistant.actions.models import Action
@@ -211,6 +212,43 @@ async def test_rg20_propose_results_never_say_sent(denv: DraftEnv) -> None:
     assert blocked["reason"] == "window_closed"
     assert blocked["sendable_until"] is None
     never_says_sent(blocked)
+
+
+async def test_propose_results_are_logged_as_not_run_never_as_failures(denv: DraftEnv) -> None:
+    """ICR-3: a card awaiting approval, a blocked proposal and "not drafted"
+    are expected outcomes, logged at info like a held confirmation — a
+    warning would page operations for every normal proposal."""
+    account_id, conversation = await seed_chat(denv)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    with capture_logs() as logs:
+        denv.script(output(text="Synthetic reply."))
+        await call(
+            context(denv, account_id, run_id, turn_id), "propose_reply", **reply_args(conversation)
+        )
+        denv.script(output(needs_reply=False, skip_reason="no_reply_needed", text=""))
+        await call(
+            context(denv, account_id, run_id, None),
+            "propose_reply",
+            call_id="c2",
+            **reply_args(conversation),
+        )
+        await close_window(denv, conversation)
+        await call(
+            context(denv, account_id, run_id, None),
+            "propose_message",
+            call_id="c3",
+            **message_args(conversation, "SYNTH-DICTATED"),
+        )
+    lines = [
+        (entry["event"], entry["log_level"], entry["status"])
+        for entry in logs
+        if entry["event"] in {"agent_tool_call_failed", "agent_tool_call_not_run"}
+    ]
+    assert lines == [
+        ("agent_tool_call_not_run", "info", "awaiting_approval"),
+        ("agent_tool_call_not_run", "info", "not_drafted"),
+        ("agent_tool_call_not_run", "info", "blocked"),
+    ]
 
 
 async def test_with_sending_off_proposals_are_normal_awaiting_cards(denv: DraftEnv) -> None:

@@ -18,7 +18,6 @@ from tests.scenarios.p2_drive import Scenario, advance, press_action, run_queued
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2/S04.3")
 async def test_a_new_contact_message_outdates_a_pending_draft(p2: Scenario) -> None:
     row = await p2.seed()
     await deliver(p2.env, business_message(message_id=102, date=p2.date + 1))
@@ -98,7 +97,6 @@ async def test_revoking_managed_consent_cancels_a_queued_ai_draft(p2: Scenario) 
     assert len(p2.business_sends()) == 1
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.3/S04.4")
 async def test_removing_the_reply_right_blocks_an_approved_draft(p2: Scenario) -> None:
     row = await p2.seed(state="approved")
     await deliver(p2.env, connection_update(rights=()))
@@ -111,7 +109,6 @@ async def test_removing_the_reply_right_blocks_an_approved_draft(p2: Scenario) -
     p2.assert_copy_ready(result)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.3")
 async def test_the_window_closing_expires_the_draft_with_copy_ready_text(p2: Scenario) -> None:
     from datetime import timedelta
 
