@@ -7,11 +7,12 @@
     python -m evals run retrieval --mode agent --live --calibrate-from docs/evals/<agent trial>.json
     python -m evals run summary [--owner-language uz-Latn|uz-Cyrl|ru|en] [--live] ...
     python -m evals run summary --live --only c36,c28,c15   # a trial of chosen chats
+    python -m evals run triage [--live] [--model ID] ...      # the product's triage over E3
     python -m evals compare docs/evals/<run>.json [...]
     python -m evals cleanup [--yes]        # list (or drop) throwaway databases a killed run left
 
 Safe by default: `run retrieval` is the deterministic, model-free baseline, and
-`run summary` (which always calls a model) refuses without `--live`. Any run
+`run summary` and `run triage` (which always call a model) refuse without `--live`. Any run
 that calls a model refuses without `--live`, refuses when the worst-case cost
 exceeds the cap, and stops mid-run before overspending. See `evals/README.md`
 "Running". Exit codes: 0 done, 2 refused or misconfigured, 4 stopped early or
@@ -60,9 +61,11 @@ from evals.runner import (
     require_live,
     run_target,
 )
-from evals.schema import load_e1, load_queries
+from evals.schema import E3_PATH, Burst, load_e1, load_e3, load_queries
 from evals.summary import SummaryTarget, isolated_summary
 from evals.targets import EvalTarget, RunContext, TargetResult
+from evals.triage import SET_NAME as TRIAGE_SET_NAME
+from evals.triage import TriageTarget, isolated_triage, model_choice, render_choice
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_DIR = REPO / "docs" / "evals"
@@ -104,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("verify", help="check the datasets against the frozen manifest")
 
     run = sub.add_parser("run", help="run a target and record the result")
-    run.add_argument("target", choices=["retrieval", "summary"])
+    run.add_argument("target", choices=["retrieval", "summary", "triage"])
     run.add_argument(
         "--mode",
         choices=[m.value for m in RetrievalMode] + ["both"],
@@ -167,8 +170,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=_ids,
         metavar="ID,ID,...",
         help=(
-            "summary only: evaluate only these conversations (e.g. c36,c28,c15), in set "
-            "order: a trial run, never a gate"
+            "summary and triage: evaluate only these conversations or bursts (e.g. "
+            "c36,c28,c15 or b001,b002), in set order: a trial run, never a gate"
         ),
     )
     run.add_argument("--estimate-only", action="store_true", help="print the cost and stop")
@@ -233,6 +236,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _compare(args.reports)
         if args.target == "summary":
             return asyncio.run(_summary(args))
+        if args.target == "triage":
+            return asyncio.run(_triage(args))
         return asyncio.run(_retrieval(args))
     except EvalsError as error:  # the tool's own, explainable failures; a bug keeps its traceback
         return _refuse(str(error))
@@ -270,6 +275,13 @@ def _cleanup(*, drop: bool) -> int:
 def _compare(paths: Sequence[Path]) -> int:
     reports = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
     sys.stdout.write(render_comparison(reports))
+    if reports and all(report.get("target") == TriageTarget.name for report in reports):
+        # The E3 model comparison: the reports are the tiers in the order tried.
+        try:
+            choice = model_choice(reports)
+        except ValueError as error:
+            raise RefusedError(f"no model-choice decision: {error}") from None
+        sys.stdout.write(render_choice(choice))
     return 0
 
 
@@ -356,10 +368,79 @@ async def _summary(args: argparse.Namespace) -> int:
     return exit_code(outcome.result)
 
 
+def _bursts() -> list[Burst]:
+    """E3, or a clean refusal while it does not load."""
+    try:
+        return load_e3()
+    except FileNotFoundError:
+        raise RefusedError(f"E3 is not authored: {E3_PATH.name} does not exist") from None
+    except ValueError:
+        # Not the message: a validation error can echo dataset text.
+        raise RefusedError(
+            "E3 does not pass its integrity checks; run `just test tests/unit/test_e3_dataset.py`"
+        ) from None
+
+
+async def _triage(args: argparse.Namespace) -> int:
+    """The triage target: the product's `Triager` and effects store over E3,
+    one throwaway account per burst in a throwaway database. It always calls
+    a model, so every guard applies. Each burst carries its own owner language
+    and timezone (`--owner-language` does not apply)."""
+    _require_recorded(args)
+    if args.calibrate_from is not None:
+        raise RefusedError("--calibrate-from is only for retrieval --mode agent")
+    digests = ensure_frozen()
+    cap, prices = _cap(args.budget_usd), _prices(args.price)
+    reviews = _reviews(args.reviews, "e3")
+    target = TriageTarget(_bursts())
+    if args.only is not None:
+        try:
+            target.named(args.only, limit=args.limit)
+        except ValueError as error:
+            raise RefusedError(f"--only: {error}") from None
+    (choice,) = _guard([target], [target.label], args, cap, prices, reviews)
+    if args.estimate_only:
+        return 0
+    assert choice is not None  # the triage target always uses a model
+    live_client = build_client(load_live_config(target.route, args.model))
+    run_date = args.date or SystemClock().now().date()
+    out_dir = None if args.no_write else args.out_dir
+    ledger = CallLedger()
+    llm = BudgetedLLMClient(live_client, cap_usd=cap, overrides=prices, ledger=ledger)
+    context = RunContext(
+        llm=llm,
+        model=choice.model,
+        effort=choice.effort,
+        reviews=reviews,
+        limit=args.limit,
+        only=args.only,
+    )
+    meta = RunMeta(
+        run_date=run_date,
+        set_name=TRIAGE_SET_NAME,
+        mode=target.label,
+        model=choice.model,
+        live=True,
+        effort=choice.effort,
+        dataset_files=digests,
+        cap_usd=cap,
+        reviews=reviews,
+    )
+    async with isolated_triage(eval_database_url(), target) as bound:
+        try:
+            outcome = await run_target(bound, context, meta=meta, ledger=ledger, out_dir=out_dir)
+        except BaseException:
+            if ledger.entries:
+                _refuse(f"the run failed after spending ${ledger.spent:.4f} of ${cap}")
+            raise
+    _print_outcome(f"triage ({target.label})", outcome, ledger=ledger, cap=cap, spent=True)
+    return exit_code(outcome.result)
+
+
 async def _retrieval(args: argparse.Namespace) -> int:
     _require_recorded(args)
     if args.only is not None:
-        raise RefusedError("--only is only for the summary target")
+        raise RefusedError("--only is only for the summary and triage targets")
     digests = ensure_frozen()
     cap, prices = _cap(args.budget_usd), _prices(args.price)
     reviews = _reviews(args.reviews, "retrieval")

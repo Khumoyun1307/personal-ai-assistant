@@ -87,6 +87,54 @@ transliterated-Russian queries. A query is a hit when any of its
 `answer_values` and gives a reference to the contact and date (threshold
 ≥ 80 %).
 
+## E3: triage (`datasets/e3/bursts.jsonl`, M05; P2 spec E3)
+
+150 synthetic bursts (E3D, Junior; provenance and counts in
+`datasets/e3/README.md`). Each is one chat at a moment `now`: its history, the
+open tasks triage already knows, a burst of new messages, and the labels a
+careful human gives the burst (`Burst` in `evals/schema.py`, which checks every
+§A layout rule at load: ids, citations, sides, chronology, the `alert` rule,
+every open task in exactly one of `resolved_tasks`/`unresolved_tasks`, `values`
+as literal substrings). `monitor_cases.jsonl` (30 cases) is for the
+`evaluate_monitor` comparison, whose target comes with S05.4.
+
+**The triage target** (`evals/triage.py`, `python -m evals run triage`) runs the
+product's `Triager` exactly as shipped (active `triage` prompt, `TriageResult`
+schema, sanitizing and validation, the route's model or `--model`, the
+`LLM_TRIAGE_EFFORT` setting) and the product's effects store
+(`TriageRepository`), per burst under its own throwaway account in a throwaway
+database: consents naming the model's processor, the burst's owner language and
+timezone, the contact's priority, the chat in Observe, the history and the burst
+stored as ingestion stores them, the open tasks as agent tasks, and a
+`conversation_triage` row covering the history, so the burst is exactly what is
+new. The clock is fixed at `now`. The verdict row, the tasks created, updated and
+closed, and the notifications enqueued are read back (nothing is delivered), then
+the account is deleted.
+
+| Metric | Definition | Threshold |
+|---|---|---|
+| Urgent/decision recall | `alert: true` bursts whose run enqueued `triage_urgent` or `triage_decision` | ≥ 90 % |
+| False-alert rate | of the bursts that got one of those alerts, the share labelled `alert: false` | ≤ 20 % |
+| False-closure rate | `unresolved_tasks` the run closed | ≤ 10 % |
+| Resolution recall | `resolved_tasks` the run closed | ≥ 80 % |
+| Informational | negatives alerted; `needs_reply` agreement; commitment recall by side (a commitment task of that side citing the labelled message) and the share carrying its `values`; suspicious recall; reasons and task titles in the owner's language and script (P2-O11) | — |
+
+The gate counts only owner-confirmed bursts (ledger `evals/reviews/e3.json`,
+`confirmed_items` = burst ids; a task id `b004.t1` is confirmed with its burst)
+and needs every item of a metric's set; the false-alert rate also waits for every
+burst of the set. A refused, invalid or truncated answer stores nothing and is a
+miss; a provider outage leaves the burst *not evaluated*. An owner-only burst with
+no open task gets no model call, as in the product.
+
+**Model comparison** (mandatory for `triage`, IMPLEMENTATION_PLAN §7, WORKFLOW
+§11): Luna first (`--estimate-only`, `--limit 1`, full); if it misses any
+threshold on the pre-screen, the next tier with `--model`, and the tier after
+that only if that one misses too. `python -m evals compare <full runs' JSON
+reports, in the order tried>` prints the decision ("route stays on …" or
+"propose `LLM_ROUTE_TRIAGE_MODEL=…`", applied on the server only with the
+owner's approval) with each tier's cost per 100 bursts. Live runs are started
+by Antony or the TL with the owner's go-ahead (P2-O8 phase cap USD 2).
+
 ## Freezing
 
 `datasets/MANIFEST.sha256` holds the SHA-256 of every `*.jsonl` under
@@ -122,7 +170,10 @@ python -m evals run retrieval --mode agent --live --calibrate-from docs/evals/<a
 python -m evals run summary --estimate-only             # worst-case cost of the summary run, calls nothing
 python -m evals run summary --live                      # REAL model; owner's go-ahead + cost approval
 python -m evals run summary --live --owner-language ru  # summaries in another owner language (default uz-Latn)
+python -m evals run triage --estimate-only              # worst-case cost of the E3 triage run, calls nothing
+python -m evals run triage --live [--model ID]          # REAL model; owner's go-ahead + cost approval
 python -m evals compare docs/evals/<run>.json …         # quality and cost per 100 items per run
+python -m evals compare <luna>.json <sol>.json          # triage: also the model-choice decision
 python -m evals cleanup [--yes]                         # list/drop throwaway databases a killed run left
 ```
 
