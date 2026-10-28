@@ -1200,6 +1200,8 @@ deploy/
 
 **As built (OPS-RT tooling):** `deploy/server.sh restore-test` runs the P2 release/action views and `tools.acceptance.restore_verify` against `restore_test` only, in one-off `--no-deps` containers with the acceptance tools mounted read-only. The gate requires zero pending/executing actions and zero todo/doing jobs, plus a present, structurally valid restore notice; it prints fixed reason codes, per-account cancelled/uncertain counts and numeric action ids only. Notice counts are derived from the stored action-id lists (creation timestamps are stored in UTC and rendered locally by the owner notice). An EXIT trap drops scratch even when a verification fails. Offline tests cover these gates; the owner-approved production restore rehearsal remains a separate acceptance step.
 
+All four scratch commands, including the mutating post-restore step, run through `tools.acceptance.scratch_restore`. It uses SQLAlchemy URL parsing to replace only the database component, privately preserving driver, credentials and query options (including slash-bearing values). Alternate `dbname`/`database` query selectors and unsupported URL shapes fail before child execution; URL values never cross the operator shell or appear in launcher diagnostics.
+
 A restore rewinds the database by up to 24 h. Actions sent after the dump come back as executable, the messages that would make `not_stale`/`no_takeover_since` fail are gone (Telegram already confirmed those updates and will not redeliver them), schedules move back in time, and /pause, consent revocations, deletions and settings changes made after the dump are undone. Therefore:
 
 - The restore script sets `system_state.restore_pending`. While it is set, `assistant run` refuses to start any role.

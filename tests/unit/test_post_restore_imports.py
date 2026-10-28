@@ -12,6 +12,7 @@ import assistant.__main__
 import assistant.privacy.post_restore
 import tools.acceptance.p2_verify
 import tools.acceptance.restore_verify
+import tools.acceptance.scratch_restore
 assert not any(name == 'assistant.telegram' or name.startswith('assistant.telegram.')
                for name in sys.modules)
 """

@@ -40,6 +40,11 @@ It also runs the P2 release and action views (actions since two days before
 the dump), followed by a read-only restore gate. All verifier mounts are
 read-only and all commands derive the scratch URL inside the container.
 The scratch database is dropped on success **and on failure**.
+All four commands use `tools.acceptance.scratch_restore`: SQLAlchemy replaces
+only the URL's database component with `restore_test`, preserving driver,
+credentials and query options even when query values contain slashes. URLs
+with alternate `dbname`/`database` query selectors or unsupported shapes are
+rejected before post-restore can run. The launcher never prints the URL.
 
 Pass requires `pending_actions=0` (proposed, awaiting approval, revising,
 approved, scheduled and executing), `pending_jobs=0` (todo and doing),
