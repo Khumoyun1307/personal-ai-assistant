@@ -621,6 +621,34 @@ async def test_expiry_at_window_close_and_at_max_age(s: Scenario, closed: bool) 
     assert s.business_sends() == []
 
 
+async def test_expiry_clears_only_the_expired_actions_own_edit_question(s: Scenario) -> None:
+    """Invariant 12: the expiry job deletes the Edit question of the account
+    whose action expired, never another account's row with the same ref."""
+    row = await s.seed(expires_at=s.env.clock.now() + timedelta(minutes=1))
+    await press_action(s, row.id, "ed")
+    async with transaction(s.env.factory) as uow:
+        other, _ = await service.get_or_create_account(
+            uow.session, telegram_user_id=7000000078, clock=s.env.clock
+        )
+        await uow.session.flush()
+        await service.set_pending_input(
+            uow.session, account_id=other.id, kind=DRAFT_EDIT, clock=s.env.clock, ref_id=row.id
+        )
+        other_id = other.id
+    await advance(s, 120, periodic=("system.expire_actions",))
+    assert (await s.action(row.id)).state == "expired"
+    assert await edit_inputs(s) == []
+    async with s.env.factory() as session:
+        left = list(
+            await session.scalars(
+                select(PendingInput.account_id).where(
+                    PendingInput.kind == DRAFT_EDIT, PendingInput.ref_id == row.id
+                )
+            )
+        )
+    assert left == [other_id]
+
+
 # ------------------------------------------------------------ discipline
 async def test_state_changes_go_through_s04_1_transitions_only(s: Scenario) -> None:
     row = await s.seed()
@@ -692,3 +720,24 @@ async def test_a_lost_card_of_another_account_is_never_shown_to_this_owner(
     assert mine.control_chat_id == account.control_chat_id
     assert mine.contact_name == "Synthetic"
     assert mine.excerpts == ("synthetic contact text",)
+
+
+async def test_an_away_message_does_not_cut_the_cards_excerpts(s: Scenario) -> None:
+    """An automated owner message (away or greeting) answers nothing (M03),
+    so the contact's message before it is still among what the card answers."""
+    away = {"is_from_offline": True}
+    await deliver(
+        s.env,
+        business_message(
+            from_id=OWNER, message_id=102, date=s.date + 1, message_text="SYNTH-AWAY", extra=away
+        ),
+    )
+    second = "Synthetic second question?"
+    await deliver(s.env, business_message(message_id=103, date=s.date + 2, message_text=second))
+    row = await s.seed()
+    async with s.env.factory() as session:
+        view = await approvals.load_card_view(
+            session, account_id=s.account_id, action_id=row.id, sending_enabled=True
+        )
+    assert view is not None
+    assert view.excerpts == ("synthetic contact text", second)

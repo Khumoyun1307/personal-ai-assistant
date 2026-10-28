@@ -43,7 +43,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup
-from sqlalchemy import case, delete, select, update
+from sqlalchemy import case, delete, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import service
@@ -297,7 +297,8 @@ async def load_card_view(
 async def _excerpts(session: AsyncSession, account_id: int, action: Action) -> tuple[str, ...]:
     """The contact messages after the last owner/assistant message, up to the
     draft's base message (or what a dictated message was shown through): at
-    most three, oldest first, each cut to 300 characters."""
+    most three, oldest first, each cut to 300 characters. An automated owner
+    message (away, greeting) answers nothing (M03), so it is no boundary."""
     upper = action.base_message_id or action.shown_through_message_id
     if upper is None:
         return ()
@@ -310,7 +311,7 @@ async def _excerpts(session: AsyncSession, account_id: int, action: Action) -> t
     )
     lower = await session.scalar(
         select(Message.id)
-        .where(*alive, Message.direction.in_(("owner_manual", "owner_automated", "assistant_sent")))
+        .where(*alive, Message.direction.in_(("owner_manual", "assistant_sent")))
         .order_by(Message.id.desc())
         .limit(1)
     )
@@ -599,13 +600,22 @@ async def ensure_card_token(
 async def clear_edit_inputs(
     session: AsyncSession, *, account_id: int | None, action_ids: Sequence[int]
 ) -> int:
-    """Drop the Edit question of these actions (never another question)."""
+    """Drop the Edit question of these actions (never another question).
+    Every row deleted belongs to its action's account (invariant 12);
+    `account_id` narrows it to one account."""
     if not action_ids:
         return 0
+    owner = (
+        select(Action.account_id)
+        .where(Action.id == PendingInput.ref_id)
+        .correlate(PendingInput)
+        .scalar_subquery()
+    )
     statement = delete(PendingInput).where(
         PendingInput.kind == DRAFT_EDIT,
         PendingInput.token.is_(None),
         PendingInput.ref_id.in_(list(action_ids)),
+        PendingInput.account_id == owner,
     )
     if account_id is not None:
         statement = statement.where(PendingInput.account_id == account_id)
@@ -643,8 +653,9 @@ class ApprovalCards:
         self._gateway = gateway
         self._clock = clock
         self._config = config
-        #: Failed edits per action since its last good one (process-local).
-        self._failures: dict[int, int] = {}
+        #: Per action: the state its failing edits tried to show, and how
+        #: many failed in a row (process-local). A new state starts again.
+        self._failures: dict[int, tuple[ActionState, int]] = {}
 
     # ---------------------------------------------------------- the port
     def present_after_commit(self, session: AsyncSession, action_id: int) -> None:
@@ -759,11 +770,23 @@ class ApprovalCards:
         # A refusal Telegram answered (e.g. "message is not modified", or a
         # card the owner deleted) cannot succeed by repeating it: settled.
         if result.ok or result.error_class is ErrorClass.BAD_REQUEST:
+            if not result.ok:
+                # Usually "not modified"; anything else (a parse error) leaves
+                # the card showing an older state, so it is traced. Telegram
+                # gives both the same code today (open item: errors.py).
+                logger.info(
+                    "approval_card_edit_refused",
+                    action_id=view.action_id,
+                    state=view.state.value,
+                    error=result.error_class,
+                    code=result.error_code,
+                )
             self._failures.pop(view.action_id, None)
             await self._record(view, message_id=view.card_message_id)
             return result
-        failures = self._failures.get(view.action_id, 0) + 1
-        self._failures[view.action_id] = failures
+        shown_before, failed = self._failures.get(view.action_id, (view.state, 0))
+        failures = failed + 1 if shown_before is view.state else 1
+        self._failures[view.action_id] = (view.state, failures)
         if failures >= SYNC_MAX_FAILURES:
             logger.error("approval_card_sync_gave_up", action_id=view.action_id, failures=failures)
         else:
@@ -1138,17 +1161,22 @@ class ApprovalCards:
         """`system.sync_action_cards`: edit every card that shows an old
         state, and present a live card that was never shown."""
         now = self._clock.now()
+        stale_cards = select(Action.id).where(
+            Action.card_message_id.is_not(None),
+            Action.card_state.is_distinct_from(Action.state),
+        )
+        given_up = [
+            (action_id, state.value)
+            for action_id, (state, failures) in self._failures.items()
+            if failures >= SYNC_MAX_FAILURES
+        ]
+        if given_up:
+            # A card given up on in its current state takes no batch slot;
+            # once its action reaches another state it is tried again.
+            stale_cards = stale_cards.where(tuple_(Action.id, Action.state).not_in(given_up))
         async with self._sf() as session:
             unsynced = list(
-                await session.scalars(
-                    select(Action.id)
-                    .where(
-                        Action.card_message_id.is_not(None),
-                        Action.card_state.is_distinct_from(Action.state),
-                    )
-                    .order_by(Action.id)
-                    .limit(SYNC_BATCH)
-                )
+                await session.scalars(stale_cards.order_by(Action.id).limit(SYNC_BATCH))
             )
             unshown = list(
                 await session.scalars(
@@ -1164,8 +1192,6 @@ class ApprovalCards:
             )
         done = 0
         for action_id in unsynced:
-            if self._failures.get(action_id, 0) >= SYNC_MAX_FAILURES:
-                continue
             await self.sync(action_id)
             done += 1
         for action_id in unshown:

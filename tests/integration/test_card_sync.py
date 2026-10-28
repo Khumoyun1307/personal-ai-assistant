@@ -11,11 +11,13 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
+from structlog.testing import capture_logs
 
 from assistant.actions import lifecycle
 from assistant.actions.models import Action
 from assistant.actions.states import StateReason
 from assistant.db.uow import transaction
+from assistant.telegram.control import approvals
 from assistant.telegram.control.approvals import SYNC_MAX_FAILURES
 from tests.fakes.sender import network_error
 from tests.integration.p2_factories import seed_action
@@ -139,3 +141,66 @@ async def test_a_card_telegram_refuses_to_edit_is_settled_not_retried(s: Scenari
     assert (await s.action(row.id)).card_state == "cancelled"
     await advance(s, 60, periodic=SYNC)
     assert len(s.env.sender.edits) == 1
+
+
+async def test_a_refused_card_edit_leaves_a_content_free_log_line(s: Scenario) -> None:
+    """A 400 settles the card, so a refusal that is not "not modified" (a
+    parse error) would otherwise leave a stale card and no trace of it."""
+    from tests.fakes.sender import telegram_error
+
+    row = await s.seed()
+    await cancel_outside_the_card_flow(s)
+    s.env.sender.fail_with = telegram_error("Bad Request: can't parse entities", status_code=400)
+    with capture_logs() as logs:
+        await advance(s, 60, periodic=SYNC)
+    refused = [entry for entry in logs if entry["event"] == "approval_card_edit_refused"]
+    assert len(refused) == 1
+    [entry] = refused
+    assert entry["action_id"] == row.id
+    assert entry["state"] == "cancelled"
+    assert "error" in entry
+    assert "code" in entry
+    assert "parse" not in str(entry)
+
+
+async def test_the_sync_tries_again_once_the_state_moves_on_after_giving_up(
+    s: Scenario,
+) -> None:
+    """Failures count per state shown: a card given up on is edited again
+    when its action reaches a new state (e.g. after a long outage)."""
+    row = await s.seed()
+    async with transaction(s.env.factory) as uow:
+        approved = await lifecycle.approve(
+            uow.session,
+            account_id=s.account_id,
+            token=row.approval_token or "",
+            now=s.env.clock.now(),
+        )
+    assert approved.status is lifecycle.ApproveStatus.APPROVED
+    s.env.sender.edits.clear()
+    s.env.sender.fail_with = network_error()
+    for _ in range(SYNC_MAX_FAILURES + 2):
+        await advance(s, 60, periodic=SYNC)
+    assert len(s.env.sender.edits) == SYNC_MAX_FAILURES
+    await cancel_outside_the_card_flow(s)
+    s.env.sender.fail_with = None
+    await advance(s, 60, periodic=SYNC)
+    assert len(s.env.sender.edits) == SYNC_MAX_FAILURES + 1
+    assert (await s.action(row.id)).card_state == "cancelled"
+
+
+async def test_a_card_the_sync_gave_up_on_never_holds_a_batch_slot(
+    s: Scenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "SYNC_BATCH", 1)
+    first = await s.seed()
+    second = await s.seed(state="approved")
+    await cancel_outside_the_card_flow(s)
+    s.env.sender.edits.clear()
+    s.env.sender.fail_with = network_error()
+    for _ in range(SYNC_MAX_FAILURES):
+        await advance(s, 60, periodic=SYNC)
+    assert {edit["message_id"] for edit in s.env.sender.edits} == {first.card_message_id}
+    s.env.sender.fail_with = None
+    await advance(s, 60, periodic=SYNC)
+    assert (await s.action(second.id)).card_state == "cancelled"
