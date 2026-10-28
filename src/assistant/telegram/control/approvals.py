@@ -29,9 +29,8 @@ control chat (AGENTS §7).
   confirmation card (a line break stays one, except in a name; every line of
   the contact's words is marked as theirs), and a piece of content shaped
   like one of Telegram's tags is defused, so it can never become markup.
-  The gateway's sanitizer is the one HTML escape (`telegram/render.py`);
-  escaping here as well would show the owner `&amp;` instead of the `&` that
-  will be sent.
+  Protected fields are HTML-escaped once before composing app markup; the
+  gateway preserves their entities without activating escaped tags.
 
 Logs carry ids, states and codes only (AGENTS §9).
 """
@@ -42,15 +41,17 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
+from sqlalchemy.sql.selectable import Exists
 
 from assistant.accounts import service
 from assistant.accounts.callbacks import encode
-from assistant.accounts.models import Account, ControlTurn, PendingInput
+from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, PendingInput
 from assistant.actions import lifecycle
 from assistant.actions.config import ActionsConfig
 from assistant.actions.drafts import request_draft
@@ -88,7 +89,7 @@ from assistant.telegram.control.handlers import (
     local_time,
 )
 from assistant.telegram.gateway import ControlChat, OutboundGateway
-from assistant.telegram.render import ALLOWED_TAGS, MAX_MESSAGE_CHARS, sanitize
+from assistant.telegram.render import ALLOWED_TAGS, MAX_MESSAGE_CHARS, escape, sanitize
 
 logger = get_logger(__name__)
 
@@ -133,6 +134,8 @@ PRESENT_GRACE = timedelta(seconds=30)
 #: Failed edits of one card before the sync stops trying (logged).
 SYNC_MAX_FAILURES = 10
 SYNC_BATCH = 100
+PRESENTATION_CLAIMED = "approval_card_presentation_claimed"
+PRESENTATION_RESOLVED = "approval_card_presentation_resolved"
 
 # ------------------------------------------------------------ texts
 ANSWER_SENDING = "Sending…"
@@ -357,15 +360,15 @@ async def _excerpts(session: AsyncSession, account_id: int, action: Action) -> t
 
 # ------------------------------------------------------------ rendering
 #: A piece of raw text the sanitizer would turn into a real tag: `<b>`,
-#: `</i>`, `<a href=…>` (the same shape as `render._ESCAPED_TAG_RE`, before
-#: escaping).
+#: `</i>`, `<a href=…>`. Kept as the card's existing visible defusing
+#: convention; `escape` below protects every remaining raw character.
 _TAG_SHAPED = re.compile(r"<(/?)([a-zA-Z0-9-]+)((?:\s[^&<>]*?)?)>")
 
 
 def _defuse(match: re.Match[str]) -> str:
     tag, attributes = match.group(2).lower(), match.group(3)
     if tag not in ALLOWED_TAGS or (attributes and not (tag == "a" and "href=" in attributes)):
-        return match.group(0)  # the sanitizer escapes it already
+        return match.group(0)  # `shown` HTML-escapes it below
     return "\\u003c" + match.group(0)[1:]
 
 
@@ -382,7 +385,7 @@ def shown(text: str, *, one_line: bool = False) -> str:
         visible = render_description(text)
     else:
         visible = "\n".join(render_description(line) for line in text.split("\n"))
-    return _TAG_SHAPED.sub(_defuse, visible)
+    return escape(_TAG_SHAPED.sub(_defuse, visible))
 
 
 def _their_words(excerpt: str) -> list[str]:
@@ -723,6 +726,39 @@ def _edit_ttl(expires_at: datetime | None, now: datetime) -> timedelta:
     return max(timedelta(seconds=1), min(expires_at - now, EDIT_INPUT_TTL))
 
 
+def _pending_presentation() -> Exists:
+    """Unresolved claim of this action/version, tenant scoped on both rows."""
+    claim = aliased(AuditLogEntry)
+    resolution = aliased(AuditLogEntry)
+    resolved = (
+        select(resolution.id)
+        .where(
+            resolution.account_id == claim.account_id,
+            resolution.event == PRESENTATION_RESOLVED,
+            resolution.subject_type == "action",
+            resolution.subject_id == claim.subject_id,
+            resolution.details["version"].as_integer() == claim.details["version"].as_integer(),
+            resolution.details["claim_id"].as_integer() == claim.id,
+            resolution.details["outcome"].as_string().in_(("shown", "not_delivered")),
+        )
+        .correlate(claim)
+        .exists()
+    )
+    return (
+        select(claim.id)
+        .where(
+            claim.account_id == Action.account_id,
+            claim.event == PRESENTATION_CLAIMED,
+            claim.subject_type == "action",
+            claim.subject_id == Action.id,
+            claim.details["version"].as_integer() == Action.version,
+            ~resolved,
+        )
+        .correlate(Action)
+        .exists()
+    )
+
+
 # ------------------------------------------------------------ the presenter
 class ApprovalCards:
     """`ApprovalCardPresenter` (F0-interfaces §8.2), the `act` press handler,
@@ -834,25 +870,93 @@ class ApprovalCards:
         if target is None:
             return None
         card = render_card(view)
+        claim_id = await self._claim_presentation(view)
+        if claim_id is None:
+            return SendResult(ErrorClass.AMBIGUOUS, error_code="presentation_uncertain")
+        full_text_delivered = False
         if card.full_text is not None:
             first = await self._gateway.send_text(target, card.full_text)
             if not first.ok:
-                # No card may point at a message that is not there: the sync
-                # tries again (counted, like a failed edit).
+                if not first.delivery_uncertain:
+                    await self._resolve_not_delivered(view, claim_id)
                 self._count_failure(view, "approval_card_not_sent", first)
                 if replacing is not None:
                     await self._gateway.edit_control_text(target, replacing, render_not_shown(view))
                 return first
+            full_text_delivered = True
         result = await self._gateway.send_text(target, card.text, keyboard=card.keyboard)
         if not result.ok or result.message_id is None:
+            if full_text_delivered or result.ok:
+                result = SendResult(ErrorClass.AMBIGUOUS, error_code="partial_delivery")
+            elif not result.delivery_uncertain:
+                await self._resolve_not_delivered(view, claim_id)
             self._count_failure(view, "approval_card_not_sent", result)
             return result
         self._failures.pop(view.action_id, None)
-        recorded = await self._record(view, message_id=result.message_id)
+        recorded = await self._record(view, message_id=result.message_id, claim_id=claim_id)
         logger.info("approval_card_sent", action_id=view.action_id, state=view.state.value)
         if recorded and replacing is not None and replacing != result.message_id:
             await self._gateway.edit_control_text(target, replacing, RETIRED_CARD_TEXT)
         return result
+
+    async def _claim_presentation(self, view: ApprovalCardView) -> int | None:
+        """Commit the version's attempt before Telegram. The row lock only
+        serializes this short claim, never the subsequent network calls."""
+        async with transaction(self._sf) as uow:
+            current = await uow.session.scalar(
+                select(Action.id)
+                .where(
+                    Action.account_id == view.account_id,
+                    Action.id == view.action_id,
+                    Action.version == view.version,
+                    Action.state == view.state.value,
+                    Action.card_message_id.is_not_distinct_from(view.card_message_id),
+                    Action.card_state.is_not_distinct_from(view.card_state),
+                )
+                .with_for_update()
+            )
+            if current is None:
+                return None
+            # A fresh statement AFTER acquiring the lock sees another
+            # claimant's committed marker, even if we waited for its lock.
+            pending = await uow.session.scalar(
+                select(Action.id).where(
+                    Action.account_id == view.account_id,
+                    Action.id == current,
+                    _pending_presentation(),
+                )
+            )
+            if pending is not None:
+                return None
+            claim = AuditLogEntry(
+                account_id=view.account_id,
+                at=self._clock.now(),
+                actor="system",
+                event=PRESENTATION_CLAIMED,
+                subject_type="action",
+                subject_id=view.action_id,
+                details={"version": view.version},
+            )
+            uow.session.add(claim)
+            await uow.session.flush()
+            return claim.id
+
+    def _presentation_resolution(
+        self, view: ApprovalCardView, claim_id: int, outcome: Literal["shown", "not_delivered"]
+    ) -> AuditLogEntry:
+        return AuditLogEntry(
+            account_id=view.account_id,
+            at=self._clock.now(),
+            actor="system",
+            event=PRESENTATION_RESOLVED,
+            subject_type="action",
+            subject_id=view.action_id,
+            details={"version": view.version, "claim_id": claim_id, "outcome": outcome},
+        )
+
+    async def _resolve_not_delivered(self, view: ApprovalCardView, claim_id: int) -> None:
+        async with transaction(self._sf) as uow:
+            uow.session.add(self._presentation_resolution(view, claim_id, "not_delivered"))
 
     def _count_failure(self, view: ApprovalCardView, event: str, result: SendResult) -> None:
         """One more failure to show this action's card in this state; the
@@ -893,7 +997,9 @@ class ApprovalCards:
         self._count_failure(view, "approval_card_edit_failed", result)
         return result
 
-    async def _record(self, view: ApprovalCardView, *, message_id: int) -> bool:
+    async def _record(
+        self, view: ApprovalCardView, *, message_id: int, claim_id: int | None = None
+    ) -> bool:
         """The card `message_id` shows `view` (its version and state). Bound
         to the version (QA B1): a presenter that rendered an older version
         records nothing, so it never overwrites the pointer to a newer
@@ -908,6 +1014,8 @@ class ApprovalCards:
                 .execution_options(synchronize_session=False)
             )
             if getattr(result, "rowcount", 0):
+                if claim_id is not None:
+                    uow.session.add(self._presentation_resolution(view, claim_id, "shown"))
                 return True
             await uow.session.execute(
                 update(Action)
@@ -1269,11 +1377,13 @@ class ApprovalCards:
         stale_cards = select(Action.id).where(
             Action.card_message_id.is_not(None),
             Action.card_state.is_distinct_from(Action.state),
+            ~_pending_presentation(),
         )
         lost_cards = select(Action.id).where(
             Action.card_message_id.is_(None),
             Action.state.in_([state.value for state in LIVE_CARD]),
             Action.created_at < now - PRESENT_GRACE,
+            ~_pending_presentation(),
         )
         given_up = [
             (action_id, state.value)

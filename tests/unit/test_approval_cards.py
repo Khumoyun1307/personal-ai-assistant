@@ -7,6 +7,7 @@ own sanitizer (`render_control_message`), as the owner would see it.
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -183,6 +184,14 @@ def test_card_content_is_escaped_and_bidi_made_visible() -> None:
     # The card's own markup still works, and the copy button has the exact text.
     assert text.startswith("📝 <b>Draft reply</b>")
     assert "<blockquote>" in text
+
+
+def test_card_preserves_entity_looking_literals_in_every_untrusted_field() -> None:
+    literal = "&lt;b&gt;literal&lt;/b&gt; &amp; &#60; &#x3c; &quot;"
+    card = render_card(view(text=literal, contact_name=literal, excerpts=(literal,)))
+    text = shown(card.text)
+    assert html.unescape(text).count(literal) == 3
+    assert "<b>literal</b>" not in text
 
 
 def test_line_breaks_in_the_text_and_the_excerpts_reach_telegram_as_line_breaks() -> None:

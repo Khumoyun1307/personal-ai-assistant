@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html
 import re
+from urllib.parse import urlsplit
 
 from assistant.core.delivery import MAX_TEXT_LENGTH
 
@@ -29,8 +30,11 @@ MAX_MESSAGE_CHARS = MAX_TEXT_LENGTH
 #: Leave room for a continuation marker without risking the limit.
 _SPLIT_BUDGET = MAX_MESSAGE_CHARS - 64
 
-#: After escaping, a tag looks like `&lt;/b&gt;`; this matches those.
-_ESCAPED_TAG_RE = re.compile(r"&lt;(/?)([a-zA-Z0-9-]+)((?:\s[^&]*?)?)&gt;")
+#: Recognise only raw markup. An escaped contact tag must never become a tag.
+_RAW_TAG_RE = re.compile(r"<(/?)([a-zA-Z0-9-]+)((?:\s[^<>]*?)?)>")
+#: Telegram HTML supports four named entities and numerical entities (TF PQ-12).
+_ENTITY_RE = re.compile(r"&(?:amp|lt|gt|quot|#[0-9]+|#x[0-9a-fA-F]+);")
+_HREF_RE = re.compile(r"""\s+href=(?:"([^"<>]*)"|'([^'<>]*)')\s*""")
 
 
 def escape(text: str) -> str:
@@ -39,22 +43,53 @@ def escape(text: str) -> str:
 
 
 def sanitize(text: str) -> str:
-    """Escape everything, then restore only the allowed tags.
+    """Keep application markup and existing entities; escape other text once.
 
-    Deny-by-default: a tag Telegram does not know fails the send with a 400,
-    and a tag we did not expect could change how the message reads.
+    Callers escape untrusted fields with `escape` before adding markup. Never
+    unescape the input: `&lt;b&gt;` is literal content, not application markup.
+    Bare ampersands and angle brackets in application text are still safe.
     """
-    return _ESCAPED_TAG_RE.sub(_restore_tag, html.escape(text, quote=False))
+    parts: list[str] = []
+    start = 0
+    for match in _RAW_TAG_RE.finditer(text):
+        parts.append(_escape_text(text[start : match.start()]))
+        parts.append(_sanitize_tag(match))
+        start = match.end()
+    parts.append(_escape_text(text[start:]))
+    return "".join(parts)
 
 
-def _restore_tag(match: re.Match[str]) -> str:
+def _escape_text(text: str) -> str:
+    parts: list[str] = []
+    start = 0
+    for entity in _ENTITY_RE.finditer(text):
+        parts.append(escape(text[start : entity.start()]))
+        parts.append(entity.group(0))
+        start = entity.end()
+    parts.append(escape(text[start:]))
+    return "".join(parts)
+
+
+def _sanitize_tag(match: re.Match[str]) -> str:
     closing, tag, attributes = match.group(1), match.group(2).lower(), match.group(3)
     if tag not in ALLOWED_TAGS:
-        return match.group(0)
-    # Only `a` carries an attribute we support, and only href.
-    if attributes and not (tag == "a" and "href=" in attributes):
-        return match.group(0)
-    return f"<{closing}{tag}{attributes.replace('&quot;', '"')}>"
+        return escape(match.group(0))
+    if not attributes:
+        return f"<{closing}{tag}>"
+    # Only application HTTP(S) links with exactly one quoted href are allowed.
+    href = _HREF_RE.fullmatch(attributes) if tag == "a" and not closing else None
+    if href is None:
+        return escape(match.group(0))
+    url = href.group(1) if href.group(1) is not None else href.group(2)
+    try:
+        parsed = urlsplit(html.unescape(url))
+    except ValueError:
+        return escape(match.group(0))
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return escape(match.group(0))
+    # Preserve entities in the URL too, without unescaping them into syntax.
+    quote = '"' if href.group(1) is not None else "'"
+    return f"<a href={quote}{_escape_text(url)}{quote}>"
 
 
 def split_message(text: str, limit: int = _SPLIT_BUDGET) -> list[str]:

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import Account, AuditLogEntry
@@ -207,8 +207,14 @@ class OwnerAlerts:
             .where(AuditLogEntry.account_id == account_id)
             .where(AuditLogEntry.event == EVENT_ALERT)
             .where(AuditLogEntry.details["key"].astext == dedupe_key)
-            # Only delivered alerts count: an undelivered one should be retried.
-            .where(AuditLogEntry.details["delivered"].astext == "true")
+            # An uncertain prefix may already be visible: never replay it.
+            # A definite non-delivery remains eligible for a later attempt.
+            .where(
+                or_(
+                    AuditLogEntry.details["delivered"].astext == "true",
+                    AuditLogEntry.details["uncertain"].astext == "true",
+                )
+            )
         )
         if cooldown is not None:
             statement = statement.where(AuditLogEntry.at >= self._clock.now() - cooldown)
