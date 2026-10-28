@@ -178,9 +178,9 @@ Content-free only. Run by the TL (server) with Antony recording the results in t
 
 ### 6.1 `deploy/server.sh` verification actions needed (built in OPS-TV by Antony; TL reviews)
 
-| Action | Prints (numbers, ids, states, hashes, times only) | Used by |
+| Action | Prints (numbers, ids, states, hash-match results, times only) | Used by |
 |---|---|---|
-| `trial-check [--since <ISO>]` | The send audit of OPS-trial-verifier: for each `succeeded`/`delivery_uncertain` action — approval audit present before the claim, `approved_text_hash == sent_text_hash`, one `assistant_sent` row per success, one attempt per action, no send after `outdated`/`expired`/`rejected`/`cancelled`, conversation of the send == conversation of the action; summary line PASS/FAIL | §7 trial, live windows |
+| `trial-check [--since <ISO>] [--until <ISO>]` | The send audit of OPS-trial-verifier on one read-only snapshot: actions created or audited in `[since, until)`, with their complete histories; approval/version before claim, hash match, one linked `assistant_sent` row per success, at most one possibly delivered attempt (definite 429 retries allowed), no send after a terminal transition, recipient/account identity and independently scoped orphan sends. Prints six PASS/FAIL checks, structural ids/counts and uncertain ids/times; exits 1 on violations, 2 on invalid arguments | §7 trial, live windows |
 | `p2-verify release` | Alembic head, enabled flag names, P2 tables, action state counts | §6 |
 | `p2-verify actions --since <ISO>` | One line per action: id, conversation id, origin, state, state_reason, version, card_state, hash match (yes/no/–), telegram id present, attempts | Live windows |
 | `p2-verify action <id>` | The action's audit timeline: event names, times (owner's timezone), reason codes | Live windows |
@@ -194,7 +194,7 @@ All actions run like `verify-r0`: a one-off app container with `tools/acceptance
 
 ## 7. Trial support (M04, 7 days after CP3)
 
-- **Daily (TL or Antony, same time each day):** `just prod <ip> trial-check --since <trial start>`; record PASS/FAIL and counts in the trial log (M04.md section prepared by the TL).
+- **Daily (TL or Antony, same time each day, in the approved server window):** `just prod <ip> trial-check --since <trial start> --until <check time>` with timezone-bearing ISO timestamps; record the exact interval, release/commit, six check results, uncertain ids and counts in the trial log (M04.md section prepared by the TL). Exit 1 requires investigation; missing audit facts fail closed. An uncertain action is not itself a violation and must never be retried from this report. The owner checks its delivery in the client. Local synthetic tests do not count as a trial day or the CP3 server dry-run.
 - **Daily (owner):** glance at `/activity` for anything unexpected.
 - **An incorrect send** (any one fails the trial): wrong recipient (conversation of the send ≠ the action's); text ≠ approved text (hash mismatch); a duplicate (two sends for one action, or two successful attempts); a send after the action was outdated, expired, rejected or cancelled; a send without approval (no `action_approved` before `action_claimed`). `delivery_uncertain` is not an incorrect send by itself; the owner checks the chat and the result is logged.
 - **If one occurs:** stop-the-line (ORG §5): post on the integration issue with `owner-gate`, the TL proposes switching `actions.send` off at once; record the action id, the check that failed and the timeline from `p2-verify action <id>`; the trial restarts after the fix.

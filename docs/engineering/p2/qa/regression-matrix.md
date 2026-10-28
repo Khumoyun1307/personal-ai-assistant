@@ -57,7 +57,7 @@ pending acceptance; its existence does not make the corresponding RG row pass.
 | FR-TRI-06 Monitors from natural language, confirmed | S05.4 | `test_m05_j6_monitors.py::*` | M05 checklist 3 |
 | FR-TRI-07 Noise control and feedback | S05.2 | Dedupe, cap and feedback tests | M05 checklist 2.4, 2.6 |
 | NFR-05 Triage < 90 s p95; urgent alert < 2 min p95 | S05.1, S05.2 | — (measured live) | M05 checklist 1.10 (`nfr05`) |
-| NFR-06 Send safety (zero duplicates, zero policy bypass, 100 % recorded) | S04.1, S04.4 | RG-04/05/06/18; `test_m04_r1_assistant_sent.py::*` | Trial: daily `trial-check` |
+| NFR-06 Send safety (zero duplicates, zero policy bypass, 100 % recorded) | S04.1, S04.4, OPS-TV | RG-04/05/06/18; `test_m04_r1_assistant_sent.py::*`; `tests/integration/test_p2_verify.py::test_trial_check_*` checks the independent structural audit (OPS-TV part2 CI/review tracked on #65) | Trial: daily `trial-check`; synthetic audit tests do not replace trial evidence |
 | NFR-09 Restore never sends | F0, S04.4 | `test_m04_restore.py::test_a_restored_database_with_an_approved_action_sends_nothing` | OPS-restore-test |
 | PRD R1 #3 Draft → edit → approve → sent; sent = approved | S04.2–S04.4 | J4 scenario (hash equality) | M04 checklist 2.1 (edit → approve → sent on one action); 1.2–1.3 cover edits alone |
 | PRD R1 #4 Every outdating/expiry condition prevents a stale send | S04.2–S04.4 | `test_m04_outdating_and_expiry.py::*`, `test_m04_j8_takeover.py::*` | M04 checklist 2.3–2.6 |
