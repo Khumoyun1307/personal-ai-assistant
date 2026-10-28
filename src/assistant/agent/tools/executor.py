@@ -71,10 +71,21 @@ UNKNOWN_TOOL = "(unknown)"
 ROOT_FIELD = "(root)"
 EXTRA_FIELD = "(extra)"
 #: Statuses that are expected states, not failures: logged at info. Held
-#: for the owner's tap or already decided on its card (a repeated call), or
-#: a chat tool's blocked stub while chat access is off.
+#: for the owner's tap or already decided on its card (a repeated call), a
+#: chat tool's blocked stub while chat access is off, or a propose tool's
+#: normal result — a card awaiting approval, blocked, not drafted (ICR-3).
 NOT_RUN_STATUSES = frozenset(
-    {"awaiting_confirmation", "not_executed", "confirmed", "applied", "rejected", CHAT_ACCESS_OFF}
+    {
+        "awaiting_confirmation",
+        "not_executed",
+        "confirmed",
+        "applied",
+        "rejected",
+        CHAT_ACCESS_OFF,
+        "awaiting_approval",
+        "blocked",
+        "not_drafted",
+    }
 )
 
 

@@ -182,6 +182,10 @@ async def test_the_blocked_stub_returns_no_message_data_and_makes_no_db_read_of_
         "list_conversations",
         "summarize_period",
         "get_attention_list",
+        "get_activity",
+        # S04.2: their results name the contact (F0-interfaces §9).
+        "propose_reply",
+        "propose_message",
     }
     assert managed <= set(stubs)
     for name in managed:
@@ -231,9 +235,9 @@ def test_release_flags_still_hide_blocked_stubs() -> None:
     assert contact_run == {}
 
 
-def test_owner_request_v7_is_active_and_v1_to_v6_remain() -> None:
-    assert prompt_registry.ACTIVE["owner_request"] == "v7"
-    for version in ("v1", "v2", "v3", "v4", "v5", "v6", "v7"):
+def test_owner_request_v8_is_active_and_older_versions_remain() -> None:
+    assert prompt_registry.ACTIVE["owner_request"] == "v8"
+    for version in ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"):
         assert prompt_registry.load("owner_request", version).text
     v6 = prompt_registry.load("owner_request", "v6").text
     assert "[msg:" in v6
@@ -275,6 +279,47 @@ def test_owner_request_v7_is_v6_plus_the_search_and_language_rules() -> None:
     rule16 = _rule(v7, 16)
     assert "whole reply" in rule16
     assert "script" in rule16
+
+
+def test_owner_request_v8_is_v7_plus_the_m04_rules() -> None:
+    """S04.3, the M04 bump (P2-T17): v7 word for word, except the two
+    sentences M04 makes untrue (rule 3: no sending at all; rule 13: Assist
+    not available), plus rules 18-22 for proposals, the kill switch and the
+    activity log."""
+    v7 = prompt_registry.load("owner_request", "v7").text
+    v8 = prompt_registry.load("owner_request", "v8").text
+    assert v8.split("\n1. ")[0] == v7.split("\n1. ")[0]
+    for number in range(1, 17):
+        if number in (3, 13):
+            continue
+        assert _rule(v8, number) == _rule(v7, number), number
+    assert _rule(v8, 17).strip() == _rule(v7, 17).strip()
+    rule13 = _rule(v8, 13)
+    assert (
+        _rule(v7, 13)
+        .split("Assist mode is not available yet.")[0]
+        .replace("observe or ignore", "observe, assist or ignore")
+        in rule13
+    )
+    assert "not available yet" not in v8
+    assert "nothing is sent without that approval" in rule13
+    assert "the owner approves it on a card, and only then is it sent" in _rule(v8, 3)
+    rules = {number: _rule(v8, number) for number in range(18, 23)}
+    assert "`propose_reply`" in rules[18]
+    assert "`propose_message`" in rules[18]
+    assert "exactly as written, never rephrased" in rules[18]
+    assert "`resolve_contact`" in rules[18]
+    assert "rather than guess" in rules[18]
+    assert "never a send" in rules[19]
+    for status in ("`awaiting_approval`", "`blocked`", "`not_drafted`", "`guidance_ignored`"):
+        assert status in rules[19]
+    assert "Never say or imply that a message was sent" in rules[19]
+    assert "`replaced_earlier_card`" in rules[20]
+    assert "`pause_autonomy`" in rules[21]
+    assert "/resume" in rules[21]
+    assert "never that you resumed" in rules[21]
+    assert "`get_activity`" in rules[22]
+    assert "`assistant_activity`" in rules[22]
 
 
 def test_duplicate_names_are_refused() -> None:

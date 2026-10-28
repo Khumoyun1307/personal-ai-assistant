@@ -330,6 +330,8 @@ def blocked_stub(tool: ToolDefinition) -> ToolDefinition:
 
 def default_registry() -> ToolRegistry:
     """Every tool the product has. The catalogue is ARCHITECTURE §8.2."""
+    from assistant.agent.tools.activity import GET_ACTIVITY
+    from assistant.agent.tools.autonomy import PAUSE_AUTONOMY, RESUME_AUTONOMY
     from assistant.agent.tools.conversations import (
         GET_CONVERSATION,
         LIST_CONVERSATIONS,
@@ -342,6 +344,7 @@ def default_registry() -> ToolRegistry:
     )
     from assistant.agent.tools.memory import FORGET, LIST_MEMORIES, REMEMBER
     from assistant.agent.tools.modes import SET_CONVERSATION_MODE, UPDATE_PREFERENCES
+    from assistant.agent.tools.replies import PROPOSE_MESSAGE, PROPOSE_REPLY
     from assistant.agent.tools.search import SEARCH_MESSAGES
     from assistant.agent.tools.status import GET_STATUS
     from assistant.agent.tools.summaries import GET_ATTENTION_LIST, SUMMARIZE_PERIOD
@@ -355,6 +358,7 @@ def default_registry() -> ToolRegistry:
             LIST_CONVERSATIONS,
             SUMMARIZE_PERIOD,
             GET_ATTENTION_LIST,
+            GET_ACTIVITY,
             REMEMBER,
             FORGET,
             LIST_MEMORIES,
@@ -363,6 +367,10 @@ def default_registry() -> ToolRegistry:
             DELETE_CONVERSATION_DATA,
             DELETE_CONTACT_DATA,
             DELETE_EVERYTHING,
+            PROPOSE_REPLY,
+            PROPOSE_MESSAGE,
+            PAUSE_AUTONOMY,
+            RESUME_AUTONOMY,
         ]
     )
 

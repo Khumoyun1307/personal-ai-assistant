@@ -45,7 +45,7 @@ from assistant.telegram.ingress.ports import TelegramTransientError
 from tests.fakes.channel import FakeChannel
 from tests.fakes.clock import FakeClock
 from tests.fakes.llm import FakeLLM, text_response, tool_response
-from tests.fakes.sender import telegram_error
+from tests.fakes.sender import network_error, telegram_error
 from tests.fakes.telegram import FakeUpdateSource
 from tests.integration.agent_env import NOTE_FLAG, PRODUCTION_FLAGS, SET_NOTE
 from tests.integration.business_env import (
@@ -60,6 +60,7 @@ from tests.integration.business_env import (
     private_message,
     run_deletion_jobs,
 )
+from tests.integration.execution_env import approved, caught_up, harness, seed
 
 pytestmark = pytest.mark.integration
 
@@ -404,3 +405,32 @@ async def test_every_tool_call_that_does_not_succeed_logs_one_content_free_line(
     assert (lines[4]["exc_type"], lines[5]["exc_type"]) == ("NotInAccountError", "KeyError")
     _assert_clean(output, caplog.records)
     assert DAY_CANARY not in output
+
+
+async def test_rg10_business_sends_and_an_ambiguous_send_log_no_content(
+    env: Env,
+    json_logs: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """S04.4: the executor and the gateway's business path log ids, states
+    and codes only — a sent reply's text, an ambiguous one's, and a network
+    error carrying the Bot API URL never reach the logs."""
+    caplog.set_level(logging.DEBUG)
+    h = harness(env)
+    chat = await seed(env)
+    await caught_up(env)
+    sent = await approved(env, chat, text=f"{CANARY} sent reply")
+    env.clock.advance(seconds=1)
+    uncertain = await approved(env, chat, text=f"{CANARY} uncertain reply")
+    h.sender.plain_script = [
+        4242,
+        network_error(f"https://api.telegram.org/bot{TOKEN}/sendMessage {CANARY}"),
+    ]
+
+    await h.execute(sent)
+    await h.execute(uncertain)
+
+    output = json_logs.readouterr().out
+    assert "action_claimed" in output
+    assert "action_outcome_recorded" in output
+    _assert_clean(output, caplog.records)

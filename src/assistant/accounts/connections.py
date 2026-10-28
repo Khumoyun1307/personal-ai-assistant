@@ -22,17 +22,20 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import (
     Account,
+    AuditLogEntry,
     BusinessConnection,
     BusinessConnectionEvent,
     ForeignConnection,
 )
 from assistant.accounts.service import get_or_create_account
+from assistant.actions import lifecycle
+from assistant.actions.states import StateReason
 from assistant.core.clock import Clock
 
 RIGHT_REPLY = "can_reply"
@@ -257,6 +260,51 @@ async def connection_for_account(
     return (await session.execute(statement)).scalar_one_or_none()
 
 
+#: Audit event when a send found the connection invalid (§6.4; decisions R15).
+EVENT_MARKED_STALE = "connection_marked_stale"
+
+
+async def mark_stale(
+    session: AsyncSession, account_id: int, now: datetime, *, connection_id: str
+) -> bool:
+    """A send on `connection_id` got `BUSINESS_CONNECTION_INVALID` (§6.4):
+    that connection becomes `stale`, which blocks every business send for
+    the account (rule `connection_active`) until a new id arrives — a
+    `business_connection` update or an unknown-id bootstrap (`_classify`
+    maps stale → `RECONNECTED`). The audit row's time is "stale since".
+    Conditional on that id still being the account's **active** connection:
+    one row per account holds the current id, rewritten in place on a
+    reconnect, so a failure on an old id must never stale its replacement
+    (Antony on #107). A connection already disabled or stale is left alone."""
+    row = (
+        await session.execute(
+            update(BusinessConnection)
+            .where(
+                BusinessConnection.account_id == account_id,
+                BusinessConnection.connection_id == connection_id,
+                BusinessConnection.status == Status.ACTIVE.value,
+            )
+            .values(status=Status.STALE.value, updated_at=now)
+            .returning(BusinessConnection.id)
+        )
+    ).one_or_none()
+    if row is None:
+        return False
+    session.add(
+        AuditLogEntry(
+            account_id=account_id,
+            at=now,
+            actor="system",
+            event=EVENT_MARKED_STALE,
+            subject_type="connection",
+            subject_id=int(row[0]),
+            details={"from": Status.ACTIVE.value, "to": Status.STALE.value},
+        )
+    )
+    await session.flush()
+    return True
+
+
 async def apply_snapshot(
     session: AsyncSession,
     snapshot: ConnectionSnapshot,
@@ -344,7 +392,34 @@ async def apply_snapshot(
     event = await _record_event(
         session, account_id=account.id, snapshot=snapshot, change=change, source=source, clock=clock
     )
+    await _settle_pending_actions(session, account.id, change, clock.now())
     return ApplyResult(change, account.id, event.id)
+
+
+async def _settle_pending_actions(
+    session: AsyncSession, account_id: int, change: Change, now: datetime
+) -> None:
+    """Send-relevant connection changes reach pending actions in the same
+    transaction (§6.4; S04.4 §3.8). A disabled connection cancels every
+    unsent action; changed rights outdate drafts and approvals made under
+    the old ones. Tx A re-checks the connection either way (the guarantee);
+    a claimed action is never touched."""
+    if change is Change.DISABLED:
+        await lifecycle.cancel_pending(
+            session,
+            account_id=account_id,
+            conversation_ids=None,
+            reason=StateReason.CONNECTION_DISABLED,
+            now=now,
+        )
+    elif change is Change.RIGHTS_CHANGED:
+        await lifecycle.outdate_pending_for_account(
+            session,
+            account_id=account_id,
+            reason=StateReason.RIGHTS_CHANGED,
+            include_approved=True,
+            now=now,
+        )
 
 
 async def activate_pending(session: AsyncSession, account: Account, clock: Clock) -> ApplyResult:

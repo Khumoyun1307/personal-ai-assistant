@@ -32,6 +32,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts.models import Account, AuditLogEntry
 from assistant.accounts.preferences import FALLBACK_DEFAULT_MODE, default_mode
 from assistant.accounts.service import active_consent
+from assistant.actions import lifecycle
+from assistant.actions.states import StateReason
 from assistant.conversations.events import (
     Direction,
     ObservedDeletion,
@@ -623,6 +625,17 @@ async def record_ingest_failure(
     )
     if conversation.autonomy_paused_reason is None:
         conversation.autonomy_paused_reason = PAUSE_INGEST_ERROR
+    # The failed update may hold a takeover or a newer contact message this
+    # chat's pending actions never saw (§6.2): outdate them, approved ones
+    # included, under the conversation lock just taken (S04.4 §3.8).
+    await lifecycle.outdate_pending(
+        session,
+        account_id=account_id,
+        conversation_id=conversation.id,
+        reason=StateReason.INGEST_ERROR,
+        include_approved=True,
+        now=clock.now(),
+    )
     existing = await session.execute(
         select(CoverageGap.id).where(CoverageGap.inbound_update_id == inbound_update_id)
     )
