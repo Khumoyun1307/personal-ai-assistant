@@ -232,8 +232,10 @@ def test_release_flags_still_hide_blocked_stubs() -> None:
     assert contact_run == {}
 
 
-def test_owner_request_v7_is_active_and_v1_to_v6_remain() -> None:
-    assert prompt_registry.ACTIVE["owner_request"] == "v7"
+def test_owner_request_v1_to_v7_remain() -> None:
+    """v7 was active through M03 (S03.7); it and every older version stay,
+    since retained runs reference them. The active version is pinned by the
+    test of the latest bump below."""
     for version in ("v1", "v2", "v3", "v4", "v5", "v6", "v7"):
         assert prompt_registry.load("owner_request", version).text
     v6 = prompt_registry.load("owner_request", "v6").text
@@ -276,6 +278,29 @@ def test_owner_request_v7_is_v6_plus_the_search_and_language_rules() -> None:
     rule16 = _rule(v7, 16)
     assert "whole reply" in rule16
     assert "script" in rule16
+
+
+def test_owner_request_m05_version_is_active_and_older_versions_remain() -> None:
+    """S05.4 §3.9 (P2-T17): the M05 bump is v7 word for word plus the
+    monitor, contact-priority and attention-v2 rules; v1-v7 stay."""
+    assert prompt_registry.ACTIVE["owner_request"] == "v8"
+    for version in ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"):
+        assert prompt_registry.load("owner_request", version).text
+    v7 = prompt_registry.load("owner_request", "v7").text
+    v8 = prompt_registry.load("owner_request", "v8").text
+    assert v8.startswith(v7 + "\n18. ")
+    monitors, priority, attention = _rule(v8, 18), _rule(v8, 19), _rule(v8, 20)
+    assert "`resolve_contact` before `create_monitor`" in monitors
+    assert "`contact_replied`" in monitors
+    assert "`keywords`" in monitors
+    assert "only when the condition is about meaning" in monitors
+    assert "never say it is active or watching until a tool result says `active`" in monitors
+    assert "Relay `list_monitors` as given" in monitors
+    assert "`set_contact_priority`" in priority
+    assert "Relay the triage `reasons` as given" in attention
+    assert "never say a task is done, answered or closed unless a tool result shows it" in (
+        attention
+    )
 
 
 def test_duplicate_names_are_refused() -> None:
