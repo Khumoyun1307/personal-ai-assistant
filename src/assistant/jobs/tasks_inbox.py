@@ -10,8 +10,11 @@ from assistant.core.jobs import NOTIFY_TASK
 from assistant.inbox.notifications import NotificationDelivery
 from assistant.jobs.app import QUEUE_OUTBOUND
 
-#: Transient database errors only. A retry after the send is harmless: the
-#: row was claimed (`uncertain`) before it, so a re-run finds nothing queued.
+#: Database errors, as `OWNER_REQUEST_RETRY`: `DBAPIError` also covers
+#: integrity and data errors, not only transient ones, which is harmless — a
+#: re-run reloads the row and decides again, at most three times. Never a
+#: resend: the row is claimed (`uncertain`) before the send, so a re-run after
+#: it finds nothing queued. Telegram errors are not exceptions here.
 NOTIFY_DELIVER_RETRY = RetryStrategy(
     max_attempts=3, exponential_wait=2, retry_exceptions={OperationalError, DBAPIError}
 )
