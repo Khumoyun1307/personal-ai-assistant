@@ -47,6 +47,7 @@ of /settings stays English.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -56,7 +57,7 @@ from assistant.accounts.models import Account, PendingInput
 from assistant.agent import owner_texts
 from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.agent.tools.modes import mode_change_text
-from assistant.conversations import modes, visibility
+from assistant.conversations import modes, priority, visibility
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
 from assistant.core.jobs import JobScheduler
@@ -93,6 +94,8 @@ RETENTION_CONFIRM_CARD = "keep_ok"
 DELETE_ALL_CARD = "del_all"
 #: C4: /settings → Language…
 LANGUAGE_CARD = "set_lang"
+#: S05.2P: /settings → Alerts & digest…
+ALERTS_CARD = "set_alerts"
 #: The card kinds this module answers.
 KINDS = frozenset(
     {
@@ -106,10 +109,19 @@ KINDS = frozenset(
         RETENTION_CONFIRM_CARD,
         DELETE_ALL_CARD,
         LANGUAGE_CARD,
+        ALERTS_CARD,
         ONBOARDING_LANGUAGE_CARD,
         ONBOARDING_TIMEZONE_CARD,
     }
 )
+
+#: S05.2P: the panel's contact-priority row, as `op → (label, priority)`
+#: (FR-TRI-04; the values are `conversations/priority.PRIORITIES`).
+PRIORITY_OPS = {
+    "p_vip": ("VIP", "vip"),
+    "p_normal": ("Normal", "normal"),
+    "p_low": ("Low", "low"),
+}
 
 #: Chats per /settings list page.
 PAGE_SIZE = 8
@@ -268,17 +280,26 @@ def _after_press(
 
 # ------------------------------------------------------------ the conversation panel
 def panel_rows(panel: ConversationPanel) -> Rows | None:
-    """Observe / Ignore, the current one ticked. None for a bot chat: it stays
-    ignored (FR-OBS-04). Assist arrives with drafts (M04)."""
+    """Observe / Ignore, the current one ticked, then the contact's priority
+    (S05.2P), also ticked. None for a bot chat: it stays ignored (FR-OBS-04).
+    Assist arrives with drafts (M04)."""
     if panel.is_bot:
         return None
-    return [
+    rows: Rows = [
         [
             (MODE_LABELS[mode] + (" ✓" if panel.mode == mode else ""), mode)
             for mode in modes.SETTABLE_MODES
         ],
         [("Delete stored data…", OP_DELETE)],
     ]
+    if panel.contact_id is not None:  # nothing to set a priority on otherwise
+        rows.append(
+            [
+                (_ticked(label, panel.contact_priority == value), op)
+                for op, (label, value) in PRIORITY_OPS.items()
+            ]
+        )
+    return rows
 
 
 OP_DELETE = "delete"
@@ -386,9 +407,32 @@ async def _press_panel(
 ) -> HandlerResult:
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     panel = await _load_panel(session, clock, account, conversation_id)
-    if panel is None or press.op not in (*modes.SETTABLE_MODES, OP_DELETE):
+    if panel is None or press.op not in (*modes.SETTABLE_MODES, OP_DELETE, *PRIORITY_OPS):
         _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
         return HandlerResult(False, "card", None, note="no_longer_active")
+    if press.op in PRIORITY_OPS:
+        if panel.is_bot or panel.contact_id is None:  # no buttons were offered
+            _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+            return HandlerResult(False, "card", None, note="no_priority")
+        try:
+            saved = await priority.set_priority(
+                session,
+                account_id=account.id,
+                contact_id=panel.contact_id,
+                priority=PRIORITY_OPS[press.op][1],
+                actor="owner",
+                clock=clock,
+            )
+        except LookupError:  # `NotInAccountError`: not this account's contact
+            _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+            return HandlerResult(False, "card", None, note="no_longer_active")
+        panel = await _load_panel(session, clock, account, conversation_id)
+        if panel is None:
+            _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+            return HandlerResult(False, "card", None, note="no_longer_active")
+        screen = await panel_screen(session, clock, account, panel)
+        _after_press(session, gateway, press, target, answer="Saved", edit=screen)
+        return HandlerResult(True, "card", None, note="priority" if saved.changed else "unchanged")
     if press.op == OP_DELETE:
         if panel.is_bot:  # a bot chat is purged already and has no buttons
             _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
@@ -603,6 +647,7 @@ async def settings_screen(session: AsyncSession, clock: Clock, account: Account)
             (f"Ignored chats ({counts.get('ignore', 0)})", "lignore"),
         ],
         [("Language…", OP_LANGUAGE), ("Replies…", "replies"), ("Retention…", "retention")],
+        [("Alerts & digest…", "alerts")],
         [("Delete everything…", "delall")],
     ]
     return await _screen(session, clock, account.id, SETTINGS_CARD, text, rows)
@@ -798,6 +843,95 @@ async def _press_reply(
     screen = await reply_screen(session, clock, account)
     _after_press(session, gateway, press, target, answer="Saved", edit=screen)
     return HandlerResult(True, "card", None, note="reply" if change.audit_id else "unchanged")
+
+
+# ------------------------------------------------------------ alerts and digest (S05.2P)
+#: `(label, op, stored value)` per button of the alerts screen. The values
+#: are what `accounts/preferences.py` stores and validates (F0-interfaces §10:
+#: quiet hours as "HH:MM-HH:MM" or "off", the digest as "HH:MM" or "off");
+#: ops stay short, the whole callback data is at most 64 bytes.
+AlertChoice = tuple[str, str, str | int | bool]
+QUIET_CHOICES: tuple[AlertChoice, ...] = (
+    ("Off", "q_off", "off"),
+    ("22–07", "q_2207", "22:00-07:00"),  # noqa: RUF001 (en dash: a range)
+    ("23–08", "q_2308", "23:00-08:00"),  # noqa: RUF001
+    ("00–08", "q_0008", "00:00-08:00"),  # noqa: RUF001
+)
+BYPASS_CHOICES: tuple[AlertChoice, ...] = (
+    ("Bypass on", "b_on", True),
+    ("Bypass off", "b_off", False),
+)
+DIGEST_CHOICES: tuple[AlertChoice, ...] = (
+    ("Off", "d_off", "off"),
+    ("08:00", "d_0800", "08:00"),
+    ("12:00", "d_1200", "12:00"),
+    ("18:00", "d_1800", "18:00"),
+    ("21:00", "d_2100", "21:00"),
+)
+CAP_CHOICES: tuple[AlertChoice, ...] = (
+    ("3/h", "c_3", 3),
+    ("6/h", "c_6", 6),
+    ("10/h", "c_10", 10),
+    ("20/h", "c_20", 20),
+)
+#: The preference each row sets (its `preferences.update` keyword).
+ALERT_ROWS: tuple[tuple[str, tuple[AlertChoice, ...]], ...] = (
+    ("quiet_hours", QUIET_CHOICES),
+    ("urgent_bypass", BYPASS_CHOICES),
+    ("digest_time", DIGEST_CHOICES),
+    ("alert_cap_per_hour", CAP_CHOICES),
+)
+#: A button's op → the one `preferences.update` change it makes.
+ALERT_OPS: dict[str, dict[str, Any]] = {
+    op: {field: value} for field, choices in ALERT_ROWS for _, op, value in choices
+}
+
+
+async def alerts_screen(session: AsyncSession, clock: Clock, account: Account) -> Screen:
+    """/settings → Alerts & digest…: quiet hours, urgent bypass, the digest
+    time and the hourly cap, each current value ticked. Only stored settings
+    are shown; the digest itself follows the stored time (S05.3b)."""
+    now = preferences.current(account)
+    quiet = now["quiet_hours"]
+    held = ""
+    if quiet != "off":  # with no quiet hours nothing waits
+        held = ' (urgent alerts wait too, unless "Urgent bypass" is on)'
+    text = (
+        "<b>Alerts & digest</b>\n\n"  # the gateway's `sanitize` escapes the &
+        f"Quiet hours: {escape(str(quiet))}{held}\n"
+        f"Urgent bypass: {'on' if now['urgent_bypass'] else 'off'}\n"
+        f"Daily digest: {escape(str(now['digest_time']))}\n"
+        f"Most alerts per hour: {now['alert_cap_per_hour']}\n"
+        f"Times are in your timezone ({escape(account.timezone)})."
+    )
+    rows: Rows = [
+        [(_ticked(label, value == now[field]), op) for label, op, value in choices]
+        for field, choices in ALERT_ROWS
+    ]
+    rows.append([("◀ Back", OP_BACK)])
+    return await _screen(session, clock, account.id, ALERTS_CARD, text, rows)
+
+
+async def _press_alerts(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    press: CardPress,
+) -> HandlerResult:
+    target = ControlChat(account_id=account.id, chat_id=press.chat_id)
+    if press.op == OP_BACK:
+        screen = await settings_screen(session, clock, account)
+        _after_press(session, gateway, press, target, answer="Settings", edit=screen)
+        return HandlerResult(True, "card", None, note="back")
+    change = ALERT_OPS.get(press.op)
+    if change is None:
+        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        return HandlerResult(False, "card", None, note="unknown_op")
+    saved = await preferences.update(session, account, **change, actor="owner", clock=clock)
+    screen = await alerts_screen(session, clock, account)
+    _after_press(session, gateway, press, target, answer="Saved", edit=screen)
+    return HandlerResult(True, "card", None, note="alerts" if saved.audit_id else "unchanged")
 
 
 # ------------------------------------------------------------ retention (S03.5)
@@ -1044,6 +1178,7 @@ async def _press_settings(
         OP_LANGUAGE: language_screen,
         "replies": reply_screen,
         "retention": retention_screen,
+        "alerts": alerts_screen,
         "delall": delete_all_screen,
     }
     if op in screens:
@@ -1127,6 +1262,8 @@ async def handle_press(
         return await _press_delete_all(session, gateway, clock, account, press, scheduler, card.id)
     if card.kind == LANGUAGE_CARD:
         return await _press_language(session, gateway, clock, account, press)
+    if card.kind == ALERTS_CARD:
+        return await _press_alerts(session, gateway, clock, account, press)
     if card.kind == ONBOARDING_LANGUAGE_CARD:
         return await _press_onboarding_language(session, gateway, clock, account, press)
     if card.kind == ONBOARDING_TIMEZONE_CARD:
