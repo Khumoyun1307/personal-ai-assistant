@@ -30,6 +30,10 @@
 
 ## B. Traceability: requirements → units → tests → manual checks
 
+QA-S4's scenario implementations and gate limitations are tracked in
+[m04-scenarios.md](m04-scenarios.md). A scenario marked strict xfail is still
+pending acceptance; its existence does not make the corresponding RG row pass.
+
 | Requirement | Unit(s) | Automated tests | Manual / live check |
 |---|---|---|---|
 | FR-DRF-01 Draft on owner request | S04.2, S04.3 | `test_m04_j4_draft_approve.py::test_j4_draft_edit_approve_sends_exactly_the_approved_text` | M04 checklist 1.1 |
