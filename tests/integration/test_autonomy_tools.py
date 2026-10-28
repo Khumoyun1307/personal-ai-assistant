@@ -151,14 +151,20 @@ async def test_a_confirmed_resume_card_resumes(env: Env) -> None:
 
 async def test_autonomy_tools_are_hidden_while_their_flags_are_off() -> None:
     registry = default_registry()
-    for flags, expected in ((ALL_FLAGS, set()), (FLAGS, {"pause_autonomy", "resume_autonomy"})):
+    both = {"pause_autonomy", "resume_autonomy"}
+    cases = (
+        (ALL_FLAGS - AUTONOMY_FLAGS, set()),
+        (ALL_FLAGS - {"tool.resume_autonomy"}, {"pause_autonomy"}),
+        (FLAGS, both),
+    )
+    for flags, expected in cases:
         offered = registry.for_run(
             "owner_request",
             tier=CapabilityTier.CONTROL_ONLY,
             enabled_flags=flags,
             managed_consent=True,
         )
-        assert {"pause_autonomy", "resume_autonomy"} & set(offered) == expected
+        assert both & set(offered) == expected
 
 
 async def test_pause_autonomy_is_idempotent_on_its_call_id(env: Env) -> None:

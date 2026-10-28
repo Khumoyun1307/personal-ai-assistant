@@ -52,7 +52,9 @@ READ_FLAGS = frozenset(
     }
 )
 NOTE_FLAG = "tool.test_set_note"
-ALL_FLAGS = READ_FLAGS | {NOTE_FLAG}
+#: The S04.4 kill-switch tools (P2-T41): control tools that never read chats.
+AUTONOMY_FLAGS = frozenset({"tool.pause_autonomy", "tool.resume_autonomy"})
+ALL_FLAGS = READ_FLAGS | {NOTE_FLAG} | AUTONOMY_FLAGS
 #: The S03.3 memory, preference and mode tools (not in ALL_FLAGS, so the
 #: S03.1/S03.2 tests keep the tool offer they were written against).
 MEMORY_FLAGS = frozenset(
@@ -95,8 +97,6 @@ PRODUCTION_LINE = (
     "tool.delete_everything,tool.get_activity,tool.pause_autonomy,tool.resume_autonomy"
 )
 PRODUCTION_FLAGS = frozenset(PRODUCTION_LINE.split(","))
-#: The S04.4 kill-switch tools (P2-T41).
-AUTONOMY_FLAGS = frozenset({"tool.pause_autonomy", "tool.resume_autonomy"})
 
 
 class SetNoteArgs(BaseModel):
