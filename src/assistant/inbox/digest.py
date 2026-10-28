@@ -48,6 +48,7 @@ from assistant.automation import schedules
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.channel import Button, ControlChannel, Delivery
 from assistant.core.clock import Clock
+from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.inbox import tasks, triage_store
 from assistant.inbox.models import Digest, Notification
@@ -215,7 +216,7 @@ async def build_digest(
     every statement is scoped to the account (§6 invariant 12, RG-21)."""
     timezone = await session.scalar(select(Account.timezone).where(Account.id == account_id))
     if timezone is None:
-        raise LookupError("account")
+        raise NotInAccountError("account not found")
     # An alert no digest carried is still news up to the longest period, even
     # when the digest before failed (it never linked its alerts).
     batched = await notifications_batched_since(
