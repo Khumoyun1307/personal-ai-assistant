@@ -11,7 +11,6 @@ from tests.scenarios.p2_drive import Scenario, run_queued
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_a_restored_database_with_an_approved_action_sends_nothing(p2: Scenario) -> None:
     approved = await p2.seed(state="approved")
     executing = await p2.seed(state="executing", attempt_id="synthetic-lost-attempt")

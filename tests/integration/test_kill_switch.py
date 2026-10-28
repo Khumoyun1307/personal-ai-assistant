@@ -144,6 +144,44 @@ async def test_the_fast_lane_pauses_on_a_stop_word(env: Env) -> None:
     assert (await owner_account(env)).autonomy_paused
 
 
+async def test_a_replayed_batch_never_reapplies_a_processed_pause(env: Env) -> None:
+    """Antony #2 on #107: Telegram replays a batch the poller stored but had
+    not yet confirmed (a crash before the next `getUpdates`). Its /pause and
+    /resume were already processed; the replay stores nothing and changes
+    nothing — "Resumed." stays true (invariant 11)."""
+    await owner_chat(env)
+    batch = [private_message(OWNER, "/pause"), private_message(OWNER, "/resume")]
+    await poll(env, *batch)
+    await env.processor.process_batch()
+    assert not (await owner_account(env)).autonomy_paused
+    assert env.sender.texts[-1] == RESUMED_TEXT
+
+    replay = await poll(env, *batch)
+
+    assert replay.state.updates_written == 0
+    assert not (await owner_account(env)).autonomy_paused
+
+
+async def test_a_mixed_replay_applies_the_fast_lane_only_to_new_updates(env: Env) -> None:
+    """A replayed /pause beside a new, unrelated update changes nothing
+    (a batch-wide "anything written" test would re-pause); a genuinely new
+    /pause beside replayed ones still pauses at once."""
+    await owner_chat(env)
+    batch = [private_message(OWNER, "/pause"), private_message(OWNER, "/resume")]
+    await poll(env, *batch)
+    await env.processor.process_batch()
+
+    mixed = await poll(env, *batch, private_message(OWNER, "Synthetic note"))
+
+    assert mixed.state.updates_written == 1
+    assert not (await owner_account(env)).autonomy_paused
+
+    fresh = await poll(env, *batch, private_message(OWNER, "/pause"))
+
+    assert fresh.state.updates_written == 1
+    assert (await owner_account(env)).autonomy_paused
+
+
 async def test_the_fast_lane_ignores_forwarded_text_and_non_owners(env: Env) -> None:
     """Forwarded text is someone else's words (§6 invariant 3b); a stranger
     is no owner (invariant 12); a business message is never a command, even

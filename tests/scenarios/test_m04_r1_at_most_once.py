@@ -30,7 +30,6 @@ async def test_a_double_tap_on_approve_sends_once(p2: Scenario, one_batch: bool)
     assert (await p2.events(row.id)).count("action_approved") == 1
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_a_restart_between_claim_and_send_is_uncertain_and_never_resent(p2: Scenario) -> None:
     row = await p2.seed(state="approved")
 
@@ -54,7 +53,6 @@ async def test_a_restart_between_claim_and_send_is_uncertain_and_never_resent(p2
     assert "not resend" in p2.control_text().lower()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_a_network_timeout_on_send_is_uncertain_not_retried(p2: Scenario) -> None:
     row = await p2.seed(state="approved")
     p2.env.sender.fail_with = network_error()
@@ -67,7 +65,6 @@ async def test_a_network_timeout_on_send_is_uncertain_not_retried(p2: Scenario) 
     assert (await p2.action(row.id)).retry_at is None
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_a_rate_limited_send_is_retried_after_retry_after_and_sent_once(p2: Scenario) -> None:
     row = await p2.seed(state="approved")
     p2.env.sender.fail_with = telegram_error("Too Many Requests", status_code=429, retry_after=120)
@@ -90,7 +87,6 @@ async def test_a_rate_limited_send_is_retried_after_retry_after_and_sent_once(p2
     assert events.count("action_rate_limited") == events.count("action_succeeded") == 1
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_a_late_result_after_mark_uncertain_settles_to_succeeded(p2: Scenario) -> None:
     row = await p2.seed(state="approved")
     entered = False

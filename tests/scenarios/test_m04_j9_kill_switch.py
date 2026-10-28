@@ -18,7 +18,6 @@ async def paused(p2: Scenario) -> bool:
         )
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_pause_blocks_an_autonomous_action_at_claim(p2: Scenario) -> None:
     row = await p2.seed(state="approved", origin="delegation_auto")
     await deliver(p2.env, private_message(OWNER, "/pause"))
@@ -39,7 +38,6 @@ async def test_a_stop_word_pauses_before_any_model_call(p2: Scenario) -> None:
 
 
 @pytest.mark.parametrize("tainted", [False, True])
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_a_model_resume_call_never_resumes(p2: Scenario, tainted: bool) -> None:
     await deliver(p2.env, private_message(OWNER, "/pause"))
     await p2.owner("resume_autonomy", forwarded=tainted)
@@ -59,7 +57,6 @@ async def test_a_model_resume_call_never_resumes(p2: Scenario, tainted: bool) ->
     assert p2.business_sends() == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_pause_does_not_block_an_owner_approved_send(p2: Scenario) -> None:
     await deliver(p2.env, private_message(OWNER, "/pause"))
     row = await p2.seed(state="approved", origin="owner_dictated", base_message_id=None)

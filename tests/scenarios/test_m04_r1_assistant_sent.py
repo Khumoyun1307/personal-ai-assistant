@@ -23,7 +23,6 @@ async def sent_rows(p2: Scenario) -> list[Message]:
         )
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_each_send_is_recorded_once_as_assistant_sent(p2: Scenario) -> None:
     row = await p2.seed(state="approved")
     await p2.execute(row.id)
@@ -35,7 +34,6 @@ async def test_each_send_is_recorded_once_as_assistant_sent(p2: Scenario) -> Non
     assert len(p2.business_sends()) == 1
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_an_echo_processed_first_merges_into_the_sent_record(p2: Scenario) -> None:
     row = await p2.seed(state="approved")
     echoed = False
@@ -70,7 +68,6 @@ async def test_an_echo_processed_first_merges_into_the_sent_record(p2: Scenario)
     assert len(p2.business_sends()) == 1
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_two_zero_id_sends_in_one_chat_both_succeed(p2: Scenario) -> None:
     # S04.4's plain transport fake consumes these exact ids, including zero.
     p2.env.sender.plain_script = [0, 0]

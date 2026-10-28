@@ -16,7 +16,12 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[2] / "src" / "assistant"
 
 BUSINESS_METHODS = frozenset(
-    {"send_business_text", "edit_assistant_message", "delete_own_business_messages"}
+    {
+        "send_business_text",
+        "send_business_text_with_connection",
+        "edit_assistant_message",
+        "delete_own_business_messages",
+    }
 )
 PLAIN_SENDER_METHODS = frozenset(
     {"send_plain_message", "edit_plain_message_text", "delete_business_messages"}
@@ -44,7 +49,10 @@ def test_only_the_executor_calls_business_sends() -> None:
     outside = {path: calls for path, calls in found.items() if path != "actions/executor.py"}
     assert outside == {}, f"business sends outside the executor: {outside}"
     # Not vacuous: the executor is where the one send happens.
-    assert any("send_business_text" in call for call in found.get("actions/executor.py", []))
+    assert any(
+        ".send_business_text_with_connection()" in call
+        for call in found.get("actions/executor.py", [])
+    )
 
 
 def test_only_the_gateway_calls_the_plain_sender_methods() -> None:

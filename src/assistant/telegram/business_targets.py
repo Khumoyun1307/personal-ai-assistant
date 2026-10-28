@@ -3,9 +3,11 @@
 The connection id is mutable (TF §12 LV-05): a reconnect issues a new one, so
 the gateway never trusts an id captured earlier. Every business call asks
 here, in a short read-only session, for the account's **current** connection
-and the conversation's chat. Anything missing, inactive, disabled, another
-account's or a bot chat resolves to `None`, and the gateway then refuses
-without calling Telegram (AGENTS §6 invariant 7: fail closed).
+and the conversation's chat. Anything missing, inactive, disabled, without
+the right the call needs, another account's or a bot chat resolves to
+`None`, and the gateway then refuses without calling Telegram (AGENTS §6
+invariant 7: fail closed). The right is re-checked here because the
+current connection may be a replacement whose rights Tx A never saw.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from assistant.accounts.connections import RIGHT_REPLY
 from assistant.accounts.models import BusinessConnection
 from assistant.conversations.models import Contact, Conversation, Message
 
@@ -34,14 +37,22 @@ class BusinessTargetResolver:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def resolve(self, account_id: int, conversation_id: int) -> BusinessTarget | None:
+    async def resolve(
+        self, account_id: int, conversation_id: int, *, needs_reply_right: bool = True
+    ) -> BusinessTarget | None:
         """The account's active, enabled connection and this conversation's
         chat — a business conversation of the same account with a human
-        contact. None for anything else."""
+        contact — and, for a send or an edit (`needs_reply_right`), the
+        connection holds `can_reply` (Bot API: "send and edit messages").
+        None for anything else."""
         async with self._session_factory() as session:
             row = (
                 await session.execute(
-                    select(BusinessConnection.connection_id, Conversation.business_chat_id)
+                    select(
+                        BusinessConnection.connection_id,
+                        Conversation.business_chat_id,
+                        BusinessConnection.rights,
+                    )
                     .join(Contact, Contact.id == Conversation.contact_id)
                     .join(
                         BusinessConnection,
@@ -59,6 +70,8 @@ class BusinessTargetResolver:
                 )
             ).one_or_none()
         if row is None:
+            return None
+        if needs_reply_right and RIGHT_REPLY not in (row[2] or ()):
             return None
         return BusinessTarget(connection_id=str(row[0]), chat_id=int(row[1]))
 

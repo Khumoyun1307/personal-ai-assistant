@@ -276,7 +276,10 @@ def _wire_m04(
     )
     if roles & {"worker", "system"}:
         # S04.4: verified execution, the uncertain-attempt sweep and the
-        # lost-job reconciler. The only business send path (§9.4).
+        # lost-job reconciler. The only business send path (§9.4). The
+        # executor's gateway resolves business targets at call time; a
+        # process without these roles never sends as the owner.
+        gateway.attach_business_targets(BusinessTargetResolver(session_factory))
         wiring.actions = replace(
             wiring.actions or ActionsJobHandlers(),
             executor=ActionExecutor(
@@ -414,9 +417,7 @@ async def running_process(
         token=settings.bot_token.get_secret_value(),
         session=AiohttpSession(timeout=REQUEST_TIMEOUT_SECONDS),
     )
-    gateway = OutboundGateway(
-        AiogramSender(bot), clock, targets=BusinessTargetResolver(session_factory)
-    )
+    gateway = OutboundGateway(AiogramSender(bot), clock)
     channel = GatewayControlChannel(gateway)
     jobs_app = build_app(database_url)
     scheduler = ProcrastinateScheduler(jobs_app)
