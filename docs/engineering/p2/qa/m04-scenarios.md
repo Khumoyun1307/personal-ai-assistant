@@ -8,7 +8,7 @@ This records automated scenario evidence; it is not CP3 acceptance or a live-tes
 
 All 38 named scenarios in test-plan §4 have implementations. Double-tap
 batching and tainted/untainted resume requests each add a parameter case.
-Three additional checks verify the driver independently of missing features.
+Five additional checks verify the driver independently of missing features.
 
 | File under `tests/scenarios/` | Coverage |
 |---|---|

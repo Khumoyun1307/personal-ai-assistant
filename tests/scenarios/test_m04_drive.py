@@ -35,12 +35,15 @@ async def test_final_card_buttons_cannot_be_satisfied_by_the_initial_transcript(
     p2: Scenario,
 ) -> None:
     row = await p2.seed(card_message_id=789)
+    # Seed may present an initial card once S04.3 is wired. Only edits after
+    # this checkpoint can count as the transition's final card.
+    p2.env.sender.edits.clear()
     p2.env.sender.sends.append({"business_connection_id": None, "text": row.text})
     with pytest.raises(AssertionError, match="update the displayed"):
         p2.assert_copy_ready(row)
     p2.env.sender.edits.append(
         {
-            "message_id": 789,
+            "message_id": row.card_message_id,
             "text": "expired",
             "reply_markup": {
                 "inline_keyboard": [[{"text": "Copy", "copy_text": {"text": row.text}}]]
