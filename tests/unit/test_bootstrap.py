@@ -104,8 +104,8 @@ def test_m05_wires_notification_delivery_its_reconciler_and_the_alert_cards(
     [
         ("", True, False, False),
         ("triage.run", True, True, True),
-        # Without a model client (no worker role) the job is not registered;
-        # the listener still flags and defers, the worker runs it.
+        # Without a model client (no worker or system role) the job is not
+        # registered in this process; the listener and reconciler still are.
         ("triage.run", False, True, False),
     ],
 )
