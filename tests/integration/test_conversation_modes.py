@@ -24,25 +24,42 @@ Synthetic text only.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from datetime import timedelta
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select, text
 
-from assistant.accounts.models import AuditLogEntry, PendingInput
+from assistant.accounts import preferences
+from assistant.accounts.models import Account, AuditLogEntry, PendingInput
+from assistant.actions.models import Action
 from assistant.agent import owner_texts
 from assistant.agent.locales import SupportedLocale
+from assistant.agent.models import ToolConfirmation
+from assistant.agent.tools.modes import MODE_EFFECT, UpdatePreferencesArgs
 from assistant.conversations import modes
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.db.uow import transaction
+from assistant.llm.port import LLMRequest, ToolResultItem
 from assistant.memory import items
 from assistant.memory.models import ConversationSummary
 from assistant.memory.retrieval import search_messages
 from assistant.privacy.retention import sweep_all
 from assistant.telegram.control import panels
-from tests.integration.agent_env import one_id
+from tests.fakes.channel import FakeChannel
+from tests.fakes.llm import FakeLLM, text_response, tool_response
+from tests.integration.agent_env import (
+    MEMORY_FLAGS,
+    READ_FLAGS,
+    S035_PREFS_UNCHANGED,
+    args,
+    ask,
+    one_id,
+    runtime,
+)
 from tests.integration.business_env import (
     CONTACT,
     OWNER,
@@ -61,6 +78,7 @@ from tests.integration.business_env import (
     queued_refreshes,
     take_job,
 )
+from tests.integration.p2_factories import seed_action
 
 pytestmark = pytest.mark.integration
 
@@ -149,11 +167,13 @@ async def test_the_panel_switches_to_ignore_only_after_a_confirmation(env: Env) 
     assert keyboard_ops(panel_send["reply_markup"]) == [
         "observe",
         "ignore",
+        "assist",  # S04.2
         "delete",
     ]  # S03.5 adds Delete
     assert keyboard_labels(panel_send["reply_markup"]) == [
         "Observe ✓",
         "Ignore",
+        "Assist",
         "Delete stored data…",
     ]
 
@@ -173,6 +193,7 @@ async def test_the_panel_switches_to_ignore_only_after_a_confirmation(env: Env) 
     assert keyboard_labels(panel_again["reply_markup"]) == [
         "Observe",
         "Ignore ✓",
+        "Assist",
         "Delete stored data…",
     ]
 
@@ -649,7 +670,7 @@ async def test_settings_lists_chats_by_mode_page_by_page_and_opens_a_panel(env: 
     await tap(env, panels.LIST_CARD, f"o_{target}")
     panel = env.sender.sends[-1]
     assert panel["text"].startswith("<b>Synth0</b>")
-    assert keyboard_ops(panel["reply_markup"]) == ["observe", "ignore", "delete"]
+    assert keyboard_ops(panel["reply_markup"]) == ["observe", "ignore", "assist", "delete"]
 
 
 async def test_a_list_cannot_open_another_accounts_chat(env: Env) -> None:
@@ -663,3 +684,182 @@ async def test_a_list_cannot_open_another_accounts_chat(env: Env) -> None:
     await tap(env, panels.LIST_CARD, "o_999999999")
     assert len(env.sender.sends) == sends_before
     assert env.sender.answered_callbacks[-1]["text"] == "This button is no longer active."
+
+
+# ------------------------------------------------------------ Assist (S04.2 §3.7, P2-T11)
+async def _assist_chat(env: Env) -> int:
+    await connect(env)
+    await grant_managed(env)
+    await deliver(env, business_message(message_id=1, message_text=FIRST, first_name="Kamola"))
+    return (await conversation_row(env)).id
+
+
+def _results(request: LLMRequest) -> list[dict[str, Any]]:
+    return [json.loads(item.output) for item in request.items if isinstance(item, ToolResultItem)]
+
+
+async def test_assist_is_settable_by_tool_and_panel_and_undoable(env: Env) -> None:
+    conversation = await _assist_chat(env)
+    await open_panel(env)
+    await tap(env, panels.PANEL_CARD, "assist")
+    assert (await conversation_row(env)).mode == "assist"
+    shown = env.sender.edits[-1]
+    assert "<b>Assist is on</b> for the chat with Kamola." in shown["text"]
+    assert "Nothing is sent without your approval." in shown["text"]
+    assert panels.ASSIST_PANEL_LINE in shown["text"]
+    assert keyboard_labels(shown["reply_markup"]) == [
+        "Observe",
+        "Ignore",
+        "Assist ✓",
+        "Delete stored data…",
+    ]
+    assert env.sender.answered_callbacks[-1]["text"] == "Assist is on"
+    await tap(env, panels.PANEL_CARD, "assist")
+    assert "already in Assist" in env.sender.edits[-1]["text"]
+    await tap(env, panels.PANEL_CARD, "observe")
+    assert (await conversation_row(env)).mode == "observe"
+
+    # The tool, with its one-tap Undo.
+    turn = await ask(env, "Turn on drafts for Kamola's chat")
+    fake = FakeLLM(
+        tool_response(
+            (
+                "c1",
+                "set_conversation_mode",
+                args(conversation_id=conversation, contact_id=None, mode="assist"),
+            )
+        ),
+        text_response("Done."),
+    )
+    channel = FakeChannel()
+    await runtime(env, fake, channel, flags=MEMORY_FLAGS).run(turn)
+    [result] = _results(fake.requests[1])
+    assert (result["status"], result["previous_mode"], result["mode"]) == (
+        "ok",
+        "observe",
+        "assist",
+    )
+    assert result["effect"] == MODE_EFFECT["assist"]
+    assert (await conversation_row(env)).mode == "assist"
+    [button] = channel.buttons[0]
+    assert button.label == "Undo"
+    await deliver(env, callback(button.callback_data))
+    assert (await conversation_row(env)).mode == "observe"
+
+
+async def test_rg11_an_injected_result_holds_a_set_mode_assist_call_for_a_tap(env: Env) -> None:
+    conversation = await _assist_chat(env)
+    turn = await ask(env, "What did Kamola say?")
+    fake = FakeLLM(
+        tool_response(
+            (
+                "c1",
+                "get_conversation",
+                args(conversation_id=conversation, contact_id=None, cursor=None, limit=None),
+            )
+        ),
+        tool_response(
+            (
+                "c2",
+                "set_conversation_mode",
+                args(conversation_id=conversation, contact_id=None, mode="assist"),
+            )
+        ),
+        text_response("Asked you."),
+    )
+    await runtime(env, fake, FakeChannel(), flags=READ_FLAGS | MEMORY_FLAGS).run(turn)
+    read, held = _results(fake.requests[2])
+    assert read["status"] == "ok"
+    assert held["status"] == "awaiting_confirmation"
+    assert (await conversation_row(env)).mode == "observe"
+    async with env.factory() as session:
+        [confirmation] = (await session.scalars(select(ToolConfirmation))).all()
+    assert confirmation.tool_name == "set_conversation_mode"
+
+
+async def test_leaving_assist_clears_the_draft_flag(env: Env) -> None:
+    conversation = await _assist_chat(env)
+    account_id = (await conversation_row(env)).account_id
+    for leave_to in ("observe", "ignore"):
+        async with transaction(env.factory) as uow:
+            await modes.set_mode(
+                uow.session,
+                account_id=account_id,
+                conversation_id=conversation,
+                mode="assist",
+                actor="owner",
+                clock=env.clock,
+            )
+            row = await uow.session.get(Conversation, conversation)
+            assert row is not None
+            row.pending_draft_at = env.clock.now()
+        async with transaction(env.factory) as uow:
+            await modes.set_mode(
+                uow.session,
+                account_id=account_id,
+                conversation_id=conversation,
+                mode=leave_to,
+                actor="owner",
+                clock=env.clock,
+            )
+        assert (await conversation_row(env)).pending_draft_at is None
+
+
+async def test_switching_to_ignore_cancels_pending_actions(env: Env) -> None:
+    conversation = await _assist_chat(env)
+    account_id = (await conversation_row(env)).account_id
+    states = ("awaiting_approval", "approved", "executing", "succeeded", "delivery_uncertain")
+    async with env.factory() as session, session.begin():
+        ids = [
+            (
+                await seed_action(
+                    session,
+                    account_id=account_id,
+                    conversation_id=conversation,
+                    state=state,
+                    version=1,
+                    approval_token="synthtoken" if state == "awaiting_approval" else None,
+                )
+            ).id
+            for state in states
+        ]
+    await open_panel(env)
+    await tap(env, panels.PANEL_CARD, "ignore")
+    await tap(env, panels.IGNORE_CARD, "confirm")
+    async with env.factory() as session:
+        rows = {r.id: r for r in await session.scalars(select(Action).where(Action.id.in_(ids)))}
+        cancelled = (
+            await session.scalars(
+                select(AuditLogEntry.subject_id).where(AuditLogEntry.event == "action_cancelled")
+            )
+        ).all()
+    assert [(rows[i].state, rows[i].state_reason) for i in ids] == [
+        ("cancelled", "ignore_mode"),
+        ("cancelled", "ignore_mode"),
+        ("executing", None),
+        ("succeeded", None),
+        ("delivery_uncertain", None),
+    ]
+    assert rows[ids[0]].approval_token is None
+    assert sorted(cancelled) == sorted(ids[:2])
+
+
+async def test_the_default_mode_for_new_chats_cannot_be_assist(env: Env) -> None:
+    await connect(env)
+    await deliver(env, private_message(OWNER, "/settings"))
+    ops = keyboard_ops(env.sender.sends[-1]["reply_markup"])
+    assert {"dobserve", "dignore"} <= set(ops)
+    assert "dassist" not in ops
+    await tap(env, panels.SETTINGS_CARD, "dassist")  # a forged op
+    assert env.sender.answered_callbacks[-1]["text"] == "This button is no longer active."
+    async with env.factory() as session:
+        account = (await session.execute(select(Account))).scalar_one()
+    assert preferences.default_mode(account) == "observe"
+    with pytest.raises(preferences.PreferenceError):
+        preferences.check_default_mode("assist")
+    with pytest.raises(ValidationError):
+        UpdatePreferencesArgs.model_validate(
+            {"preferred_language": None, "timezone": None, "default_mode": "assist"}
+            | S035_PREFS_UNCHANGED
+        )
+    assert preferences.SETTABLE_DEFAULT_MODES == ("observe", "ignore")

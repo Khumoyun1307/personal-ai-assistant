@@ -13,7 +13,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
-from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from aiogram import Bot
@@ -24,8 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from assistant.actions.config import ActionsConfig
 from assistant.actions.drafts import assist_trigger
 from assistant.actions.executor import ActionExecutor, uncertain_after
+from assistant.actions.ingestion import ActionsIngestionListener
 from assistant.actions.ports import ApprovalCardPresenter
 from assistant.agent.confirmations import ConfirmationApplier
+from assistant.agent.drafting import AssistDraftJob, DraftConfig, Drafter
 from assistant.agent.persistence import DbCallRecorder, DbConsentReader
 from assistant.agent.ports import ControlChannel
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime
@@ -42,7 +43,7 @@ from assistant.inbox.notify import OwnerAlerts
 from assistant.inbox.processor import InboxProcessor
 from assistant.jobs.app import QUEUE_SYSTEM, QUEUES, build_app, run_queue_worker
 from assistant.jobs.reconcile import Reconciler
-from assistant.jobs.reconcile_actions import unqueued_executions
+from assistant.jobs.reconcile_actions import UnqueuedDrafts, unqueued_executions
 from assistant.jobs.scheduler import ProcrastinateScheduler
 from assistant.jobs.tasks import JobHandlers, register_tasks
 from assistant.jobs.tasks_actions import ActionsJobHandlers
@@ -74,9 +75,6 @@ from assistant.telegram.ingress.aiogram_source import AiogramUpdateSource
 from assistant.telegram.ingress.poller import Poller
 from assistant.telegram.ingress.writer import write_state
 from assistant.telegram.routing import route_update
-
-if TYPE_CHECKING:
-    from assistant.agent.drafting import Drafter  # type: ignore[import-untyped, unused-ignore]
 
 #: SDK-level retries for connection errors, 429 and 5xx. Safe for a model call
 #: (it changes nothing in the world); never applied to Telegram sends.
@@ -276,6 +274,67 @@ def _wire_m04(
             ),
         )
         wiring.reconcilers.append(unqueued_executions)
+    _wire_s042_drafting(
+        wiring,
+        settings=settings,
+        session_factory=session_factory,
+        channel=channel,
+        clock=clock,
+        scheduler=scheduler,
+        llm=llm,
+    )
+
+
+def draft_config(settings: Settings) -> DraftConfig:
+    return DraftConfig(
+        model=settings.model_routes.model_for("draft_reply"),
+        effort=settings.llm_draft_reply_effort,
+        monthly_budget_usd=settings.llm_monthly_budget_usd,
+    )
+
+
+def _wire_s042_drafting(
+    wiring: _PhaseWiring,
+    *,
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    channel: ControlChannel,
+    clock: Clock,
+    scheduler: ProcrastinateScheduler,
+    llm: LLMClient | None,
+) -> None:
+    """S04.2: the actions listener (first in order, F0-interfaces §5), and —
+    where a role can call the model — the `Drafter` for `propose_reply`, the
+    `replies.draft` job and its reconciler. `wiring.approval_cards` is S04.3's
+    presenter (None until it lands: cards are then shown by its sync job)."""
+    config = wiring.actions_config
+    assert config is not None  # built above
+    wiring.listeners.insert(
+        0,
+        ActionsIngestionListener(
+            config=config, scheduler=scheduler, clock=clock, presenter=wiring.approval_cards
+        ),
+    )
+    if llm is None:
+        return
+    drafter = Drafter(
+        session_factory=session_factory, llm=llm, clock=clock, config=draft_config(settings)
+    )
+    wiring.drafter = drafter
+    wiring.actions = replace(
+        wiring.actions or ActionsJobHandlers(),
+        assist_drafts=AssistDraftJob(
+            session_factory=session_factory,
+            drafter=drafter,
+            scheduler=scheduler,
+            clock=clock,
+            config=config,
+            presenter=wiring.approval_cards,
+            alerts=OwnerAlerts(session_factory, channel, clock),
+            monthly_budget_usd=settings.llm_monthly_budget_usd,
+        ),
+    )
+    wiring.reconcilers.append(UnqueuedDrafts(config, drafter.config.model))
 
 
 def _wire_m05(

@@ -31,7 +31,6 @@ async def test_a_new_contact_message_outdates_a_pending_draft(p2: Scenario) -> N
     assert any(str(b.get("callback_data", "")).endswith(":rd") for b in p2.card_buttons(changed))
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2")
 async def test_an_owner_manual_reply_outdates_a_pending_draft(p2: Scenario) -> None:
     row = await p2.seed()
     await deliver(
@@ -42,7 +41,6 @@ async def test_an_owner_manual_reply_outdates_a_pending_draft(p2: Scenario) -> N
     assert p2.business_sends() == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2")
 async def test_deleting_the_source_message_outdates_the_draft(p2: Scenario) -> None:
     row = await p2.seed()
     await deliver(p2.env, deleted_messages(message_ids=[101]))
@@ -51,7 +49,6 @@ async def test_deleting_the_source_message_outdates_the_draft(p2: Scenario) -> N
     assert p2.business_sends() == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2/S04.3")
 async def test_editing_the_source_message_outdates_the_draft(p2: Scenario) -> None:
     row = await p2.seed()
     await deliver(
@@ -68,7 +65,6 @@ async def test_editing_the_source_message_outdates_the_draft(p2: Scenario) -> No
     assert "no longer" in str(p2.env.sender.answered_callbacks).lower()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2")
 async def test_switching_to_ignore_cancels_a_pending_draft(p2: Scenario) -> None:
     row = await p2.seed()
     async with transaction(p2.env.factory) as uow:

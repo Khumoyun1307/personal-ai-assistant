@@ -21,7 +21,6 @@ async def test_an_owner_message_dated_after_the_base_but_ingested_late_blocks_th
     assert p2.business_sends() == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2")
 async def test_takeover_outdates_the_card_and_audits_without_messaging_the_contact(
     p2: Scenario,
 ) -> None:

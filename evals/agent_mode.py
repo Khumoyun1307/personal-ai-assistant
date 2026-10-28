@@ -152,6 +152,8 @@ PRODUCTION_FLAGS = frozenset(
         "tool.delete_contact_data",
         "tool.delete_everything",
         "tool.get_activity",
+        "tool.propose_reply",
+        "tool.propose_message",
         "tool.pause_autonomy",
         "tool.resume_autonomy",
     }
