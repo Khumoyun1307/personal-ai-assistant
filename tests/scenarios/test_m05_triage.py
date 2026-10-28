@@ -63,7 +63,6 @@ async def test_with_the_triage_trigger_a_burst_still_produces_one_card(m05: M05S
     assert sum(r.purpose == "draft_reply" for r in m05.fake.requests) == 1
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.1")
 async def test_an_urgent_decision_request_alerts_the_owner(m05: M05Scenario) -> None:
     await m05.preferences(quiet_hours="off")
     await m05.message(102, "Synthetic urgent decision needed.")
@@ -74,16 +73,15 @@ async def test_an_urgent_decision_request_alerts_the_owner(m05: M05Scenario) -> 
             requests_decision=True,
             urgency="urgent",
             escalation_category="urgent_decision",
-            reasons=["Synthetic urgent decision."],
+            reasons=["Synthetic decision needed before the deadline."],
         ),
     )
     await run_queued(m05, "notify.deliver")
     [row] = await m05.rows(Notification)
     assert (row.kind, row.priority, row.status) == ("triage_urgent", "urgent", "sent")
-    assert "urgent" in m05.output().lower()
+    assert "urgent" in m05.output_for(row.message_id).lower()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.1")
 async def test_a_repeated_promise_creates_one_task(m05: M05Scenario) -> None:
     first = await m05.message(102, "Synthetic promise: I will send the sample.")
     promise = {
@@ -109,7 +107,6 @@ async def test_a_repeated_promise_creates_one_task(m05: M05Scenario) -> None:
     assert sum(e.event == "task_created" for e in await m05.rows(AuditLogEntry)) == 1
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.1")
 async def test_the_owners_manual_answer_closes_the_open_question(m05: M05Scenario) -> None:
     source = await m05.message(102, "Synthetic question: which sample should I use?")
     await triage(
@@ -141,7 +138,6 @@ async def test_the_owners_manual_answer_closes_the_open_question(m05: M05Scenari
     assert alerts[0].refs["task_ids"] == [task.id]
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.1")
 async def test_triage_runs_have_no_tools_and_see_one_conversation(m05: M05Scenario) -> None:
     m05.require("inbox.triage")
     await m05.message(102, "P2-QA-CONVERSATION-A-CANARY")
@@ -160,7 +156,6 @@ async def test_triage_runs_have_no_tools_and_see_one_conversation(m05: M05Scenar
     assert len(await m05.rows(ConversationTriage)) == 2
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.1")
 async def test_revoked_consent_stops_a_queued_triage_run(m05: M05Scenario) -> None:
     m05.require("inbox.triage")
     await m05.message(102)

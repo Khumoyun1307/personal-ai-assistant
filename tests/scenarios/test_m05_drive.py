@@ -17,6 +17,19 @@ async def test_m05_driver_uses_real_inbox_and_no_external_clients(m05: M05Scenar
     assert m05.settings.openai_api_key is None
 
 
+async def test_m05_driver_rejects_invalid_preferences_without_changing_settings(
+    m05: M05Scenario,
+) -> None:
+    from assistant.accounts.preferences import PreferenceError
+
+    [before] = await m05.rows(Account)
+    with pytest.raises(PreferenceError):
+        await m05.preferences(quiet_hours="invalid", alert_cap_per_hour=2)
+    [after] = await m05.rows(Account)
+    assert after.settings == before.settings
+    assert after.timezone == before.timezone
+
+
 async def test_m05_driver_respects_due_time_and_invokes_real_registration(m05: M05Scenario) -> None:
     from datetime import timedelta
 

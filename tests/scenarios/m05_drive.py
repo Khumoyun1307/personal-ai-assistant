@@ -183,12 +183,12 @@ class M05Scenario:
         return row.id
 
     async def preferences(self, **values: Any) -> None:
+        from assistant.accounts.preferences import update
+
         async with transaction(self.env.factory) as uow:
             account = await uow.session.get(Account, self.account_id)
             assert account is not None
-            if "timezone" in values:
-                account.timezone = values.pop("timezone")
-            account.settings = {**account.settings, **values}
+            await update(uow.session, account, actor="owner", clock=self.env.clock, **values)
 
     async def revoke(self) -> None:
         from tests.integration.business_env import private_message
@@ -201,7 +201,8 @@ class M05Scenario:
         from assistant.automation.models import Automation
         from tests.integration.business_env import live_card
 
-        before = len(await self.rows(Automation))
+        before = {a.id for a in await self.rows(Automation) if a.kind == "monitor"}
+        request_start = len(self.fake.requests)
         await self.owner(
             "create_monitor",
             forwarded=forwarded,
@@ -227,7 +228,7 @@ class M05Scenario:
 
         outputs = [
             json.loads(i.output)
-            for r in self.fake.requests
+            for r in self.fake.requests[request_start:]
             for i in r.items
             if isinstance(i, ToolResultItem)
         ]
@@ -235,7 +236,7 @@ class M05Scenario:
             "monitor tool must produce an owner confirmation"
         )
         card = await live_card(self.env, "tool_confirm")
-        assert len(await self.rows(Automation)) == before
+        assert {a.id for a in await self.rows(Automation) if a.kind == "monitor"} == before
         if not confirm:
             return card
         await deliver(
@@ -243,10 +244,15 @@ class M05Scenario:
             callback(f"tool_confirm:{card.token}:confirm", message_id=card.prompt_message_id),
         )
         assert await run_queued(self, "agent.apply_confirmation") == 1
-        rows = await self.rows(Automation)
-        assert len(rows) == before + 1
-        assert rows[-1].status == "active"
-        return rows[-1]
+        created = [
+            a for a in await self.rows(Automation) if a.kind == "monitor" and a.id not in before
+        ]
+        assert len(created) == 1
+        assert {a.id for a in await self.rows(Automation) if a.kind == "monitor"} == before | {
+            created[0].id
+        }
+        assert created[0].status == "active"
+        return created[0]
 
     async def alert(
         self,

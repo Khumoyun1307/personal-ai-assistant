@@ -1,7 +1,7 @@
 # QA-S5 implementation evidence
 
-Issue #63, branch `qa/m05-scenarios`, based on `int/m05@ca624a8`.
-All 24 names in test-plan §5 are implemented, with two additional driver checks
+Issue #63, branch `qa/m05-scenarios`, based on `int/m05@6fd19f1`.
+All 24 names in test-plan §5 are implemented, with three additional driver checks
 and one late-note assertion regression.
 This is readiness of the test unit; expected failures are pending acceptance.
 
@@ -57,8 +57,9 @@ duplicate alert, ambiguous delivery/reconciliation and feedback. Their complete
 bodies passed; no assertion was weakened. Their markers have been removed.
 The integration-base update preserves the already pushed history.
 
-The unit now expects **9 passing checks / 18 strict expected failures** on this
-base, including the unmarked late-note assertion regression added below.
+At `d13ad8d`, the unit expected **9 passing checks / 18 strict expected failures**
+on the historical `ca624a8` base, including the unmarked late-note assertion
+regression added below.
 The quiet-hour-to-digest case still awaits S05.3b; the system-alert migration
 still awaits CP4. Full verification after marker removal belongs to CI.
 
@@ -90,3 +91,47 @@ produced **2 passed / 2 strict expected failures, 57.98 s**. The expected
 failures still name S05.3b and CP4; this does not claim either feature works.
 Changed-file Ruff and format checks pass. The full suite was not run locally;
 CI remains its gate.
+
+## Consolidated peer/TL fix round and S05.1 activation (2026-10-28)
+
+The current integration base `6fd19f1` is merged without rewriting published
+history. CI [40680110726](https://github.com/Khumoyun1307/personal-ai-assistant/actions/runs/40680110726)
+tested merge `ee2f5db` of `d13ad8d` with this base. Shard 3 reported **1011 passed,
+5 strict XPASS failures, 1 xfailed**, 118.24 s. The five complete triage bodies
+passed: urgent decision alert, repeated promise, owner-answer closure,
+one-conversation/no-tools isolation and queued consent revocation. Exactly
+those five S05.1 markers are removed; every pending feature marker remains.
+
+The urgent reason no longer contains the title word, and its title assertion
+reads only the notification's own returned message id. The preference helper
+uses the production `preferences.update` validator and transaction. An
+unmarked regression checks that invalid quiet hours raise `PreferenceError`
+without changing settings or timezone. Against the original helper it failed
+with `DID NOT RAISE PreferenceError`: **1 failed, 90.17 s**.
+
+The monitor journeys now assert the first reply's cited message id; one
+tool-less call containing all three semantic conditions and one validated
+match; no evaluation job or model call for keyword matching; both keyword
+and semantic monitors before Ignore mode; and no `evaluate_monitor` run after
+consent revocation. Confirmation outputs are scoped to the current owner
+request. Newly created monitors are selected by identity and kind, with the
+pre-existing monitor ids preserved, so a digest automation cannot replace
+the selected monitor. The six reasons now name only S05.4.
+
+An independent read-only source review found no blocker. The monitor feature
+is still absent from this integration base; retained expected failures do
+not validate the new monitor assertions against an implemented S05.4.
+
+Focused local verification of `test_m05_drive.py`, `test_m05_triage.py` and
+`test_m05_j6_monitors.py`: **8 passed / 7 strict expected failures / 0 skipped**,
+183.72 s. The five activated triage scenarios and all three driver checks
+pass. The Assist journey stops at its CP4 guard; all six monitor journeys
+still stop at unavailable S05.4 confirmation. Changed-file Ruff and format
+checks pass. No full local suite was run.
+
+The full M05 set is expected to contain **15 passing checks / 13 strict
+expected failures** after these changes; this is an expectation for CI,
+not a full local result. Jack/Viro must recheck the author changes, and the
+TL must verify CI against the current integration base before merging.
+No live checks, model calls, server actions or eval spend were performed.
+Only synthetic data in Compose project `antony-scheduled` was used.
