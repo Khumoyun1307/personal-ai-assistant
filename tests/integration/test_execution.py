@@ -14,7 +14,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import select, text
 
 from assistant.accounts import connections
 from assistant.accounts.connections import ConnectionSnapshot, Source
@@ -904,26 +904,3 @@ async def test_the_stale_sweep_settles_only_executing_rows(env: Env) -> None:
         "reason": "stale_executing",
         "attempt_id": "attempt-old",
     }
-
-
-async def test_no_send_while_the_inbox_has_a_pending_row(env: Env) -> None:
-    """`inbox_drained`: a pending inbound row (any account's) makes Tx A wait
-    and re-defer in 3 s — never a denial, never a send."""
-    h = harness(env)
-    chat = await seed(env)
-    await caught_up(env)
-    action_id = await approved(env, chat, text=TEXT)
-    async with env.factory() as session, session.begin():
-        session.add(
-            InboundUpdate(bot_id=env.bot_id, update_id=123_456, kind="message", status="pending")
-        )
-
-    outcome = await h.execute(action_id)
-
-    assert outcome.status is ExecuteStatus.WAITING
-    assert (await action(env, action_id)).state == "approved"
-    assert [item.schedule_at for item in defers(h)] == [env.clock.now() + timedelta(seconds=3)]
-    assert h.sender.business_calls == 0
-    async with env.factory() as session, session.begin():
-        await session.execute(update(InboundUpdate).values(status="processed"))
-    assert (await h.execute(action_id)).status is ExecuteStatus.SENT

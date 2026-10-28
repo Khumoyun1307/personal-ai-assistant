@@ -11,15 +11,16 @@ synthetic.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from itertools import count
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts.models import AuditLogEntry, BusinessConnection
+from assistant.accounts.models import Account, AuditLogEntry, BusinessConnection
 from assistant.actions.config import ActionsConfig
 from assistant.actions.executor import ActionExecutor
 from assistant.actions.lifecycle import approve, sendable_length, text_hash
@@ -38,7 +39,16 @@ from tests.fakes.channel import FakeChannel
 from tests.fakes.clock import FakeSleep
 from tests.fakes.sender import FakeTelegramSender
 from tests.integration.actions_env import CONFIG, DRAFT_TEXT, Chat, request, seed_chat
-from tests.integration.business_env import Env
+from tests.integration.business_env import (
+    CONTACT,
+    OWNER,
+    T_BASE,
+    Env,
+    business_message,
+    connect,
+    deliver,
+    grant_managed,
+)
 
 _ids = count(7_600_000_000)
 
@@ -284,9 +294,62 @@ async def add_message_now(
         return row.id
 
 
+async def owner_chat(env: Env) -> Chat:
+    """The allowlisted owner (`business_env.OWNER`) onboarded through the real
+    inbox, connected with the reply right, managed-AI consent granted, and
+    one contact message in the chat with `CONTACT` — for tests whose updates
+    must pass the real routing and business gates."""
+    await connect(env)
+    await grant_managed(env)
+    await deliver(env, business_message(message_id=11, message_text="Synthetic", date=T_BASE))
+    async with env.factory() as session:
+        row = (
+            await session.execute(
+                select(Conversation).where(Conversation.business_chat_id == CONTACT)
+            )
+        ).scalar_one()
+        message_id = await session.scalar(
+            select(Message.id).where(
+                Message.conversation_id == row.id, Message.direction == "contact"
+            )
+        )
+    assert message_id is not None
+    return Chat(row.account_id, row.id, message_id)
+
+
+async def owner_account(env: Env) -> Account:
+    async with env.factory() as session:
+        return (
+            await session.execute(select(Account).where(Account.telegram_user_id == OWNER))
+        ).scalar_one()
+
+
 async def update_rows(env: Env, model: Any, where: Any, **values: Any) -> None:
     async with env.factory() as session, session.begin():
         await session.execute(update(model).where(where).values(**values))
+
+
+async def lock_waits(env: Env, at_least: int, *, deadline: float = 20.0) -> None:
+    """Return once `at_least` other sessions of this database wait on a lock.
+    Nothing is asserted on time: the deadline only bounds a failing test."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + deadline
+    while True:
+        async with env.factory() as session:
+            waiting = (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() AND wait_event_type = 'Lock' "
+                        "AND pid <> pg_backend_pid()"
+                    )
+                )
+            ).scalar_one()
+        if waiting >= at_least:
+            return
+        if loop.time() > end:
+            raise AssertionError(f"expected {at_least} lock waits, saw {waiting}")
+        await asyncio.sleep(0.02)
 
 
 async def count_rows(session: AsyncSession, model: Any, *where: Any) -> int:

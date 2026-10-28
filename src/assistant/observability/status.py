@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts import connections
 from assistant.accounts.models import Account
 from assistant.accounts.service import CONSENT_AI_CONTROL, CONSENT_AI_MANAGED, active_consent
+from assistant.actions.models import Action
 from assistant.conversations.coverage import (
     older_gap_filter,
     status_delayed_filter,
@@ -91,6 +92,31 @@ class BudgetStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class ActionsStatus:
+    """Owner-voice replies, as counts only (S04.4 §3.9)."""
+
+    awaiting_approval: int
+    #: Approved or claimed, not settled yet.
+    sending: int
+    #: Delivery uncertain in the last 7 days: the owner should check the chat.
+    uncertain_7d: int
+    failed_24h: int
+
+    @property
+    def line(self) -> str:
+        """The one `/status` line; "uncertain" is never folded into "sent"."""
+        parts = [
+            f"{self.awaiting_approval} awaiting approval",
+            f"{self.sending} sending",
+            f"{self.uncertain_7d} delivery uncertain"
+            + (" — check the chat" if self.uncertain_7d else ""),
+        ]
+        if self.failed_24h:
+            parts.append(f"{self.failed_24h} not sent today")
+        return "Replies: " + " · ".join(parts)
+
+
+@dataclass(frozen=True, slots=True)
 class StatusReport:
     account_status: str
     timezone: str
@@ -100,6 +126,7 @@ class StatusReport:
     autonomy: AutonomyStatus
     inbox: InboxStatus
     budget: BudgetStatus
+    actions: ActionsStatus
 
     @property
     def coverage_caveat(self) -> str | None:
@@ -271,7 +298,40 @@ async def build_status(
         ),
         inbox=inbox,
         budget=budget,
+        actions=await actions_status(session, account_id, now),
     )
+
+
+#: `delivery_uncertain` actions stay on `/status` this long; failed ones a day.
+UNCERTAIN_WINDOW = timedelta(days=7)
+FAILED_WINDOW = timedelta(hours=24)
+
+
+async def actions_status(session: AsyncSession, account_id: int, now: datetime) -> ActionsStatus:
+    """Counts by state, account-scoped; never any text (S04.4 §3.9)."""
+    rows = await session.execute(
+        select(Action.state, func.count())
+        .where(Action.account_id == account_id)
+        .where(
+            (Action.state.in_(_OPEN_STATES))
+            | (
+                (Action.state == "delivery_uncertain")
+                & (Action.updated_at >= now - UNCERTAIN_WINDOW)
+            )
+            | ((Action.state == "failed") & (Action.updated_at >= now - FAILED_WINDOW))
+        )
+        .group_by(Action.state)
+    )
+    by_state = {str(state): int(count) for state, count in rows.all()}
+    return ActionsStatus(
+        awaiting_approval=by_state.get("awaiting_approval", 0) + by_state.get("revising", 0),
+        sending=by_state.get("approved", 0) + by_state.get("executing", 0),
+        uncertain_7d=by_state.get("delivery_uncertain", 0),
+        failed_24h=by_state.get("failed", 0),
+    )
+
+
+_OPEN_STATES = ("awaiting_approval", "revising", "approved", "executing")
 
 
 def heartbeat_is_fresh(report: StatusReport, within: timedelta) -> bool:

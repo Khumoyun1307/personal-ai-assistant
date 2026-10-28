@@ -1011,6 +1011,8 @@ def render_status(report: StatusReport, *, visibility: str) -> str:
         "",
         f"Account: {escape(report.account_status)}",
         f"Autonomy: {'paused' if report.autonomy.paused else 'active'}",
+        # S04.4 §3.9: counts only.
+        escape(report.actions.line),
         f"Timezone: {escape(tz)}",
         "",
         "<b>Connection</b>",

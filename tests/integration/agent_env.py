@@ -92,9 +92,11 @@ PRODUCTION_LINE = (
     "tool.list_conversations,tool.summarize_period,tool.get_attention_list,summary.refresh,"
     "tool.remember,tool.forget,tool.list_memories,tool.set_conversation_mode,"
     "tool.update_preferences,tool.delete_conversation_data,tool.delete_contact_data,"
-    "tool.delete_everything,tool.get_activity"
+    "tool.delete_everything,tool.get_activity,tool.pause_autonomy,tool.resume_autonomy"
 )
 PRODUCTION_FLAGS = frozenset(PRODUCTION_LINE.split(","))
+#: The S04.4 kill-switch tools (P2-T41).
+AUTONOMY_FLAGS = frozenset({"tool.pause_autonomy", "tool.resume_autonomy"})
 
 
 class SetNoteArgs(BaseModel):

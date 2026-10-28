@@ -435,7 +435,12 @@ async def running_process(
                         {"process_run_id": process_run_id, "caught_up_at": None},
                     )
                 poller = Poller(
-                    AiogramUpdateSource(bot), session_factory, clock, process_run_id=process_run_id
+                    AiogramUpdateSource(bot),
+                    session_factory,
+                    clock,
+                    process_run_id=process_run_id,
+                    # The kill switch's fast lane recognises the owners' /pause.
+                    owner_ids=frozenset(settings.owner_telegram_ids),
                 )
                 await poller.startup()
                 supervisor_roles.append(PollerRole(poller, lock, clock).role())
