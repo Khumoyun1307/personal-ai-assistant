@@ -141,6 +141,7 @@ HELP_TEXT = (
     "/status — what I can see: connection, rights, coverage, gaps, consent\n"
     "/settings — language, timezone, chat modes, replies, how long things are kept, "
     "deleting data\n"
+    "/digest — your digest now: alerts held for you, chats waiting, commitments due\n"
     "/privacy — what I store, who sees it, and how to delete it "
     "(<code>/privacy delete</code> deletes everything, after asking)\n\n"
     "Send me anything else and I will answer it.\n"
