@@ -29,6 +29,9 @@ from assistant.inbox.models import Task
 
 #: Chat modes triage reads (Ignore never; a bot chat is never in them).
 TRIAGED_MODES = frozenset({"observe", "assist"})
+#: Who can set the flag: a contact always; the owner by hand only while the
+#: chat has an open task. Automatic and assistant-sent messages never do.
+TRIGGER_DIRECTIONS = frozenset({Direction.CONTACT, Direction.OWNER_MANUAL})
 
 
 async def defer_triage(
@@ -52,10 +55,11 @@ class TriageIngestionListener:
     async def on_message(self, session: AsyncSession, change: MessageChange) -> None:
         if not change.new_message or change.metadata_only or change.mode not in TRIAGED_MODES:
             return
-        if change.direction is Direction.OWNER_MANUAL:
-            if not await _has_open_task(session, change.account_id, change.conversation_id):
-                return
-        elif change.direction is not Direction.CONTACT:
+        if change.direction not in TRIGGER_DIRECTIONS:
+            return
+        if change.direction is Direction.OWNER_MANUAL and not await _has_open_task(
+            session, change.account_id, change.conversation_id
+        ):
             return
         now = self._clock.now()
         # The conversation row is already locked by ingestion (F0 §5).

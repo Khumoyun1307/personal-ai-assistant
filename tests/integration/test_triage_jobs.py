@@ -10,7 +10,7 @@ Synthetic text only; FakeLLM stands in for the provider (AGENTS §11).
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -33,6 +33,7 @@ from tests.integration.business_env import (
     Env,
     business_message,
     connect,
+    deleted_messages,
     deliver,
     environment,
     grant_managed,
@@ -266,3 +267,141 @@ async def test_the_reconciler_skips_chats_without_managed_consent(env: Env) -> N
     async with env.factory() as session:
         assert await triage_reconciler()(session, env.clock.now()) == []
     assert conversation
+
+
+# ------------------------------------------------- the flag after a verdict
+async def settled_chat(env: Env) -> int:
+    """A chat whose first burst is triaged: a verdict, and no flag."""
+    conversation = await chat(env)
+    env.clock.advance(seconds=25)
+    fake = FakeLLM()
+    fake.parsed = [quiet_verdict]
+    outcome = await job(env, fake).triage(conversation)
+    assert outcome is not None
+    assert outcome.status is TriageStatus.TRIAGED
+    assert await flag(env, conversation) is None
+    return conversation
+
+
+async def assert_settled(env: Env, conversation: int) -> None:
+    """No flag, so nothing for the reconciler to re-create once every queued
+    job has run (here: is gone) and the 30 s grace has passed."""
+    assert await flag(env, conversation) is None
+    async with env.factory() as session, session.begin():
+        await session.execute(text("DELETE FROM procrastinate.procrastinate_jobs"))
+    env.clock.advance(seconds=31)
+    async with env.factory() as session:
+        assert await triage_reconciler()(session, env.clock.now()) == []
+
+
+async def a_location(env: Env) -> None:
+    """Stored with neither text nor media (FR-MEM-05): no run can show it."""
+    await deliver(
+        env,
+        business_message(
+            message_id=12,
+            message_text=None,
+            date=ts(5),
+            extra={"location": {"latitude": 0.0, "longitude": 0.0}},
+        ),
+    )
+
+
+async def a_deleted_message(env: Env) -> None:
+    await deliver(env, business_message(message_id=12, message_text="SYNTH oops", date=ts(5)))
+    await deliver(env, deleted_messages(message_ids=[12]))
+
+
+@pytest.mark.parametrize("arrive", [a_location, a_deleted_message], ids=["location", "deleted"])
+async def test_a_message_triage_cannot_read_never_keeps_the_flag(
+    env: Env, arrive: Callable[[Env], Awaitable[None]]
+) -> None:
+    """Viro on #92: the flag counts only what a run could read. A contact's
+    location, or a message deleted before the run, sets the flag; the run
+    finds nothing new and clears it. Otherwise the reconciler re-creates the
+    job every minute until the contact writes again."""
+    conversation = await settled_chat(env)
+    env.clock.advance(seconds=5)
+    await arrive(env)
+    assert await flag(env, conversation) == env.clock.now()
+    env.clock.advance(seconds=25)
+    fake = FakeLLM()
+    outcome = await job(env, fake).triage(conversation)
+    assert outcome is not None
+    assert (outcome.status, outcome.calls) == (TriageStatus.UP_TO_DATE, 0)
+    await assert_settled(env, conversation)
+
+
+async def test_a_burst_whose_newest_message_is_deleted_during_the_call_settles(env: Env) -> None:
+    """The verdict is discarded and the next run reads the rest; the deleted
+    message after it keeps no flag."""
+    conversation = await chat(env)
+    env.clock.advance(seconds=5)
+    await deliver(env, business_message(message_id=12, message_text="SYNTH 2", date=ts(1)))
+    env.clock.advance(seconds=25)
+
+    async def delete_then_answer(request: LLMRequest) -> dict[str, Any]:
+        await deliver(env, deleted_messages(message_ids=[12]))
+        return quiet_verdict(request)
+
+    fake = FakeLLM()
+    fake.parsed = [delete_then_answer, quiet_verdict]
+    first = await job(env, fake).triage(conversation)
+    assert first is not None
+    assert first.status is TriageStatus.DISCARDED
+    assert await flag(env, conversation) is not None  # what remains is still to triage
+    second = await job(env, fake).triage(conversation)
+    assert second is not None
+    assert (second.status, second.calls) == (TriageStatus.TRIAGED, 1)
+    await assert_settled(env, conversation)
+
+
+async def test_an_automatic_message_during_the_call_keeps_no_flag(env: Env) -> None:
+    """An away/greeting message triggers no triage (the listener), so one that
+    arrives during a call keeps no flag either: the next burst reads it."""
+    conversation = await chat(env)
+    env.clock.advance(seconds=25)
+
+    async def away_then_answer(request: LLMRequest) -> dict[str, Any]:
+        await deliver(
+            env,
+            business_message(
+                message_id=12,
+                from_id=OWNER,
+                message_text="SYNTH away",
+                date=ts(1),
+                extra={"is_from_offline": True},
+            ),
+        )
+        return quiet_verdict(request)
+
+    fake = FakeLLM()
+    fake.parsed = [away_then_answer]
+    outcome = await job(env, fake).triage(conversation)
+    assert outcome is not None
+    assert outcome.status is TriageStatus.TRIAGED
+    await assert_settled(env, conversation)
+
+
+async def test_a_contact_message_during_the_call_keeps_the_flag_for_the_next_run(
+    env: Env,
+) -> None:
+    """The counterpart: a message triage can read keeps the flag, at its
+    arrival time, and the job re-defers one debounce after it."""
+    conversation = await chat(env)
+    async with env.factory() as session, session.begin():  # the running job is not `todo`
+        await session.execute(text("DELETE FROM procrastinate.procrastinate_jobs"))
+    env.clock.advance(seconds=25)
+    arrived = env.clock.now()
+
+    async def write_then_answer(request: LLMRequest) -> dict[str, Any]:
+        await deliver(env, business_message(message_id=12, message_text="SYNTH 2", date=ts(1)))
+        return quiet_verdict(request)
+
+    fake = FakeLLM()
+    fake.parsed = [write_then_answer]
+    outcome = await job(env, fake).triage(conversation)
+    assert outcome is not None
+    assert outcome.status is TriageStatus.TRIAGED
+    assert await flag(env, conversation) == arrived
+    assert await triage_jobs(env) == [(conversation, "todo", arrived + DEBOUNCE)]

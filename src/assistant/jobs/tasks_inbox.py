@@ -77,7 +77,9 @@ class TriageJob:
             # More arrived while the model ran: the store moved the flag to it.
             async with transaction(self.session_factory) as uow:
                 pending = await uow.session.scalar(
-                    select(Conversation.pending_triage_at).where(Conversation.id == conversation_id)
+                    select(Conversation.pending_triage_at)
+                    .where(Conversation.account_id == ref.account_id)
+                    .where(Conversation.id == conversation_id)
                 )
             if pending is not None:
                 await triage_trigger.defer_triage(
