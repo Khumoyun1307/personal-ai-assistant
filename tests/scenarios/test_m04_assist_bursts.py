@@ -39,7 +39,6 @@ async def queued_drafts(p2: Scenario) -> int:
         )
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2/S04.3")
 async def test_a_burst_in_an_assist_chat_produces_one_card(p2: Scenario) -> None:
     await assist(p2)
     p2.fake.parsed.append(draft_result())

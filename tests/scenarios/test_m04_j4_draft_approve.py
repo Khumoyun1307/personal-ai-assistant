@@ -24,7 +24,6 @@ from tests.scenarios.p2_drive import (
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2/S04.3/S04.4")
 async def test_j4_draft_edit_approve_sends_exactly_the_approved_text(p2: Scenario) -> None:
     row = await p2.propose()
     assert row.state == "awaiting_approval"
@@ -65,7 +64,6 @@ async def test_j4_draft_edit_approve_sends_exactly_the_approved_text(p2: Scenari
     assert "Sent" in p2.control_text()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2/S04.3")
 async def test_j4_a_revision_instruction_creates_a_new_version_shown_for_approval(
     p2: Scenario,
 ) -> None:
@@ -131,19 +129,16 @@ async def revision_interleaving(p2: Scenario, *, outdate: bool) -> None:
     assert p2.business_sends() == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2/S04.3")
 async def test_approve_during_revision_sends_nothing(p2: Scenario) -> None:
     await revision_interleaving(p2, outdate=False)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2/S04.3")
 async def test_a_revision_finishing_after_outdating_cannot_reactivate_the_card(
     p2: Scenario,
 ) -> None:
     await revision_interleaving(p2, outdate=True)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2/S04.3")
 async def test_j4_reject_sends_nothing_and_says_rejected(p2: Scenario) -> None:
     row = await p2.propose()
     await reject(p2, row.id)
@@ -153,7 +148,6 @@ async def test_j4_reject_sends_nothing_and_says_rejected(p2: Scenario) -> None:
     assert "Rejected" in p2.control_text()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2/S04.3")
 async def test_j4_owner_dictated_text_is_shown_exactly_with_the_resolved_recipient(
     p2: Scenario,
 ) -> None:
