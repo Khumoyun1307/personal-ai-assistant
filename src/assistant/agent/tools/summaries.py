@@ -23,6 +23,12 @@ type (`agent/summarize.py`):
   summary is stale is refreshed first — at most `MAX_INLINE_CHECKS` chats,
   ONE summary call each (plus one retry of a truncated output), never
   chained (M03 D62) — otherwise marked unchecked.
+  **v2** (S05.1 §3.9): a chat whose triage verdict covers its newest contact
+  message also gets the verdict (`triage`: reasons wrapped untrusted), up to
+  five `open_tasks` (titles wrapped untrusted) and deterministic
+  `next_actions` (`draft_reply` only with `tool.propose_reply` on, the
+  drafter wired and the reply window open — ICR-2; `open_panel` always); it
+  needs no summary call and ranks urgent → decision → needs reply → others.
 
 A chat whose summary fails is listed as not summarized (or unchecked); it
 never aborts the other chats. A summary written from messages that changed
@@ -89,6 +95,9 @@ logger = get_logger(__name__)
 
 SUMMARIZE_PERIOD_FLAG = "tool.summarize_period"
 ATTENTION_FLAG = "tool.get_attention_list"
+#: `propose_reply`'s release flag (S04.2b): attention v2 offers
+#: `next_actions: "draft_reply"` only while it is on (ICR-2).
+PROPOSE_REPLY_FLAG = "tool.propose_reply"
 
 #: The longest catch-up range.
 MAX_PERIOD = timedelta(days=31)
@@ -533,11 +542,16 @@ def _order(candidate: catch_up.Unanswered, tier: int, triaged: bool) -> tuple[in
 
 
 def _draft_offered(ctx: ToolContext) -> bool:
-    """Whether `propose_reply` can be offered to this run. Fail closed: the
-    tool needs the drafter and the approval cards (S04.2); until CP4 wires
-    them, never."""
+    """Whether `propose_reply` can be offered to this run (ICR-2): its release
+    flag is on **and** the drafter and approval cards it needs are wired
+    (S04.2). Both must hold, so it fails closed: Assist mode wiring the
+    drafter offers nothing while the tool itself is off."""
     services = ctx.services
-    return services.drafter is not None and services.approval_cards is not None
+    return (
+        PROPOSE_REPLY_FLAG in services.enabled_flags
+        and services.drafter is not None
+        and services.approval_cards is not None
+    )
 
 
 def _triage_view(

@@ -7,10 +7,19 @@ Required tests, findable by name:
 `test_attention_falls_back_to_v1_without_a_verdict`,
 `test_reasons_and_titles_are_wrapped_untrusted_and_taint_the_run`,
 `test_attention_never_returns_another_accounts_tasks` (RG-21).
+
+ICR-2 (decisions §C): `next_actions` offers `draft_reply` only when
+`tool.propose_reply` is among the run's enabled flags **and** the drafter and
+approval cards are wired — `test_draft_reply_is_offered_with_the_flag_on_and_wired`,
+`test_draft_reply_is_not_offered_with_the_flag_off_even_when_wired`,
+`test_draft_reply_is_not_offered_with_the_flag_on_but_unwired`, and
+`test_the_owner_runtime_hands_its_flags_to_the_attention_list` (the one
+`runtime.py` line).
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -18,9 +27,13 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
-from assistant.agent.tools.registry import ToolContext, ToolOutcome, ToolServices
+from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime, RunStatus
+from assistant.agent.tools.registry import ToolContext, ToolOutcome, ToolServices, default_registry
 from assistant.agent.tools.summaries import GetAttentionListArgs, get_attention_list_tool
-from tests.integration.agent_env import one_id
+from assistant.llm.port import ToolResultItem
+from tests.fakes.channel import FakeChannel
+from tests.fakes.llm import FakeLLM, text_response, tool_response
+from tests.integration.agent_env import args, ask, gated, one_id
 from tests.integration.business_env import (
     CONTACT,
     NOW,
@@ -125,14 +138,37 @@ async def add_task(
     return task_id
 
 
-async def attention(env: Env, account: int) -> ToolOutcome:
+#: `propose_reply`'s release flag (S04.2b); attention v2 mirrors it (ICR-2).
+PROPOSE_REPLY = "tool.propose_reply"
+
+
+class Wired:
+    """Stands in for S04.2's drafter and approval cards: attention v2 only
+    asks whether they are wired and never calls them."""
+
+    def present_after_commit(self, session: object, action_id: int) -> None:
+        raise AssertionError("attention v2 never presents a card")
+
+    def sync_after_commit(self, session: object, action_id: int) -> None:
+        raise AssertionError("attention v2 never syncs a card")
+
+
+async def attention(
+    env: Env, account: int, *, flags: frozenset[str] = frozenset(), wired: bool = False
+) -> ToolOutcome:
+    part = Wired() if wired else None
     ctx = ToolContext(
         account_id=account,
         run_id=0,
         run_type="owner_request",
         tainted=False,
         services=ToolServices(
-            session_factory=env.factory, clock=env.clock, monthly_budget_usd=None
+            session_factory=env.factory,
+            clock=env.clock,
+            monthly_budget_usd=None,
+            drafter=part,
+            approval_cards=part,
+            enabled_flags=flags,
         ),
     )
     return await get_attention_list_tool(
@@ -225,3 +261,58 @@ async def test_attention_never_returns_another_accounts_tasks(env: Env) -> None:
     assert len(titles) == 1
     assert "Synthetic own task" in titles[0]
     assert "triage" not in entry(outcome, b)
+
+
+# ------------------------------------------------- next_actions (ICR-2)
+async def test_draft_reply_is_offered_with_the_flag_on_and_wired(env: Env) -> None:
+    account, a, _ = await seed(env)
+    await add_verdict(env, account, a, through=await newest(env, a))
+    outcome = await attention(env, account, flags=frozenset({PROPOSE_REPLY}), wired=True)
+    # A's contact wrote at 09:00 and it is 12:00: the reply window is open.
+    assert entry(outcome, a)["next_actions"] == ["draft_reply", "open_panel"]
+
+
+async def test_draft_reply_is_not_offered_with_the_flag_off_even_when_wired(env: Env) -> None:
+    """Assist mode wires the drafter; the tool's own release flag still decides."""
+    account, a, _ = await seed(env)
+    await add_verdict(env, account, a, through=await newest(env, a))
+    outcome = await attention(env, account, flags=frozenset(), wired=True)
+    assert entry(outcome, a)["next_actions"] == ["open_panel"]
+
+
+async def test_draft_reply_is_not_offered_with_the_flag_on_but_unwired(env: Env) -> None:
+    account, a, _ = await seed(env)
+    await add_verdict(env, account, a, through=await newest(env, a))
+    outcome = await attention(env, account, flags=frozenset({PROPOSE_REPLY}), wired=False)
+    assert entry(outcome, a)["next_actions"] == ["open_panel"]
+
+
+async def test_the_owner_runtime_hands_its_flags_to_the_attention_list(env: Env) -> None:
+    """The one `runtime.py` line of ICR-2: `OwnerRequestRuntime` fills
+    `ToolServices.enabled_flags` from its config, so a real owner run with
+    `tool.propose_reply` on and the drafter wired is offered `draft_reply`."""
+    account, a, _ = await seed(env)
+    await add_verdict(env, account, a, through=await newest(env, a))
+    turn = await ask(env, "Synthetic: who is waiting for me?")
+    fake = FakeLLM(
+        tool_response(("c1", "get_attention_list", args(active_within_days=None, limit=None))),
+        text_response("ok"),
+    )
+    wired = Wired()
+    runtime = OwnerRequestRuntime(
+        session_factory=env.factory,
+        llm=gated(env, fake),
+        channel=FakeChannel(),
+        registry=default_registry(),
+        clock=env.clock,
+        config=AgentConfig(
+            model="gpt-6-luna",
+            enabled_flags=frozenset({"tool.get_attention_list", PROPOSE_REPLY}),
+        ),
+        drafter=wired,
+        approval_cards=wired,
+    )
+    assert (await runtime.run(turn)).status is RunStatus.SUCCEEDED
+    (result,) = [item for item in fake.requests[1].items if isinstance(item, ToolResultItem)]
+    (shown,) = [e for e in json.loads(result.output)["conversations"] if e["conversation_id"] == a]
+    assert shown["next_actions"] == ["draft_reply", "open_panel"]
