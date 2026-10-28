@@ -30,7 +30,7 @@ You own the plan, the contracts and the integration; engineers own implementatio
 
 ## 4. Merging
 
-Merge with `gh pr merge <n> --merge` (a merge commit; never squash a unit with migrations) once WORKFLOW §7.1 holds. If the session's permission classifier blocks it, merge locally in your own worktree (`git merge --no-ff origin/<unit-branch>` on an up-to-date `int/*` checkout, then `git push origin int/m0x`). Never merge `int/m04` or `int/m05` into `main` — those two PRs are the owner's (AGENTS §15).
+Merge with `gh pr merge <n> --merge` (a merge commit; never squash a unit with migrations) once WORKFLOW §7.1 holds. `main` and every `int/*` branch are protected by a GitHub ruleset (2026-10-28: pull requests only, no force-push, no deletion, no bypass), so merging locally and pushing `int/*` no longer works; if `gh pr merge` is blocked, ask the owner. Never merge `int/m04` or `int/m05` into `main` — those two PRs are the owner's (AGENTS §15).
 
 ## 5. Things only you decide (log each)
 
