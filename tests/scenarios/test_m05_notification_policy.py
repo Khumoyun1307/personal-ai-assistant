@@ -11,7 +11,6 @@ from tests.scenarios.m05_drive import M05Scenario, advance, run_queued
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.2/S05.3b")
 async def test_quiet_hours_move_non_urgent_alerts_to_the_digest(m05: M05Scenario) -> None:
     await m05.preferences(quiet_hours="00:00-23:59")
     await m05.alert()

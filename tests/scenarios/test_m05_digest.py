@@ -77,7 +77,6 @@ async def test_late_note_assertion_rejects_other_messages_and_substrings(m05: M0
     assert_late_note(m05, result.message_id)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.3b")
 async def test_a_digest_built_twice_for_one_period_is_delivered_once(m05: M05Scenario) -> None:
     for _ in range(2):
         await m05.job("digest.build", account_id=m05.account_id, period_end=m05.date)
@@ -86,7 +85,6 @@ async def test_a_digest_built_twice_for_one_period_is_delivered_once(m05: M05Sce
     assert len(m05.env.sender.sends) == 1
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.3b")
 async def test_the_digest_fires_at_local_time_across_dst(m05: M05Scenario) -> None:
     m05.require("system.reconcile_schedules")
     await m05.preferences(timezone="Europe/Berlin", digest_time="08:00")
@@ -105,7 +103,6 @@ async def test_the_digest_fires_at_local_time_across_dst(m05: M05Scenario) -> No
     assert rows[1].sent_at - rows[0].sent_at == timedelta(hours=25)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.3b")
 async def test_a_missed_digest_after_downtime_fires_late_with_a_note(m05: M05Scenario) -> None:
     m05.require("system.reconcile_schedules")
     await m05.preferences(timezone="Europe/Berlin", digest_time="08:00")
@@ -119,7 +116,6 @@ async def test_a_missed_digest_after_downtime_fires_late_with_a_note(m05: M05Sce
     assert_late_note(m05, digest.message_id)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.3b")
 async def test_digest_on_demand(m05: M05Scenario) -> None:
     m05.require("digest.build")
     await m05.preferences(digest_time="off")
