@@ -7,13 +7,16 @@ asserted in each: the send is either claimed before the competing commit or
 blocked; it is never claimed after it. Antony re-runs these independently.
 The competing writes emulate their paths' lock steps (S04.2's ingestion
 listener is not on this branch: Tx A's re-check is the guarantee tested).
-Synthetic text.
+Every event and task of a test belongs to its `Race`, which releases them
+when the test ends, so a failing race fails instead of hanging. Synthetic
+text.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from typing import Any
 
 import pytest
 from sqlalchemy import select, update
@@ -44,6 +47,67 @@ pytestmark = pytest.mark.integration
 
 TEXT = "Synthetic approved reply"
 Work = Callable[[AsyncSession], Awaitable[None]]
+#: How long closing a race waits for its tasks to end once released, before
+#: cancelling them. It only bounds a failing test; nothing is ordered by it.
+CLOSE_DEADLINE_SECONDS = 20.0
+
+
+class Race:
+    """The competing transactions and executor runs of one test.
+
+    `close` sets every event and waits for every task, cancelling what is
+    still running after that: a test that fails midway (an assertion in
+    `lock_waits`, say) then fails, instead of leaving a transaction idle
+    with row locks that the env teardown's TRUNCATE waits on forever (Viro
+    on #107).
+    """
+
+    def __init__(self) -> None:
+        self._events: list[asyncio.Event] = []
+        self._tasks: list[asyncio.Task[Any]] = []
+
+    def event(self, *, is_set: bool = False) -> asyncio.Event:
+        event = asyncio.Event()
+        if is_set:
+            event.set()
+        self._events.append(event)
+        return event
+
+    def spawn[T](self, work: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
+        task = asyncio.create_task(work)
+        self._tasks.append(task)
+        return task
+
+    async def reached(self, event: asyncio.Event, task: asyncio.Task[Any]) -> None:
+        """Wait for `event`; if `task` ends first, fail with its error."""
+        waiter = self.spawn(event.wait())
+        await asyncio.wait({waiter, task}, return_when=asyncio.FIRST_COMPLETED)
+        if not event.is_set():
+            task.result()
+            raise AssertionError("the competing transaction ended before taking its locks")
+
+    async def close(self) -> None:
+        for event in self._events:
+            event.set()
+        running = [task for task in self._tasks if not task.done()]
+        if running:
+            _, stuck = await asyncio.wait(running, timeout=CLOSE_DEADLINE_SECONDS)
+            for task in stuck:
+                task.cancel()
+            await asyncio.gather(*stuck, return_exceptions=True)
+        for task in self._tasks:
+            if not task.cancelled():
+                task.exception()  # retrieved: the test's own failure is what counts
+
+
+@pytest.fixture
+async def race(env: Env) -> AsyncIterator[Race]:
+    """Torn down before `env`, so nothing holds a lock at its TRUNCATE."""
+    race = Race()
+    try:
+        yield race
+    finally:
+        await race.close()
 
 
 async def hold(env: Env, work: Work, locked: asyncio.Event, release: asyncio.Event) -> None:
@@ -56,19 +120,19 @@ async def hold(env: Env, work: Work, locked: asyncio.Event, release: asyncio.Eve
 
 
 async def blocking_the_action(
-    env: Env, action_id: int, release: asyncio.Event
-) -> asyncio.Task[None]:
-    """Hold the action row `FOR UPDATE` until released, so Tx A stops at its
-    last lock step while holding the account and the conversation
-    `FOR SHARE`. Returns once the row is held."""
+    env: Env, race: Race, action_id: int
+) -> tuple[asyncio.Task[None], asyncio.Event]:
+    """Hold the action row `FOR UPDATE` until the returned event is set, so
+    Tx A stops at its last lock step while holding the account and the
+    conversation `FOR SHARE`. Returns once the row is held."""
 
     async def lock(session: AsyncSession) -> None:
         await session.execute(select(Action.id).where(Action.id == action_id).with_for_update())
 
-    locked = asyncio.Event()
-    task = asyncio.create_task(hold(env, lock, locked, release))
-    await locked.wait()
-    return task
+    locked, unblock = race.event(), race.event()
+    task = race.spawn(hold(env, lock, locked, unblock))
+    await race.reached(locked, task)
+    return task, unblock
 
 
 def action_state(action_id: int, seen: list[str]) -> Work:
@@ -115,13 +179,35 @@ async def ready(env: Env) -> tuple[Harness, Chat, int]:
     return h, chat, await approved(env, chat, text=TEXT)
 
 
-async def test_takeover_committed_before_tx_a_blocks_the_send(env: Env) -> None:
-    h, chat, action_id = await ready(env)
-    locked, release = asyncio.Event(), asyncio.Event()
-    competing = asyncio.create_task(hold(env, takeover(env, chat), locked, release))
-    await locked.wait()
+async def test_a_race_that_fails_midway_releases_every_lock(env: Env) -> None:
+    """The harness itself (Viro on #107): a race test that fails while a
+    competing transaction holds the action row and Tx A waits on it ends
+    both when its race closes (what the `race` fixture does on any
+    failure), and the row is free again — the test fails, never hangs."""
+    h, _chat, action_id = await ready(env)
+    race = Race()
+    blocker, unblock = await blocking_the_action(env, race, action_id)
+    run = race.spawn(h.execute(action_id))
+    await lock_waits(env, 1)
 
-    run = asyncio.create_task(h.execute(action_id))
+    await race.close()  # never unblocked by the test: the race does it
+
+    assert unblock.is_set()
+    assert blocker.done()
+    assert run.done()
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            select(Action.id).where(Action.id == action_id).with_for_update(nowait=True)
+        )
+
+
+async def test_takeover_committed_before_tx_a_blocks_the_send(env: Env, race: Race) -> None:
+    h, chat, action_id = await ready(env)
+    locked, release = race.event(), race.event()
+    competing = race.spawn(hold(env, takeover(env, chat), locked, release))
+    await race.reached(locked, competing)
+
+    run = race.spawn(h.execute(action_id))
     await lock_waits(env, 1)  # Tx A waits for the conversation
     release.set()
     await competing
@@ -132,19 +218,21 @@ async def test_takeover_committed_before_tx_a_blocks_the_send(env: Env) -> None:
 
 
 async def test_takeover_waiting_on_tx_a_lands_after_the_claim_and_the_send_is_recorded_as_claimed_first(  # noqa: E501
-    env: Env,
+    env: Env, race: Race
 ) -> None:
     h, chat, action_id = await ready(env)
-    unblock = asyncio.Event()
-    blocker = await blocking_the_action(env, action_id, unblock)
-    run = asyncio.create_task(h.execute(action_id))
+    blocker, unblock = await blocking_the_action(env, race, action_id)
+    run = race.spawn(h.execute(action_id))
     await lock_waits(env, 1)  # Tx A holds account + conversation, waits for the action
 
     seen: list[str] = []
-    go = asyncio.Event()
-    go.set()  # commits as soon as it has its lock
-    competing = asyncio.create_task(
-        hold(env, takeover(env, chat, then=action_state(action_id, seen)), asyncio.Event(), go)
+    competing = race.spawn(
+        hold(
+            env,
+            takeover(env, chat, then=action_state(action_id, seen)),
+            race.event(),
+            race.event(is_set=True),  # commits as soon as it has its lock
+        )
     )
     await lock_waits(env, 2)  # the takeover waits for Tx A's conversation lock
     unblock.set()
@@ -158,21 +246,23 @@ async def test_takeover_waiting_on_tx_a_lands_after_the_claim_and_the_send_is_re
     assert len(h.sender.plain_sends) == 1
 
 
-async def test_pause_committed_before_tx_a_blocks_an_autonomous_action(env: Env) -> None:
+async def test_pause_committed_before_tx_a_blocks_an_autonomous_action(
+    env: Env, race: Race
+) -> None:
     h = harness(env)
     chat = await seed(env)
     await caught_up(env)
     autonomous = await inserted(env, chat, origin=ActionOrigin.DELEGATION_AUTO)
-    locked, release = asyncio.Event(), asyncio.Event()
+    locked, release = race.event(), race.event()
 
     async def pause(session: AsyncSession) -> None:
         await autonomy.pause(
             session, account_id=chat.account_id, now=env.clock.now(), source="command"
         )
 
-    competing = asyncio.create_task(hold(env, pause, locked, release))
-    await locked.wait()
-    run = asyncio.create_task(h.execute(autonomous))
+    competing = race.spawn(hold(env, pause, locked, release))
+    await race.reached(locked, competing)
+    run = race.spawn(h.execute(autonomous))
     await lock_waits(env, 1)  # Tx A waits for the account
     release.set()
     await competing
@@ -184,13 +274,14 @@ async def test_pause_committed_before_tx_a_blocks_an_autonomous_action(env: Env)
     assert h.sender.business_calls == 0
 
 
-async def test_pause_waiting_on_tx_a_never_finds_a_claim_made_after_it(env: Env) -> None:
+async def test_pause_waiting_on_tx_a_never_finds_a_claim_made_after_it(
+    env: Env, race: Race
+) -> None:
     """The pause queues behind Tx A's account lock: any claim it sees was
     made before it; after its commit, no autonomous claim is possible."""
     h, chat, action_id = await ready(env)
-    unblock = asyncio.Event()
-    blocker = await blocking_the_action(env, action_id, unblock)
-    run = asyncio.create_task(h.execute(action_id))
+    blocker, unblock = await blocking_the_action(env, race, action_id)
+    run = race.spawn(h.execute(action_id))
     await lock_waits(env, 1)
 
     seen: list[str] = []
@@ -201,9 +292,7 @@ async def test_pause_waiting_on_tx_a_never_finds_a_claim_made_after_it(env: Env)
         )
         await action_state(action_id, seen)(session)
 
-    go = asyncio.Event()
-    go.set()
-    competing = asyncio.create_task(hold(env, pause, asyncio.Event(), go))
+    competing = race.spawn(hold(env, pause, race.event(), race.event(is_set=True)))
     await lock_waits(env, 2)  # the pause waits for Tx A's account lock
     unblock.set()
     await blocker
@@ -221,10 +310,10 @@ async def test_pause_waiting_on_tx_a_never_finds_a_claim_made_after_it(env: Env)
 
 
 async def test_a_contact_message_committed_between_approval_and_tx_a_outdates_the_action(
-    env: Env,
+    env: Env, race: Race
 ) -> None:
     h, chat, action_id = await ready(env)
-    locked, release = asyncio.Event(), asyncio.Event()
+    locked, release = race.event(), race.event()
 
     async def contact_writes(session: AsyncSession) -> None:
         await session.execute(
@@ -247,9 +336,9 @@ async def test_a_contact_message_committed_between_approval_and_tx_a_outdates_th
             .values(last_contact_msg_at=env.clock.now())
         )
 
-    competing = asyncio.create_task(hold(env, contact_writes, locked, release))
-    await locked.wait()
-    run = asyncio.create_task(h.execute(action_id))
+    competing = race.spawn(hold(env, contact_writes, locked, release))
+    await race.reached(locked, competing)
+    run = race.spawn(h.execute(action_id))
     await lock_waits(env, 1)
     release.set()
     await competing
@@ -288,19 +377,19 @@ async def rights_change(session: AsyncSession, chat: Chat, env: Env) -> None:
 
 
 async def test_a_rights_change_during_tx_a_waits_and_then_outdates_or_finds_it_claimed(
-    env: Env,
+    env: Env, race: Race
 ) -> None:
     # 1. The rights change holds the action first: Tx A waits, then finds it
     #    outdated and sends nothing.
     h, chat, first = await ready(env)
-    locked, release = asyncio.Event(), asyncio.Event()
+    locked, release = race.event(), race.event()
 
     async def change(session: AsyncSession) -> None:
         await rights_change(session, chat, env)
 
-    competing = asyncio.create_task(hold(env, change, locked, release))
-    await locked.wait()
-    run = asyncio.create_task(h.execute(first))
+    competing = race.spawn(hold(env, change, locked, release))
+    await race.reached(locked, competing)
+    run = race.spawn(h.execute(first))
     await lock_waits(env, 1)
     release.set()
     await competing
@@ -314,12 +403,9 @@ async def test_a_rights_change_during_tx_a_waits_and_then_outdates_or_finds_it_c
     #    leaves a claimed action alone) or the action is outdated — it is
     #    never claimed after the change committed.
     second = await approved(env, chat, text=TEXT)
-    unblock = asyncio.Event()
-    blocker = await blocking_the_action(env, second, unblock)
-    run = asyncio.create_task(h.execute(second))
+    blocker, unblock = await blocking_the_action(env, race, second)
+    run = race.spawn(h.execute(second))
     await lock_waits(env, 1)
-    go = asyncio.Event()
-    go.set()
 
     async def change_back(session: AsyncSession) -> None:
         # Rights back to the reply right only: another rights change.
@@ -345,7 +431,7 @@ async def test_a_rights_change_during_tx_a_waits_and_then_outdates_or_finds_it_c
             clock=env.clock,
         )
 
-    competing = asyncio.create_task(hold(env, change_back, asyncio.Event(), go))
+    competing = race.spawn(hold(env, change_back, race.event(), race.event(is_set=True)))
     await lock_waits(env, 2)
     unblock.set()
     await blocker
