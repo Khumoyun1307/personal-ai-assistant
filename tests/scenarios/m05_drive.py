@@ -44,6 +44,7 @@ from assistant.telegram.ingress.writer import write_state
 from assistant.telegram.routing import route_update
 from tests.fakes.clock import FakeSleep
 from tests.fakes.llm import FakeLLM, text_response, tool_response
+from tests.fakes.sender import FakeTelegramSender
 from tests.integration.agent_env import READ_FLAGS, args, ask, gated
 from tests.integration.business_env import (
     OWNER,
@@ -72,6 +73,32 @@ FLAGS = READ_FLAGS | {
     "monitors.run",
 }
 PROCESS_RUN = "synthetic-qa-s5-process"
+
+
+class _RecordingSender(FakeTelegramSender):
+    """Keep returned ids so assertions can inspect one delivered control message."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.control_messages: dict[int, tuple[int, str]] = {}
+
+    async def send_message(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        reply_markup: Any | None = None,
+        business_connection_id: str | None = None,
+    ) -> dict[str, Any]:
+        result = await super().send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=reply_markup,
+            business_connection_id=business_connection_id,
+        )
+        if business_connection_id is None:
+            self.control_messages[result["message_id"]] = (chat_id, text)
+        return result
 
 
 @dataclass
@@ -227,9 +254,7 @@ class M05Scenario:
         key: str = "qa-alert",
         kind: str = "triage_decision",
         priority: str = "high",
-        alert_class: str = "standard",
         conversation_id: int | None = None,
-        action_ids: tuple[int, ...] = (),
     ) -> int | None:
         from assistant.inbox.notification_types import (
             AlertClass,
@@ -260,13 +285,11 @@ class M05Scenario:
                 account_id=self.account_id,
                 kind=NotificationKind(kind),
                 priority=Priority(priority),
-                alert_class=AlertClass(alert_class),
+                alert_class=AlertClass.STANDARD,
                 dedupe_key=key,
                 refs=NotificationRefs(
                     conversation_ids=(conv,),
                     contact_ids=(self.contact_id,),
-                    action_ids=action_ids,
-                    alert_kind="delivery_uncertain" if kind == "system" else None,
                 ),
                 clock=self.env.clock,
                 conversation_id=conv,
@@ -280,6 +303,15 @@ class M05Scenario:
             for s in self.env.sender.sends[start:]
             if s.get("business_connection_id") is None
         )
+
+    def output_for(self, message_id: int | None) -> str:
+        assert message_id is not None, "the expected control message was not delivered"
+        sender = self.env.sender
+        assert isinstance(sender, _RecordingSender)
+        assert message_id in sender.control_messages, "the control message id was not recorded"
+        chat_id, text = sender.control_messages[message_id]
+        assert chat_id == OWNER, "the message was not delivered to the owner's control chat"
+        return text
 
 
 def triage_result(**changes: Any) -> dict[str, Any]:
@@ -310,6 +342,8 @@ async def triage(s: M05Scenario, result: dict[str, Any]) -> None:
 @asynccontextmanager
 async def m05_environment(url: str, *, flags: frozenset[str] = FLAGS) -> AsyncIterator[M05Scenario]:
     async with environment(url) as env:
+        sender = _RecordingSender()
+        env.sender = sender
         fake = FakeLLM()
         app = build_app(url)
         scheduler = ProcrastinateScheduler(app)
@@ -428,6 +462,7 @@ async def m05_environment(url: str, *, flags: frozenset[str] = FLAGS) -> AsyncIt
             assert account_id is not None
             env.sender.sends.clear()
             env.sender.edits.clear()
+            sender.control_messages.clear()
             yield M05Scenario(
                 env, fake, app, handlers, wiring, account_id, conv.id, conv.contact_id, settings
             )

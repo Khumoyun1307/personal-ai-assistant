@@ -1,5 +1,6 @@
 """Deterministic digest delivery, recurrence and downtime recovery."""
 
+import re
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -8,6 +9,7 @@ import pytest
 from assistant.automation.models import AutomationOccurrence
 from assistant.db.uow import transaction
 from assistant.inbox.models import Digest
+from assistant.inbox.notify import AlertKind
 from tests.integration.business_env import OWNER, deliver, private_message
 from tests.integration.p2_factories import seed_automation
 from tests.scenarios.m05_drive import M05Scenario, advance, run_queued
@@ -40,6 +42,39 @@ async def fire(s: M05Scenario) -> None:
     await advance(s, 0, periodic=("system.reconcile_schedules",))
     assert await run_queued(s, "automation.fire") == 1
     assert await run_queued(s, "digest.build") == 1
+
+
+def assert_late_note(s: M05Scenario, message_id: int | None) -> None:
+    assert re.search(r"\blate\b", s.output_for(message_id), re.IGNORECASE), (
+        "the digest message must include a late note"
+    )
+
+
+async def test_late_note_assertion_rejects_other_messages_and_substrings(m05: M05Scenario) -> None:
+    await m05.handlers.alerts.notify_owner(
+        m05.account_id,
+        AlertKind.CONNECTION_CHANGE,
+        dedupe_key="late-proof-unrelated",
+        body="An unrelated synthetic alert arrived late.",
+    )
+    for number, body in enumerate(("Synthetic digest.", "Please try again later.")):
+        result = await m05.handlers.alerts.notify_owner(
+            m05.account_id,
+            AlertKind.CONNECTION_CHANGE,
+            dedupe_key=f"late-proof-negative:{number}",
+            body=body,
+        )
+        assert result.sent
+        with pytest.raises(AssertionError):
+            assert_late_note(m05, result.message_id)
+    result = await m05.handlers.alerts.notify_owner(
+        m05.account_id,
+        AlertKind.CONNECTION_CHANGE,
+        dedupe_key="late-proof-positive",
+        body="Synthetic digest delivered late after downtime.",
+    )
+    assert result.sent
+    assert_late_note(m05, result.message_id)
 
 
 @pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.3b")
@@ -79,8 +114,9 @@ async def test_a_missed_digest_after_downtime_fires_late_with_a_note(m05: M05Sce
     await fire(m05)
     [row] = await m05.rows(AutomationOccurrence)
     assert (row.status, row.note_code) == ("fired", "late")
-    assert "late" in m05.output().lower()
-    assert (await m05.rows(Digest))[0].status == "sent"
+    [digest] = await m05.rows(Digest)
+    assert digest.status == "sent"
+    assert_late_note(m05, digest.message_id)
 
 
 @pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S05.3b")

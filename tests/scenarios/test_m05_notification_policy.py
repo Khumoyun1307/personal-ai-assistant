@@ -3,6 +3,7 @@
 import pytest
 
 from assistant.inbox.models import Digest, Notification
+from assistant.inbox.notify import ALERT_TEXT, AlertKind
 from tests.fakes.sender import network_error
 from tests.integration.business_env import callback, deliver
 from tests.scenarios.m05_drive import M05Scenario, advance, run_queued
@@ -61,32 +62,29 @@ async def test_the_hourly_cap_batches_extra_standard_alerts(m05: M05Scenario) ->
 async def test_a_system_alert_is_delivered_during_quiet_hours_with_the_cap_reached(
     m05: M05Scenario,
 ) -> None:
-    from assistant.db.uow import transaction
-    from tests.integration.p2_factories import seed_action
-
+    assert AlertKind.DELIVERY_UNCERTAIN in ALERT_TEXT, "awaiting S04.4 + CP4"
     await m05.preferences(quiet_hours="off", alert_cap_per_hour=1)
     await m05.alert(key="fill-cap")
     await run_queued(m05, "notify.deliver")
+    [standard] = await m05.rows(Notification)
+    assert standard.status == "sent"
+    before = len(m05.env.sender.sends)
+    assert before == 1
     await m05.preferences(quiet_hours="00:00-23:59")
-    async with transaction(m05.env.factory) as uow:
-        action = await seed_action(
-            uow.session,
-            account_id=m05.account_id,
-            conversation_id=m05.conversation_id,
-            state="delivery_uncertain",
-            created_at=m05.env.clock.now(),
-            updated_at=m05.env.clock.now(),
-        )
-    await m05.alert(
-        key="system",
-        kind="system",
-        priority="urgent",
-        alert_class="system",
-        action_ids=(action.id,),
+    result = await m05.handlers.alerts.notify_owner(
+        m05.account_id,
+        AlertKind.DELIVERY_UNCERTAIN,
+        dedupe_key="qa-delivery-uncertain",
+        contact="Synthetic contact",
     )
-    await run_queued(m05, "notify.deliver")
-    assert [r.status for r in await m05.rows(Notification)] == ["sent", "sent"]
-    assert len(m05.env.sender.sends) == 2
+    assert result.sent
+    assert result.reason == "sent"
+    assert len(m05.env.sender.sends) == before + 1
+    rows = await m05.rows(Notification)
+    assert len(rows) == 2
+    system = rows[-1]
+    assert (system.kind, system.alert_class, system.status) == ("system", "system", "sent")
+    assert system.message_id == result.message_id
 
 
 async def test_a_duplicate_alert_is_sent_once(m05: M05Scenario) -> None:
