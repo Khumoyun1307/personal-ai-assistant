@@ -1,4 +1,14 @@
-"""M04 reconcilers (F0-interfaces §6.3): domain rows are the truth, jobs are triggers.
+"""M04 reconcilers (F0-interfaces §6.3; ARCHITECTURE §12.4).
+
+Domain rows are the source of truth and jobs are triggers (AGENTS §13). These
+live in the jobs adapter because they read procrastinate's own table.
+
+`unqueued_executions` (S04.4): an `approved` action that is due (no
+`retry_at` ahead) and has had no change for a few seconds, with no
+`actions.execute` job queued or running for it, lost its job — a crash
+between the approval's commit and its defer (ARCHITECTURE §9.5), or a
+re-defer lost after a WAIT or a 429. Re-deferring is safe by construction:
+Tx A's conditional claim lets only one job send.
 
 `UnqueuedDrafts` (S04.2 §3.9): a conversation in Assist whose
 `pending_draft_at` is older than the grace period, with no queued or running
@@ -9,8 +19,6 @@ for bot chats, and only for accounts whose consent lets a draft run (the job
 re-checks): without consent the flag simply waits. A flag found on a chat
 that left Assist, or while the trigger is off, is cleared here, in the
 reconciling transaction, so it is never re-deferred every cycle.
-
-Lives in the jobs adapter because it reads procrastinate's own table.
 """
 
 from __future__ import annotations
@@ -23,12 +31,34 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.actions.config import ActionsConfig
 from assistant.agent.drafting import draft_consent_ok
-from assistant.core.jobs import DRAFT_TASK, DraftReason, draft_queueing_lock
+from assistant.core.jobs import DRAFT_TASK, EXECUTE_TASK, DraftReason, draft_queueing_lock
 from assistant.jobs.reconcile import DeferRequest
+
+#: Do not race the defer that normally follows an approval's commit.
+EXECUTE_GRACE = timedelta(seconds=10)
+EXECUTE_BATCH = 500
 
 #: Do not race a defer that is happening right now.
 DRAFT_GRACE = timedelta(seconds=30)
 DRAFT_BATCH = 500
+
+_UNQUEUED_EXECUTIONS = text(
+    """
+    SELECT a.id
+    FROM app.actions AS a
+    WHERE a.state = 'approved'
+      AND (a.retry_at IS NULL OR a.retry_at <= :now)
+      AND a.updated_at < :older_than
+      AND NOT EXISTS (
+          SELECT 1 FROM procrastinate.procrastinate_jobs AS j
+          WHERE j.task_name = :task
+            AND j.args ->> 'action_id' = a.id::text
+            AND j.status IN ('todo', 'doing')
+      )
+    ORDER BY a.id
+    LIMIT :limit
+    """
+)
 
 _CLEAR_STRAY_FLAGS = text(
     """
@@ -62,6 +92,20 @@ _UNQUEUED_DRAFTS = text(
     LIMIT :limit
     """
 )
+
+
+async def unqueued_executions(session: AsyncSession, now: datetime) -> list[DeferRequest]:
+    """`actions.execute` defers for approved actions whose job was lost."""
+    rows = await session.execute(
+        _UNQUEUED_EXECUTIONS,
+        {
+            "now": now,
+            "older_than": now - EXECUTE_GRACE,
+            "task": EXECUTE_TASK,
+            "limit": EXECUTE_BATCH,
+        },
+    )
+    return [DeferRequest(EXECUTE_TASK, {"action_id": int(row[0])}) for row in rows.all()]
 
 
 @dataclass(frozen=True, slots=True)

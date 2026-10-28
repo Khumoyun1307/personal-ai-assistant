@@ -3,10 +3,12 @@ unapproved text (S04.1 Â§5; invariants 1 and 6).
 
 A hypothesis state machine drives one synthetic chat through proposals,
 approvals (current and stale tokens), edits, rejections, contact and owner
-messages and expiry, and executes approved actions through a minimal Tx A
-harness: the Â§9.4 locks, `load_context` + `decide`, the conditional claim
-`approved â†’ executing`, a recorded "send", then `executing â†’ succeeded`.
-S04.4 swaps the harness for the real executor and re-runs this machine.
+messages and expiry, and executes approved actions through the real
+executor (S04.4): Tx A, the gateway with `FakeTelegramSender` scripted per
+attempt to answer OK, OK with a pending identity, 429, nothing (ambiguous)
+or a refusal, then Tx B; `system.mark_uncertain` runs between steps. Same
+invariants as S04.1's harness, plus: no `delivery_uncertain` action is ever
+claimed again.
 
 Hypothesis state machines are synchronous, so each machine owns an event
 loop and a database engine. Derandomised and bounded; no wall clock.
@@ -33,28 +35,30 @@ from hypothesis.stateful import (
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from assistant.accounts.models import Account, AuditLogEntry
+from assistant.accounts.models import AuditLogEntry
+from assistant.actions.executor import ActionExecutor
 from assistant.actions.lifecycle import (
     apply_new_version,
     approve,
     cancel_edit,
     expire_due,
     reject,
-    sendable_length,
     start_edit,
     text_hash,
-    transition,
 )
 from assistant.actions.models import Action
-from assistant.actions.policy_loader import KEY_INGESTION_BARRIER, load_context
+from assistant.actions.policy_loader import KEY_INGESTION_BARRIER
 from assistant.actions.proposals import propose
-from assistant.actions.states import ActionKind, ActionOrigin, ActionState
+from assistant.actions.states import ActionOrigin, ActionState
 from assistant.conversations.models import Conversation, Message
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.db.models import SystemState
-from assistant.policy.context import ActionFacts, Outcome, Phase
-from assistant.policy.engine import decide, execution_target
-from tests.fakes.clock import FakeClock
+from assistant.inbox.notify import OwnerAlerts
+from assistant.telegram.business_targets import BusinessTargetResolver
+from assistant.telegram.gateway import OutboundGateway
+from tests.fakes.channel import FakeChannel
+from tests.fakes.clock import FakeClock, FakeSleep
+from tests.fakes.sender import FakeTelegramSender, network_error, telegram_error
 from tests.integration.actions_env import CONFIG, Chat, add_message, request, seed_chat, seed_turn
 
 pytestmark = pytest.mark.integration
@@ -66,9 +70,31 @@ RESET = "TRUNCATE app.accounts, app.inbound_updates, app.system_state CASCADE"
 
 @dataclass
 class Sent:
+    """An attempt Telegram may have delivered (it answered OK, or not at all)."""
+
     action_id: int
     version: int
     text: str
+    claimed_at: datetime
+
+
+#: What scripted Telegram answers an attempt with (S04.4 re-run).
+TELEGRAM_OUTCOMES = ("ok", "pending_identity", "rate_limited", "ambiguous", "refused")
+POSSIBLY_DELIVERED = frozenset({"ok", "pending_identity", "ambiguous"})
+
+
+def scripted(outcome: str, message_id: int) -> Exception | int:
+    match outcome:
+        case "ok":
+            return message_id
+        case "pending_identity":
+            return 0
+        case "rate_limited":
+            return telegram_error("Too Many Requests", status_code=429, retry_after=1)
+        case "ambiguous":
+            return network_error()
+        case _:
+            return telegram_error("Forbidden: bot was blocked by the user", status_code=403)
 
 
 @dataclass
@@ -96,6 +122,23 @@ class ActionMachine(RuleBasedStateMachine):
         self.sends: list[Sent] = []
         self.basis: dict[int, Basis] = {}
         self.texts = 0
+        # S04.4: the real executor, its gateway resolving real targets, and
+        # Telegram scripted per attempt.
+        self.sender = FakeTelegramSender()
+        self.message_ids = 4_000_000
+        self.executor = ActionExecutor(
+            session_factory=self.factory,
+            clock=self.clock,
+            config=CONFIG,
+            sender=OutboundGateway(
+                self.sender,
+                self.clock,
+                sleep=FakeSleep(),
+                targets=BusinessTargetResolver(self.factory),
+            ),
+            alerts=OwnerAlerts(self.factory, FakeChannel(), self.clock),
+            scheduler=None,
+        )
 
     def run(self, awaitable: Awaitable[T]) -> T:
         return self.loop.run_until_complete(awaitable)
@@ -311,11 +354,19 @@ class ActionMachine(RuleBasedStateMachine):
 
         self.run(go())
 
-    @rule()
-    def execute_sends(self) -> None:
-        self.run(self.execute_approved())
+    @rule(outcome=st.sampled_from(TELEGRAM_OUTCOMES))
+    def execute_sends(self, outcome: str) -> None:
+        self.run(self.execute_approved(outcome))
 
-    async def execute_approved(self) -> None:
+    @rule()
+    def sweep_uncertain(self) -> None:
+        """`system.mark_uncertain` after its threshold."""
+        self.clock.advance(seconds=CONFIG.mark_uncertain_after.total_seconds() + 1)
+        self.run(self.executor.mark_uncertain())
+
+    async def execute_approved(self, outcome: str) -> None:
+        """The real executor (S04.4) against Telegram scripted to answer
+        `outcome`: a send, a 429, no answer, or a definite refusal."""
         async with self.factory() as session:
             approved = list(
                 await session.scalars(
@@ -326,92 +377,18 @@ class ActionMachine(RuleBasedStateMachine):
                 )
             )
         for action_id in approved:
-            claimed = await self.tx_a(action_id)
-            if claimed is None:
-                continue
-            self.sends.append(claimed)  # the "send", outside any transaction
-            async with self.factory() as session, session.begin():
-                await transition(
-                    session,
-                    account_id=self.c.account_id,
-                    action_id=action_id,
-                    from_state=ActionState.EXECUTING,
-                    to_state=ActionState.SUCCEEDED,
-                    reason=None,
-                    now=self.clock.now(),
-                    values={"attempt_id": "attempt"},
-                )
-
-    async def tx_a(self, action_id: int) -> Sent | None:
-        """The claim: Â§9.4 lock order, then policy, then a conditional update."""
-        now = self.clock.now()
-        async with self.factory() as session, session.begin():
-            await session.execute(
-                select(Account.id).where(Account.id == self.c.account_id).with_for_update(read=True)
-            )
-            await session.execute(
-                select(Conversation.id)
-                .where(Conversation.id == self.c.conversation_id)
-                .with_for_update(read=True)
-            )
-            row = await session.scalar(
-                select(Action).where(Action.id == action_id).with_for_update()
-            )
-            if row is None or row.state != ActionState.APPROVED.value or row.text is None:
-                return None
-            facts = ActionFacts(
-                action_id=row.id,
-                kind=ActionKind(row.kind),
-                origin=ActionOrigin(row.origin),
-                state=ActionState(row.state),
-                version=row.version,
-                text_length=sendable_length(row.text),
-                created_at=row.created_at,
-                expires_at=row.expires_at,
-                shown_through_message_id=row.shown_through_message_id,
-                owner_retry=False,
-            )
-            context = await load_context(
-                session,
-                account_id=self.c.account_id,
-                conversation_id=self.c.conversation_id,
-                facts=facts,
-                base_message_id=row.base_message_id,
-                target_message_id=None,
-                owner_requested=row.origin == "owner_dictated" or row.trigger_turn_id is not None,
-                phase=Phase.EXECUTION,
-                now=now,
-                config=CONFIG,
-                ai_generated=row.origin == "agent_proposal",
-                process_run_id=CONFIG.process_run_id,
-            )
-            decision = decide(context)
-            if decision.outcome is not Outcome.ALLOW_AUTO:
-                target = execution_target(decision)
-                if target is not None:
-                    await transition(
-                        session,
-                        account_id=self.c.account_id,
-                        action_id=row.id,
-                        from_state=ActionState.APPROVED,
-                        to_state=target[0],
-                        reason=target[1],
-                        now=now,
-                    )
-                return None
-            if not await transition(
-                session,
-                account_id=self.c.account_id,
-                action_id=row.id,
-                from_state=ActionState.APPROVED,
-                to_state=ActionState.EXECUTING,
-                reason=None,
-                now=now,
-                expected_version=row.version,
-                values={"attempt_id": "attempt", "attempt_started_at": now},
-            ):
-                return None
-            return Sent(row.id, row.version, row.text)
+            async with self.factory() as session:
+                version = await session.scalar(select(Action.version).where(Action.id == action_id))
+            before = len(self.sender.plain_sends)
+            self.message_ids += 1
+            self.sender.plain_script = [scripted(outcome, self.message_ids)]
+            await self.executor.execute(action_id)
+            self.sender.plain_script = []
+            if len(self.sender.plain_sends) > before and outcome in POSSIBLY_DELIVERED:
+                # Telegram may hold it: from here on this action counts as sent.
+                text = self.sender.plain_sends[-1]["text"]
+                assert version is not None
+                self.sends.append(Sent(action_id, version, text, self.clock.now()))
 
     # ------------------------------------------------------------ invariants
     @invariant()
@@ -436,12 +413,7 @@ class ActionMachine(RuleBasedStateMachine):
                         )
                     )
                     assert sent.version in [details["version"] for details in approvals]
-                    claimed_at = await session.scalar(
-                        select(AuditLogEntry.at).where(
-                            AuditLogEntry.subject_id == sent.action_id,
-                            AuditLogEntry.event == "action_claimed",
-                        )
-                    )
+                    claimed_at = sent.claimed_at
                     basis = self.basis[sent.action_id]
                     newer_contact = await session.scalar(
                         select(Message.id)
@@ -469,9 +441,38 @@ class ActionMachine(RuleBasedStateMachine):
                         message_at = await session.scalar(
                             select(Message.sent_at).where(Message.id == newer_contact)
                         )
-                        assert claimed_at is not None
                         assert message_at is not None
                         assert message_at > claimed_at, "sent over a newer contact message"
+
+        self.run(check())
+
+    @invariant()
+    def no_uncertain_action_is_ever_sent_again(self) -> None:
+        """S04.4: once an attempt is `delivery_uncertain`, nothing claims
+        that action again (invariant 6)."""
+        if self.chat is None:
+            return
+
+        async def check() -> None:
+            async with self.factory() as session:
+                rows = (
+                    await session.execute(
+                        select(AuditLogEntry.subject_id, AuditLogEntry.id, AuditLogEntry.event)
+                        .where(
+                            AuditLogEntry.subject_type == "action",
+                            AuditLogEntry.event.in_(
+                                ["action_delivery_uncertain", "action_claimed"]
+                            ),
+                        )
+                        .order_by(AuditLogEntry.id)
+                    )
+                ).all()
+            uncertain: set[int] = set()
+            for action_id, _, event in rows:
+                if event == "action_delivery_uncertain":
+                    uncertain.add(action_id)
+                else:
+                    assert action_id not in uncertain, "an uncertain action was claimed again"
 
         self.run(check())
 

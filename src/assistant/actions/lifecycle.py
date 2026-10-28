@@ -28,6 +28,7 @@ from assistant.actions.states import (
     LIVE_CARD,
     PENDING,
     TRANSITIONS,
+    ActionOrigin,
     ActionState,
     StateReason,
 )
@@ -45,12 +46,15 @@ async def _change_pending(
     target: ActionState,
     reason: StateReason,
     now: datetime,
+    origins: frozenset[ActionOrigin] | None = None,
 ) -> list[int]:
     previous = select(Action.id.label("old_id"), Action.state.label("old_state")).where(
         Action.account_id == account_id, Action.state.in_(states)
     )
     if conversation_ids is not None:
         previous = previous.where(Action.conversation_id.in_(conversation_ids))
+    if origins is not None:
+        previous = previous.where(Action.origin.in_([origin.value for origin in origins]))
     source = previous.cte("previous_actions")
     rows = (
         await session.execute(
@@ -127,6 +131,65 @@ async def cancel_pending(
         target=ActionState.CANCELLED,
         reason=reason,
         now=now,
+    )
+
+
+# S04.4: origin-filtered and account-wide variants, with the same guarantees.
+# The callers hold the locks their path already takes (§9.4 order); a claimed
+# action (`executing`) is never touched: its send has its own outcome.
+async def cancel_autonomous_pending(
+    session: AsyncSession, *, account_id: int, now: datetime
+) -> list[int]:
+    """`/pause` (P2-T23): every pending autonomous action of the account is
+    cancelled; drafts and owner approvals stay what they are."""
+    return await _change_pending(
+        session,
+        account_id=account_id,
+        conversation_ids=None,
+        states=frozenset(PENDING),
+        target=ActionState.CANCELLED,
+        reason=StateReason.AUTONOMY_PAUSED,
+        now=now,
+        origins=frozenset({ActionOrigin.DELEGATION_AUTO}),
+    )
+
+
+async def outdate_pending_for_account(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    reason: StateReason,
+    include_approved: bool,
+    now: datetime,
+) -> list[int]:
+    """`outdate_pending` for every conversation of the account (a rights
+    change: what was approved under the old rights must be looked at again)."""
+    states = LIVE_CARD | ({ActionState.APPROVED} if include_approved else set())
+    return await _change_pending(
+        session,
+        account_id=account_id,
+        conversation_ids=None,
+        states=frozenset(states),
+        target=ActionState.OUTDATED,
+        reason=reason,
+        now=now,
+    )
+
+
+async def cancel_pending_ai_generated(
+    session: AsyncSession, *, account_id: int, reason: StateReason, now: datetime
+) -> list[int]:
+    """`ai_managed` revoked: pending AI drafts are cancelled; texts the owner
+    dictated are the owner's own words, not AI content, and stay."""
+    return await _change_pending(
+        session,
+        account_id=account_id,
+        conversation_ids=None,
+        states=frozenset(PENDING),
+        target=ActionState.CANCELLED,
+        reason=reason,
+        now=now,
+        origins=frozenset({ActionOrigin.AGENT_PROPOSAL}),
     )
 
 
@@ -294,7 +357,9 @@ async def transition(
         "reason": None if reason is None else reason.value,
         **details,
     }
-    if "attempt_id" in values:
+    if values.get("attempt_id") is not None:
+        # The claim's new attempt; a transition that clears it (a 429's
+        # return to `approved`) names the closed attempt through `details`.
         audit["attempt_id"] = values["attempt_id"]
     session.add(
         AuditLogEntry(

@@ -20,10 +20,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import callbacks, connections, service
 from assistant.accounts.models import Account
+from assistant.actions import autonomy
 from assistant.agent.confirmations import TOOL_CONFIRM_CARD
 from assistant.conversations import read, visibility
 from assistant.core.clock import Clock
@@ -33,6 +34,7 @@ from assistant.core.jobs import (
     JobScheduler,
     owner_control_lock,
 )
+from assistant.db.uow import after_commit
 from assistant.inbox.connection_alerts import VISIBILITY
 from assistant.memory.undo import UNDO_CARD
 from assistant.observability.logging import get_logger
@@ -46,6 +48,13 @@ logger = get_logger(__name__)
 
 #: Commands that work before onboarding completes.
 PRE_ONBOARDING_COMMANDS = frozenset({"start", "help", "privacy"})
+
+#: The kill switch's acknowledgements (S04.4 §3.7): /pause stops automatic
+#: replies only (P2-T23), and says so.
+PAUSED_TEXT = (
+    "Paused: no automatic replies until you send /resume. Replies you approve are still sent."
+)
+RESUMED_TEXT = "Resumed."
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,14 +130,15 @@ class ControlDispatcher:
 
         # Precedence rule 2: the kill switch never depends on the model.
         if not message.forwarded and handlers.is_stop_word(message.text):
-            account.autonomy_paused = True
-            await session.flush()
-            await service.clear_pending_input(session, account_id=account.id)
-            send = await self._gateway.send_text(
-                ControlChat(account_id=account.id, chat_id=message.chat_id),
-                "Paused. I will not act on your behalf until you send /resume.",
+            await autonomy.pause(
+                session,
+                account_id=account.id,
+                now=self._clock.now(),
+                source=autonomy.SOURCE_STOP_WORD,
             )
-            return DispatchOutcome(HandlerResult(True, "pause", send, note="stop_word"), account.id)
+            await service.clear_pending_input(session, account_id=account.id)
+            self._acknowledge_after_commit(session, account, message, PAUSED_TEXT)
+            return DispatchOutcome(HandlerResult(True, "pause", None, note="stop_word"), account.id)
 
         # Precedence rule 3: an open question consumes this message.
         pending = (
@@ -200,6 +210,20 @@ class ControlDispatcher:
             )
             note = "queued_for_agent"
         return DispatchOutcome(HandlerResult(True, "free_text", None, note=note), account.id)
+
+    def _acknowledge_after_commit(
+        self, session: AsyncSession, account: Account, message: IncomingMessage, text: str
+    ) -> None:
+        """The kill switch's reply goes out only once its transaction has
+        committed (ARCHITECTURE §9.4): "Paused" is never said for a pause a
+        rollback undid (§6 invariant 11)."""
+        target = ControlChat(account_id=account.id, chat_id=message.chat_id)
+        gateway = self._gateway
+
+        async def acknowledge(_: async_sessionmaker[AsyncSession]) -> None:
+            await gateway.send_text(target, text)
+
+        after_commit(session, acknowledge)
 
     async def _activate_pending_connection(self, session: AsyncSession, account: Account) -> None:
         """A connection that arrived before onboarding goes live now (J1 edge case).
@@ -365,21 +389,23 @@ class ControlDispatcher:
                     session, self._gateway, self._clock, account, message
                 )
             case "pause":
-                account.autonomy_paused = True
-                await session.flush()
-                send = await self._gateway.send_text(
-                    ControlChat(account_id=account.id, chat_id=message.chat_id),
-                    "Paused. Send /resume to continue.",
+                await autonomy.pause(
+                    session,
+                    account_id=account.id,
+                    now=self._clock.now(),
+                    source=autonomy.SOURCE_COMMAND,
                 )
-                return HandlerResult(True, "pause", send)
+                self._acknowledge_after_commit(session, account, message, PAUSED_TEXT)
+                return HandlerResult(True, "pause", None)
             case "resume":
-                account.autonomy_paused = False
-                await session.flush()
-                send = await self._gateway.send_text(
-                    ControlChat(account_id=account.id, chat_id=message.chat_id),
-                    "Resumed.",
+                await autonomy.resume(
+                    session,
+                    account_id=account.id,
+                    now=self._clock.now(),
+                    source=autonomy.SOURCE_COMMAND,
                 )
-                return HandlerResult(True, "resume", send)
+                self._acknowledge_after_commit(session, account, message, RESUMED_TEXT)
+                return HandlerResult(True, "resume", None)
             case _:
                 if handler := self._routes.commands.get(command):
                     return await handler(

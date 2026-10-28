@@ -46,10 +46,56 @@ class FakeTelegramSender:
         #: Telegram is being called" (e.g. which rows are locked).
         self.on_call: Callable[[], Awaitable[None]] | None = None
         self._next_message_id = 1000
+        #: Plain-text business calls (S04.4): `sendMessage` and
+        #: `editMessageText` as the owner, with every argument.
+        self.plain_sends: list[dict[str, Any]] = []
+        self.plain_edits: list[dict[str, Any]] = []
+        #: Scripted outcomes of plain sends, consumed in order before
+        #: `fail_with` applies: an exception is raised, an int is returned as
+        #: the message id (0 = Telegram's "pending identity").
+        self.plain_script: list[Exception | int] = []
 
     async def _observe(self) -> None:
         if self.on_call is not None:
             await self.on_call()
+
+    async def send_plain_message(
+        self, *, chat_id: int, text: str, business_connection_id: str
+    ) -> dict[str, Any]:
+        await self._observe()
+        self.plain_sends.append(
+            {"chat_id": chat_id, "text": text, "business_connection_id": business_connection_id}
+        )
+        if self.plain_script:
+            scripted = self.plain_script.pop(0)
+            if isinstance(scripted, Exception):
+                raise scripted
+            return {"message_id": scripted, "chat": {"id": chat_id}}
+        if self.fail_with is not None:
+            raise self.fail_with
+        self._next_message_id += 1
+        return {"message_id": self._next_message_id, "chat": {"id": chat_id}}
+
+    async def edit_plain_message_text(
+        self, *, chat_id: int, message_id: int, text: str, business_connection_id: str
+    ) -> dict[str, Any]:
+        await self._observe()
+        self.plain_edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                "business_connection_id": business_connection_id,
+            }
+        )
+        if self.fail_with is not None:
+            raise self.fail_with
+        return {"message_id": message_id}
+
+    @property
+    def business_calls(self) -> int:
+        """Every call that would act as the owner in a business chat."""
+        return len(self.plain_sends) + len(self.plain_edits) + len(self.deletes)
 
     async def send_message(
         self,
