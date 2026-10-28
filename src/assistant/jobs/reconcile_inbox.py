@@ -9,7 +9,12 @@ from datetime import datetime, timedelta
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.core.jobs import NOTIFY_TASK, notification_queueing_lock
+from assistant.core.jobs import (
+    NOTIFY_TASK,
+    TRIAGE_TASK,
+    notification_queueing_lock,
+    triage_queueing_lock,
+)
 from assistant.jobs.reconcile import DeferRequest, Reconciler
 
 #: A queued notification younger than this still has its own defer coming.
@@ -60,6 +65,61 @@ def notification_reconciler(*, enabled: bool) -> Reconciler:
                 queueing_lock=notification_queueing_lock(int(notification_id)),
             )
             for (notification_id,) in result.all()
+        ]
+
+    return reconcile
+
+
+#: A flagged conversation younger than this still has its own defer coming.
+TRIAGE_GRACE = timedelta(seconds=30)
+TRIAGE_BATCH = 500
+
+_UNQUEUED_TRIAGE = text(
+    """
+    SELECT c.id
+    FROM app.conversations AS c
+    JOIN app.contacts AS k ON k.id = c.contact_id
+    WHERE c.pending_triage_at IS NOT NULL
+      AND c.pending_triage_at < :older_than
+      AND c.mode IN ('observe', 'assist')
+      AND NOT k.is_bot
+      AND EXISTS (
+          SELECT 1 FROM app.consents AS s
+          WHERE s.account_id = c.account_id
+            AND s.kind = 'ai_managed'
+            AND s.revoked_at IS NULL
+      )
+      AND NOT EXISTS (
+          -- By queueing lock (`triage:{id}`, core/jobs.py).
+          SELECT 1 FROM procrastinate.procrastinate_jobs AS j
+          WHERE j.queueing_lock = 'triage:' || c.id::text
+            AND j.task_name = :task
+            AND j.status IN ('todo', 'doing')
+      )
+    ORDER BY c.pending_triage_at, c.id
+    LIMIT :limit
+    """
+)
+
+
+def triage_reconciler() -> Reconciler:
+    """Flagged Observe/Assist chats (not bots, with `ai_managed` active)
+    whose `inbox.triage` job was lost (S05.1 §3.8). Wired only while flag
+    `triage.run` is on."""
+
+    async def reconcile(session: AsyncSession, now: datetime) -> list[DeferRequest]:
+        result = await session.execute(
+            _UNQUEUED_TRIAGE,
+            {"older_than": now - TRIAGE_GRACE, "task": TRIAGE_TASK, "limit": TRIAGE_BATCH},
+        )
+        return [
+            DeferRequest(
+                TRIAGE_TASK,
+                {"conversation_id": int(conversation_id)},
+                queueing_lock=triage_queueing_lock(int(conversation_id)),
+                schedule_at=now,
+            )
+            for (conversation_id,) in result.all()
         ]
 
     return reconcile

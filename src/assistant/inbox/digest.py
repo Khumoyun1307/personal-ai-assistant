@@ -37,7 +37,7 @@ from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -49,13 +49,15 @@ from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.channel import Button, ControlChannel, Delivery
 from assistant.core.clock import Clock
 from assistant.db.uow import transaction
-from assistant.inbox.models import ConversationTriage, Digest, Notification, Task
+from assistant.inbox import tasks, triage_store
+from assistant.inbox.models import Digest, Notification
 from assistant.inbox.notification_types import AlertClass, NotificationKind
 from assistant.inbox.notifications import (
     NotificationView,
     mark_digested,
     notifications_batched_since,
 )
+from assistant.inbox.tasks import TaskView
 from assistant.memory import catch_up
 from assistant.memory.summaries import preferred_name
 from assistant.observability.logging import get_logger
@@ -78,6 +80,8 @@ MAX_PERIOD = timedelta(hours=48)
 #: Commitments due before this long after the period ends are listed
 #: (J7 step 2: due today and still open → in the next digest).
 COMMITMENT_HORIZON = timedelta(hours=24)
+#: Overdue commitments are listed until triage expires them.
+COMMITMENT_LOOKBACK = tasks.COMMITMENT_EXPIRY_AFTER_DUE
 #: The attention list's default window (`get_attention_list`) and size.
 WAITING_WINDOW = timedelta(days=7)
 WAITING_CANDIDATES = 100
@@ -229,15 +233,22 @@ async def build_digest(
     alert_chats = list(
         dict.fromkeys(n.conversation_id for n in needs_you_alerts if n.conversation_id)
     )
-    verdicts = await _verdicts(
-        session, account_id, [*alert_chats, *(c.conversation_id for c in candidates)]
+    # S05.1's read models: the stored verdict of each alerted chat, and the
+    # verdicts that have read a waiting chat's newest contact message
+    # (attention list v2).
+    verdicts = await triage_store.latest(
+        session, account_id=account_id, conversation_ids=alert_chats
     )
-    covering = await _covering(session, account_id, [c.conversation_id for c in candidates])
+    covering = await catch_up.covering_triage(
+        session, account_id, [c.conversation_id for c in candidates]
+    )
     names = await _names(session, account_id, alert_chats)
 
     needs_you = tuple(
         ChatLine(
-            conversation_id, names[conversation_id], _first_reason(verdicts.get(conversation_id))
+            conversation_id,
+            names[conversation_id],
+            _first_reason(verdicts[conversation_id].reasons if conversation_id in verdicts else ()),
         )
         for conversation_id in alert_chats
         if conversation_id in names  # a chat whose data is gone is not listed
@@ -247,14 +258,13 @@ async def build_digest(
     for candidate in candidates:
         if candidate.conversation_id in listed:
             continue
-        verdict = verdicts.get(candidate.conversation_id)
-        rank = 1
-        if candidate.conversation_id in covering and verdict is not None:
-            if not (verdict.needs_reply or verdict.requests_decision):
+        attention = covering.get(candidate.conversation_id)
+        rank, reason = 1, None
+        if attention is not None:
+            if not (attention.needs_reply or attention.requests_decision):
                 continue  # triage read the newest message: nothing is owed
-            rank = 0
+            rank, reason = 0, _first_reason(attention.reasons)
         name = preferred_name(candidate.display_name, candidate.username)
-        reason = _first_reason(verdict) if rank == 0 else None
         waiting.append(
             (rank, ChatLine(candidate.conversation_id, name, reason, candidate.last_contact_msg_at))
         )
@@ -287,11 +297,9 @@ async def build_digest(
     )
 
 
-def _first_reason(verdict: ConversationTriage | None) -> str | None:
-    if verdict is None:
-        return None
-    for reason in verdict.reasons or ():
-        if isinstance(reason, str) and reason.strip():
+def _first_reason(reasons: Sequence[str]) -> str | None:
+    for reason in reasons:
+        if reason.strip():
             return reason.strip()
     return None
 
@@ -328,45 +336,6 @@ async def _held_needs_you(
     ]
 
 
-async def _verdicts(
-    session: AsyncSession, account_id: int, conversation_ids: Sequence[int]
-) -> dict[int, ConversationTriage]:
-    """Each chat's stored triage verdict. (S05.1's `triage_store.latest`
-    reads the same rows; switch to it once S05.1's pipeline is merged.)"""
-    if not conversation_ids:
-        return {}
-    rows = await session.execute(
-        select(ConversationTriage)
-        .where(ConversationTriage.account_id == account_id)
-        .where(ConversationTriage.conversation_id.in_(sorted(set(conversation_ids))))
-    )
-    return {row.conversation_id: row for row in rows.scalars()}
-
-
-async def _covering(
-    session: AsyncSession, account_id: int, conversation_ids: Sequence[int]
-) -> set[int]:
-    """The chats whose verdict has read their newest contact message
-    (attention list v2, S05.1 §3.9): only then does the verdict decide."""
-    if not conversation_ids:
-        return set()
-    newest = (
-        select(Message.conversation_id, func.max(Message.id).label("newest"))
-        .where(Message.account_id == account_id)
-        .where(Message.conversation_id.in_(sorted(set(conversation_ids))))
-        .where(Message.direction == "contact")
-        .group_by(Message.conversation_id)
-        .subquery()
-    )
-    rows = await session.execute(
-        select(ConversationTriage.conversation_id)
-        .join(newest, newest.c.conversation_id == ConversationTriage.conversation_id)
-        .where(ConversationTriage.account_id == account_id)
-        .where(ConversationTriage.covers_through_message_id >= newest.c.newest)
-    )
-    return {int(conversation_id) for conversation_id in rows.scalars()}
-
-
 async def _names(
     session: AsyncSession, account_id: int, conversation_ids: Collection[int]
 ) -> dict[int, str | None]:
@@ -385,20 +354,20 @@ async def _names(
 
 
 async def _task_lines(
-    session: AsyncSession, account_id: int, tasks: Sequence[Task]
+    session: AsyncSession, account_id: int, views: Sequence[TaskView]
 ) -> tuple[TaskLine, ...]:
     names = await _names(
-        session, account_id, [t.conversation_id for t in tasks if t.conversation_id is not None]
+        session, account_id, [t.conversation_id for t in views if t.conversation_id is not None]
     )
     return tuple(
         TaskLine(
-            task_id=task.id,
-            kind=task.kind,
-            title=task.title,
-            name=None if task.conversation_id is None else names.get(task.conversation_id),
-            due_at=task.due_at,
+            task_id=view.task_id,
+            kind=view.kind,
+            title=view.title,
+            name=None if view.conversation_id is None else names.get(view.conversation_id),
+            due_at=view.due_at,
         )
-        for task in tasks
+        for view in views
     )
 
 
@@ -406,45 +375,33 @@ async def _commitments(
     session: AsyncSession, account_id: int, period_end: datetime
 ) -> tuple[tuple[TaskLine, ...], int]:
     """Open commitments (either side) due before the horizon, soonest first,
-    overdue ones included; a snoozed one is left out until its snooze ends.
-    (S05.1's `tasks.due_between` covers a bounded window; this one has no
-    lower bound.)"""
-    due = and_(
-        Task.account_id == account_id,
-        Task.status == "open",
-        Task.kind.in_(COMMITMENT_KINDS),
-        Task.due_at.is_not(None),
-        Task.due_at < period_end + COMMITMENT_HORIZON,
-        or_(Task.snoozed_until.is_(None), Task.snoozed_until <= period_end),
+    overdue ones included back to when triage expires them (S05.1's
+    `tasks.due_between`)."""
+    due = await tasks.due_between(
+        session,
+        account_id=account_id,
+        start=period_end - COMMITMENT_LOOKBACK,
+        end=period_end + COMMITMENT_HORIZON,
+        kinds=COMMITMENT_KINDS,
     )
-    total = int(await session.scalar(select(func.count(Task.id)).where(due)) or 0)
-    rows = (
-        await session.execute(
-            select(Task).where(due).order_by(Task.due_at, Task.id).limit(MAX_TASK_LINES)
-        )
-    ).scalars()
-    lines = await _task_lines(session, account_id, list(rows))
-    return lines, max(0, total - len(lines))
+    lines = await _task_lines(session, account_id, due[:MAX_TASK_LINES])
+    return lines, len(due) - len(lines)
 
 
 async def _closed(
     session: AsyncSession, account_id: int, period_start: datetime, period_end: datetime
 ) -> tuple[tuple[TaskLine, ...], int]:
-    """Tasks triage closed in the period (FR-TRI-05: reported in the digest)."""
-    closed = and_(
-        Task.account_id == account_id,
-        Task.closed_reason == RESOLVED_BY_TRIAGE,
-        Task.closed_at >= period_start,
-        Task.closed_at < period_end,
+    """Tasks triage closed in the period (FR-TRI-05: reported in the digest;
+    S05.1's `tasks.closed_between`)."""
+    closed = await tasks.closed_between(
+        session,
+        account_id=account_id,
+        start=period_start,
+        end=period_end,
+        reason=RESOLVED_BY_TRIAGE,
     )
-    total = int(await session.scalar(select(func.count(Task.id)).where(closed)) or 0)
-    rows = (
-        await session.execute(
-            select(Task).where(closed).order_by(Task.closed_at, Task.id).limit(MAX_TASK_LINES)
-        )
-    ).scalars()
-    lines = await _task_lines(session, account_id, list(rows))
-    return lines, max(0, total - len(lines))
+    lines = await _task_lines(session, account_id, closed[:MAX_TASK_LINES])
+    return lines, len(closed) - len(lines)
 
 
 _BY_DIRECTION = {

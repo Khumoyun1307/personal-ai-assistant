@@ -18,7 +18,9 @@ Account-scoped queries plus pure functions:
   question after the owner's last answer;
 - `needs_reply` + `open_to_owner` — the summary's "needs a reply", kept on
   while a question, decision or request to the owner is open (P9);
-- `importance` — the deterministic grouping of a catch-up.
+- `importance` — the deterministic grouping of a catch-up;
+- `covering_triage` — attention list v2 (S05.1 §3.9): the triage verdict
+  that has read a chat's newest contact message, with its open tasks.
 
 Caveat sentences carry times and counts only — no names, no message text —
 so they are the application's own words, not untrusted content.
@@ -39,6 +41,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts.models import AuditLogEntry, BusinessConnection, BusinessConnectionEvent
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.conversations.read import not_stored_while_ignored
+from assistant.inbox import tasks
+from assistant.inbox.models import ConversationTriage
+from assistant.inbox.tasks import TaskView
 
 #: Gap certainties a summary reports. `delayed` means the messages arrived
 #: late, nothing is missing (ARCHITECTURE §6.6, §10.3 `coverage_gaps`).
@@ -745,3 +750,65 @@ async def waiting_questions(
         if conversation_id not in found and has_question(text):
             found[int(conversation_id)] = WaitingQuestion(int(message_id), sent_at, str(text))
     return found
+
+
+# ------------------------------------------------------- attention v2 (S05.1)
+#: Open tasks shown per chat in the attention list, due first.
+ATTENTION_TASKS: Final = 5
+
+
+@dataclass(frozen=True, slots=True)
+class AttentionTriage:
+    """A chat's triage verdict, when it covers the chat's newest contact
+    message, with its open tasks. `reasons` and task titles are content
+    (model-written), to be wrapped untrusted by the tool."""
+
+    needs_reply: bool
+    requests_decision: bool
+    urgency: str
+    category: str
+    deadline_at: datetime | None
+    reasons: tuple[str, ...]
+    open_tasks: tuple[TaskView, ...]
+
+
+async def covering_triage(
+    session: AsyncSession, account_id: int, conversation_ids: Sequence[int]
+) -> dict[int, AttentionTriage]:
+    """Attention list v2 (S05.1 §3.9): the verdicts that cover each chat's
+    newest contact message. A chat whose newest contact message no verdict
+    has read yet is absent (it keeps the v1 behaviour)."""
+    if not conversation_ids:
+        return {}
+    newest = (
+        select(Message.conversation_id, func.max(Message.id).label("newest"))
+        .where(Message.account_id == account_id)
+        .where(Message.conversation_id.in_(list(conversation_ids)))
+        .where(Message.direction == "contact")
+        .group_by(Message.conversation_id)
+        .subquery()
+    )
+    verdicts = (
+        await session.execute(
+            select(ConversationTriage)
+            .join(newest, newest.c.conversation_id == ConversationTriage.conversation_id)
+            .where(ConversationTriage.account_id == account_id)
+            .where(ConversationTriage.covers_through_message_id >= newest.c.newest)
+        )
+    ).scalars()
+    found = {row.conversation_id: row for row in verdicts}
+    open_tasks = await tasks.open_by_conversation(
+        session, account_id=account_id, conversation_ids=list(found)
+    )
+    return {
+        conversation_id: AttentionTriage(
+            needs_reply=row.needs_reply,
+            requests_decision=row.requests_decision,
+            urgency=row.urgency,
+            category=row.escalation_category,
+            deadline_at=row.deadline_at,
+            reasons=tuple(str(reason) for reason in row.reasons or ()),
+            open_tasks=tuple(open_tasks[conversation_id][:ATTENTION_TASKS]),
+        )
+        for conversation_id, row in found.items()
+    }
