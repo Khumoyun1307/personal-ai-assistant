@@ -90,6 +90,10 @@ class ToolServices:
     approval_cards: ApprovalCardPresenter | None = None
     actions_config: ActionsConfig | None = None
     notifications_enabled: bool = False
+    #: The run's enabled feature flags, for a tool that must mirror another
+    #: tool's release flag (ICR-2: attention v2 offers `draft_reply` only
+    #: with `tool.propose_reply` on). Empty by default, so it fails closed.
+    enabled_flags: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)

@@ -30,8 +30,9 @@ from assistant.agent.ports import ControlChannel
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime
 from assistant.agent.summarize import SummarizeConfig, Summarizer
 from assistant.agent.tools.registry import ToolServices, default_registry
+from assistant.agent.triage import TriageConfig, Triager
 from assistant.automation.monitor_trigger import MonitorIngestionListener
-from assistant.automation.monitors import MON_CARD, render_monitor_match
+from assistant.automation.monitors import MON_CARD, MonitorMatchRenderer
 from assistant.config import ConfigError, Settings
 from assistant.conversations.listeners import IngestionListener
 from assistant.core.clock import Clock, SystemClock
@@ -43,15 +44,17 @@ from assistant.inbox.notification_types import NotificationKind
 from assistant.inbox.notifications import NTF_CARD, NotificationDelivery
 from assistant.inbox.notify import OwnerAlerts
 from assistant.inbox.processor import InboxProcessor
+from assistant.inbox.triage_store import TriageRepository
+from assistant.inbox.triage_trigger import TriageIngestionListener
 from assistant.jobs.app import QUEUE_SYSTEM, QUEUES, build_app, run_queue_worker
 from assistant.jobs.reconcile import Reconciler
-from assistant.jobs.reconcile_inbox import notification_reconciler
+from assistant.jobs.reconcile_inbox import notification_reconciler, triage_reconciler
 from assistant.jobs.reconcile_monitors import monitor_reconciler
 from assistant.jobs.scheduler import ProcrastinateScheduler
 from assistant.jobs.tasks import JobHandlers, register_tasks
 from assistant.jobs.tasks_actions import ActionsJobHandlers
 from assistant.jobs.tasks_automation import AutomationJobHandlers, MonitorJobs
-from assistant.jobs.tasks_inbox import InboxJobHandlers
+from assistant.jobs.tasks_inbox import InboxJobHandlers, TriageJob
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.metering import MeteredLLMClient
 from assistant.llm.openai_adapter import OpenAIClient
@@ -280,12 +283,57 @@ def _wire_m05(
     wiring.routes = replace(
         wiring.routes, callbacks={**wiring.routes.callbacks, NTF_CARD: handle_ntf_press}
     )
+    # S05.1: triage only while flag `triage.run` is on — the listener sets the
+    # flag and defers the job, the reconciler recovers lost defers, the job
+    # (worker role: it needs the model) runs the `Triager` with the production
+    # store. The Assist trigger reads the single switch (P2-O6); the draft
+    # request itself is S04.2's and is wired at CP4 (until then None).
+    if "triage.run" in settings.feature_flags:
+        debounce = timedelta(seconds=settings.triage_debounce_seconds)
+        wiring.listeners.append(
+            TriageIngestionListener(scheduler=scheduler, clock=clock, debounce=debounce)
+        )
+        wiring.reconcilers.append(triage_reconciler())
+        if llm is not None:
+            store = TriageRepository(
+                clock=clock,
+                scheduler=scheduler,
+                assist_draft_trigger=(
+                    "off"
+                    if wiring.actions_config is None
+                    else wiring.actions_config.assist_draft_trigger
+                ),
+                draft_requester=None,
+            )
+            triager = Triager(
+                session_factory=session_factory,
+                llm=llm,
+                clock=clock,
+                config=TriageConfig(
+                    model=settings.model_routes.model_for("triage"),
+                    effort=settings.llm_triage_effort,
+                    monthly_budget_usd=settings.llm_monthly_budget_usd,
+                ),
+                store=store,
+            )
+            wiring.inbox = replace(
+                wiring.inbox,
+                triage=TriageJob(
+                    session_factory=session_factory,
+                    triager=triager,
+                    scheduler=scheduler,
+                    clock=clock,
+                    debounce=debounce,
+                    alerts=OwnerAlerts(session_factory, channel, clock),
+                    monthly_budget_usd=settings.llm_monthly_budget_usd,
+                ),
+            )
     # S05.4: the `MONITOR_MATCH` renderer, the Stop button and the hourly
     # expiry are always wired; matching (the listener, registered LAST —
     # after actions and triage, F0-interfaces §5), the evaluation job and
     # its reconciler only while flag `monitors.run` is on. The tools follow
     # their own release flags.
-    delivery.register_renderer(NotificationKind.MONITOR_MATCH, render_monitor_match)
+    delivery.register_renderer(NotificationKind.MONITOR_MATCH, MonitorMatchRenderer(clock))
     wiring.routes = replace(
         wiring.routes, callbacks={**wiring.routes.callbacks, MON_CARD: handle_mon_press}
     )

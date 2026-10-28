@@ -150,11 +150,17 @@ async def test_the_panel_switches_to_ignore_only_after_a_confirmation(env: Env) 
         "observe",
         "ignore",
         "delete",
-    ]  # S03.5 adds Delete
+        "p_vip",
+        "p_normal",
+        "p_low",
+    ]  # S03.5 adds Delete, S05.2P the contact's priority
     assert keyboard_labels(panel_send["reply_markup"]) == [
         "Observe ✓",
         "Ignore",
         "Delete stored data…",
+        "VIP",
+        "Normal ✓",
+        "Low",
     ]
 
     await tap(env, panels.PANEL_CARD, "ignore")
@@ -174,6 +180,9 @@ async def test_the_panel_switches_to_ignore_only_after_a_confirmation(env: Env) 
         "Observe",
         "Ignore ✓",
         "Delete stored data…",
+        "VIP",
+        "Normal ✓",
+        "Low",
     ]
 
     # Observe applies at once from the panel.
@@ -649,7 +658,14 @@ async def test_settings_lists_chats_by_mode_page_by_page_and_opens_a_panel(env: 
     await tap(env, panels.LIST_CARD, f"o_{target}")
     panel = env.sender.sends[-1]
     assert panel["text"].startswith("<b>Synth0</b>")
-    assert keyboard_ops(panel["reply_markup"]) == ["observe", "ignore", "delete"]
+    assert keyboard_ops(panel["reply_markup"]) == [
+        "observe",
+        "ignore",
+        "delete",
+        "p_vip",
+        "p_normal",
+        "p_low",
+    ]
 
 
 async def test_a_list_cannot_open_another_accounts_chat(env: Env) -> None:

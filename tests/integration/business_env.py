@@ -250,6 +250,10 @@ async def environment(
     async def monitors_evaluate(conversation_id: int) -> None:  # deferred only (S05.4)
         return None
 
+    @app.task(name="inbox.triage", queue="llm")
+    async def inbox_triage(conversation_id: int) -> None:  # deferred only (S05.1)
+        return None
+
     scheduler = ProcrastinateScheduler(app)
     owners = owner_ids
     lookup = FakeLookup()

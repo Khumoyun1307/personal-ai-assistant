@@ -59,6 +59,10 @@ class Source(StrEnum):
     them, but they were written in a run that may have read other people's
     text, and they may carry names."""
 
+    TRIAGE_REASON = "triage_reason"
+    """A triage verdict's short reason (S05.1 attention v2): model-written
+    from a contact's messages, so it may carry an injection forward."""
+
 
 OPEN_TAG = '<untrusted source="{source}" trust="untrusted">'
 CLOSE_TAG = "</untrusted>"
