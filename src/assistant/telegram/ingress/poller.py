@@ -28,7 +28,7 @@ from assistant.telegram.ingress.ports import (
     TelegramConflictError,
     UpdateSource,
 )
-from assistant.telegram.ingress.writer import read_state, write_batch, write_state
+from assistant.telegram.ingress.writer import read_state, write_new_updates, write_state
 
 logger = get_logger(__name__)
 
@@ -198,11 +198,16 @@ class Poller:
 
         marked = False
         async with self._session_factory() as session, session.begin():
-            written = await write_batch(session, bot_id=self._bot_id, updates=updates)
+            stored = await write_new_updates(session, bot_id=self._bot_id, updates=updates)
+            written = len(stored)
             # The kill switch's fast lane, in the batch's own transaction: a
             # /pause waiting in Telegram's queue is in force once it is stored.
+            # Only updates stored by THIS write: a replayed one was stored
+            # (and maybe processed, with a later /resume) before, so it has
+            # no new effect; an unprocessed stored /pause still holds every
+            # claim through `inbox_drained` until the inbox applies it.
             pausing = fast_lane.pausing_owners(
-                updates,
+                [update for update in updates if update.get("update_id") in stored],
                 owner_ids=self._owner_ids,
                 bot_id=self._bot_id,
                 bot_username=self._bot_username,
