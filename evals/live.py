@@ -75,6 +75,7 @@ def resolve_model(route: str, override: str | None) -> ModelChoice:
         "owner_request": settings.llm_owner_request_effort,
         "summarize": settings.llm_summarize_effort,
         "triage": settings.llm_triage_effort,
+        "evaluate_monitor": settings.llm_evaluate_monitor_effort,
     }
     return ModelChoice(model, efforts.get(route))
 

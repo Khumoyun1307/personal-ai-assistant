@@ -51,6 +51,7 @@ def no_database(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "isolated_corpus", boom)
     monkeypatch.setattr(cli, "isolated_summary", boom)
     monkeypatch.setattr(cli, "isolated_triage", boom)
+    monkeypatch.setattr(cli, "isolated_monitors", boom)
 
 
 @pytest.fixture
@@ -512,11 +513,11 @@ def test_each_route_uses_the_effort_the_product_sends(monkeypatch: pytest.Monkey
 
 
 # -------------------------------------------------------------------- triage
-def test_the_triage_target_is_offered_and_estimate_only_spends_nothing(
+def test_triage_and_monitor_targets_are_offered_and_estimate_only_spends_nothing(
     forbid_client: None, no_settings: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # Estimating needs neither --live nor a client, and opens no database (the
-    # autouse fixture). The monitor target arrives with S05.4's evaluator.
+    # autouse fixture).
     code = cli.main(["run", "triage", "--model", LUNA, "--estimate-only"])
     out = capsys.readouterr().out
     match = re.search(
@@ -530,6 +531,41 @@ def test_the_triage_target_is_offered_and_estimate_only_spends_nothing(
     assert 0 < Decimal(match.group(2)) < 1  # fits the default per-run cap
     cli.main(["run", "triage", "--model", LUNA, "--estimate-only", "--limit", "1"])
     assert re.search(r"triage \(e3-bursts\): model gpt-6-luna, [12] calls", capsys.readouterr().out)
+
+    # The 30 monitor cases: one call per case and its truncation retry.
+    assert cli.main(["run", "monitors", "--model", LUNA, "--estimate-only"]) == 0
+    match = re.search(
+        r"monitors \(e3-monitor-cases\): model gpt-6-luna, 60 calls, worst case \$(\d\.\d{4})",
+        capsys.readouterr().out,
+    )
+    assert match
+    assert 0 < Decimal(match.group(1)) < 1
+    cli.main(["run", "monitors", "--model", LUNA, "--estimate-only", "--only", "m001,m002"])
+    out = capsys.readouterr().out
+    assert re.search(r"monitors \(e3-monitor-cases\): model gpt-6-luna, 4 calls", out)
+
+
+def test_a_monitor_run_refuses_without_the_live_flag_and_reaches_no_database(
+    forbid_client: None, no_settings: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["run", "monitors", "--model", LUNA]) == cli.EXIT_REFUSED
+    assert "--live" in capsys.readouterr().err
+    assert cli.main(["run", "monitors", "--model", LUNA, "--only", "m999"]) == cli.EXIT_REFUSED
+    assert "unknown cases" in capsys.readouterr().err
+    assert cli.main(["run", "monitors", "--live", "--calibrate-from", "x.json"]) == cli.EXIT_REFUSED
+    with pytest.raises(AssertionError, match="a model client was configured or built"):
+        cli.main(["run", "monitors", "--model", LUNA, "--live"])
+
+
+def test_the_monitor_route_uses_the_monitor_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        database_url="postgresql+psycopg://u:p@db:5432/a",
+        llm_evaluate_monitor_effort="medium",
+        llm_route_evaluate_monitor_model="gpt-6-sol",
+    )
+    monkeypatch.setattr(live, "_settings", lambda: settings)
+    assert live.resolve_model("evaluate_monitor", None) == live.ModelChoice("gpt-6-sol", "medium")
 
 
 def test_a_triage_run_refuses_without_the_live_flag_and_reaches_no_database(
@@ -553,8 +589,9 @@ def test_the_triage_route_uses_the_triage_effort(monkeypatch: pytest.MonkeyPatch
     assert live.resolve_model("triage", None) == live.ModelChoice(LUNA, "medium")
 
 
-def triage_report(directory: Path, model: str, status: str, cost: str) -> Path:
-    """A full triage run's JSON report, in the shape `evals/report.py` writes."""
+def triage_report(directory: Path, model: str, status: str, cost: str, *, refused: int = 0) -> Path:
+    """A full triage run's JSON report over 10 bursts, in the shape
+    `evals/report.py` writes; the first `refused` bursts were refused."""
     path = directory / f"{model}.json"
     metric = {
         "key": "alert_recall",
@@ -579,6 +616,10 @@ def triage_report(directory: Path, model: str, status: str, cost: str) -> Path:
         "prompts": ["triage.v1"],
         "metrics": [metric],
         "cost": {"per_model": {model: {"cost_per_100_items_usd": cost}}},
+        "details": [
+            {"id": f"b{n:03d}", "status": "refused" if n <= refused else "triaged"}
+            for n in range(1, 11)
+        ],
     }
     path.write_text(json.dumps(report), encoding="utf-8")
     return path
@@ -639,6 +680,58 @@ def test_compare_without_loadable_settings_needs_the_route_model_named(
     assert "--route-model" in capsys.readouterr().err
     assert cli.main(["compare", str(luna), "--route-model", LUNA]) == 0
     assert f"Decision: route stays on {LUNA}" in capsys.readouterr().out
+
+
+def monitor_report(
+    directory: Path, model: str, status: str, cost: str, *, refused: int = 0
+) -> Path:
+    """A full monitor run's JSON report over 10 cases: its bar is ungated
+    (spec: informational); the first `refused` cases were refused."""
+    path = directory / f"monitors-{model}.json"
+    report = json.loads(triage_report(directory, model, status, cost).read_text(encoding="utf-8"))
+    report |= {
+        "target": "monitors",
+        "set": "monitors",
+        "mode": "e3-monitor-cases",
+        "dataset_files": {"e3/monitor_cases.jsonl": "m1"},
+        "prompts": ["evaluate_monitor.v1"],
+        "details": [
+            {"id": f"m{n:03d}", "status": "refused" if n <= refused else "evaluated"}
+            for n in range(1, 11)
+        ],
+    }
+    report["metrics"][0] |= {"key": "monitor_accuracy", "label": "Monitor accuracy", "gated": False}
+    path.write_text(json.dumps(report), encoding="utf-8")
+    return path
+
+
+def test_compare_states_the_monitor_model_choice_from_the_monitor_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The `evaluate_monitor` route's current model comes from its own setting;
+    the triage route's does not matter."""
+    routes(monkeypatch, triage="gpt-6-sol")
+    luna = monitor_report(tmp_path, LUNA, "fail", "0.0100", refused=2)
+    sol = monitor_report(tmp_path, "gpt-6-sol", "pass", "0.0700")
+    assert cli.main(["compare", str(luna), str(sol)]) == 0
+    out = capsys.readouterr().out
+    assert "Model choice (evaluate_monitor route" in out
+    # Each model's refusals stand beside its quality (P2-T51).
+    assert (
+        f"- {LUNA}: misses Monitor accuracy; cost per 100 cases $0.0100; refused 2 of 10 cases"
+    ) in out
+    assert "- gpt-6-sol: meets every threshold; cost per 100 cases $0.0700; refused 0 of 10" in out
+    assert "Decision: propose LLM_ROUTE_EVALUATE_MONITOR_MODEL=gpt-6-sol" in out
+
+    routes(monkeypatch, evaluate_monitor="gpt-6-sol")
+    assert cli.main(["compare", str(luna), str(sol)]) == cli.EXIT_REFUSED
+    assert "the route's current model gpt-6-sol" in capsys.readouterr().err
+    assert cli.main(["compare", "--route-model", LUNA, str(luna), str(sol)]) == 0
+    capsys.readouterr()
+    # A triage run and a monitor run are two routes: compared, never chosen between.
+    triage = triage_report(tmp_path, LUNA, "pass", "0.0600")
+    assert cli.main(["compare", str(triage), str(luna)]) == 0
+    assert "Decision:" not in capsys.readouterr().out
 
 
 # -------------------------------------------------------------------- reports

@@ -95,7 +95,10 @@ def report(
     cost: str | None = "0.0600",
     prompts: Sequence[str] = ("triage.v1",),
     effort: str | None = "low",
+    refused: int = 0,
 ) -> dict[str, Any]:
+    """A triage run's JSON report over 40 bursts, the first `refused` of them
+    refused (the product's `refused` status)."""
     return {
         "target": "triage",
         "model": model,
@@ -128,6 +131,10 @@ def report(
             },
         ],
         "cost": {"per_model": {model: {"cost_per_100_items_usd": cost}}},
+        "details": [
+            {"id": f"b{n:03d}", "status": "refused" if n <= refused else "triaged"}
+            for n in range(1, 41)
+        ],
     }
 
 
@@ -224,6 +231,26 @@ def test_the_decision_lists_each_tier_with_its_cost_per_100_bursts() -> None:
     assert f"- {LUNA}: misses Urgent/decision recall; cost per 100 bursts $0.0600" in text
     assert f"- {SOL}: meets every threshold; cost per 100 bursts $0.4100" in text
     assert f"Decision: propose LLM_ROUTE_TRIAGE_MODEL={SOL}" in text
+
+
+def test_the_decision_reports_each_models_refusals() -> None:
+    """P2-T51 (the shared comparison): a refused burst alerts and closes
+    nothing, which reads right wherever nothing was needed; each tier's
+    refusal count is shown beside its quality."""
+    tiers = [report(LUNA, recall="fail", refused=3), report(SOL, cost="0.4100")]
+    choice = model_choice(tiers, route_model=LUNA)
+    assert [tier.refusals for tier in choice.tiers] == [3, 0]
+    text = render_choice(choice)
+    assert (
+        f"- {LUNA}: misses Urgent/decision recall; cost per 100 bursts $0.0600; "
+        "refused 3 of 40 bursts"
+    ) in text
+    assert (
+        f"- {SOL}: meets every threshold; cost per 100 bursts $0.4100; refused 0 of 40 bursts"
+    ) in text
+    without = {key: value for key, value in report(LUNA).items() if key != "details"}
+    with pytest.raises(ValueError, match=f"the {LUNA} run lists no per-item results"):
+        model_choice([without], route_model=LUNA)
 
 
 def test_the_product_makes_no_call_for_an_owner_only_burst_without_open_tasks() -> None:
