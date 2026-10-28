@@ -283,6 +283,92 @@ async def test_triage_sees_only_its_own_conversation(tenv: Env) -> None:
     assert set(store.verdicts[0].source) == set(await message_ids(tenv, a))
 
 
+async def test_triage_never_sees_another_chats_note_summary_or_task(tenv: Env) -> None:
+    """§6 invariant 4 with every other source triage reads (Viro on #79):
+    chat B's contact note, chat note, rolling summary and open task stay out
+    of chat A's call; A's own are in it. The real store loads the tasks."""
+    a, b = await seed(tenv)
+    account = await one_id(tenv, "SELECT account_id FROM app.conversations WHERE id = :c", c=a)
+    contacts = {
+        conversation: await one_id(
+            tenv, "SELECT contact_id FROM app.conversations WHERE id = :c", c=conversation
+        )
+        for conversation in (a, b)
+    }
+    first_message = {
+        conversation: min(await message_ids(tenv, conversation)) for conversation in (a, b)
+    }
+    async with tenv.factory() as session, session.begin():
+        for conversation, tag in ((a, "OWN"), (b, "FOREIGN")):
+            await session.execute(
+                text(
+                    "INSERT INTO app.memory_items (account_id, scope, contact_id, kind, content) "
+                    "VALUES (:a, 'contact', :k, 'fact', :t)"
+                ),
+                {"a": account, "k": contacts[conversation], "t": f"{tag}-CONTACT-NOTE"},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO app.memory_items (account_id, scope, conversation_id, kind, "
+                    "content) VALUES (:a, 'conversation', :c, 'fact', :t)"
+                ),
+                {"a": account, "c": conversation, "t": f"{tag}-CHAT-NOTE"},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO app.conversation_summaries (account_id, conversation_id, kind, "
+                    "summary) VALUES (:a, :c, 'rolling', CAST(:j AS jsonb))"
+                ),
+                {"a": account, "c": conversation, "j": f'{{"overview": "{tag}-SUMMARY"}}'},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO app.tasks (account_id, conversation_id, kind, title, created_by, "
+                    "source_message_ids, first_source_message_id) VALUES (:a, :c, "
+                    "'open_question', :t, 'agent', CAST(:s AS jsonb), :f)"
+                ),
+                {
+                    "a": account,
+                    "c": conversation,
+                    "t": f"{tag}-TASK",
+                    "s": f"[{first_message[conversation]}]",
+                    "f": first_message[conversation],
+                },
+            )
+    fake = FakeLLM()
+    fake.parsed = [echo]
+    assert (await stored_triager(tenv, fake).triage(a)).status is TriageStatus.TRIAGED
+    body = everything(triage_requests(fake)[0])
+    for source in ("CONTACT-NOTE", "CHAT-NOTE", "SUMMARY", "TASK"):
+        assert f"OWN-{source}" in body
+        assert f"FOREIGN-{source}" not in body
+
+
+async def test_rg21_triage_never_loads_another_accounts_tasks(tenv: Env) -> None:
+    """RG-21 on the real store: a task row of another account that points at
+    this chat is never listed, so its id can never be resolved or updated."""
+    a, _ = await seed(tenv)
+    async with tenv.factory() as session, session.begin():
+        other: int = (
+            await session.execute(
+                text("INSERT INTO app.accounts (telegram_user_id) VALUES (7000000077) RETURNING id")
+            )
+        ).scalar_one()
+        await session.execute(
+            text(
+                "INSERT INTO app.tasks (account_id, conversation_id, kind, title, created_by) "
+                "VALUES (:a, :c, 'open_question', 'FOREIGN-ACCOUNT-TASK', 'owner')"
+            ),
+            {"a": other, "c": a},
+        )
+    fake = FakeLLM()
+    fake.parsed = [echo]
+    assert (await stored_triager(tenv, fake).triage(a)).status is TriageStatus.TRIAGED
+    body = everything(triage_requests(fake)[0])
+    assert "FOREIGN-ACCOUNT-TASK" not in body
+    assert "Open tasks of this chat: none." in body
+
+
 async def test_without_managed_consent_no_triage_call_is_made(tenv: Env) -> None:
     """RG-08 extension (invariant 9): without `ai_managed` nothing reaches the
     provider and no run row is written (a clean skip)."""
