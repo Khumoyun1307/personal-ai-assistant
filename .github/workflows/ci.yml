@@ -28,6 +28,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# The repository is public (owner, 2026-10-28): the token every job gets is
+# read-only, and no job needs more.
+permissions:
+  contents: read
+
 env:
   POSTGRES_PASSWORD: ci-local-password
   DATABASE_URL: postgresql+psycopg://postgres:ci-local-password@localhost:5432/assistant
@@ -63,15 +68,16 @@ jobs:
       - name: Dependency audit
         run: uv run pip-audit
 
-  # The full test suite in three parallel jobs, each with its own PostgreSQL
-  # (owner, 2026-10-27). `tools/ci/split_tests.py` gives each job its files;
-  # tests/unit/test_ci_split.py checks that every file runs exactly once.
+  # The full test suite in five parallel jobs, each with its own PostgreSQL
+  # (owner, 2026-10-27; five since the repository went public, 2026-10-28,
+  # where standard runners are free). `tools/ci/split_tests.py` gives each job
+  # its files; tests/unit/test_ci_split.py checks that every file runs exactly once.
   tests:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5]
     services:
       db:
         image: pgvector/pgvector:pg18
@@ -111,8 +117,8 @@ jobs:
             -c "ALTER SYSTEM SET log_statement = 'none';" \
             -c "SELECT pg_reload_conf();"
 
-      - name: Tests (shard ${{ matrix.shard }} of 3)
-        run: uv run pytest $(uv run python tools/ci/split_tests.py --shards 3 --index ${{ matrix.shard }})
+      - name: Tests (shard ${{ matrix.shard }} of 5)
+        run: uv run pytest $(uv run python tools/ci/split_tests.py --shards 5 --index ${{ matrix.shard }})
 
       # RG-10 on the database side: the test suite writes canary strings into
       # content columns and injects constraint violations; none of it may
