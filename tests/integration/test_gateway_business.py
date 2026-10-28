@@ -105,7 +105,7 @@ async def test_business_send_is_plain_text_and_never_split(env: Env) -> None:
 
 @pytest.mark.parametrize(
     "state",
-    ["stale", "disabled", "pending_owner", "not_enabled", "missing", "bot_chat"],
+    ["stale", "disabled", "pending_owner", "not_enabled", "no_reply_right", "missing", "bot_chat"],
 )
 async def test_business_send_refuses_a_disabled_or_stale_connection_without_calling_telegram(
     env: Env, state: str
@@ -115,6 +115,10 @@ async def test_business_send_refuses_a_disabled_or_stale_connection_without_call
         await set_connection(env, chat, status=state)
     elif state == "not_enabled":
         await set_connection(env, chat, is_enabled=False)
+    elif state == "no_reply_right":
+        # Viro on #107: the current connection may be a replacement whose
+        # rights Tx A never saw; without `can_reply` nothing is sent.
+        await set_connection(env, chat, rights=["can_read_messages"])
     elif state == "bot_chat":
         async with env.factory() as session, session.begin():
             conversation = await session.get(Conversation, chat.conversation_id)
@@ -162,6 +166,33 @@ async def test_business_send_returns_message_id_zero_as_is(env: Env) -> None:
 
     assert result.ok
     assert result.message_id == 0
+
+
+async def test_business_send_reports_the_connection_id_it_used(env: Env) -> None:
+    """Antony #1 on #107: the executor may stale only the connection a
+    failed call was sent on, so the send names it (resolved at call time);
+    a call refused locally used none."""
+    chat = await seed(env)
+    other = await seed(env)
+    sender = FakeTelegramSender()
+    gateway = gateway_for(env, sender)
+    sender.plain_script = [
+        telegram_error("Bad Request: BUSINESS_CONNECTION_INVALID", status_code=400)
+    ]
+    await set_connection(env, chat, connection_id="synthetic-current")
+
+    failed, used = await gateway.send_business_text_with_connection(
+        account_id=chat.account_id, conversation_id=chat.conversation_id, text="Synthetic"
+    )
+    refused, none = await gateway.send_business_text_with_connection(
+        account_id=chat.account_id, conversation_id=other.conversation_id, text="Synthetic"
+    )
+
+    assert failed.error_class is ErrorClass.CONNECTION_INVALID
+    assert used == "synthetic-current" == sender.plain_sends[0]["business_connection_id"]
+    assert refused.error_code == LOCAL_TARGET_REFUSED
+    assert none is None
+    assert len(sender.plain_sends) == 1
 
 
 @pytest.fixture

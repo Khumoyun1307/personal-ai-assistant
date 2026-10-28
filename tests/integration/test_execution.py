@@ -411,8 +411,11 @@ async def test_a_new_connection_id_reactivates_a_stale_connection(env: Env) -> N
     h = harness(env)
     chat = await seed(env)
     await caught_up(env)
+    used = (await connection(env, chat.account_id)).connection_id
     async with env.factory() as session, session.begin():
-        assert await connections.mark_stale(session, chat.account_id, env.clock.now())
+        assert await connections.mark_stale(
+            session, chat.account_id, env.clock.now(), connection_id=used
+        )
         owner = await session.get(Account, chat.account_id)
         assert owner is not None
         row = await session.scalar(
@@ -441,6 +444,112 @@ async def test_a_new_connection_id_reactivates_a_stale_connection(env: Env) -> N
     action_id = await approved(env, chat, text=TEXT)
     assert (await h.execute(action_id)).status is ExecuteStatus.SENT
     assert h.sender.plain_sends[0]["business_connection_id"] == "synthetic-new-id"
+
+
+async def reconnect(env: Env, account_id: int, connection_id: str) -> None:
+    """The owner reconnects: a `business_connection` update with a new id
+    (TF §12 LV-05), applied through the real registry."""
+    async with env.factory() as session, session.begin():
+        owner = await session.get(Account, account_id)
+        row = await session.scalar(
+            select(BusinessConnection).where(BusinessConnection.account_id == account_id)
+        )
+        assert owner is not None
+        assert row is not None
+        result = await connections.apply_snapshot(
+            session,
+            ConnectionSnapshot(
+                connection_id=connection_id,
+                user_id=owner.telegram_user_id,
+                user_chat_id=row.user_chat_id,
+                date=env.clock.now(),
+                is_enabled=True,
+                rights=frozenset({"can_reply"}),
+                payload_digest="synthetic",
+            ),
+            owner_ids=frozenset({owner.telegram_user_id}),
+            source=Source.UPDATE,
+            clock=env.clock,
+        )
+    assert result.change is connections.Change.RECONNECTED
+
+
+def connection_invalid() -> Exception:
+    return telegram_error("Bad Request: BUSINESS_CONNECTION_INVALID", status_code=400)
+
+
+async def test_a_connection_invalid_for_a_replaced_connection_leaves_the_replacement_active(
+    env: Env,
+) -> None:
+    """Antony #1 on #107: the owner reconnects while a send on the old id is
+    in flight, and that call then fails with BUSINESS_CONNECTION_INVALID.
+    Only the connection the call actually used may become stale; the
+    replacement stays active and the next send goes out on it."""
+    h = harness(env)
+    chat = await seed(env)
+    await caught_up(env)
+    used = (await connection(env, chat.account_id)).connection_id
+    action_id = await approved(env, chat, text=TEXT)
+    h.sender.plain_script = [connection_invalid()]
+
+    async def reconnect_meanwhile() -> None:
+        h.sender.on_call = None
+        await reconnect(env, chat.account_id, "synthetic-replacement")
+
+    h.sender.on_call = reconnect_meanwhile
+
+    outcome = await h.execute(action_id)
+
+    assert (outcome.state, outcome.reason) == (ActionState.FAILED, StateReason.CONNECTION_INVALID)
+    assert h.sender.plain_sends[0]["business_connection_id"] == used
+    current = await connection(env, chat.account_id)
+    assert (current.connection_id, current.status) == ("synthetic-replacement", "active")
+    async with env.factory() as session:
+        marked = await session.scalar(
+            select(AuditLogEntry).where(
+                AuditLogEntry.account_id == chat.account_id,
+                AuditLogEntry.event == "connection_marked_stale",
+            )
+        )
+    assert marked is None
+    following = await approved(env, chat, text=TEXT)
+    assert (await h.execute(following)).status is ExecuteStatus.SENT
+    assert h.sender.plain_sends[1]["business_connection_id"] == "synthetic-replacement"
+
+
+@pytest.mark.parametrize("reconnected", [True, False], ids=["reconnected", "same_connection"])
+async def test_a_late_connection_invalid_marks_only_the_connection_it_used_stale(
+    env: Env, reconnected: bool
+) -> None:
+    """Viro on #107: a late BUSINESS_CONNECTION_INVALID arrives after
+    `mark_uncertain`, when a reconnect has most likely landed. It fails the
+    action (decisions R4) and stales the connection it was sent on only
+    while that id is still the account's active one."""
+    h = harness(env)
+    chat = await seed(env)
+    await caught_up(env)
+    used = (await connection(env, chat.account_id)).connection_id
+    action_id = await approved(env, chat, text=TEXT)
+    h.sender.plain_script = [connection_invalid()]
+
+    async def sweep_then_maybe_reconnect() -> None:
+        h.sender.on_call = None
+        env.clock.advance(seconds=CONFIG_THRESHOLD_SECONDS + 1)
+        await h.executor.mark_uncertain()
+        if reconnected:
+            await reconnect(env, chat.account_id, "synthetic-replacement")
+
+    h.sender.on_call = sweep_then_maybe_reconnect
+
+    outcome = await h.execute(action_id)
+
+    assert (outcome.state, outcome.reason) == (ActionState.FAILED, StateReason.NOT_DELIVERED)
+    assert h.sender.plain_sends[0]["business_connection_id"] == used
+    current = await connection(env, chat.account_id)
+    if reconnected:
+        assert (current.connection_id, current.status) == ("synthetic-replacement", "active")
+    else:
+        assert (current.connection_id, current.status) == (used, "stale")
 
 
 async def test_an_ambiguous_send_is_uncertain_alerts_once_and_is_never_retried(

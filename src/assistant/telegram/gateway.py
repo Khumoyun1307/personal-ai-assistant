@@ -21,7 +21,9 @@ sent as the owner cannot be taken back.
 its committed claim passed the policy re-check (§6 invariants 1, 6). Each call
 resolves the account's *current* connection id and the conversation's chat at
 call time (`business_targets.py`) and refuses locally — no Telegram call — when
-either is missing, inactive or not the account's. Text is never parsed as HTML
+either is missing, inactive or not the account's, or (send, edit) the
+connection lacks `can_reply`. The send reports the connection id it used,
+so a failure stales only that connection. Text is never parsed as HTML
 and never split. `send_text(BusinessChat, ...)` still raises: there is no
 second way to send as the owner.
 """
@@ -287,6 +289,12 @@ class OutboundGateway:
             logger.warning("answer_callback_failed", exc_type=type(error).__name__)
 
     # ------------------------------------------------------- business (owner voice)
+    def attach_business_targets(self, targets: BusinessTargetResolver) -> None:
+        """Let business calls resolve their targets (bootstrap `_wire_m04`,
+        for the roles that run the executor). Without it every business call
+        is refused locally."""
+        self._targets = targets
+
     async def send_business_text(
         self, *, account_id: int, conversation_id: int, text: str
     ) -> SendResult:
@@ -298,9 +306,29 @@ class OutboundGateway:
         called. `message_id` is returned as Telegram gave it, 0 included
         ("pending identity", ARCHITECTURE §6.8).
         """
+        result, _ = await self._send_business(
+            account_id=account_id, conversation_id=conversation_id, text=text
+        )
+        return result
+
+    async def send_business_text_with_connection(
+        self, *, account_id: int, conversation_id: int, text: str
+    ) -> tuple[SendResult, str | None]:
+        """`send_business_text`, and the connection id the call was sent on
+        (None when refused locally: no call was made). The executor stales
+        only that connection on BUSINESS_CONNECTION_INVALID — never a
+        replacement that arrived while the call was in flight (§6.4)."""
+        return await self._send_business(
+            account_id=account_id, conversation_id=conversation_id, text=text
+        )
+
+    async def _send_business(
+        self, *, account_id: int, conversation_id: int, text: str
+    ) -> tuple[SendResult, str | None]:
         target = await self._business_target(account_id, conversation_id)
         if target is None:
-            return self._refused("send", account_id=account_id, conversation_id=conversation_id)
+            refused = self._refused("send", account_id=account_id, conversation_id=conversation_id)
+            return refused, None
         await self._throttle(target.chat_id)
         try:
             message = await self._sender.send_plain_message(
@@ -309,9 +337,10 @@ class OutboundGateway:
                 business_connection_id=target.connection_id,
             )
         except Exception as error:
-            return self._business_failure(
+            failure = self._business_failure(
                 "send", error, account_id=account_id, conversation_id=conversation_id
             )
+            return failure, target.connection_id
         message_id = message.get("message_id") if isinstance(message, dict) else None
         logger.info(
             "business_message_sent",
@@ -319,7 +348,7 @@ class OutboundGateway:
             conversation_id=conversation_id,
             message_id=message_id,
         )
-        return SendResult(ErrorClass.OK, message_id=message_id)
+        return SendResult(ErrorClass.OK, message_id=message_id), target.connection_id
 
     async def edit_assistant_message(
         self, *, account_id: int, conversation_id: int, assistant_message_ref: int, text: str
@@ -363,7 +392,7 @@ class OutboundGateway:
         must be an `assistant_sent` row of this conversation, or nothing is
         deleted and Telegram is not called. No product feature calls this in P2."""
         target, telegram_ids = await self._own_messages(
-            account_id, conversation_id, assistant_message_refs
+            account_id, conversation_id, assistant_message_refs, needs_reply_right=False
         )
         if target is None or telegram_ids is None:
             return self._refused("delete", account_id=account_id, conversation_id=conversation_id)
@@ -385,16 +414,27 @@ class OutboundGateway:
         return SendResult(ErrorClass.OK)
 
     async def _business_target(
-        self, account_id: int, conversation_id: int
+        self, account_id: int, conversation_id: int, *, needs_reply_right: bool = True
     ) -> BusinessTarget | None:
         if self._targets is None:
             return None
-        return await self._targets.resolve(account_id, conversation_id)
+        return await self._targets.resolve(
+            account_id, conversation_id, needs_reply_right=needs_reply_right
+        )
 
     async def _own_messages(
-        self, account_id: int, conversation_id: int, refs: Sequence[int]
+        self,
+        account_id: int,
+        conversation_id: int,
+        refs: Sequence[int],
+        *,
+        needs_reply_right: bool = True,
     ) -> tuple[BusinessTarget | None, list[int] | None]:
-        target = await self._business_target(account_id, conversation_id)
+        """Deleting needs a delete right, not `can_reply`; Telegram enforces
+        which one (no product feature deletes in P2)."""
+        target = await self._business_target(
+            account_id, conversation_id, needs_reply_right=needs_reply_right
+        )
         if target is None or self._targets is None:
             return None, None
         return target, await self._targets.assistant_message_ids(account_id, conversation_id, refs)

@@ -264,18 +264,24 @@ async def connection_for_account(
 EVENT_MARKED_STALE = "connection_marked_stale"
 
 
-async def mark_stale(session: AsyncSession, account_id: int, now: datetime) -> bool:
-    """A send got `BUSINESS_CONNECTION_INVALID` (§6.4): the account's active
-    connection becomes `stale`, which blocks every business send for the
-    account (rule `connection_active`) until a new id arrives — a
+async def mark_stale(
+    session: AsyncSession, account_id: int, now: datetime, *, connection_id: str
+) -> bool:
+    """A send on `connection_id` got `BUSINESS_CONNECTION_INVALID` (§6.4):
+    that connection becomes `stale`, which blocks every business send for
+    the account (rule `connection_active`) until a new id arrives — a
     `business_connection` update or an unknown-id bootstrap (`_classify`
     maps stale → `RECONNECTED`). The audit row's time is "stale since".
-    Conditional: a connection already disabled or stale is left alone."""
+    Conditional on that id still being the account's **active** connection:
+    one row per account holds the current id, rewritten in place on a
+    reconnect, so a failure on an old id must never stale its replacement
+    (Antony on #107). A connection already disabled or stale is left alone."""
     row = (
         await session.execute(
             update(BusinessConnection)
             .where(
                 BusinessConnection.account_id == account_id,
+                BusinessConnection.connection_id == connection_id,
                 BusinessConnection.status == Status.ACTIVE.value,
             )
             .values(status=Status.STALE.value, updated_at=now)

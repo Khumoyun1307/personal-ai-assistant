@@ -11,14 +11,17 @@ protocol, exactly:
    `approved → executing` with a new `attempt_id`. The claim **commits before
    Telegram is called** (invariant 6).
 2. **The call**, outside any transaction and holding no lock: one plain-text
-   `sendMessage` through the gateway, which resolves the current connection.
+   `sendMessage` through the gateway, which resolves the current connection
+   and reports the id it used.
 3. **Tx B** — lock the conversation, then the action **of this attempt**
    (`executing` or `delivery_uncertain`), and record the outcome truthfully
    (invariant 11). An ambiguous outcome becomes `delivery_uncertain` and is
    never retried (invariant 6); nothing ever moves an action back from it.
+   BUSINESS_CONNECTION_INVALID stales only the connection the call used.
 
 `mark_uncertain` settles attempts that never reached Tx B (a crash or a cut
-send) the same honest way. Every state change goes through
+send) the same honest way, and sends an uncertain alert that was lost after
+its outcome committed. Every state change goes through
 `lifecycle.transition`: conditional, audited, content-free.
 """
 
@@ -30,9 +33,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import exists, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -50,7 +53,7 @@ from assistant.core.clock import Clock
 from assistant.core.delivery import ErrorClass, SendResult
 from assistant.core.jobs import EXECUTE_TASK, JobScheduler
 from assistant.db.uow import transaction
-from assistant.inbox.notify import AlertKind, OwnerAlerts
+from assistant.inbox.notify import EVENT_ALERT, AlertKind, OwnerAlerts
 from assistant.memory.search import detect_script, guess_lang, normalize
 from assistant.memory.summaries import contact_display_name
 from assistant.observability.logging import get_logger
@@ -83,6 +86,24 @@ _DEFINITE_FAILURES: dict[ErrorClass, StateReason] = {
     ErrorClass.BAD_REQUEST: StateReason.NOT_DELIVERED,
     ErrorClass.CONFLICT: StateReason.NOT_DELIVERED,
 }
+
+
+#: An uncertain attempt of the executor or of the sweep is alerted after
+#: its transaction; one with no alert on record is alerted again by the
+#: sweep (a restore's uncertain rows are the restore notice's, §15.6).
+_REALERTED_REASONS = (StateReason.AMBIGUOUS.value, StateReason.STALE_EXECUTING.value)
+
+
+class ConnectionReportingSender(BusinessSender, Protocol):
+    """The F0 `BusinessSender` (unchanged) plus the send the executor uses:
+    it also names the connection id the call went out on (None when refused
+    locally), so BUSINESS_CONNECTION_INVALID stales only that connection,
+    never a replacement that arrived meanwhile (Antony on #107).
+    `OutboundGateway` implements both."""
+
+    async def send_business_text_with_connection(
+        self, *, account_id: int, conversation_id: int, text: str
+    ) -> tuple[SendResult, str | None]: ...
 
 
 def _refused(check: str, code: str) -> Decision:
@@ -155,7 +176,7 @@ class ActionExecutor:
         session_factory: async_sessionmaker[AsyncSession],
         clock: Clock,
         config: ActionsConfig,
-        sender: BusinessSender,
+        sender: ConnectionReportingSender,
         alerts: OwnerAlerts,
         scheduler: JobScheduler | None,
         presenter: ApprovalCardPresenter | None = None,
@@ -183,7 +204,7 @@ class ActionExecutor:
             await self._redefer(action_id, claimed.redefer_at)
             return claimed
         try:
-            result = await self._sender.send_business_text(
+            result, used_connection = await self._sender.send_business_text_with_connection(
                 account_id=claimed.account_id,
                 conversation_id=claimed.conversation_id,
                 text=claimed.text,
@@ -195,7 +216,7 @@ class ActionExecutor:
             logger.error("action_send_raised", action_id=action_id, exc_type=type(error).__name__)
             return ExecuteOutcome(ExecuteStatus.INTERRUPTED, ActionState.EXECUTING)
         try:
-            outcome = await self._tx_b(claimed, result)
+            outcome = await self._tx_b(claimed, result, used_connection)
         except Exception as error:
             logger.error(
                 "action_outcome_not_recorded", action_id=action_id, exc_type=type(error).__name__
@@ -373,7 +394,9 @@ class ActionExecutor:
         )
         return ExecuteOutcome(ExecuteStatus.DENIED, to_state, reason)
 
-    async def _tx_b(self, claim: _Claim, result: SendResult) -> ExecuteOutcome:
+    async def _tx_b(
+        self, claim: _Claim, result: SendResult, used_connection: str | None
+    ) -> ExecuteOutcome:
         async with transaction(self._sf) as uow:
             session = uow.session
             # §9.4 order: the conversation, then the action.
@@ -414,6 +437,7 @@ class ActionExecutor:
                 from_state=from_state,
                 stored_text=row.text,
                 late=late,
+                used_connection=used_connection,
             )
             if outcome.state is not None and outcome.state is not from_state:
                 self._sync_card(session, claim.action_id)
@@ -438,6 +462,7 @@ class ActionExecutor:
         from_state: ActionState,
         stored_text: str | None,
         late: bool,
+        used_connection: str | None,
     ) -> ExecuteOutcome:
         now = self._clock.now()
         error_class = result.error_class
@@ -490,8 +515,13 @@ class ActionExecutor:
         if error_class is ErrorClass.PEER_UNAVAILABLE:
             conversation.availability = "possibly_paused"  # §6.6
             conversation.updated_at = now
-        elif error_class is ErrorClass.CONNECTION_INVALID:
-            await connections.mark_stale(session, claim.account_id, now)
+        elif error_class is ErrorClass.CONNECTION_INVALID and used_connection is not None:
+            # Only the connection this call went out on, and only while it
+            # is still the account's active one: a reconnect during the call
+            # (or before a late result) leaves the replacement alone.
+            await connections.mark_stale(
+                session, claim.account_id, now, connection_id=used_connection
+            )
         if late:
             # Decisions R4: a late definite result only ever fails the action —
             # never back to `approved`, never retried, never `expired`.
@@ -611,10 +641,22 @@ class ActionExecutor:
 
     async def _after_outcome(self, claim: _Claim, outcome: ExecuteOutcome) -> None:
         if outcome.status is ExecuteStatus.UNCERTAIN and outcome.reason is StateReason.AMBIGUOUS:
-            await self._alert_uncertain(
+            await self._try_alert_uncertain(
                 _Uncertain(claim.action_id, claim.account_id, claim.conversation_id)
             )
         await self._redefer(claim.action_id, outcome.redefer_at)
+
+    async def _try_alert_uncertain(self, item: _Uncertain) -> None:
+        """The outcome is committed; an alert that fails here (a database
+        blip, a channel error) must not fail the run — a retried job would
+        only find the action settled and never say it. `mark_uncertain`
+        alerts it later: no alert is on record for it (Viro on #107)."""
+        try:
+            await self._alert_uncertain(item)
+        except Exception as error:
+            logger.error(
+                "uncertain_alert_failed", action_id=item.action_id, exc_type=type(error).__name__
+            )
 
     async def _redefer(self, action_id: int, at: datetime | None) -> None:
         if at is None:
@@ -643,20 +685,25 @@ class ActionExecutor:
     # -------------------------------------------------------- mark_uncertain
     async def mark_uncertain(self) -> int:
         """`system.mark_uncertain`: settle attempts stuck in `executing` and
-        tell the owner, once per action; then the stale-connection alert."""
+        tell the owner, once per action — including an uncertain attempt
+        whose alert was lost after its transaction; then the
+        stale-connection alert. Returns how many attempts it settled."""
         now = self._clock.now()
+        older_than = now - self._config.mark_uncertain_after
         async with transaction(self._sf) as uow:
-            settled = await mark_stale_attempts(
-                uow.session, now=now, older_than=now - self._config.mark_uncertain_after
-            )
+            settled = await mark_stale_attempts(uow.session, now=now, older_than=older_than)
             for item in settled:
                 self._sync_card(uow.session, item.action_id)
+            unalerted = await unalerted_uncertain(uow.session, older_than=older_than)
             stale = await stale_connections(
                 uow.session, older_than=now - self._config.connection_stale_alert_after
             )
         for item in settled:
             logger.warning("action_marked_uncertain", action_id=item.action_id)
-            await self._alert_uncertain(item)
+            await self._try_alert_uncertain(item)
+        for item in unalerted:
+            logger.warning("uncertain_alert_recovered", action_id=item.action_id)
+            await self._try_alert_uncertain(item)
         minutes = int(self._config.connection_stale_alert_after.total_seconds() // 60)
         for account_id, since in stale:
             await self._alerts.notify_owner(
@@ -721,6 +768,34 @@ async def mark_stale_attempts(
         _Uncertain(int(row[0]), int(row[1]), int(row[2]))
         for row in sorted(rows, key=lambda row: int(row[0]))
     ]
+
+
+async def unalerted_uncertain(session: AsyncSession, *, older_than: datetime) -> list[_Uncertain]:
+    """Uncertain attempts of the executor or the sweep, settled before
+    `older_than`, with no `delivery_uncertain` alert on record (delivered or
+    not): their alert was lost after the outcome committed. The grace
+    (`older_than`) keeps the sweep from racing a run still alerting; the
+    alert's dedupe key keeps a repeat harmless. One attempt each: an alert
+    on record, even an undelivered one, ends it."""
+    alert_on_record = exists().where(
+        AuditLogEntry.account_id == Action.account_id,
+        AuditLogEntry.event == EVENT_ALERT,
+        AuditLogEntry.details["key"].astext
+        == func.concat(UNCERTAIN_ALERT_KEY.format(action_id=""), Action.id),
+    )
+    rows = (
+        await session.execute(
+            select(Action.id, Action.account_id, Action.conversation_id)
+            .where(
+                Action.state == ActionState.DELIVERY_UNCERTAIN.value,
+                Action.state_reason.in_(_REALERTED_REASONS),
+                Action.updated_at < older_than,
+                ~alert_on_record,
+            )
+            .order_by(Action.id)
+        )
+    ).all()
+    return [_Uncertain(int(row[0]), int(row[1]), int(row[2])) for row in rows]
 
 
 _STALE_CONNECTIONS = text(

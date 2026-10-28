@@ -9,9 +9,11 @@ connection-stale alert once per stale period. Synthetic text.
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from assistant.accounts import connections
 from assistant.accounts.models import AuditLogEntry, BusinessConnection
@@ -20,14 +22,17 @@ from assistant.actions.models import Action
 from assistant.actions.states import ActionState
 from assistant.bootstrap import _PhaseWiring, _wire_m04
 from assistant.config import Settings
+from assistant.core.channel import Delivery
 from assistant.inbox.notify import ALERT_TEXT, AlertKind
 from assistant.telegram.gateway import MAX_THROTTLE_WAIT_SECONDS, REQUEST_TIMEOUT_SECONDS
+from tests.fakes.sender import network_error
 from tests.integration.actions_env import Chat
 from tests.integration.business_env import Env
 from tests.integration.execution_env import (
     action,
     approved,
     caught_up,
+    connection,
     harness,
     inserted,
     seed,
@@ -134,8 +139,11 @@ async def test_connection_stale_alert_after_thirty_minutes_once_per_stale_period
 ) -> None:
     h = harness(env, connection_stale_alert_after=timedelta(minutes=30))
     chat = await seed(env)
+    used = (await connection(env, chat.account_id)).connection_id
     async with env.factory() as session, session.begin():
-        assert await connections.mark_stale(session, chat.account_id, env.clock.now())
+        assert await connections.mark_stale(
+            session, chat.account_id, env.clock.now(), connection_id=used
+        )
 
     env.clock.advance(minutes=29)
     await h.executor.mark_uncertain()
@@ -152,7 +160,9 @@ async def test_connection_stale_alert_after_thirty_minutes_once_per_stale_period
         env, BusinessConnection, BusinessConnection.account_id == chat.account_id, status="active"
     )
     async with env.factory() as session, session.begin():
-        assert await connections.mark_stale(session, chat.account_id, env.clock.now())
+        assert await connections.mark_stale(
+            session, chat.account_id, env.clock.now(), connection_id=used
+        )
     env.clock.advance(minutes=31)
     await h.executor.mark_uncertain()
     assert h.channel.sends == [expected, expected]
@@ -163,3 +173,59 @@ async def test_connection_stale_alert_after_thirty_minutes_once_per_stale_period
             .where(AuditLogEntry.event == "connection_marked_stale")
         )
     assert markings == 2
+
+
+async def test_an_uncertain_alert_lost_after_tx_b_is_sent_by_a_later_sweep(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Viro on #107: Tx B committed `delivery_uncertain`, then the alert
+    raised (a database blip, a channel error) before its audit row was
+    written. The run still ends normally — nothing is retried or resent —
+    and a later `mark_uncertain` tells the owner, once (invariant 11)."""
+    h = harness(env)
+    chat = await seed(env)
+    await caught_up(env)
+    action_id = await approved(env, chat, text="Synthetic approved reply")
+    h.sender.plain_script = [network_error()]
+
+    async def failing_send(**_: Any) -> Delivery:
+        raise OperationalError("synthetic", {}, Exception("synthetic"))
+
+    monkeypatch.setattr(h.channel, "send", failing_send)
+    outcome = await h.execute(action_id)
+    monkeypatch.undo()  # the channel works again
+
+    assert outcome.status is ExecuteStatus.UNCERTAIN
+    assert (await action(env, action_id)).state == "delivery_uncertain"
+    await h.executor.mark_uncertain()
+    assert h.channel.sends == []  # too soon: the run may still be alerting
+
+    env.clock.advance(seconds=h.config.mark_uncertain_after.total_seconds() + 1)
+    await h.executor.mark_uncertain()
+    await h.executor.mark_uncertain()
+
+    assert len(h.channel.sends) == 1
+    assert h.channel.sends[0].startswith("⚠️ I'm not sure a reply reached")
+    assert (await h.execute(action_id)).status is ExecuteStatus.SETTLED
+    assert len(h.sender.plain_sends) == 1  # never resent
+
+
+async def test_the_lost_alert_sweep_leaves_alerted_and_restored_rows_alone(env: Env) -> None:
+    """Only an uncertain attempt of the executor or the sweep with no alert
+    on record is alerted again: one already alerted is not, and one a
+    restore made uncertain belongs to the restore notice (§15.6)."""
+    h = harness(env)
+    chat = await seed(env)
+    await caught_up(env)
+    alerted = await executing(env, chat, started_ago=timedelta(minutes=3), attempt="a-1")
+    assert await h.executor.mark_uncertain() == 1
+    restored = await inserted(env, chat, state=ActionState.DELIVERY_UNCERTAIN)
+    await update_rows(
+        env, Action, Action.id == restored, state_reason="restored_from_backup", attempt_id="a-2"
+    )
+
+    env.clock.advance(minutes=10)
+    await h.executor.mark_uncertain()
+
+    assert (await action(env, alerted)).state == "delivery_uncertain"
+    assert len(h.channel.sends) == 1
