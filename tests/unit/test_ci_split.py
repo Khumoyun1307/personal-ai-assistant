@@ -30,7 +30,7 @@ def _load() -> ModuleType:
 split_tests = _load()
 
 
-@pytest.mark.parametrize("shards", [1, 2, 3, 4])
+@pytest.mark.parametrize("shards", [1, 2, 3, 4, 5])
 def test_every_test_file_runs_in_exactly_one_shard(shards: int) -> None:
     files = split_tests.collected_files()
     buckets = split_tests.split(files, shards)
