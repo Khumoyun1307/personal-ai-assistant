@@ -10,6 +10,14 @@ later reconciler run never claims it again and a restart loses nothing
 claimed occurrence to `fired` with a conditional update; whatever it
 delivers deduplicates on its own (a digest on its `digests` row).
 
+A claim is made on time, but its jobs may wait in their queues: every job
+that acts on an occurrence re-checks its persisted deadlines (`expires_at`,
+`occurrence_at + max_lateness`) at the time it runs (`timing`), and one past
+them settles the occurrence `skipped` (`skipped_obsolete` or `expired`)
+instead of acting. A claim whose fire job was lost is re-deferred while its
+rule still allows it, and settled the same way once it does not
+(`recover_claims`).
+
 The schedule maths is S05.3a's pure `automation/schedule.py`; the rule is
 `automation/rules.py::ScheduleRule`. A row whose rule or schedule no longer
 validates is paused with a content-free `automation_invalid` audit row and
@@ -23,7 +31,7 @@ by its epoch second (F0-interfaces §6.1).
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -92,6 +100,27 @@ class Note(StrEnum):
     INACTIVE = "inactive"
     #: The kind's release flag is off.
     DISABLED = "disabled"
+    #: The automation's `expires_at` passed before the occurrence was acted on.
+    EXPIRED = "expired"
+
+
+class Timing(StrEnum):
+    """A claimed occurrence's deadlines, re-checked whenever queued work acts
+    on it (AGENTS §13: a job reloads its rows and re-checks its conditions).
+    A claim is made on time, but its job may wait in a queue."""
+
+    ON_TIME = "on_time"
+    #: Past the grace, within `max_lateness`: acted on, with a note.
+    LATE = "late"
+    #: Past `occurrence_at + max_lateness`: settled `skipped_obsolete`.
+    OBSOLETE = "obsolete"
+    #: `expires_at` has passed: settled `expired`.
+    EXPIRED = "expired"
+
+
+#: The note an occurrence is settled with when its deadline has passed.
+_SETTLED = {Timing.OBSOLETE: Note.SKIPPED_OBSOLETE, Timing.EXPIRED: Note.EXPIRED}
+_SETTLED_TIMING = {note.value: timing for timing, note in _SETTLED.items()}
 
 
 def epoch_of(moment: datetime) -> int:
@@ -159,6 +188,28 @@ def _load(automation: Automation) -> tuple[ScheduleRule, ScheduleSpec] | None:
         return rule, schedule_of(automation, rule)
     except ValidationError, ScheduleError:
         return None
+
+
+def timing(automation: Automation, occurrence_at: datetime, now: datetime) -> Timing:
+    """Whether `occurrence_at` may still be acted on at `now`, from the
+    persisted deadlines: the automation's `expires_at`, and the rule's
+    `max_lateness` judged as at the claim (S05.3a `lateness`). A rule that no
+    longer loads allows only the grace (fail closed)."""
+    if automation.expires_at is not None and automation.expires_at <= now:
+        return Timing.EXPIRED
+    loaded = _load(automation)
+    max_late = timedelta(minutes=loaded[0].max_lateness_minutes if loaded else 0)
+    verdict = lateness(occurrence_at, now, grace=GRACE, max_lateness=max_late)
+    if verdict is Lateness.SKIP:
+        return Timing.OBSOLETE
+    return Timing.LATE if verdict is Lateness.LATE else Timing.ON_TIME
+
+
+def _settle(occurrence: AutomationOccurrence, note: Note) -> None:
+    """A claimed (or handed-over) occurrence that will never be acted on."""
+    occurrence.status = "skipped"
+    occurrence.note_code = note.value
+    occurrence.fired_at = None
 
 
 def _pause_invalid(session: AsyncSession, automation: Automation, now: datetime) -> None:
@@ -557,12 +608,15 @@ async def plan_fire(
     automation_id: int,
     occurrence_at: datetime,
     digest_enabled: bool,
+    now: datetime,
 ) -> FirePlan:
     """`automation.fire` steps 1-3 (S05.3b §3.3): load the occurrence under
     a row lock; anything but `claimed` is a no-op (idempotent); re-check the
     automation (still active, or completed by this very occurrence), the
-    account and the kind's flag; a kind without a handler in P2 is skipped
-    (`no_handler`)."""
+    account, the deadlines at `now` (a claim made on time may have waited
+    in the queue past `max_lateness` or `expires_at`: `skipped_obsolete` or
+    `expired`) and the kind's flag; a kind without a handler in P2 is
+    skipped (`no_handler`)."""
     start, end = _instant(occurrence_at)
     row = (
         await session.execute(
@@ -583,19 +637,64 @@ async def plan_fire(
     account_status = await session.scalar(
         select(Account.status).where(Account.id == automation.account_id)
     )
+    past_deadline = _SETTLED.get(timing(automation, occurrence.occurrence_at, now))
     note: Note | None = None
     if account_status != "active" or not await _still_runs(session, automation, occurrence):
         note = Note.INACTIVE
+    elif past_deadline is not None:
+        note = past_deadline
     elif automation.kind != DIGEST_KIND:
         note = Note.NO_HANDLER
     elif not digest_enabled:
         note = Note.DISABLED
     if note is not None:
-        occurrence.status = "skipped"
-        occurrence.note_code = note.value
+        _settle(occurrence, note)
         await session.flush()
         return FirePlan(FireAction.SKIPPED, automation.account_id, note)
     return FirePlan(FireAction.DIGEST, automation.account_id)
+
+
+@dataclass(frozen=True, slots=True)
+class Recovery:
+    """Lost fires: the claims to re-defer, and how many were settled."""
+
+    due: tuple[DueOccurrence, ...] = ()
+    settled: int = 0
+
+
+async def recover_claims(
+    session: AsyncSession, occurrence_ids: Sequence[int], now: datetime
+) -> Recovery:
+    """Claimed occurrences whose `automation.fire` job was lost (the caller
+    found no job for them): those the rule still allows at `now` are
+    returned to be re-deferred, however long ago they were claimed; the rest
+    are settled `skipped_obsolete` or `expired`, so the ledger never keeps a
+    claim that will never fire. A row a running job holds is left to it."""
+    if not occurrence_ids:
+        return Recovery()
+    rows = (
+        await session.execute(
+            select(AutomationOccurrence, Automation)
+            .join(Automation, Automation.id == AutomationOccurrence.automation_id)
+            .where(AutomationOccurrence.id.in_(list(occurrence_ids)))
+            .where(AutomationOccurrence.account_id == Automation.account_id)
+            .where(AutomationOccurrence.status == "claimed")
+            .order_by(AutomationOccurrence.occurrence_at, AutomationOccurrence.id)
+            .with_for_update(of=AutomationOccurrence, skip_locked=True)
+        )
+    ).all()
+    due: list[DueOccurrence] = []
+    settled = 0
+    for occurrence, automation in rows:
+        at = occurrence.occurrence_at
+        note = _SETTLED.get(timing(automation, at, now))
+        if note is None:
+            due.append(DueOccurrence(automation.id, automation.account_id, at))
+        else:
+            _settle(occurrence, note)
+            settled += 1
+    await session.flush()
+    return Recovery(tuple(due), settled)
 
 
 async def _still_runs(
@@ -631,28 +730,42 @@ async def mark_fired(
     return changed.first() is not None
 
 
-async def runs_late(
+async def recheck_occurrence(
     session: AsyncSession, *, account_id: int, kind: str, occurrence_at: datetime, now: datetime
-) -> bool:
-    """Whether `occurrence_at` is a scheduled occurrence of one of this
-    account's `kind` automations that is being acted on late: claimed with
-    the `late` note, or acted on more than the grace after its time. The
-    owner is told (FR-FUP-08: "fires late (with a note)")."""
+) -> Timing | None:
+    """The re-check of a job a fire handed `occurrence_at` to (`digest.build`
+    may wait in its queue after the fire): None when it is not a scheduled
+    occurrence of one of this account's `kind` automations (`/digest`).
+    Past its deadline (`OBSOLETE`, `EXPIRED`), the occurrence is settled
+    `skipped` with the note in the caller's transaction and the caller acts
+    on nothing; an occurrence already settled that way answers the same.
+    `LATE`: the owner is told (FR-FUP-08: "fires late (with a note)")."""
     row = (
         await session.execute(
-            select(AutomationOccurrence.note_code)
+            select(AutomationOccurrence, Automation)
             .join(Automation, Automation.id == AutomationOccurrence.automation_id)
             .where(AutomationOccurrence.account_id == account_id)
             .where(Automation.account_id == account_id)
             .where(Automation.kind == kind)
             .where(AutomationOccurrence.occurrence_at == occurrence_at)
-            .where(AutomationOccurrence.status.in_(("claimed", "fired")))
+            .order_by(AutomationOccurrence.id)
             .limit(1)
+            .with_for_update(of=AutomationOccurrence)
         )
     ).first()
     if row is None:
-        return False  # not a scheduled occurrence (e.g. `/digest`)
-    return row.note_code == Note.LATE.value or now - occurrence_at > GRACE
+        return None  # not a scheduled occurrence (e.g. `/digest`)
+    occurrence, automation = row
+    if occurrence.status == "skipped":
+        # Settled past its deadline by the reconciler meanwhile. Any other
+        # skip was never handed to a job: nothing scheduled is being acted on.
+        return _SETTLED_TIMING.get(occurrence.note_code or "")
+    verdict = timing(automation, occurrence.occurrence_at, now)
+    note = _SETTLED.get(verdict)
+    if note is not None:
+        _settle(occurrence, note)
+        await session.flush()
+    return verdict
 
 
 # ------------------------------------------------------------ restores

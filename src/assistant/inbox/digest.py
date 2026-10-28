@@ -544,6 +544,21 @@ class DigestDelivery:
             )
             if last_sent is not None and last_sent >= period_end:
                 return DigestResult("covered", reason="newer_digest_sent")
+            # The scheduled occurrence's deadlines, re-checked now: this job
+            # may have waited in its queue since the fire (AGENTS §13).
+            timing = await schedules.recheck_occurrence(
+                session,
+                account_id=account_id,
+                kind=schedules.DIGEST_KIND,
+                occurrence_at=period_end,
+                now=now,
+            )
+            if timing in (schedules.Timing.OBSOLETE, schedules.Timing.EXPIRED):
+                # Nothing is sent and no row claims the period: the next
+                # digest covers it (its start follows the last sent one).
+                skipped = DigestResult("skipped", reason=timing.value)
+                logger.info("digest_skipped", account_id=account_id, reason=skipped.reason)
+                return skipped
             period_start = max(
                 last_sent if last_sent is not None else period_end - FIRST_PERIOD,
                 period_end - MAX_PERIOD,
@@ -566,13 +581,7 @@ class DigestDelivery:
             content = await build_digest(
                 session, account_id=account_id, period_start=period_start, period_end=period_end
             )
-            if await schedules.runs_late(
-                session,
-                account_id=account_id,
-                kind=schedules.DIGEST_KIND,
-                occurrence_at=period_end,
-                now=now,
-            ):
+            if timing is schedules.Timing.LATE:
                 content = replace(content, due_late_at=period_end)
             text = self._render(content)
             # The at-most-once claim (§3.5 step 3): committed before the send.

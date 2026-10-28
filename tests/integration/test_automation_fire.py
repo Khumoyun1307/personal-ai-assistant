@@ -11,6 +11,7 @@ Synthetic data only; FakeChannel stands in for the control chat.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import select, text, update
@@ -19,6 +20,7 @@ from assistant.automation.models import Automation, AutomationOccurrence
 from assistant.automation.schedules import FireAction, Note
 from assistant.core.jobs import DIGEST_TASK, FIRE_TASK
 from assistant.inbox.digest import DigestDelivery
+from assistant.inbox.models import Digest
 from assistant.jobs.tasks_automation import ScheduleJobs
 from assistant.telegram.control.digest import render_digest
 from tests.fakes.channel import FakeChannel
@@ -77,7 +79,7 @@ async def occurrence(env: Env) -> AutomationOccurrence:
         return (await session.execute(select(AutomationOccurrence))).scalar_one()
 
 
-async def due_digest(env: Env) -> tuple[int, int]:
+async def due_digest(env: Env, **automation_fields: Any) -> tuple[int, int]:
     """An account whose digest automation is due at EVENING, claimed by the
     reconciler job: (account id, automation id)."""
     async with env.factory() as session, session.begin():
@@ -95,6 +97,7 @@ async def due_digest(env: Env) -> tuple[int, int]:
             rrule="FREQ=DAILY",
             timezone="Asia/Tashkent",
             next_run_at=EVENING,
+            **automation_fields,
         )
         ids = (account.id, automation.id)
     env.clock.set(EVENING + timedelta(seconds=30))
@@ -205,3 +208,108 @@ async def test_the_reconciler_redefers_a_lost_fire_once_its_grace_passed(env: En
     await handlers.fire(automation_id, EPOCH)
     env.clock.advance(minutes=5)
     assert await handlers.reconcile_schedules() == 0
+
+
+async def lose_the_fire_job(env: Env) -> None:
+    """A crash between the reconciler's commit and its defer."""
+    async with env.factory() as session, session.begin():
+        await session.execute(text("DELETE FROM procrastinate.procrastinate_jobs"))
+
+
+async def no_digests(env: Env) -> bool:
+    async with env.factory() as session:
+        return (await session.scalar(select(Digest.id).limit(1))) is None
+
+
+# ------------------------------------------------ deadlines at execution (QA B2)
+async def test_an_on_time_claim_that_waits_past_its_lateness_never_fires(env: Env) -> None:
+    """AGENTS §13: queued work re-checks its conditions when it runs. A claim
+    made on time whose fire job runs only after the rule's 120 minutes is
+    settled `skipped_obsolete`; no digest is built."""
+    _, automation_id = await due_digest(env)
+    env.clock.set(EVENING + timedelta(hours=3))
+    plan = await jobs(env).fire(automation_id, EPOCH)
+    assert (plan.action, plan.note) == (FireAction.SKIPPED, "skipped_obsolete")
+    assert await queued(env, DIGEST_TASK) == []
+    row = await occurrence(env)
+    assert (row.status, row.note_code, row.fired_at) == ("skipped", "skipped_obsolete", None)
+
+
+async def test_an_on_time_claim_that_waits_within_its_lateness_still_fires(env: Env) -> None:
+    account_id, automation_id = await due_digest(env)
+    env.clock.set(EVENING + timedelta(minutes=119))
+    assert (await jobs(env).fire(automation_id, EPOCH)).action is FireAction.DIGEST
+    assert await queued(env, DIGEST_TASK) == [{"account_id": account_id, "period_end": EPOCH}]
+    assert (await occurrence(env)).status == "fired"
+
+
+async def test_an_automation_that_expires_while_its_claim_waits_never_fires(env: Env) -> None:
+    _, automation_id = await due_digest(env, expires_at=EVENING + timedelta(minutes=10))
+    env.clock.set(EVENING + timedelta(minutes=15))
+    plan = await jobs(env).fire(automation_id, EPOCH)
+    assert (plan.action, plan.note) == (FireAction.SKIPPED, "expired")
+    assert await queued(env, DIGEST_TASK) == []
+    row = await occurrence(env)
+    assert (row.status, row.note_code) == ("skipped", "expired")
+
+
+async def test_a_digest_build_that_waits_past_its_lateness_sends_nothing(env: Env) -> None:
+    """The fire ran on time, but `digest.build` waited in its queue past the
+    rule's lateness: nothing is sent, no `digests` row claims the period (the
+    next digest covers it), and the occurrence is settled obsolete."""
+    account_id, automation_id = await due_digest(env)
+    channel = FakeChannel()
+    handlers = jobs(env, channel)
+    assert (await handlers.fire(automation_id, EPOCH)).action is FireAction.DIGEST
+    env.clock.set(EVENING + timedelta(hours=3))
+    result = await handlers.build_digest(account_id, EPOCH)
+    assert (result.status, result.reason) == ("skipped", "obsolete")
+    assert channel.sends == []
+    assert await no_digests(env)
+    row = await occurrence(env)
+    assert (row.status, row.note_code, row.fired_at) == ("skipped", "skipped_obsolete", None)
+
+
+# ------------------------------------------------ lost fires follow the rule (QA B1)
+async def test_a_lost_fire_is_recovered_while_its_rule_still_allows_it(env: Env) -> None:
+    """Recovery follows the rule's deadline (the occurrence + 120 minutes for
+    the digest), not a fixed hour: a defer lost in a 70-minute outage is
+    re-deferred once, and the digest still goes out, late with a note."""
+    account_id, automation_id = await due_digest(env)
+    await lose_the_fire_job(env)
+    channel = FakeChannel()
+    handlers = jobs(env, channel)
+    env.clock.advance(minutes=70)
+    assert await handlers.reconcile_schedules() == 1
+    assert await queued(env, FIRE_TASK) == [
+        {"automation_id": automation_id, "occurrence_at": EPOCH}
+    ]
+    env.clock.advance(minutes=1)
+    assert await handlers.reconcile_schedules() == 0  # queued: not deferred again
+    assert len(await queued(env, FIRE_TASK)) == 1
+
+    await take(env, FIRE_TASK)
+    assert (await handlers.fire(automation_id, EPOCH)).action is FireAction.DIGEST
+    await take(env, DIGEST_TASK)
+    assert (await handlers.build_digest(account_id, EPOCH)).status == "sent"
+    [sent] = channel.sends
+    assert "⏰ Late: this digest was due at 18 Oct 21:00." in sent
+    assert (await occurrence(env)).status == "fired"
+    env.clock.advance(minutes=5)
+    assert await handlers.reconcile_schedules() == 0
+
+
+async def test_a_lost_fire_past_its_rule_deadline_is_settled_obsolete(env: Env) -> None:
+    """A claim whose rule no longer allows it never stays `claimed` forever:
+    the reconciler records it `skipped_obsolete` once, and defers nothing."""
+    _, automation_id = await due_digest(env)
+    await lose_the_fire_job(env)
+    handlers = jobs(env)
+    env.clock.set(EVENING + timedelta(minutes=121))
+    assert await handlers.reconcile_schedules() == 0
+    assert await queued(env, FIRE_TASK) == []
+    row = await occurrence(env)
+    assert (row.status, row.note_code) == ("skipped", "skipped_obsolete")
+    env.clock.advance(minutes=1)
+    assert await handlers.reconcile_schedules() == 0
+    assert (await jobs(env).fire(automation_id, EPOCH)).action is FireAction.NONE

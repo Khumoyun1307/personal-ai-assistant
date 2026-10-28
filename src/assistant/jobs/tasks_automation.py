@@ -26,7 +26,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.automation import schedules
-from assistant.automation.schedules import DueOccurrence, FireAction, FirePlan
+from assistant.automation.schedules import FireAction, FirePlan, Recovery
 from assistant.core.clock import Clock
 from assistant.core.jobs import (
     DIGEST_TASK,
@@ -52,20 +52,18 @@ FIRE_RETRY = RetryStrategy(
 )
 
 #: A claimed occurrence with no `automation.fire` job after this lost its
-#: defer (a crash between the reconciler's commit and the defer).
+#: defer (a crash between the reconciler's commit and the defer). How long
+#: it may still be recovered is its rule's deadline, not a fixed window
+#: (`schedules.recover_claims`).
 FIRE_GRACE = timedelta(minutes=2)
-#: Older claims are left alone: firing them now would be later than any
-#: digest tolerates (they stay `claimed` in the ledger, visible).
-FIRE_WINDOW = timedelta(hours=1)
 LOST_FIRE_BATCH = 100
 
 _LOST_FIRES = text(
     """
-    SELECT o.automation_id, o.account_id, o.occurrence_at
+    SELECT o.id
     FROM app.automation_occurrences AS o
     WHERE o.status = 'claimed'
       AND o.created_at < :older_than
-      AND o.created_at >= :newer_than
       AND NOT EXISTS (
           -- By queueing lock (`auto:{id}:{epoch}`, core/jobs.py).
           SELECT 1 FROM procrastinate.procrastinate_jobs AS j
@@ -80,21 +78,14 @@ _LOST_FIRES = text(
 )
 
 
-async def lost_fires(session: AsyncSession, now: datetime) -> list[DueOccurrence]:
-    """Claimed occurrences whose `automation.fire` job was lost."""
+async def lost_fires(session: AsyncSession, now: datetime) -> Recovery:
+    """Claimed occurrences whose `automation.fire` job was lost: re-deferred
+    while their rule still allows them, settled once it does not."""
     result = await session.execute(
         _LOST_FIRES,
-        {
-            "older_than": now - FIRE_GRACE,
-            "newer_than": now - FIRE_WINDOW,
-            "task": FIRE_TASK,
-            "limit": LOST_FIRE_BATCH,
-        },
+        {"older_than": now - FIRE_GRACE, "task": FIRE_TASK, "limit": LOST_FIRE_BATCH},
     )
-    return [
-        DueOccurrence(int(automation_id), int(account_id), occurrence_at)
-        for automation_id, account_id, occurrence_at in result.all()
-    ]
+    return await schedules.recover_claims(session, [int(row_id) for (row_id,) in result.all()], now)
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,18 +110,20 @@ class ScheduleJobs:
                 uow.session, now, digest_enabled=self.digest_enabled
             )
             lost = await lost_fires(uow.session, now)
-        due = list(dict.fromkeys((*report.claimed, *lost)))
+        due = list(dict.fromkeys((*report.claimed, *lost.due)))
         for occurrence in due:
             await self.scheduler.defer(
                 FIRE_TASK,
                 args={"automation_id": occurrence.automation_id, "occurrence_at": occurrence.epoch},
                 queueing_lock=occurrence_queueing_lock(occurrence.automation_id, occurrence.epoch),
             )
-        if due or report.skipped or report.invalid or report.rezoned or report.digests:
+        changed = report.skipped or report.invalid or report.rezoned or report.digests
+        if due or changed or lost.settled:
             logger.info(
                 "schedules_reconciled",
                 claimed=len(report.claimed),
-                redeferred=len(lost),
+                redeferred=len(lost.due),
+                settled=lost.settled,
                 skipped=report.skipped,
                 completed=report.completed,
                 expired=report.expired,
@@ -141,10 +134,11 @@ class ScheduleJobs:
         return len(due)
 
     async def fire(self, automation_id: int, occurrence_at: int) -> FirePlan:
-        """`automation.fire` (S05.3b §3.3): re-check, act, then mark the
-        occurrence fired. A crash after the digest was sent and before the
-        mark re-runs this: the new `digest.build` finds its row and sends
-        nothing, and the occurrence is marked fired."""
+        """`automation.fire` (S05.3b §3.3): re-check (deadlines included: the
+        job may have waited in its queue), act, then mark the occurrence
+        fired. A crash after the digest was sent and before the mark re-runs
+        this: the new `digest.build` finds its row and sends nothing, and the
+        occurrence is marked fired."""
         moment = schedules.from_epoch(occurrence_at)
         async with transaction(self.session_factory) as uow:
             plan = await schedules.plan_fire(
@@ -152,6 +146,7 @@ class ScheduleJobs:
                 automation_id=automation_id,
                 occurrence_at=moment,
                 digest_enabled=self.digest_enabled,
+                now=self.clock.now(),
             )
         if plan.action is FireAction.DIGEST and plan.account_id is not None:
             await self.scheduler.defer(
