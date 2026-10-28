@@ -43,7 +43,11 @@ from assistant.inbox.notify import OwnerAlerts
 from assistant.inbox.processor import InboxProcessor
 from assistant.jobs.app import QUEUE_SYSTEM, QUEUES, build_app, run_queue_worker
 from assistant.jobs.reconcile import Reconciler
-from assistant.jobs.reconcile_actions import UnqueuedDrafts, unqueued_executions
+from assistant.jobs.reconcile_actions import (
+    UnfinishedRevisions,
+    UnqueuedDrafts,
+    unqueued_executions,
+)
 from assistant.jobs.scheduler import ProcrastinateScheduler
 from assistant.jobs.tasks import JobHandlers, register_tasks
 from assistant.jobs.tasks_actions import ActionsJobHandlers
@@ -62,6 +66,7 @@ from assistant.telegram.business_targets import BusinessTargetResolver
 from assistant.telegram.connections import AiogramConnectionLookup, ConnectionRegistry
 from assistant.telegram.control.activity import handle_activity
 from assistant.telegram.control.agent_channel import GatewayControlChannel
+from assistant.telegram.control.approvals import DRAFT_EDIT, KIND, ApprovalCards, RevisionJob
 from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.inbox_handlers import ControlInboxHandlers, RefusalLimiter
 from assistant.telegram.control.routes import ControlRoutes
@@ -255,6 +260,20 @@ def _wire_m04(
         wiring.routes,
         commands={**wiring.routes.commands, "activity": handle_activity},
     )
+    # S04.3: the approval cards, set before S04.4's executor and S04.2's
+    # drafting read `wiring.approval_cards`.
+    cards = ApprovalCards(
+        session_factory=session_factory,
+        gateway=gateway,
+        clock=clock,
+        config=wiring.actions_config,
+    )
+    wiring.approval_cards = cards
+    wiring.routes = replace(
+        wiring.routes,
+        callbacks={**wiring.routes.callbacks, KIND: cards.handle_press},
+        pending_inputs={**wiring.routes.pending_inputs, DRAFT_EDIT: cards.handle_edit_input},
+    )
     if roles & {"worker", "system"}:
         # S04.4: verified execution, the uncertain-attempt sweep and the
         # lost-job reconciler. The only business send path (§9.4).
@@ -280,6 +299,22 @@ def _wire_m04(
         scheduler=scheduler,
         llm=llm,
     )
+    if roles & {"worker", "system"}:
+        # S04.3: card expiry and sync, the revising reconciler, and — where
+        # the model runs — `replies.revise`.
+        wiring.actions = replace(wiring.actions or ActionsJobHandlers(), cards=cards)
+        wiring.reconcilers.append(UnfinishedRevisions(cards))
+        if wiring.drafter is not None:
+            wiring.actions = replace(
+                wiring.actions,
+                revisions=RevisionJob(
+                    session_factory=session_factory,
+                    cards=cards,
+                    drafter=wiring.drafter,
+                    clock=clock,
+                    scheduler=scheduler,
+                ),
+            )
 
 
 def draft_config(settings: Settings) -> DraftConfig:
@@ -303,7 +338,7 @@ def _wire_s042_drafting(
     """S04.2: the actions listener (first in order, F0-interfaces §5), and —
     where a role can call the model — the `Drafter` for `propose_reply`, the
     `replies.draft` job and its reconciler. `wiring.approval_cards` is S04.3's
-    presenter (None until it lands: cards are then shown by its sync job)."""
+    presenter, set before this runs."""
     config = wiring.actions_config
     assert config is not None  # built above
     wiring.listeners.insert(

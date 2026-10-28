@@ -204,6 +204,7 @@ async def _result(
     action_id: int,
     *,
     guidance_ignored: bool = False,
+    replaced: bool = False,
 ) -> ToolOutcome:
     action = await session.scalar(select(Action).where(Action.id == action_id))
     if action is None:  # pragma: no cover - created or found in this transaction
@@ -225,6 +226,9 @@ async def _result(
         data["state"] = state.value
     if guidance_ignored:
         data["guidance_ignored"] = GUIDANCE_IGNORED
+    if replaced:
+        # One card per chat: this proposal outdated the chat's earlier card.
+        data["replaced_earlier_card"] = True
     return ToolOutcome(
         status,
         data,
@@ -300,7 +304,11 @@ async def propose_reply_tool(ctx: ToolContext, args: ProposeReplyArgs) -> ToolOu
                 return _not_available()
             if not isinstance(proposal, Stale):
                 return await _result(
-                    uow.session, target, proposal.action_id, guidance_ignored=ignored
+                    uow.session,
+                    target,
+                    proposal.action_id,
+                    guidance_ignored=ignored,
+                    replaced=proposal.superseded_action_id is not None,
                 )
         # The chat moved on while the model wrote: draft once more (§3.5 step 4).
     return _not_drafted(target, "chat_changed", guidance_ignored=ignored)
@@ -336,7 +344,12 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
         except ProposalRefused:
             return _not_available()
         assert not isinstance(proposal, Stale)  # a dictated text is never stale
-        return await _result(uow.session, target, proposal.action_id)
+        return await _result(
+            uow.session,
+            target,
+            proposal.action_id,
+            replaced=proposal.superseded_action_id is not None,
+        )
 
 
 _RESULT_RULE = (

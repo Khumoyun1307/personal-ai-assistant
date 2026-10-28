@@ -537,6 +537,9 @@ async def propose_draft(
     )
     if not proposal.reused and presenter is not None:
         presenter.present_after_commit(session, proposal.action_id)
+        if proposal.superseded_action_id is not None:
+            # One card per chat: the replaced card shows "Outdated" at once.
+            presenter.sync_after_commit(session, proposal.superseded_action_id)
     return proposal
 
 
