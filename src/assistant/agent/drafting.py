@@ -119,6 +119,12 @@ class _Prepared:
     context: DraftContext
     prompt_label: str
     run_kind: Literal["draft", "revise"]
+    #: The conversation's newest message id (any direction, tombstones
+    #: included) when the window was read: every message at or below it was
+    #: either shown or had nothing to show (a location, a poll, a deleted
+    #: message). The draft is fresh through it — never through less, or such
+    #: a newest message would make every draft stale (PR #106 review).
+    shown_through_message_id: int
 
 
 async def draft_consent_ok(session: AsyncSession, account_id: int, model: str) -> bool:
@@ -217,7 +223,7 @@ class Drafter:
                 result,
                 run_id=prepared.run_id,
                 base_message_id=prepared.context.base_message_id,
-                shown_through_message_id=prepared.context.shown_through_message_id,
+                shown_through_message_id=prepared.shown_through_message_id,
             )
         except BaseException as error:
             # Cancellation is included: shutdown must not leave a running row.
@@ -261,8 +267,16 @@ class Drafter:
                 )
                 if spent >= self._config.monthly_budget_usd:
                     return DraftOutcome(DraftStatus.OVER_BUDGET)
-            messages = await self._messages(session, account_id, conversation_id)
-            if not messages:
+            # The watermark first, then the window up to it: a message
+            # ingested between the two reads is above both, so the freshness
+            # check still finds it.
+            through = await _newest_message_id(session, account_id, conversation_id)
+            messages = (
+                await self._messages(session, account_id, conversation_id, through=through)
+                if through is not None
+                else []
+            )
+            if through is None or not messages:
                 return DraftOutcome(DraftStatus.NOT_DRAFTABLE)
             account = await session.get(Account, account_id)
             if account is None:
@@ -297,10 +311,10 @@ class Drafter:
                 )
             )
             await session.flush()
-            return _Prepared(account_id, run.id, context, prompt.label, request.run_kind)
+            return _Prepared(account_id, run.id, context, prompt.label, request.run_kind, through)
 
     async def _messages(
-        self, session: AsyncSession, account_id: int, conversation_id: int
+        self, session: AsyncSession, account_id: int, conversation_id: int, *, through: int
     ) -> list[SourceMessage]:
         rows = (
             await session.scalars(
@@ -308,6 +322,7 @@ class Drafter:
                 .where(
                     Message.account_id == account_id,
                     Message.conversation_id == conversation_id,
+                    Message.id <= through,
                     Message.deleted_at.is_(None),
                     Message.purged_at.is_(None),
                     Message.direction.is_not(None),
@@ -485,9 +500,12 @@ async def propose_draft(
     """One proposal, in the caller's transaction (§3.4).
 
     Locks in the §9.4 order (account `FOR SHARE`, conversation `FOR UPDATE`),
-    then checks freshness: a draft is `Stale` if a contact message newer than
-    what it was shown exists (the listener had nothing to outdate yet while
-    the model ran). An owner-dictated text (`dictated_text`, origin
+    then checks freshness: a draft is `Stale` if a contact message arrived
+    after its window was read — an id above `shown_through_message_id`, the
+    conversation's newest id at that read (the listener had nothing to
+    outdate yet while the model ran). The same comparison is S04.1's
+    `not_stale` at Approve, so a fresh draft stays approvable. An
+    owner-dictated text (`dictated_text`, origin
     `owner_dictated`) needs no model run: it has no base message (decisions
     R3) and is shown through the newest message of any direction now.
     Then S04.1's `propose()` (which re-takes the same locks harmlessly) and,
@@ -689,6 +707,9 @@ class AssistDraftJob:
                 return _Checked(
                     "debounced", account_id, later=newest.created_at + self._config.draft_debounce
                 )
+            # The same comparison as `propose_draft`'s freshness check and
+            # S04.1's `not_stale`: a card's watermark against the newest
+            # contact row, tombstones included.
             covered = await session.scalar(
                 select(func.count())
                 .select_from(Action)
@@ -756,18 +777,19 @@ class AssistDraftJob:
                     )
                 except ProposalRefused as refused:
                     code = f"proposal_{refused.code}"
-                    await self._clear(session, conversation_id, flagged=flagged)
+                    await self._clear(session, account_id, conversation_id, flagged=flagged)
                     _audit(session, account_id, conversation_id, EVENT_DRAFT_FAILED, code, why, now)
                     return code
                 if isinstance(proposal, Stale):
                     stale = True  # keep the flag; a newer burst is waiting
                 else:
-                    await self._clear(session, conversation_id, flagged=flagged)
+                    await self._clear(session, account_id, conversation_id, flagged=flagged)
                     return f"proposed_{proposal.state.value}"
             else:
                 code = _outcome_code(outcome)
                 await self._clear(
                     session,
+                    account_id,
                     conversation_id,
                     flagged=flagged,
                     unless_newer_than=outcome.shown_through_message_id,
@@ -788,6 +810,7 @@ class AssistDraftJob:
     async def _clear(
         self,
         session: AsyncSession,
+        account_id: int,
         conversation_id: int,
         *,
         flagged: bool,
@@ -795,11 +818,13 @@ class AssistDraftJob:
     ) -> None:
         """Clear the flag under the conversation lock — unless a contact
         message newer than what the run saw arrived meanwhile: its own job
-        (deferred while this one ran) will draft for it."""
+        (deferred while this one ran) will draft for it. Account-scoped."""
         if not flagged:
             return
         conversation = await session.scalar(
-            select(Conversation).where(Conversation.id == conversation_id).with_for_update()
+            select(Conversation)
+            .where(Conversation.id == conversation_id, Conversation.account_id == account_id)
+            .with_for_update()
         )
         if conversation is None:
             return
@@ -808,7 +833,7 @@ class AssistDraftJob:
                 select(func.count())
                 .select_from(Message)
                 .where(
-                    Message.account_id == conversation.account_id,
+                    Message.account_id == account_id,
                     Message.conversation_id == conversation_id,
                     Message.direction == "contact",
                     Message.id > unless_newer_than,

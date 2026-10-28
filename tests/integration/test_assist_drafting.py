@@ -13,22 +13,28 @@ from dataclasses import replace
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry, Consent
 from assistant.actions.drafts import assist_trigger, request_draft
-from assistant.actions.states import ActionOrigin, ActionState, StateReason
+from assistant.actions.models import Action
+from assistant.actions.policy_loader import load_context
+from assistant.actions.states import ActionKind, ActionOrigin, ActionState, StateReason
 from assistant.agent.drafting import DraftOutcome, DraftStatus, Stale, propose_draft
-from assistant.conversations.models import Contact, Conversation
+from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.jobs import DraftReason
 from assistant.db.uow import transaction
 from assistant.jobs.reconcile_actions import UnqueuedDrafts
 from assistant.llm.port import LLMRequest, StopReason, TextItem
+from assistant.policy import rules
+from assistant.policy.context import ActionFacts, CheckResult, Phase
 from tests.integration.drafting_env import (
     DraftEnv,
     actions_of,
+    contact_deletes,
     contact_says,
+    contact_shares_location,
     draft_jobs,
     drafting_environment,
     finish_draft_jobs,
@@ -285,6 +291,113 @@ async def test_a_contact_message_during_drafting_discards_the_stale_draft_and_re
     assert "SYNTH-SECOND-QUESTION" in prompt_text(denv.fake.requests[-1])
     [card] = await actions_of(denv.env, conversation)
     assert card.state == "awaiting_approval"
+
+
+# ------------------------------------------------------------ a newest message with nothing to show
+# PR #106 review (Neryn): the window shows only messages with text or media,
+# so a location (or a poll, a contact, …) or a deleted contact message as the
+# newest one made every draft `Stale` — the job called the model again every
+# debounce, and a re-draft back to back, while no card ever appeared.
+async def not_stale_at_approval(denv: DraftEnv, card: Action) -> CheckResult:
+    """S04.1's `not_stale`, as Tx A of an Approve would evaluate it now."""
+    async with denv.env.factory() as session:
+        context = await load_context(
+            session,
+            account_id=card.account_id,
+            conversation_id=card.conversation_id,
+            facts=ActionFacts(
+                action_id=card.id,
+                kind=ActionKind(card.kind),
+                origin=ActionOrigin(card.origin),
+                state=ActionState.APPROVED,
+                version=card.version,
+                text_length=len(card.text or ""),
+                created_at=card.created_at,
+                expires_at=card.expires_at,
+                shown_through_message_id=card.shown_through_message_id,
+                owner_retry=False,
+            ),
+            base_message_id=card.base_message_id,
+            target_message_id=None,
+            owner_requested=card.trigger_turn_id is not None,
+            phase=Phase.EXECUTION,
+            now=denv.env.clock.now(),
+            config=denv.config,
+            ai_generated=True,
+            process_run_id="synthetic-run",
+        )
+    result = rules.not_stale(context)
+    assert result is not None
+    return result
+
+
+async def newest_message_id(denv: DraftEnv, conversation_id: int) -> int:
+    async with denv.env.factory() as session:
+        newest = await session.scalar(
+            select(func.max(Message.id)).where(Message.conversation_id == conversation_id)
+        )
+    assert newest is not None
+    return int(newest)
+
+
+async def assert_one_card_from_one_call(denv: DraftEnv, conversation_id: int) -> Action:
+    """Exactly one model call and one live card that Approve would not find
+    stale; the flag is cleared and nothing is queued to draft again."""
+    assert len(denv.fake.requests) == 1
+    [card] = await actions_of(denv.env, conversation_id)
+    assert card.state == ActionState.AWAITING_APPROVAL.value
+    assert card.shown_through_message_id == await newest_message_id(denv, conversation_id)
+    assert (await not_stale_at_approval(denv, card)).passed
+    assert await pending_flag(denv.env, conversation_id) is None
+    todo = [job for job in await draft_jobs(denv.env, conversation_id) if job["status"] == "todo"]
+    assert todo == []
+    return card
+
+
+async def test_a_location_as_the_newest_contact_message_gets_one_card_from_one_call(
+    denv: DraftEnv,
+) -> None:
+    _, conversation = await seed_chat(denv)
+    await contact_says(denv, "SYNTH-WHERE-SHALL-WE-MEET")
+    await contact_shares_location(denv)
+    await finish_draft_jobs(denv.env, conversation)  # a worker took the queued job
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+    denv.script(output(text="Synthetic reply about the place."))
+
+    assert await run_job(denv, conversation) == "proposed_awaiting_approval"
+    card = await assert_one_card_from_one_call(denv, conversation)
+    assert "SYNTH-WHERE-SHALL-WE-MEET" in prompt_text(denv.fake.requests[0])
+    assert card.base_message_id is not None
+    # Run again (a redelivered job): nothing new, no second call.
+    assert await run_job(denv, conversation) == "no_flag"
+    assert len(denv.fake.requests) == 1
+
+
+async def test_a_contact_message_deleted_before_the_run_gets_one_card_from_one_call(
+    denv: DraftEnv,
+) -> None:
+    _, conversation = await seed_chat(denv)
+    await contact_says(denv, "SYNTH-QUESTION")
+    await contact_deletes(denv)
+    await finish_draft_jobs(denv.env, conversation)
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+    denv.script(output(text="Synthetic answer."))
+
+    assert await run_job(denv, conversation) == "proposed_awaiting_approval"
+    await assert_one_card_from_one_call(denv, conversation)
+    assert "SYNTH-SOON-DELETED" not in prompt_text(denv.fake.requests[0])
+
+
+async def test_a_redraft_with_a_location_as_the_newest_message_drafts_once(
+    denv: DraftEnv,
+) -> None:
+    _, conversation = await seed_chat(denv, mode="observe")
+    await contact_says(denv, "SYNTH-QUESTION")
+    await contact_shares_location(denv)
+    denv.script(output(text="Synthetic re-draft."))
+
+    assert await run_job(denv, conversation, "redraft") == "proposed_awaiting_approval"
+    await assert_one_card_from_one_call(denv, conversation)
 
 
 # ------------------------------------------------------------ the switch and the flag
