@@ -69,24 +69,36 @@ checks across different snapshots.
 The interval includes `since` and excludes `until`. Both must include a
 timezone; defaults are the Unix epoch and the current UTC time. An empty or
 reversed interval is rejected before opening a database connection. Actions
-created in the interval or with any audit event in it are checked against
-their retained history; orphan assistant-sent messages are checked in the
-interval.
+created in the interval, with any audit event in it, or with a linked message
+created in it are checked against their retained history; orphan
+assistant-sent messages are checked in the interval.
 
 | Check | Evidence checked |
 |---|---|
 | `approved_before_claim` | Every claim follows approval of that version; no autonomous-origin action is allowed in P2. |
-| `hash_match` | Successful or uncertain delivery has non-null, matching approved and sent text hashes. |
-| `one_send_per_action` | A success has one linked message; other states have none; at most one attempt delivered or may have delivered. |
+| `hash_match` | Successful or uncertain delivery has non-null, matching approved and sent text hashes. Approved and scheduled actions have non-null text (computed as an SQL boolean). |
+| `one_send_per_action` | A success has one linked message, except the deletion receipt case below; other states have none; at most one attempt delivered or may have delivered. |
 | `no_send_after_terminal` | A claim or success never follows a terminal denial, and denied actions have no delivered message identity. |
 | `recipient_matches` | Linked messages belong to the action's conversation. |
 | `no_orphan_sends` | Every assistant-sent message in the interval belongs to a successful action. |
 
-Repeated claims after definite rate-limited non-delivery are allowed. Repeated
-outcome events for the same attempt, such as uncertain followed by a late
-success, are one possible delivery; two distinct possibly delivered attempts
-fail. A `delivery_uncertain` state with valid evidence is listed for the owner
+Repeated claims after definite rate-limited non-delivery are allowed. Every
+outcome names the latest claim; each attempt has exactly one closing outcome,
+with at most one late result after uncertainty. A claim without an outcome
+fails (`missing_outcome`), except an executing action's current in-flight claim.
+Every claim counts as possibly delivered until definite non-delivery closes
+it; two distinct possibly delivered attempts fail. Approved or scheduled
+actions with claims require their latest claim to have closed as rate-limited.
+A `delivery_uncertain` state with valid evidence is listed for the owner
 to check and does not fail the trial by itself.
+
+A succeeded action with no retained linked message prints the non-violation
+code `message_deleted_after_success` only when a later `data_deleted` or
+`managed_data_deleted` audit receipt covers that account and conversation.
+Conversation, contact, everything and managed-data deletion scopes are
+recognized; timestamp ties use audit ids. Missing/mismatching receipts still
+fail. This exception never waives approval, outcome, hash, recipient or duplicate
+checks, and never permits NULL text in an approved or scheduled action.
 
 Output includes each check's `PASS`/`FAIL`, fixed violation codes with account
 and action ids, each scoped action's structural state, counts by state,
@@ -121,3 +133,21 @@ The backend and final claim fix also received independent delegated source
 reviews; the root reviewed the complete diff. CI and external Neryn/TL review
 are tracked on the PR linked from #65. This is automated tooling evidence;
 the owner/TL CP3 server dry-run and daily trial checks remain pending.
+
+One review fix round (2026-10-28, Neryn review and TL disposition on PR #123):
+
+- Before the fix, the 44-case focused selection produced **28 failures and
+  16 passes**, reproducing stale outcomes, missing outcomes, contradictory
+  closures, rearming after uncertainty, NULL pending text, linked-message
+  scope gaps and privacy deletion false alarms.
+- Added direct terminal-send and outcome-order assertions, a real
+  `ActionExecutor` fixture with a fake Telegram sender, four real deletion
+  scopes and negative receipt-account/conversation/time/outcome cases.
+- Final focused gate: **108 passed** across `tests/unit/test_p2_verify.py`,
+  `tests/unit/test_server_sh.py` and `tests/integration/test_p2_verify.py`, in
+  Compose project `antony-tvfix`. Changed-file Ruff check/format and strict
+  mypy on the verifier (`--cache-dir /tmp/mypy-cache`) passed. Full-suite
+  verification remains GitHub CI's gate; independent peer/QA/TL reviews
+  follow the push.
+- The change remains in QA tooling/tests/docs; no product source, migrations,
+  provider calls, Telegram calls or production actions are involved.

@@ -397,6 +397,8 @@ class _TrialAction:
     zone: str
     recipient_valid: bool
     current_claim_present: bool
+    text_missing: bool = False
+    message_deleted_after_success: bool = False
 
 
 @dataclass(frozen=True)
@@ -437,7 +439,9 @@ def _trial_history(
         fail("one_send_per_action", "unknown_state")
     claims: dict[str, _TrialEvent] = {}
     rate_limited: set[str] = set()
-    potential: set[str] = set()
+    outcomes: dict[str, _TrialEvent] = {}
+    late_results: set[str] = set()
+    definite_non_delivery: set[str] = set()
     last_claim: str | None = None
     terminal: _TrialEvent | None = None
     success = uncertain = False
@@ -473,13 +477,17 @@ def _trial_history(
             "action_late_result",
         } or (event.name == "action_expired" and event.before == "executing"):
             claim = claims.get(event.attempt) if event.attempt is not None else None
-            if (
+            matching = not (
                 claim is None
                 or event.version is None
                 or claim.version != event.version
                 or claim.order >= event.order
-            ):
+            )
+            if not matching:
                 fail("one_send_per_action", "missing_matching_claim")
+            latest = event.attempt is not None and event.attempt == last_claim
+            if not latest:
+                fail("one_send_per_action", "outcome_not_latest_claim")
             allowed = {
                 "action_succeeded": ("executing", "succeeded"),
                 "action_failed": ("executing", "failed"),
@@ -496,13 +504,27 @@ def _trial_history(
                 valid = (event.before, event.after) == allowed[event.name]
             if not valid:
                 fail("one_send_per_action", "invalid_outcome")
-            if event.name == "action_rate_limited" and event.attempt is not None:
-                rate_limited.add(event.attempt)
-            if (
-                event.name in {"action_succeeded", "action_delivery_uncertain"}
-                or (event.name == "action_late_result" and event.after == "succeeded")
-            ) and event.attempt is not None:
-                potential.add(event.attempt)
+            previous = outcomes.get(event.attempt) if event.attempt is not None else None
+            closing = previous is None
+            if event.name == "action_late_result":
+                closing = (
+                    previous is not None
+                    and previous.name == "action_delivery_uncertain"
+                    and event.attempt not in late_results
+                )
+                if not closing:
+                    fail("one_send_per_action", "invalid_late_result")
+            elif not closing:
+                fail("one_send_per_action", "multiple_outcomes")
+            # A malformed outcome cannot prove non-delivery or close a claim.
+            if matching and latest and valid and closing and event.attempt is not None:
+                outcomes[event.attempt] = event
+                if event.name == "action_late_result":
+                    late_results.add(event.attempt)
+                if event.name == "action_rate_limited":
+                    rate_limited.add(event.attempt)
+                if event.after in {"approved", "failed", "expired"}:
+                    definite_non_delivery.add(event.attempt)
             if event.after == "succeeded":
                 success = True
                 if terminal is not None:
@@ -515,8 +537,18 @@ def _trial_history(
             terminal = event
         elif event.after in _NO_SEND_STATES:
             terminal = event
-    if len(potential) > 1:
+    for attempt in claims:
+        in_flight = (
+            action.state == "executing" and action.current_claim_present and attempt == last_claim
+        )
+        if attempt not in outcomes and not in_flight:
+            fail("one_send_per_action", "missing_outcome")
+    if len(claims.keys() - definite_non_delivery) > 1:
         fail("one_send_per_action", "multiple_possible_deliveries")
+    if action.state in {"approved", "scheduled"} and last_claim is not None:
+        last_outcome = outcomes.get(last_claim)
+        if last_outcome is None or last_outcome.name != "action_rate_limited":
+            fail("one_send_per_action", "rearmed_without_rate_limit")
     if action.state == "succeeded" and not success:
         fail("one_send_per_action", "missing_success_outcome")
     if action.state == "delivery_uncertain" and not uncertain:
@@ -548,6 +580,39 @@ def trial_check(conn: psycopg.Connection[Any], since: datetime, until: datetime)
                          AND jsonb_typeof(claim.details -> 'attempt_id') = 'string'
                          AND replace(lower(claim.details ->> 'attempt_id'), '-', '') =
                              replace(lower(a.attempt_id), '-', '')
+                         AND NOT EXISTS (
+                             SELECT 1 FROM app.audit_log later
+                             WHERE later.account_id = a.account_id
+                               AND later.subject_type = 'action' AND later.subject_id = a.id
+                               AND later.event = 'action_claimed'
+                               AND (later.at, later.id) > (claim.at, claim.id)
+                         )
+                   ), a.text IS NULL,
+                   EXISTS (
+                       SELECT 1 FROM app.audit_log deletion
+                       JOIN LATERAL (
+                           SELECT success.at, success.id FROM app.audit_log success
+                           WHERE success.account_id = a.account_id
+                             AND success.subject_type = 'action' AND success.subject_id = a.id
+                             AND success.event IN ('action_succeeded', 'action_late_result')
+                             AND success.details ->> 'to' = 'succeeded'
+                           ORDER BY success.at DESC, success.id DESC LIMIT 1
+                       ) success ON true
+                       WHERE deletion.account_id = a.account_id
+                         AND (deletion.at, deletion.id) > (success.at, success.id)
+                         AND (deletion.event = 'managed_data_deleted' OR (
+                             deletion.event = 'data_deleted' AND (
+                                 (deletion.subject_type = 'conversation'
+                                  AND deletion.subject_id = a.conversation_id
+                                  AND deletion.details ->> 'scope' = 'conversation')
+                                 OR (deletion.subject_type = 'contact'
+                                     AND deletion.subject_id = c.contact_id
+                                     AND deletion.details ->> 'scope' = 'contact')
+                                 OR (deletion.subject_type = 'account'
+                                     AND deletion.subject_id = a.account_id
+                                     AND deletion.details ->> 'scope' = 'everything')
+                             )
+                         ))
                    )
             FROM app.actions a JOIN app.accounts o ON o.id = a.account_id
             LEFT JOIN app.conversations c ON c.id = a.conversation_id
@@ -555,9 +620,12 @@ def trial_check(conn: psycopg.Connection[Any], since: datetime, until: datetime)
                 SELECT 1 FROM app.audit_log e
                 WHERE e.account_id = a.account_id AND e.subject_type = 'action'
                   AND e.subject_id = a.id AND e.at >= %s AND e.at < %s
+            ) OR EXISTS (
+                SELECT 1 FROM app.messages m WHERE m.action_id = a.id
+                  AND m.created_at >= %s AND m.created_at < %s
             ) ORDER BY a.id
             """,
-            (since, until, since, until),
+            (since, until, since, until, since, until),
         )
     ]
     identities = [action.id for action in scoped]
@@ -604,8 +672,18 @@ def trial_check(conn: psycopg.Connection[Any], since: datetime, until: datetime)
         messages = linked[action.id]
         if action.state in {"succeeded", "delivery_uncertain"} and not action.hashes_match:
             fail("hash_match", "missing_or_different_hash")
+        if action.state in {"approved", "scheduled"} and action.text_missing:
+            fail("hash_match", "sendable_text_missing")
+        deleted = (
+            action.state == "succeeded" and not messages and action.message_deleted_after_success
+        )
+        if deleted:
+            print(
+                f"PASS one_send_per_action account={action.account} action={action.id} "
+                "code=message_deleted_after_success"
+            )
         if (
-            (action.state == "succeeded" and len(messages) != 1)
+            (action.state == "succeeded" and len(messages) != 1 and not deleted)
             or (action.state != "succeeded" and messages)
             or any(message[3] != "assistant_sent" for message in messages)
         ):

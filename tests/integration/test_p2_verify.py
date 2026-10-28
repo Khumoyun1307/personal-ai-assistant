@@ -22,10 +22,17 @@ from assistant.accounts.models import AuditLogEntry, BusinessConnection
 from assistant.actions.lifecycle import text_hash, transition
 from assistant.actions.models import Action
 from assistant.actions.states import ActionState, StateReason
-from assistant.conversations.models import Message
+from assistant.conversations.models import Conversation, Message
 from assistant.db.uow import transaction
 from assistant.inbox.models import Digest
 from assistant.privacy.content_columns import CONTENT_COLUMNS
+from assistant.privacy.deletion import (
+    delete_contact_data,
+    delete_conversation_data,
+    delete_everything,
+    delete_managed_data,
+)
+from tests.integration import execution_env
 from tests.integration.business_env import Env, business_message, deliver
 from tests.integration.p2_factories import seed_account, seed_action, seed_conversation, seed_task
 from tests.integration.test_data_deletion import OTHER_OWNER, env, hits, seed
@@ -228,6 +235,197 @@ async def test_trial_check_passes_a_clean_history(env: Env, migrated_url: str) -
     assert "state=succeeded count=1" in result.stdout
     assert "total_sends=1" in result.stdout
     assert all(f"FAIL {check}" not in result.stdout for check in TRIAL_CHECKS)
+
+
+async def test_trial_check_rejects_a_success_for_the_old_rate_limited_attempt(
+    env: Env, migrated_url: str
+) -> None:
+    history = await trial_history(env, rate_limited=True)
+    async with transaction(env.factory) as uow:
+        rows = list(
+            await uow.session.scalars(
+                select(AuditLogEntry).where(
+                    AuditLogEntry.subject_type == "action",
+                    AuditLogEntry.subject_id == history.action_id,
+                    AuditLogEntry.account_id == history.account_id,
+                )
+            )
+        )
+        limited = next(row for row in rows if row.event == "action_rate_limited")
+        success = next(row for row in rows if row.event == "action_succeeded")
+        success.details = {**success.details, "attempt_id": limited.details["attempt_id"]}
+    result = await run_trial(migrated_url, history)
+    assert_failed_check(result, "one_send_per_action")
+    assert "code=missing_outcome" in result.stdout
+
+
+@pytest.mark.parametrize("state", ["approved", "scheduled"])
+async def test_trial_check_rejects_rearming_an_uncertain_send(
+    env: Env, migrated_url: str, state: str
+) -> None:
+    history = await trial_history(env, outcome=ActionState.DELIVERY_UNCERTAIN)
+    async with transaction(env.factory) as uow:
+        action = await uow.session.get(Action, history.action_id)
+        assert action is not None
+        action.state = state
+    result = await run_trial(migrated_url, history)
+    assert_failed_check(result, "one_send_per_action")
+    assert "code=rearmed_without_rate_limit" in result.stdout
+
+
+@pytest.mark.parametrize("state", ["approved", "scheduled"])
+async def test_trial_check_rejects_null_text_ready_to_send(
+    env: Env, migrated_url: str, state: str
+) -> None:
+    history = await trial_history(env, outcome=ActionState.EXECUTING)
+    async with transaction(env.factory) as uow:
+        action = await uow.session.get(Action, history.action_id)
+        assert action is not None
+        action.state, action.text = state, None
+    result = await run_trial(migrated_url, history)
+    assert_failed_check(result, "hash_match")
+    assert "code=sendable_text_missing" in result.stdout
+
+
+@pytest.mark.parametrize("state", ["outdated", "blocked"])
+@pytest.mark.parametrize("evidence", ["telegram", "message"])
+async def test_trial_check_terminal_state_cannot_hold_send_evidence(
+    env: Env, migrated_url: str, state: str, evidence: str
+) -> None:
+    history = await trial_history(env, outcome=ActionState.EXECUTING)
+    async with transaction(env.factory) as uow:
+        action = await uow.session.get(Action, history.action_id)
+        assert action is not None
+        action.state = state
+        if evidence == "telegram":
+            action.telegram_message_id = 1234
+        else:
+            await trial_message(uow.session, history)
+    result = await run_trial(migrated_url, history)
+    assert_failed_check(result, "no_send_after_terminal")
+    assert "code=terminal_has_send" in result.stdout
+
+
+async def test_trial_check_scopes_old_actions_with_new_linked_messages(
+    env: Env, migrated_url: str
+) -> None:
+    old = env.clock.now() - timedelta(days=2)
+    history = await trial_history(env, created_at=old, approved_at=old)
+    async with transaction(env.factory) as uow:
+        audits = list(
+            await uow.session.scalars(
+                select(AuditLogEntry).where(
+                    AuditLogEntry.subject_type == "action",
+                    AuditLogEntry.subject_id == history.action_id,
+                    AuditLogEntry.account_id == history.account_id,
+                )
+            )
+        )
+        for audit in audits:
+            audit.at = old
+            if audit.event in {"action_claimed", "action_succeeded"}:
+                await uow.session.delete(audit)
+    result = await run_trial(migrated_url, history)
+    assert_failed_check(result, "one_send_per_action")
+    assert "code=missing_success_outcome" in result.stdout
+
+
+@pytest.mark.parametrize("scope", ["conversation", "contact", "everything", "managed"])
+async def test_trial_check_reports_privacy_deleted_message_as_non_violation(
+    env: Env, migrated_url: str, scope: str
+) -> None:
+    history = await trial_history(env)
+    env.clock.advance(seconds=1)
+    async with transaction(env.factory) as uow:
+        if scope == "conversation":
+            await delete_conversation_data(
+                uow.session,
+                account_id=history.account_id,
+                conversation_id=history.conversation_id,
+                actor="owner",
+                clock=env.clock,
+            )
+        elif scope == "contact":
+            conversation = await uow.session.get(Conversation, history.conversation_id)
+            assert conversation is not None
+            await delete_contact_data(
+                uow.session,
+                account_id=history.account_id,
+                contact_id=conversation.contact_id,
+                actor="owner",
+                clock=env.clock,
+            )
+        elif scope == "everything":
+            await delete_everything(
+                uow.session, account_id=history.account_id, actor="owner", clock=env.clock
+            )
+        else:
+            await delete_managed_data(uow.session, account_id=history.account_id, clock=env.clock)
+    result = await run_trial(migrated_url, history)
+    assert_trial(result, passed=True)
+    assert f"action={history.action_id} code=message_deleted_after_success" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "damage", ["before_success", "wrong_account", "wrong_chat", "missing_success"]
+)
+async def test_trial_check_deletion_receipt_must_cover_this_success(
+    env: Env, migrated_url: str, damage: str
+) -> None:
+    history = await trial_history(env)
+    env.clock.advance(seconds=1)
+    async with transaction(env.factory) as uow:
+        await delete_conversation_data(
+            uow.session,
+            account_id=history.account_id,
+            conversation_id=history.conversation_id,
+            actor="owner",
+            clock=env.clock,
+        )
+        receipt = (
+            await uow.session.scalars(
+                select(AuditLogEntry).where(
+                    AuditLogEntry.account_id == history.account_id,
+                    AuditLogEntry.event == "data_deleted",
+                )
+            )
+        ).one()
+        if damage == "before_success":
+            receipt.at = history.at - timedelta(seconds=1)
+        elif damage == "wrong_account":
+            other = await seed_account(uow.session)
+            receipt.account_id = other.id
+        elif damage == "wrong_chat":
+            other_chat = await seed_conversation(uow.session, account_id=history.account_id)
+            receipt.subject_id = other_chat.id
+        else:
+            success = (
+                await uow.session.scalars(
+                    select(AuditLogEntry).where(
+                        AuditLogEntry.account_id == history.account_id,
+                        AuditLogEntry.subject_type == "action",
+                        AuditLogEntry.subject_id == history.action_id,
+                        AuditLogEntry.event == "action_succeeded",
+                    )
+                )
+            ).one()
+            await uow.session.delete(success)
+    assert_failed_check(await run_trial(migrated_url, history), "one_send_per_action")
+
+
+async def test_trial_check_consumes_real_executor_audit_shape(env: Env, migrated_url: str) -> None:
+    chat = await execution_env.seed(env)
+    action_id = await execution_env.approved(env, chat)
+    await execution_env.caught_up(env)
+    harness = execution_env.harness(env)
+    await harness.execute(action_id)
+    row = await execution_env.action(env, action_id)
+    assert row.state == "succeeded"
+    assert row.attempt_id is not None
+    history = TrialHistory(
+        chat.account_id, chat.conversation_id, action_id, row.attempt_id, env.clock.now()
+    )
+    assert_trial(await run_trial(migrated_url, history), passed=True)
 
 
 @pytest.mark.parametrize(

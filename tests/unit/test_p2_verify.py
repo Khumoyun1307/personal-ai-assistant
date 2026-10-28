@@ -1,6 +1,7 @@
 """Content-free audit values and CLI failure boundaries."""
 
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import psycopg
@@ -119,3 +120,144 @@ def test_unexpected_failures_print_only_the_exception_class(
     output = capsys.readouterr()
     assert output.out == ""
     assert output.err == f"verification_failed type={error_type.__name__}\n"
+
+
+def history_event(name: str, order: int, attempt: str = "a") -> p2_verify._TrialEvent:
+    before, after = {
+        "action_approved": ("awaiting_approval", "approved"),
+        "action_claimed": ("approved", "executing"),
+        "action_rate_limited": ("executing", "approved"),
+        "action_succeeded": ("executing", "succeeded"),
+        "action_failed": ("executing", "failed"),
+        "action_expired": ("executing", "expired"),
+        "action_delivery_uncertain": ("executing", "delivery_uncertain"),
+        "action_late_result": ("delivery_uncertain", "succeeded"),
+    }[name]
+    return p2_verify._TrialEvent(
+        1,
+        order,
+        datetime(2026, 10, 28, tzinfo=UTC),
+        name,
+        1,
+        attempt,
+        before,
+        after,
+        "owner" if name == "action_approved" else "system",
+    )
+
+
+def history_codes(state: str, events: list[p2_verify._TrialEvent]) -> set[str]:
+    action = p2_verify._TrialAction(
+        1,
+        1,
+        1,
+        "owner_dictated",
+        state,
+        False,
+        True,
+        datetime(2026, 10, 28, tzinfo=UTC),
+        "UTC",
+        True,
+        True,
+    )
+    failures: set[str] = set()
+    p2_verify._trial_history(action, events, lambda _check, code: failures.add(code))
+    return failures
+
+
+@pytest.mark.parametrize("state", ["approved", "scheduled", "failed", "cancelled"])
+def test_trial_history_requires_an_outcome_except_for_the_current_executing_claim(
+    state: str,
+) -> None:
+    events = [history_event("action_approved", 1), history_event("action_claimed", 2)]
+    assert "missing_outcome" in history_codes(state, events)
+    assert history_codes("executing", events) == set()
+
+
+@pytest.mark.parametrize("state", ["approved", "scheduled"])
+@pytest.mark.parametrize(
+    "outcome", ["action_delivery_uncertain", "action_succeeded", "action_failed"]
+)
+def test_trial_history_only_rate_limits_can_rearm_an_approved_action(
+    state: str, outcome: str
+) -> None:
+    events = [
+        history_event("action_approved", 1),
+        history_event("action_claimed", 2),
+        history_event(outcome, 3),
+    ]
+    assert "rearmed_without_rate_limit" in history_codes(state, events)
+
+
+def test_trial_history_rejects_a_stale_outcome_and_unclosed_latest_claim() -> None:
+    events = [
+        history_event("action_approved", 1),
+        history_event("action_claimed", 2),
+        history_event("action_rate_limited", 3),
+        history_event("action_claimed", 4, "b"),
+        history_event("action_succeeded", 5),
+    ]
+    assert {"outcome_not_latest_claim", "multiple_outcomes", "missing_outcome"} <= history_codes(
+        "succeeded", events
+    )
+
+
+@pytest.mark.parametrize(
+    "first",
+    ["action_succeeded", "action_failed", "action_rate_limited", "action_delivery_uncertain"],
+)
+def test_trial_history_rejects_multiple_closures(first: str) -> None:
+    events = [
+        history_event("action_approved", 1),
+        history_event("action_claimed", 2),
+        history_event(first, 3),
+        history_event("action_succeeded", 4),
+    ]
+    assert "multiple_outcomes" in history_codes("succeeded", events)
+
+
+@pytest.mark.parametrize("damage", ["without_uncertain", "twice", "wrong_attempt"])
+def test_trial_history_accepts_exactly_one_late_result_after_uncertain(damage: str) -> None:
+    events = [history_event("action_approved", 1), history_event("action_claimed", 2)]
+    if damage != "without_uncertain":
+        events.append(history_event("action_delivery_uncertain", 3))
+    events.append(history_event("action_late_result", 4, "b" if damage == "wrong_attempt" else "a"))
+    if damage == "twice":
+        events.append(history_event("action_late_result", 5))
+    assert history_codes("succeeded", events)
+
+
+def test_trial_history_reclaim_after_uncertain_counts_both_possible_deliveries() -> None:
+    events = [
+        history_event("action_approved", 1),
+        history_event("action_claimed", 2),
+        history_event("action_delivery_uncertain", 3),
+        history_event("action_claimed", 4, "b"),
+    ]
+    assert "multiple_possible_deliveries" in history_codes("executing", events)
+
+
+@pytest.mark.parametrize(
+    "outcome", ["action_rate_limited", "action_failed", "action_expired", "action_late_result"]
+)
+def test_trial_history_definite_non_delivery_is_not_a_possible_delivery(outcome: str) -> None:
+    events = [history_event("action_approved", 1), history_event("action_claimed", 2)]
+    if outcome == "action_late_result":
+        events.append(history_event("action_delivery_uncertain", 3))
+        events.append(replace(history_event(outcome, 4), after="failed"))
+    else:
+        events.append(history_event(outcome, 3))
+    events.append(history_event("action_claimed", 5, "b"))
+    assert "multiple_possible_deliveries" not in history_codes("executing", events)
+
+
+@pytest.mark.parametrize("damage", ["timestamp", "id"])
+def test_trial_history_rejects_an_outcome_before_its_claim(damage: str) -> None:
+    claim = history_event("action_claimed", 3)
+    outcome = history_event("action_succeeded", 2)
+    if damage == "timestamp":
+        outcome = replace(outcome, at=outcome.at.replace(hour=1))
+        claim = replace(claim, at=claim.at.replace(hour=2))
+    # The history helper also guards callers supplying an unordered projection.
+    events = [history_event("action_approved", 1), claim, outcome]
+    assert "missing_matching_claim" in history_codes("succeeded", events)
