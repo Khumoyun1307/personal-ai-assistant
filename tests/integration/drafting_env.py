@@ -40,6 +40,7 @@ from tests.integration.business_env import (
     Env,
     business_message,
     connect,
+    deleted_messages,
     deliver,
     environment,
     grant_managed,
@@ -150,6 +151,30 @@ async def contact_says(denv: DraftEnv, words: str = "SYNTH-CONTACT", **kwargs: A
     message_id = kwargs.pop("message_id", next(_message_ids))
     await deliver(denv.env, business_message(message_id=message_id, message_text=words, **kwargs))
     return int(message_id)
+
+
+async def contact_shares_location(denv: DraftEnv) -> int:
+    """A contact's shared location: stored with its kind only, no text and no
+    media (`normalize._PLAIN_KINDS`), so a draft's window has nothing to show
+    for it. Synthetic coordinates. Returns its Telegram message id."""
+    message_id = next(_message_ids)
+    await deliver(
+        denv.env,
+        business_message(
+            message_id=message_id,
+            message_text=None,
+            extra={"location": {"latitude": 1.5, "longitude": 2.5}},
+        ),
+    )
+    return message_id
+
+
+async def contact_deletes(denv: DraftEnv, words: str = "SYNTH-SOON-DELETED") -> int:
+    """A contact message the contact deleted again: a tombstone that keeps its
+    direction. Returns its Telegram message id."""
+    message_id = await contact_says(denv, words)
+    await deliver(denv.env, deleted_messages(message_ids=[message_id]))
+    return message_id
 
 
 async def owner_says(denv: DraftEnv, words: str = "SYNTH-OWNER", **kwargs: Any) -> int:

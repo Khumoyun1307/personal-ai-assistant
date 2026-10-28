@@ -200,13 +200,20 @@ def _status_of(state: ActionState) -> str:
 
 async def _result(
     session: AsyncSession,
+    account_id: int,
     target: _Target,
     action_id: int,
     *,
+    reused: bool = False,
     guidance_ignored: bool = False,
     replaced: bool = False,
 ) -> ToolOutcome:
-    action = await session.scalar(select(Action).where(Action.id == action_id))
+    """The tool's result for one action. `reused`: this call created
+    nothing — the action came from an earlier call of this run or this owner
+    turn — so the model never reports a second card (PR #106 review)."""
+    action = await session.scalar(
+        select(Action).where(Action.account_id == account_id, Action.id == action_id)
+    )
     if action is None:  # pragma: no cover - created or found in this transaction
         raise NotInAccountError("action")
     state = ActionState(action.state)
@@ -224,6 +231,8 @@ async def _result(
         data["reason"] = action.state_reason
     elif status == "no_longer_pending":
         data["state"] = state.value
+    if reused:
+        data["reused"] = True
     if guidance_ignored:
         data["guidance_ignored"] = GUIDANCE_IGNORED
     if replaced:
@@ -251,8 +260,11 @@ def _not_drafted(target: _Target, reason: str, *, guidance_ignored: bool = False
     )
 
 
-def _not_available() -> ToolOutcome:
-    return ToolOutcome("error", {"reason": "not available"}, log_code="not_available")
+def _not_available(refused: ProposalRefused | None = None) -> ToolOutcome:
+    """The model is told "not available"; a refused proposal keeps its code
+    in the executor's log line for operations (PR #106 review)."""
+    code = f"proposal_{refused.code}" if refused is not None else "not_available"
+    return ToolOutcome("error", {"reason": "not available"}, log_code=code)
 
 
 def _draft_code(outcome: DraftOutcome) -> str:
@@ -272,7 +284,7 @@ async def propose_reply_tool(ctx: ToolContext, args: ProposeReplyArgs) -> ToolOu
         if (refusal := _refused(target)) is not None:
             return refusal
         if (existing := await _existing(uow.session, ctx, target.conversation_id)) is not None:
-            return await _result(uow.session, target, existing.id)
+            return await _result(uow.session, ctx.account_id, target, existing.id, reused=True)
     ignored = args.guidance is not None and ctx.tainted
     for _attempt in range(2):
         outcome = await drafter.draft(
@@ -300,13 +312,15 @@ async def propose_reply_tool(ctx: ToolContext, args: ProposeReplyArgs) -> ToolOu
                     config=config,
                     presenter=services.approval_cards,
                 )
-            except ProposalRefused:
-                return _not_available()
+            except ProposalRefused as refused:
+                return _not_available(refused)
             if not isinstance(proposal, Stale):
                 return await _result(
                     uow.session,
+                    ctx.account_id,
                     target,
                     proposal.action_id,
+                    reused=proposal.reused,
                     guidance_ignored=ignored,
                     replaced=proposal.superseded_action_id is not None,
                 )
@@ -325,7 +339,7 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
         if (refusal := _refused(target)) is not None:
             return refusal
         if (existing := await _existing(uow.session, ctx, target.conversation_id)) is not None:
-            return await _result(uow.session, target, existing.id)
+            return await _result(uow.session, ctx.account_id, target, existing.id, reused=True)
         try:
             proposal = await propose_draft(
                 uow.session,
@@ -341,13 +355,15 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
                 presenter=services.approval_cards,
                 dictated_text=args.text,
             )
-        except ProposalRefused:
-            return _not_available()
+        except ProposalRefused as refused:
+            return _not_available(refused)
         assert not isinstance(proposal, Stale)  # a dictated text is never stale
         return await _result(
             uow.session,
+            ctx.account_id,
             target,
             proposal.action_id,
+            reused=proposal.reused,
             replaced=proposal.superseded_action_id is not None,
         )
 
@@ -355,7 +371,9 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
 _RESULT_RULE = (
     "The result is never a send: 'awaiting_approval' means a card is on its way to "
     "the owner, 'blocked' means it cannot be sent (the card offers the text to copy), "
-    "'not_drafted' means no draft was made. Never say the message was sent."
+    "'not_drafted' means no draft was made; 'reused' means the card already existed "
+    "from an earlier call in this turn and this call created nothing new. Never say "
+    "the message was sent."
 )
 
 PROPOSE_REPLY = ToolDefinition(

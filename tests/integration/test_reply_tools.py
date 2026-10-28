@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 
 from assistant.accounts.models import Account
 from assistant.actions.models import Action
@@ -31,7 +31,7 @@ from assistant.agent.tools.registry import (
     ToolServices,
     default_registry,
 )
-from assistant.agent.tools.replies import GUIDANCE_CHARS
+from assistant.agent.tools.replies import GUIDANCE_CHARS, ProposeReplyArgs, propose_reply_tool
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.llm.port import TextItem, ToolCall
 from tests.fakes.channel import FakeChannel
@@ -41,11 +41,15 @@ from tests.integration.agent_env import PRODUCTION_FLAGS, PROPOSE_FLAGS, ask, ga
 from tests.integration.business_env import (
     OTHER_CONTACT,
     business_message,
+    deleted_messages,
     deliver,
 )
 from tests.integration.drafting_env import (
     DraftEnv,
     actions_of,
+    contact_deletes,
+    contact_says,
+    contact_shares_location,
     drafting_environment,
     later,
     message_row_id,
@@ -402,6 +406,8 @@ async def test_a_repeated_call_id_creates_no_second_action(denv: DraftEnv) -> No
         context(denv, account_id, run_id, None), "propose_reply", **reply_args(conversation)
     )
     assert again["action_id"] == first["action_id"]
+    assert again["reused"] is True  # nothing new was created
+    assert "reused" not in first
     assert len(denv.fake.requests) == 1
     dictated = await call(
         context(denv, account_id, run_id, None),
@@ -416,6 +422,8 @@ async def test_a_repeated_call_id_creates_no_second_action(denv: DraftEnv) -> No
         **message_args(conversation, "SYNTH-ONE"),
     )
     assert repeat["action_id"] == dictated["action_id"]
+    assert repeat["reused"] is True
+    assert "reused" not in dictated
     assert len(await actions_of(denv.env, conversation)) == 2
     assert turn_id
 
@@ -440,8 +448,59 @@ async def test_a_retried_owner_turn_reuses_the_awaiting_card_without_drafting_ag
     )
     assert again["status"] == "awaiting_approval"
     assert again["action_id"] == first["action_id"]
+    assert again["reused"] is True
     assert len(denv.fake.requests) == 1  # no second draft, no cost
     assert len(await actions_of(denv.env, conversation)) == 1
+
+
+async def test_a_second_proposal_in_the_same_turn_says_it_reused_the_first_card(
+    denv: DraftEnv,
+) -> None:
+    # PR #106 review (Neryn): "tell them X ... also tell them Y" in one turn
+    # gives one card (the turn's live card); the second result must not read
+    # as a second queued message.
+    account_id, conversation = await seed_chat(denv)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    ctx = context(denv, account_id, run_id, turn_id)
+    first = await call(ctx, "propose_message", **message_args(conversation, "SYNTH-X"))
+    second = await call(
+        ctx, "propose_message", call_id="c2", **message_args(conversation, "SYNTH-Y")
+    )
+    assert first["status"] == second["status"] == "awaiting_approval"
+    assert second["action_id"] == first["action_id"]
+    assert second["reused"] is True
+    assert "reused" not in first
+    [card] = await actions_of(denv.env, conversation)
+    assert card.text == "SYNTH-X"
+
+
+# ------------------------------------------------------------ a newest message with nothing to show
+@pytest.mark.parametrize("newest", ["location", "deleted"])
+async def test_propose_reply_after_a_location_or_a_deleted_message_drafts_once(
+    denv: DraftEnv, newest: str
+) -> None:
+    # PR #106 review (Neryn): such a newest contact message made every draft
+    # stale: two model calls, then always `not_drafted`/`chat_changed`.
+    account_id, conversation = await seed_chat(denv, mode="observe")
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    await contact_says(denv, "SYNTH-QUESTION")
+    if newest == "location":
+        await contact_shares_location(denv)
+    else:
+        await contact_deletes(denv)
+    denv.script(output(text="Synthetic reply."))
+    result = await call(
+        context(denv, account_id, run_id, turn_id), "propose_reply", **reply_args(conversation)
+    )
+    assert result["status"] == "awaiting_approval"
+    assert len(draft_prompts(denv)) == 1
+    [card] = await actions_of(denv.env, conversation)
+    assert card.id == result["action_id"]
+    async with denv.env.factory() as session:
+        newest_id = await session.scalar(
+            select(func.max(Message.id)).where(Message.conversation_id == conversation)
+        )
+    assert card.shown_through_message_id == newest_id
 
 
 # ------------------------------------------------------------ the offer
@@ -556,6 +615,24 @@ async def test_a_tool_without_its_services_is_not_available(denv: DraftEnv) -> N
             "status": "error",
             "reason": "not available",
         }
+    assert await actions_of(denv.env, conversation) == []
+
+
+async def test_a_refused_proposal_is_not_available_and_logs_its_code(denv: DraftEnv) -> None:
+    # PR #106 review (Neryn): the refusal code reaches the executor's log line.
+    account_id, conversation = await seed_chat(denv, mode="observe")
+    run_id, _ = await run_and_turn(denv, account_id)
+    await owner_says(denv, "SYNTH-OWNER-ONLY")
+    # The contact's only message is gone: the draft has no base message, and
+    # without an owner turn S04.1 refuses it (`base_required`).
+    await deliver(denv.env, deleted_messages(message_ids=[1]))
+    denv.script(output(text="Synthetic reply."))
+    outcome = await propose_reply_tool(
+        context(denv, account_id, run_id, None),
+        ProposeReplyArgs(conversation_id=conversation, contact_id=None, guidance=None),
+    )
+    assert (outcome.status, dict(outcome.data)) == ("error", {"reason": "not available"})
+    assert outcome.log_code == "proposal_base_required"
     assert await actions_of(denv.env, conversation) == []
 
 
