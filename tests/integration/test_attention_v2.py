@@ -100,6 +100,7 @@ async def add_verdict(
     urgency: str = "normal",
     category: str = "needs_owner",
     needs_reply: bool = True,
+    decision: bool = False,
 ) -> None:
     async with env.factory() as session, session.begin():
         await session.execute(
@@ -107,7 +108,7 @@ async def add_verdict(
                 "INSERT INTO app.conversation_triage (account_id, conversation_id, "
                 "covers_through_message_id, needs_reply, contains_question, requests_decision, "
                 "urgency, escalation_category, reasons, prompt_version, model) "
-                "VALUES (:a, :c, :t, :n, true, false, :u, :cat, CAST(:r AS jsonb), "
+                "VALUES (:a, :c, :t, :n, true, :d, :u, :cat, CAST(:r AS jsonb), "
                 "'triage.v1', 'gpt-6-luna')"
             ),
             {
@@ -115,6 +116,7 @@ async def add_verdict(
                 "c": conversation,
                 "t": through,
                 "n": needs_reply,
+                "d": decision,
                 "u": urgency,
                 "cat": category,
                 "r": reasons,
@@ -211,6 +213,26 @@ async def test_attention_shows_reasons_and_tasks_from_a_covering_verdict(env: En
     assert outcome.data["waiting_count"] == 1
 
 
+async def test_a_decision_comes_before_a_reply_and_a_tier_lists_newest_first(env: Env) -> None:
+    """Viro on #92 (§3.9): a decision before a chat that only needs a reply,
+    though older; within one tier, the newest contact message first."""
+    account, a, b = await seed(env)  # B's contact wrote last
+    await add_verdict(env, account, a, through=await newest(env, a), decision=True)
+    await add_verdict(env, account, b, through=await newest(env, b))
+    outcome = await attention(env, account)
+    assert [e["conversation_id"] for e in outcome.data["conversations"]] == [a, b]
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE app.conversation_triage SET requests_decision = false "
+                "WHERE conversation_id = :c"
+            ),
+            {"c": a},
+        )
+    outcome = await attention(env, account)
+    assert [e["conversation_id"] for e in outcome.data["conversations"]] == [b, a]
+
+
 async def test_attention_falls_back_to_v1_without_a_verdict(env: Env) -> None:
     account, a, b = await seed(env)
     # A's verdict predates its newest contact message: it does not cover it.
@@ -284,6 +306,16 @@ async def test_draft_reply_is_not_offered_with_the_flag_on_but_unwired(env: Env)
     account, a, _ = await seed(env)
     await add_verdict(env, account, a, through=await newest(env, a))
     outcome = await attention(env, account, flags=frozenset({PROPOSE_REPLY}), wired=False)
+    assert entry(outcome, a)["next_actions"] == ["open_panel"]
+
+
+async def test_draft_reply_is_not_offered_once_the_reply_window_closed(env: Env) -> None:
+    """The third ICR-2 condition (Viro on #92): flag on and wired, but the
+    contact's last message is more than 24 h old."""
+    account, a, _ = await seed(env)
+    await add_verdict(env, account, a, through=await newest(env, a))
+    env.clock.advance(hours=25)
+    outcome = await attention(env, account, flags=frozenset({PROPOSE_REPLY}), wired=True)
     assert entry(outcome, a)["next_actions"] == ["open_panel"]
 
 

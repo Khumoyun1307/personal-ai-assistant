@@ -823,6 +823,24 @@ async def test_repeated_triage_of_the_same_promise_creates_one_task(tenv: Env) -
     assert len(await task_rows(tenv)) == 1
 
 
+async def test_a_reminder_naming_the_open_task_updates_it_and_merges_sources(tenv: Env) -> None:
+    """Viro on #92: a reminder cites the new message and names the open task
+    (`existing_task_id`): the same row, its first source kept, both cited."""
+    a, _ = await seed(tenv)
+    first, _ = await message_ids(tenv, a)
+    fake = FakeLLM()
+    fake.parsed = [verdict(commitments=[commitment_item("contact", first)])]
+    await stored_triager(tenv, fake).triage(a)
+    (task,) = await task_rows(tenv)
+    await add_message(tenv, 13, "SYNTH-A Esingizda bo'lsin, ertaga yuboraman")
+    reminder = max(await message_ids(tenv, a))
+    fake.parsed = [verdict(commitments=[commitment_item("contact", reminder, existing=task.id)])]
+    assert (await stored_triager(tenv, fake).triage(a)).status is TriageStatus.TRIAGED
+    (updated,) = await task_rows(tenv)
+    assert (updated.id, updated.status, updated.first_source_message_id) == (task.id, "open", first)
+    assert updated.source_message_ids == [first, reminder]
+
+
 async def test_the_owners_manual_answer_closes_the_open_question(tenv: Env) -> None:
     a, _ = await seed(tenv)
     _, second = await message_ids(tenv, a)
