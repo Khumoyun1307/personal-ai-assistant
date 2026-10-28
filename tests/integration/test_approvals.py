@@ -554,6 +554,30 @@ async def test_redraft_on_an_outdated_card_requests_a_new_draft(s: Scenario) -> 
     assert new.card_message_id != old.card_message_id
 
 
+async def test_a_second_redraft_tap_while_one_is_queued_keeps_the_press_transaction_alive(
+    s: Scenario,
+) -> None:
+    """Two outdated cards of one chat: the second Re-draft meets the first's
+    queueing lock. Only its SAVEPOINT rolls back, so the press still commits
+    (its single-use card token is spent) and is answered (spec §3.3, R17)."""
+    first = await s.seed()
+    await deliver(s.env, business_message(message_id=102, date=s.date + 1))
+    second = await s.seed(approval_token="QAseed5678")
+    await deliver(s.env, business_message(message_id=103, date=s.date + 2))
+    first, second = await s.action(first.id), await s.action(second.id)
+    assert (first.state, second.state) == ("outdated", "outdated")
+    first_token, second_token = button_token(s, first, "rd"), button_token(s, second, "rd")
+    await press(s, first_token, "rd")
+    await press(s, second_token, "rd")
+    assert answers(s) == [ANSWER_REDRAFTING, ANSWER_REDRAFTING]
+    [job] = await jobs(s, "replies.draft")
+    assert job["queueing_lock"] == f"redraft:{s.conversation_id}"
+    # The second press committed: its token is spent, its card says so.
+    await press(s, second_token, "rd")
+    assert answers(s)[-1] == CALLBACK_EXPIRED_TEXT
+    assert "Re-draft requested" in s.final_card(second)["text"]
+
+
 # ------------------------------------------------------------ expiry
 @pytest.mark.parametrize("closed", [True, False])
 async def test_expiry_at_window_close_and_at_max_age(s: Scenario, closed: bool) -> None:
