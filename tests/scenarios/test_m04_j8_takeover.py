@@ -8,7 +8,6 @@ from tests.scenarios.p2_drive import Scenario
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_an_owner_message_dated_after_the_base_but_ingested_late_blocks_the_send(
     p2: Scenario,
 ) -> None:
