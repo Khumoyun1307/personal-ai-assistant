@@ -122,7 +122,7 @@ Routine technical decisions inside the approved scope (AGENTS §3). Each names w
 
 | Date | Requester | Contract | Change | Affected | Decision |
 |---|---|---|---|---|---|
-| — | — | — | — | — | — |
+| 2026-10-28 | Jack / TL | F0-interfaces §8.3; S05.2 §3.2/§3.5; ARCHITECTURE §9.4/§17 | [CP4 ICR #132](https://github.com/Khumoyun1307/personal-ai-assistant/issues/132): synchronous content-free system claims/resolutions, KEY SHARE plus SYSA transaction advisory namespace, monotonic attempt milliseconds, immutable audit dedupe and additive `in_progress`; definite failed system attempts leave retry ownership with callers, while standard queued retries stay bounded | CP4, all existing `OwnerAlerts` callers | TL approved on #132; no lock across channel I/O, no schema/processor/flag change; unresolved claims do not expire on cooldown; shipped M04 v8 retained and M05 rules appended as v9 rules 23–25; live/eval gates remain pending |
 
 ## D. Safety sign-offs
 

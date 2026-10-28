@@ -2,8 +2,7 @@
 
 Every system alert (ingestion stall, dead-lettered updates, budget thresholds;
 later connection, rights and delivery alerts) goes through `OwnerAlerts`.
-In M01 to M04 it sends straight to the control chat; M05 puts the `notifications`
-table behind the same call.
+M05 puts content-free notification and audit claims behind the same call.
 
 Alerts of class `system` are never suppressed by quiet hours or batching
 (§17), but each one is **deduplicated** by a key, so a watchdog that runs every
@@ -21,15 +20,14 @@ from enum import StrEnum
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from assistant.accounts.models import Account, AuditLogEntry
+from assistant.accounts.models import Account
 from assistant.core.channel import Button, ControlChannel
 from assistant.core.clock import Clock
 from assistant.db.uow import transaction
+from assistant.inbox.system_notifications import SystemNotificationDelivery
 from assistant.observability.logging import get_logger
 
 logger = get_logger(__name__)
-
-EVENT_ALERT = "system_alert"
 
 
 class AlertKind(StrEnum):
@@ -119,6 +117,7 @@ class OwnerAlerts:
         self._session_factory = session_factory
         self._channel = channel
         self._clock = clock
+        self._system_delivery = SystemNotificationDelivery(session_factory, channel, clock)
 
     async def notify_owner(
         self,
@@ -134,73 +133,33 @@ class OwnerAlerts:
 
         `cooldown=None` means once ever for that key (e.g. one per budget
         threshold per month). `buttons` make the alert a card (§6.7).
+        An unresolved prior claim returns `in_progress`; it is neither a
+        settled duplicate nor evidence of definite non-delivery (ICR #132).
         """
-        async with transaction(self._session_factory) as uow:
-            account = await uow.session.get(Account, account_id)
-            if account is None or account.control_chat_id is None:
-                return AlertResult(False, "unreachable")
-            if await self._recently_sent(uow.session, account_id, dedupe_key, cooldown):
-                return AlertResult(False, "duplicate")
-            chat_id = account.control_chat_id
-
         if kind is AlertKind.RESTORE_NOTICE:
             values.setdefault("actions", "")
-        delivery = await self._channel.send(
+        outcome = await self._system_delivery.send(
             account_id=account_id,
-            chat_id=chat_id,
-            text=ALERT_TEXT[kind].format(**values),
+            kind=kind.value,
+            key=dedupe_key,
+            cooldown=cooldown,
+            rendered_text=ALERT_TEXT[kind].format(**values),
             buttons=buttons,
         )
-        uncertain = not delivery.ok and delivery.uncertain
-        details: dict[str, object] = {
-            "kind": kind.value,
-            "key": dedupe_key,
-            "delivered": delivery.ok,
-        }
-        if uncertain:
-            details["uncertain"] = True
-        async with transaction(self._session_factory) as uow:
-            uow.session.add(
-                AuditLogEntry(
-                    account_id=account_id,
-                    at=self._clock.now(),
-                    actor="system",
-                    event=EVENT_ALERT,
-                    details=details,
-                )
-            )
         logger.info(
             "owner_alert",
             account_id=account_id,
             kind=kind.value,
-            delivered=delivery.ok,
-            uncertain=uncertain,
+            delivered=outcome.sent,
+            uncertain=outcome.uncertain,
+            reason=outcome.reason,
         )
         return AlertResult(
-            delivery.ok,
-            "sent" if delivery.ok else ("uncertain" if uncertain else "not_delivered"),
-            delivery.message_id if delivery.ok else None,
-            uncertain=uncertain,
+            outcome.sent,
+            outcome.reason,
+            outcome.message_id,
+            uncertain=outcome.uncertain,
         )
-
-    async def _recently_sent(
-        self,
-        session: AsyncSession,
-        account_id: int,
-        dedupe_key: str,
-        cooldown: timedelta | None,
-    ) -> bool:
-        statement = (
-            select(AuditLogEntry.id)
-            .where(AuditLogEntry.account_id == account_id)
-            .where(AuditLogEntry.event == EVENT_ALERT)
-            .where(AuditLogEntry.details["key"].astext == dedupe_key)
-            # Only delivered alerts count: an undelivered one should be retried.
-            .where(AuditLogEntry.details["delivered"].astext == "true")
-        )
-        if cooldown is not None:
-            statement = statement.where(AuditLogEntry.at >= self._clock.now() - cooldown)
-        return (await session.execute(statement.limit(1))).first() is not None
 
     async def notify_all_owners(
         self,
