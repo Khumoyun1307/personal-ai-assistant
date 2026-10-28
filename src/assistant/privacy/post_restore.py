@@ -9,7 +9,8 @@ makes the restored state safe and honest in one transaction:
 2. open actions cancelled and executing ones made uncertain (from M04, when
    the `actions` table exists — recorded here so the step is not forgotten);
 3. queued procrastinate jobs deleted (reconcilers re-create valid work);
-4. schedules recomputed (from M05);
+4. schedules recomputed: missed and claimed occurrences skipped with the
+   note `skipped_restore`, `next_run_at` from now (S05.3b);
 5. a `possible` coverage gap for [backup_taken_at, now] per active account;
 6. the retention sweep;
 7. `restore_pending` cleared, and a restore notice queued for the owner.
@@ -30,6 +31,7 @@ from assistant.accounts.models import Account, AuditLogEntry
 from assistant.actions.lifecycle import cancel_pending
 from assistant.actions.models import Action
 from assistant.actions.states import PENDING, StateReason
+from assistant.automation import schedules
 from assistant.conversations.models import CoverageGap
 from assistant.core.clock import Clock
 from assistant.db.models import KEY_RESTORE_PENDING, SystemState
@@ -51,6 +53,8 @@ class PostRestoreReport:
     sweep: SweepReport
     actions_cancelled: int = 0
     actions_uncertain: int = 0
+    #: Step 4: scheduled occurrences skipped with `skipped_restore`.
+    schedules_skipped: int = 0
 
 
 async def restore_pending(session: AsyncSession) -> dict[str, Any] | None:
@@ -145,7 +149,10 @@ async def post_restore(
             }
             actions_cancelled += len(cancelled)
             actions_uncertain += len(uncertain)
-        # 4. Automation next_run_at recomputation belongs to S05.3b.
+        # 4. No schedule from a rewound backup fires by itself (S05.3b §3.7):
+        #    missed and claimed occurrences are skipped with a note, and the
+        #    next run is recomputed from now.
+        schedules_skipped = await schedules.skip_for_restore(session, now)
         # 3. Queued jobs refer to rows that may no longer exist; reconcilers
         #    re-create what is still valid from domain state.
         deleted = await session.execute(
@@ -188,6 +195,10 @@ async def post_restore(
             "backup_taken_at": backup_taken_at.isoformat(),
             "at": now.isoformat(),
             "actions": action_notices,
+            # Per account: how many scheduled items step 4 skipped (counts only).
+            "schedules_skipped": {
+                str(account_id): count for account_id, count in schedules_skipped.items()
+            },
         }
         if notice is None:
             session.add(SystemState(key=KEY_RESTORE_NOTICE, value=payload))
@@ -197,5 +208,11 @@ async def post_restore(
     # 6. Retention, outside the big transaction (each class commits on its own).
     sweep = await sweep_all(session_factory, clock)
     return PostRestoreReport(
-        accounts_paused, jobs_deleted, len(accounts), sweep, actions_cancelled, actions_uncertain
+        accounts_paused,
+        jobs_deleted,
+        len(accounts),
+        sweep,
+        actions_cancelled,
+        actions_uncertain,
+        sum(schedules_skipped.values()),
     )

@@ -242,6 +242,14 @@ async def environment(
     ) -> None:  # deferred only; tests run it with `run_deletion_jobs`
         return None
 
+    @app.task(name="automation.fire", queue="outbound")
+    async def automation_fire(automation_id: int, occurrence_at: int) -> None:  # S05.3b
+        return None
+
+    @app.task(name="digest.build", queue="llm")
+    async def digest_build(account_id: int, period_end: int) -> None:  # deferred only (S05.3b)
+        return None
+
     @app.task(name="notify.deliver", queue="outbound")
     async def notify_deliver(notification_id: int) -> None:  # deferred only (S05.2)
         return None

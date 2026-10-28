@@ -33,6 +33,7 @@ from assistant.agent.tools.registry import ToolServices, default_registry
 from assistant.agent.triage import TriageConfig, Triager
 from assistant.automation.monitor_trigger import MonitorIngestionListener
 from assistant.automation.monitors import MON_CARD, MonitorMatchRenderer
+from assistant.automation.schedules import DIGEST_FLAG
 from assistant.config import ConfigError, Settings
 from assistant.conversations.listeners import IngestionListener
 from assistant.core.clock import Clock, SystemClock
@@ -40,6 +41,7 @@ from assistant.core.routing import Route
 from assistant.core.supervisor import Role, Supervisor
 from assistant.db.advisory_lock import NAMESPACE_INBOX, NAMESPACE_POLLER, AdvisoryLock
 from assistant.db.engine import build_engine, build_session_factory
+from assistant.inbox.digest import DIGEST_CARD, DigestDelivery
 from assistant.inbox.notification_types import NotificationKind
 from assistant.inbox.notifications import NTF_CARD, NotificationDelivery
 from assistant.inbox.notify import OwnerAlerts
@@ -53,7 +55,7 @@ from assistant.jobs.reconcile_monitors import monitor_reconciler
 from assistant.jobs.scheduler import ProcrastinateScheduler
 from assistant.jobs.tasks import JobHandlers, register_tasks
 from assistant.jobs.tasks_actions import ActionsJobHandlers
-from assistant.jobs.tasks_automation import AutomationJobHandlers, MonitorJobs
+from assistant.jobs.tasks_automation import AutomationJobHandlers, MonitorJobs, ScheduleJobs
 from assistant.jobs.tasks_inbox import InboxJobHandlers, TriageJob
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.metering import MeteredLLMClient
@@ -67,6 +69,11 @@ from assistant.telegram.business import BusinessPipeline
 from assistant.telegram.connections import AiogramConnectionLookup, ConnectionRegistry
 from assistant.telegram.control.agent_channel import GatewayControlChannel
 from assistant.telegram.control.alerts import handle_ntf_press
+from assistant.telegram.control.digest import (
+    handle_digest_command,
+    handle_digest_press,
+    render_digest,
+)
 from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.inbox_handlers import ControlInboxHandlers, RefusalLimiter
 from assistant.telegram.control.monitors import handle_mon_press
@@ -266,6 +273,27 @@ def _wire_m05(
 ) -> None:
     """M05 units add their adapters and listeners here after F0 (`llm` as
     in `_wire_m04`)."""
+    # S05.3b: the schedule reconciler, `automation.fire`, `digest.build`,
+    # `/digest` and the digest's "Open" buttons are always wired (`/digest`
+    # needs no flag); flag `digest.daily` keeps each account's digest
+    # automation in step with its preference and lets it fire.
+    wiring.automation = replace(
+        wiring.automation or AutomationJobHandlers(),
+        schedules=ScheduleJobs(
+            session_factory=session_factory,
+            clock=clock,
+            scheduler=scheduler,
+            digests=DigestDelivery(
+                session_factory=session_factory, channel=channel, clock=clock, render=render_digest
+            ),
+            digest_enabled=DIGEST_FLAG in settings.feature_flags,
+        ),
+    )
+    wiring.routes = replace(
+        wiring.routes,
+        callbacks={**wiring.routes.callbacks, DIGEST_CARD: handle_digest_press},
+        commands={**wiring.routes.commands, "digest": handle_digest_command},
+    )
     # S05.2: delivery, its reconciler and the alert cards are always wired;
     # flag `notifications.deliver` decides whether standard alerts go out
     # (they wait in `queued` while it is off; system alerts never wait).
