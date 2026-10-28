@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import connections, preferences, service
 from assistant.accounts.models import Account, PendingInput
+from assistant.actions import lifecycle
+from assistant.actions.states import StateReason
 from assistant.agent import confirmations, owner_texts
 from assistant.agent.confirmations import OP_CONFIRM, OP_REJECT, TOOL_CONFIRM_CARD
 from assistant.agent.locales import SupportedLocale, supported_locale
@@ -500,6 +502,12 @@ async def handle_revoke(
     managed_revoked = await service.revoke_consent(
         session, account, kind=service.CONSENT_AI_MANAGED, clock=clock
     )
+    if managed_revoked:
+        # S04.4 §3.8: pending AI drafts are cancelled in the same transaction
+        # (Tx A's `consent_valid` is the guarantee); dictated texts stay.
+        await lifecycle.cancel_pending_ai_generated(
+            session, account_id=account.id, reason=StateReason.CONSENT_REVOKED, now=clock.now()
+        )
     target = ControlChat(account_id=account.id, chat_id=message.chat_id)
     if not revoked and not managed_revoked:
         result = await gateway.send_text(target, "There was no AI consent to revoke.")
@@ -1003,6 +1011,8 @@ def render_status(report: StatusReport, *, visibility: str) -> str:
         "",
         f"Account: {escape(report.account_status)}",
         f"Autonomy: {'paused' if report.autonomy.paused else 'active'}",
+        # S04.4 §3.9: counts only.
+        escape(report.actions.line),
         f"Timezone: {escape(tz)}",
         "",
         "<b>Connection</b>",

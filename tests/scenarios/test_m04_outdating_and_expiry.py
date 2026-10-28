@@ -84,7 +84,6 @@ async def test_switching_to_ignore_cancels_a_pending_draft(p2: Scenario) -> None
     assert "no longer" in str(p2.env.sender.answered_callbacks).lower()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_revoking_managed_consent_cancels_a_queued_ai_draft(p2: Scenario) -> None:
     row = await p2.seed(state="approved")
     dictated = await p2.seed(state="approved", origin="owner_dictated", base_message_id=None)
@@ -126,7 +125,6 @@ async def test_the_window_closing_expires_the_draft_with_copy_ready_text(p2: Sce
     assert p2.business_sends() == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.4")
 async def test_a_contact_message_ingested_after_approval_blocks_the_send(p2: Scenario) -> None:
     row = await p2.seed(state="approved")
     await deliver(p2.env, business_message(message_id=102, date=p2.date + 1))

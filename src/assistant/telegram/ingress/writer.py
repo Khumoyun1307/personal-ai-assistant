@@ -26,8 +26,20 @@ async def write_batch(session: AsyncSession, *, bot_id: int, updates: list[dict[
 
     Caller commits. Nothing here advances any offset.
     """
+    return len(await write_new_updates(session, bot_id=bot_id, updates=updates))
+
+
+async def write_new_updates(
+    session: AsyncSession, *, bot_id: int, updates: list[dict[str, Any]]
+) -> frozenset[int]:
+    """`write_batch`, returning the `update_id`s this call actually stored.
+
+    A replayed update (already stored, perhaps already processed) is not
+    among them, so the poller's kill-switch fast lane never re-applies an
+    old /pause over a later /resume (S04.4; Antony on #107).
+    """
     if not updates:
-        return 0
+        return frozenset()
 
     rows = [
         {
@@ -41,17 +53,17 @@ async def write_batch(session: AsyncSession, *, bot_id: int, updates: list[dict[
         if "update_id" in update
     ]
     if not rows:
-        return 0
+        return frozenset()
 
     statement = (
         insert(InboundUpdate)
         .values(rows)
         # The redelivery guarantee: a duplicate is a no-op, not an error.
         .on_conflict_do_nothing(index_elements=["bot_id", "update_id"])
-        .returning(InboundUpdate.id)
+        .returning(InboundUpdate.update_id)
     )
     result = await session.execute(statement)
-    return len(result.scalars().all())
+    return frozenset(int(update_id) for update_id in result.scalars().all())
 
 
 async def read_state(session: AsyncSession, key: str) -> dict[str, Any] | None:

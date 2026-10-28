@@ -16,11 +16,13 @@ from datetime import timedelta
 from uuid import uuid4
 
 from aiogram import Bot
+from aiogram.client.session.aiohttp import AiohttpSession
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.actions.config import ActionsConfig
 from assistant.actions.drafts import assist_trigger
+from assistant.actions.executor import ActionExecutor, uncertain_after
 from assistant.actions.ingestion import ActionsIngestionListener
 from assistant.actions.ports import ApprovalCardPresenter
 from assistant.agent.confirmations import ConfirmationApplier
@@ -41,7 +43,7 @@ from assistant.inbox.notify import OwnerAlerts
 from assistant.inbox.processor import InboxProcessor
 from assistant.jobs.app import QUEUE_SYSTEM, QUEUES, build_app, run_queue_worker
 from assistant.jobs.reconcile import Reconciler
-from assistant.jobs.reconcile_actions import UnqueuedDrafts
+from assistant.jobs.reconcile_actions import UnqueuedDrafts, unqueued_executions
 from assistant.jobs.scheduler import ProcrastinateScheduler
 from assistant.jobs.tasks import JobHandlers, register_tasks
 from assistant.jobs.tasks_actions import ActionsJobHandlers
@@ -56,13 +58,19 @@ from assistant.privacy.post_restore import assert_not_restore_pending
 from assistant.privacy.requests import RequestedDeletions
 from assistant.process import InboxRole, PollerRole, WorkerRole, worker_heartbeat_probe
 from assistant.telegram.business import BusinessPipeline
+from assistant.telegram.business_targets import BusinessTargetResolver
 from assistant.telegram.connections import AiogramConnectionLookup, ConnectionRegistry
 from assistant.telegram.control.activity import handle_activity
 from assistant.telegram.control.agent_channel import GatewayControlChannel
 from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.inbox_handlers import ControlInboxHandlers, RefusalLimiter
 from assistant.telegram.control.routes import ControlRoutes
-from assistant.telegram.gateway import AiogramSender, OutboundGateway
+from assistant.telegram.gateway import (
+    MAX_THROTTLE_WAIT_SECONDS,
+    REQUEST_TIMEOUT_SECONDS,
+    AiogramSender,
+    OutboundGateway,
+)
 from assistant.telegram.ingress.aiogram_source import AiogramUpdateSource
 from assistant.telegram.ingress.poller import Poller
 from assistant.telegram.ingress.writer import write_state
@@ -231,7 +239,12 @@ def _wire_m04(
     wiring.actions_config = ActionsConfig(
         approval_max_age=timedelta(hours=settings.approval_max_age_hours),
         draft_debounce=timedelta(seconds=settings.draft_debounce_seconds),
-        mark_uncertain_after=timedelta(seconds=settings.mark_uncertain_after_seconds),
+        # S04.4: never below the time a claimed send can still be in flight.
+        mark_uncertain_after=uncertain_after(
+            timedelta(seconds=settings.mark_uncertain_after_seconds),
+            request_timeout=timedelta(seconds=REQUEST_TIMEOUT_SECONDS),
+            throttle_wait=timedelta(seconds=MAX_THROTTLE_WAIT_SECONDS),
+        ),
         connection_stale_alert_after=timedelta(minutes=settings.connection_stale_alert_minutes),
         sending_enabled="actions.send" in settings.feature_flags,
         process_run_id=process_run_id,
@@ -242,6 +255,25 @@ def _wire_m04(
         wiring.routes,
         commands={**wiring.routes.commands, "activity": handle_activity},
     )
+    if roles & {"worker", "system"}:
+        # S04.4: verified execution, the uncertain-attempt sweep and the
+        # lost-job reconciler. The only business send path (§9.4). The
+        # executor's gateway resolves business targets at call time; a
+        # process without these roles never sends as the owner.
+        gateway.attach_business_targets(BusinessTargetResolver(session_factory))
+        wiring.actions = replace(
+            wiring.actions or ActionsJobHandlers(),
+            executor=ActionExecutor(
+                session_factory=session_factory,
+                clock=clock,
+                config=wiring.actions_config,
+                sender=gateway,
+                alerts=OwnerAlerts(session_factory, channel, clock),
+                scheduler=scheduler,
+                presenter=wiring.approval_cards,
+            ),
+        )
+        wiring.reconcilers.append(unqueued_executions)
     _wire_s042_drafting(
         wiring,
         settings=settings,
@@ -344,7 +376,12 @@ async def running_process(
     database_url = settings.database_url.get_secret_value()
     engine = build_engine(database_url)
     session_factory = build_session_factory(engine)
-    bot = Bot(token=settings.bot_token.get_secret_value())
+    # An explicit request timeout, below the outbound queue's shutdown grace:
+    # a send in flight at SIGTERM ends and Tx B records it (S04.4).
+    bot = Bot(
+        token=settings.bot_token.get_secret_value(),
+        session=AiohttpSession(timeout=REQUEST_TIMEOUT_SECONDS),
+    )
     gateway = OutboundGateway(AiogramSender(bot), clock)
     channel = GatewayControlChannel(gateway)
     jobs_app = build_app(database_url)
@@ -458,7 +495,12 @@ async def running_process(
                         {"process_run_id": process_run_id, "caught_up_at": None},
                     )
                 poller = Poller(
-                    AiogramUpdateSource(bot), session_factory, clock, process_run_id=process_run_id
+                    AiogramUpdateSource(bot),
+                    session_factory,
+                    clock,
+                    process_run_id=process_run_id,
+                    # The kill switch's fast lane recognises the owners' /pause.
+                    owner_ids=frozenset(settings.owner_telegram_ids),
                 )
                 await poller.startup()
                 supervisor_roles.append(PollerRole(poller, lock, clock).role())

@@ -331,6 +331,7 @@ def blocked_stub(tool: ToolDefinition) -> ToolDefinition:
 def default_registry() -> ToolRegistry:
     """Every tool the product has. The catalogue is ARCHITECTURE §8.2."""
     from assistant.agent.tools.activity import GET_ACTIVITY
+    from assistant.agent.tools.autonomy import PAUSE_AUTONOMY, RESUME_AUTONOMY
     from assistant.agent.tools.conversations import (
         GET_CONVERSATION,
         LIST_CONVERSATIONS,
@@ -368,6 +369,8 @@ def default_registry() -> ToolRegistry:
             DELETE_EVERYTHING,
             PROPOSE_REPLY,
             PROPOSE_MESSAGE,
+            PAUSE_AUTONOMY,
+            RESUME_AUTONOMY,
         ]
     )
 

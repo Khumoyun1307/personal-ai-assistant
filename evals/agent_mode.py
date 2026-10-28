@@ -154,6 +154,8 @@ PRODUCTION_FLAGS = frozenset(
         "tool.get_activity",
         "tool.propose_reply",
         "tool.propose_message",
+        "tool.pause_autonomy",
+        "tool.resume_autonomy",
     }
 )
 #: A consent version label that cannot be mistaken for a real policy version.

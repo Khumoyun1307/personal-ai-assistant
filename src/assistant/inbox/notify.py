@@ -68,6 +68,18 @@ ALERT_TEXT: dict[AlertKind, str] = {
         "I will remind you daily until then."
     ),
     AlertKind.BUDGET_THRESHOLD: "💰 This month's AI spend has reached {percent}% of the budget.",
+    #: S04.4: the contact's name (escaped) is rendered at delivery from ids,
+    #: never the reply's text; "uncertain" is never reported as sent (§6
+    #: invariants 6, 11).
+    AlertKind.DELIVERY_UNCERTAIN: (
+        "⚠️ I'm not sure a reply reached {contact}: Telegram did not confirm it. "
+        "Please check the chat. I will not resend it."
+    ),
+    AlertKind.CONNECTION_STALE: (
+        "⚠️ Telegram stopped accepting replies through the old connection and no new one "
+        "has arrived for {minutes} minutes. Open Chat Automation in Telegram and check "
+        "Alviro is connected."
+    ),
     AlertKind.CONNECTION_CHANGE: "{body}",
     AlertKind.BACKUP_STALE: (
         "⚠️ No successful database backup for {hours} hours. Check the backup container "

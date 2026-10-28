@@ -42,7 +42,8 @@ async def test_sends_to_one_chat_are_spaced_by_the_injected_sleep(
     sender: FakeTelegramSender,
 ) -> None:
     """About one message per second per chat (TF §5), waited through the
-    injected sleep: the first send and another chat's send never wait."""
+    injected sleep: the first send never waits, and another chat's send waits
+    only the global spacing of any two sends (< 25 msg/s, S04.4)."""
     clock = FakeClock()
     sleep = FakeSleep()
     gateway = OutboundGateway(sender, clock, sleep=sleep)
@@ -50,14 +51,14 @@ async def test_sends_to_one_chat_are_spaced_by_the_injected_sleep(
 
     await gateway.send_text(CONTROL, "first")
     await gateway.send_text(other, "another chat")
-    assert sleep.waits == []
+    assert sleep.waits == [pytest.approx(0.04)]
 
     await gateway.send_text(CONTROL, "second")
-    assert sleep.waits == [1.0]
+    assert sleep.waits == [pytest.approx(0.04), 1.0]
 
     clock.advance(seconds=5)
     await gateway.send_text(CONTROL, "later")
-    assert sleep.waits == [1.0]
+    assert sleep.waits == [pytest.approx(0.04), 1.0]
 
 
 # ------------------------------------------------------------------ renderer

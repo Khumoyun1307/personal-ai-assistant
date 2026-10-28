@@ -25,6 +25,9 @@ from assistant.telegram.ingress.ports import (
     TelegramTransientError,
 )
 
+#: Seconds a `getUpdates` request may take beyond its long-poll timeout.
+LONG_POLL_REQUEST_MARGIN_SECONDS = 15
+
 
 class AiogramUpdateSource:
     """Wraps an aiogram `Bot` as an `UpdateSource`."""
@@ -59,6 +62,9 @@ class AiogramUpdateSource:
                 timeout=timeout,
                 limit=limit,
                 allowed_updates=allowed_updates,
+                # The bot's session timeout is short (20 s, for sends — S04.4);
+                # a long poll holds the request open for `timeout` seconds.
+                request_timeout=timeout + LONG_POLL_REQUEST_MARGIN_SECONDS,
             )
         except AiogramConflictError as error:
             raise TelegramConflictError(type(error).__name__) from error
