@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.callbacks import encode, parse
 from assistant.accounts.models import Account
@@ -34,6 +35,7 @@ from assistant.conversations.models import Conversation, Message
 from assistant.core.jobs import NOTIFY_TASK
 from assistant.db.uow import transaction
 from assistant.inbox.models import ConversationTriage, Notification
+from assistant.inbox.notification_policy import RecentLoad
 from assistant.inbox.notification_types import NotificationKind, NotificationRefs, Priority
 from assistant.inbox.notifications import (
     NTF_CARD,
@@ -41,6 +43,7 @@ from assistant.inbox.notifications import (
     NotificationDelivery,
     enqueue,
     mark_digested,
+    notification_counts,
     notifications_batched_since,
 )
 from assistant.jobs.reconcile_inbox import notification_reconciler
@@ -304,6 +307,35 @@ async def test_a_definite_failure_is_retried_then_fails(env: Env) -> None:
     assert [(i, s) for i, s, _ in await notify_jobs(env)] == [(notification, "todo")]
 
 
+async def test_a_quiet_hours_hold_keeps_the_failed_attempts(env: Env) -> None:
+    """QA B1 (#87): a hold for quiet hours between two definite failures does
+    not reset the count, so the third attempt in all is still the last
+    (§3.2 step 5), and the held row still counts as held on /status."""
+    env.clock.set(DAY)
+    where = await chat(env)
+    notification = await add(env, where)
+    assert notification is not None
+    channel = FakeChannel(deliver=False)
+    service = delivery(env, channel)
+    assert (await service.deliver(notification)).status == "retry"
+    env.clock.set(NIGHT)
+    assert (await service.deliver(notification)).status == "deferred"
+    stored = await row(env, notification)
+    assert (stored.status, stored.deliver_after) == ("queued", QUIET_END)
+    async with env.factory() as session:
+        held = await notification_counts(session, account_id=where.account_id, now=NIGHT)
+    assert (held.queued, held.deferred) == (0, 1)
+    env.clock.set(QUIET_END)
+    assert (await service.deliver(notification)).status == "retry"
+    stored = await row(env, notification)
+    assert (stored.status, stored.reason_code) == ("queued", "not_delivered:2")
+    assert stored.deliver_after is not None
+    env.clock.set(stored.deliver_after)
+    assert (await service.deliver(notification)).status == "failed"
+    assert (await row(env, notification)).status == "failed"
+    assert len(channel.sends) == 3
+
+
 async def test_a_deleted_source_suppresses_the_alert(env: Env) -> None:
     """The renderer reads the verdict from its refs; when the chat's data is
     gone, nothing is sent and the row says why."""
@@ -415,6 +447,96 @@ async def test_the_hourly_cap_counts_claimed_alerts(env: Env) -> None:
     channel = FakeChannel()
     assert (await delivery(env, channel).deliver(notification)).status == "batched"
     assert (await row(env, notification)).reason_code == "cap"
+
+
+async def wait_for_lock_waiter(env: Env, *, deadline: float = 15.0) -> None:
+    """Until a backend of this database waits on a lock (a condition, not a
+    timer; as `test_summaries_verification`)."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + deadline
+    while True:
+        async with env.factory() as session:
+            waiting = await session.scalar(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+            )
+        if waiting:
+            return
+        if loop.time() > end:
+            raise AssertionError("no backend started waiting on a lock")
+        await asyncio.sleep(0.05)
+
+
+async def test_two_alerts_cannot_both_take_the_last_cap_slot(env: Env) -> None:
+    """QA B2 (#87), rule 6 / P2-T38: with one slot left under the cap, two
+    deliveries of different alerts race; the first is held right after it
+    read the load. The second must not read the same load: it waits for the
+    first's claim, sees the cap reached and batches."""
+    env.clock.set(DAY)
+    where = await chat(env)
+    async with env.factory() as session, session.begin():
+        for i in range(5):  # the default cap is six an hour
+            session.add(
+                Notification(
+                    account_id=where.account_id,
+                    kind="triage_urgent",
+                    priority="urgent",
+                    status="sent",
+                    dedupe_key=f"earlier:{i}",
+                    refs={},
+                    sent_at=DAY - timedelta(minutes=10),
+                    created_at=DAY - timedelta(minutes=20),
+                    updated_at=DAY - timedelta(minutes=10),
+                )
+            )
+    first = await add(env, where, key="triage:1:1:urgent")
+    second = await add(env, where, key="triage:1:2:urgent")
+    assert first is not None
+    assert second is not None
+    loaded, release, second_loaded = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    loads: list[int] = []
+
+    class HeldAfterTheLoad(NotificationDelivery):
+        async def _load(
+            self, session: AsyncSession, notification: Notification, now: datetime
+        ) -> RecentLoad:
+            load = await super()._load(session, notification, now)
+            loads.append(load.immediate_last_hour)
+            if len(loads) == 1:
+                loaded.set()
+                await release.wait()
+            else:
+                second_loaded.set()
+            return load
+
+    assert env.scheduler is not None
+    channel = FakeChannel()
+    service = HeldAfterTheLoad(
+        session_factory=env.factory,
+        channel=channel,
+        clock=env.clock,
+        scheduler=env.scheduler,
+        enabled=True,
+    )
+    one = asyncio.create_task(service.deliver(first))
+    await loaded.wait()
+    two = asyncio.create_task(service.deliver(second))
+    # Either the second read the load too (the race) or it waits on a lock.
+    watchers = [
+        asyncio.create_task(second_loaded.wait()),
+        asyncio.create_task(wait_for_lock_waiter(env)),
+    ]
+    _, pending = await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
+    for watcher in pending:
+        watcher.cancel()
+    release.set()
+    results = await asyncio.gather(one, two)
+    assert [r.status for r in results] == ["sent", "batched"]
+    assert results[1].reason == "cap"
+    assert loads == [5, 6]
+    assert len(channel.sends) == 1
 
 
 async def test_standard_alerts_wait_while_the_flag_is_off(env: Env) -> None:

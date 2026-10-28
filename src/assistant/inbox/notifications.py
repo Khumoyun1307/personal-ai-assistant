@@ -69,6 +69,8 @@ _CAP_WINDOW = timedelta(hours=1)
 _SUSPICIOUS_WINDOW = timedelta(hours=24)
 #: `reason_code` of a definite failure; `not_delivered:<n>` while retrying.
 _NOT_DELIVERED = "not_delivered"
+#: The policy's reason for a hold until the quiet hours end.
+_QUIET_HOURS = "quiet_hours"
 
 #: The alert card (F0-interfaces §7): `pending_inputs` kind, `ref_id` = the
 #: notification. Its buttons are not single-use: the owner may change the
@@ -176,13 +178,19 @@ def quiet_hours(value: object) -> tuple[time, time] | None:
     return time.fromisoformat(start), time.fromisoformat(end)
 
 
-def _attempts(reason_code: str | None) -> int:
-    """Definite failures so far, from `not_delivered:<n>`."""
-    prefix = f"{_NOT_DELIVERED}:"
-    if reason_code and reason_code.startswith(prefix):
-        tail = reason_code.removeprefix(prefix)
-        return int(tail) if tail.isdigit() else 0
-    return 0
+def _failures(reason_code: str | None) -> int:
+    """Definite failures so far: the `:<n>` that `not_delivered:<n>` carries,
+    and a later hold keeps (`quiet_hours:<n>`). No column holds the count, so
+    a hold must not drop it, or quiet hours would reset the attempt budget
+    (QA B1, #87)."""
+    if not reason_code:
+        return 0
+    _, separator, tail = reason_code.rpartition(":")
+    return int(tail) if separator and tail.isdigit() else 0
+
+
+def _with_failures(reason: str, failures: int) -> str:
+    return f"{reason}:{failures}" if failures else reason
 
 
 class NotificationDelivery:
@@ -214,6 +222,18 @@ class NotificationDelivery:
         now = self._clock.now()
         async with transaction(self._session_factory) as uow:
             session = uow.session
+            # §9.4 lock order: the account, then the notification. Its account
+            # and class never change, so they are read first, unlocked.
+            head = (
+                await session.execute(
+                    select(Notification.account_id, Notification.alert_class).where(
+                        Notification.id == notification_id
+                    )
+                )
+            ).one_or_none()
+            if head is None:
+                return DeliveryResult("not_queued")
+            account = await self._lock_account(session, head.account_id, head.alert_class)
             notification = (
                 await session.execute(
                     select(Notification).where(Notification.id == notification_id).with_for_update()
@@ -224,13 +244,6 @@ class NotificationDelivery:
             if notification.deliver_after is not None and notification.deliver_after > now:
                 # Early (a retry or a quiet-hours hold): its own job runs then.
                 return DeliveryResult("not_due")
-            account = (
-                await session.execute(
-                    select(Account)
-                    .where(Account.id == notification.account_id)
-                    .with_for_update(read=True)
-                )
-            ).scalar_one_or_none()
             if account is None or account.status == "deleted":
                 return self._settle(notification, "suppressed", "account_gone", now)
             if notification.alert_class == AlertClass.STANDARD and not self._enabled:
@@ -249,7 +262,9 @@ class NotificationDelivery:
                 return self._settle(notification, "suppressed", decision.reason, now)
             if decision.verdict is Verdict.DEFER:
                 notification.deliver_after = decision.deliver_after
-                notification.reason_code = decision.reason
+                notification.reason_code = _with_failures(
+                    decision.reason, _failures(notification.reason_code)
+                )
                 notification.updated_at = now
                 _defer_after_commit(
                     session, self._scheduler, notification.id, decision.deliver_after
@@ -258,7 +273,7 @@ class NotificationDelivery:
             rendered = await self._render(session, notification, account)
             if rendered is None:
                 return self._settle(notification, "suppressed", "source_deleted", now)
-            attempt = _attempts(notification.reason_code) + 1
+            attempt = _failures(notification.reason_code) + 1
             # The at-most-once claim (P2-T25): committed before the send.
             notification.status = "uncertain"
             notification.reason_code = "claimed"
@@ -325,10 +340,27 @@ class NotificationDelivery:
                 return DeliveryResult("failed", _NOT_DELIVERED)
             retry_at = now + RETRY_BACKOFF * attempt
             notification.status = "queued"
-            notification.reason_code = f"{_NOT_DELIVERED}:{attempt}"
+            notification.reason_code = _with_failures(_NOT_DELIVERED, attempt)
             notification.deliver_after = retry_at
             _defer_after_commit(uow.session, self._scheduler, notification_id, retry_at)
             return DeliveryResult("retry", notification.reason_code)
+
+    @staticmethod
+    async def _lock_account(
+        session: AsyncSession, account_id: int, alert_class: str
+    ) -> Account | None:
+        """A standard alert takes its account FOR NO KEY UPDATE, so deliveries
+        for one account count the hour's load, decide and claim one at a time
+        and two cannot both take the cap's last slot (rule 6, P2-T38; QA B2,
+        #87). Held only to this short transaction's commit, never across the
+        send. Not FOR UPDATE: ingestion's foreign-key KEY SHARE need not wait.
+        A system alert is never capped, so FOR SHARE is enough for it."""
+        statement = select(Account).where(Account.id == account_id)
+        if alert_class == AlertClass.STANDARD:
+            statement = statement.with_for_update(key_share=True)
+        else:
+            statement = statement.with_for_update(read=True)
+        return (await session.execute(statement)).scalar_one_or_none()
 
     @staticmethod
     def _settle(
@@ -474,17 +506,16 @@ async def notification_counts(
     session: AsyncSession, *, account_id: int, now: datetime
 ) -> NotificationCounts:
     held = and_(Notification.deliver_after.is_not(None), Notification.deliver_after > now)
+    # `quiet_hours`, or `quiet_hours:<n>` after earlier failed attempts.
+    quiet = or_(
+        Notification.reason_code == _QUIET_HOURS,
+        Notification.reason_code.startswith(f"{_QUIET_HOURS}:"),
+    )
     row = (
         await session.execute(
             select(
                 func.count().filter(and_(Notification.status == "queued", ~held)),
-                func.count().filter(
-                    and_(
-                        Notification.status == "queued",
-                        held,
-                        Notification.reason_code == "quiet_hours",
-                    )
-                ),
+                func.count().filter(and_(Notification.status == "queued", held, quiet)),
                 func.count().filter(
                     and_(Notification.status == "batched", Notification.digest_id.is_(None))
                 ),

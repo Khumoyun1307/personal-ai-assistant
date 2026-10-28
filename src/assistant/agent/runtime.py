@@ -307,6 +307,7 @@ class OwnerRequestRuntime:
                     approval_cards=self._approval_cards,
                     actions_config=self._actions_config,
                     notifications_enabled=self._notifications_enabled,
+                    enabled_flags=self._config.enabled_flags,
                 ),
             ),
             offered=offered,
