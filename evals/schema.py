@@ -552,11 +552,18 @@ class Burst(_Strict):
     def _check_tasks(self) -> None:
         ids = {m.id for m in self.messages()}
         seen: set[str] = set()
+        keys: set[tuple[str, str]] = set()
         for task in self.open_tasks:
             if not re.fullmatch(rf"{self.id}\.t\d+", task.id) or task.id in seen:
                 raise ValueError(f"{task.id}: task ids are unique '{self.id}.tN'")
             if task.source not in ids:
                 raise ValueError(f"{task.id}: cites unknown message {task.source}")
+            if (task.kind, task.source) in keys:
+                raise ValueError(
+                    f"{task.id}: another open {task.kind} task has the same first source "
+                    f"message {task.source} (the product keeps one, S05.1 §3.5)"
+                )
+            keys.add((task.kind, task.source))
             side = "owner" if task.kind == "owner_commitment" else "contact"
             if self.message(task.source).direction != side:
                 raise ValueError(

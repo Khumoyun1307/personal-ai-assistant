@@ -209,6 +209,20 @@ def test_open_task_sources_are_from_the_side_the_task_belongs_to() -> None:
             parse_burst(data)
 
 
+def test_two_open_tasks_of_one_kind_never_share_a_source() -> None:
+    """The product keeps one agent task per kind and first source message
+    (`ux_tasks_agent_dedupe`, S05.1 §3.5): the E3 target could not seed such a
+    pair, so the dataset may not hold one. Different kinds may share a message."""
+    data = record()
+    data["open_tasks"][1] = {**data["open_tasks"][1], "kind": "owner_commitment"}
+    data["open_tasks"][1]["source"] = "b001.h01"
+    with pytest.raises(ValidationError, match="first source"):
+        parse_burst(data)
+    question = record()
+    question["open_tasks"][1] = {**question["open_tasks"][1], "kind": "open_question"}
+    assert len(parse_burst(question).open_tasks) == 2  # the contact's h02, another kind
+
+
 def test_commitment_sources_are_from_the_committing_side() -> None:
     owner_promise_cites_contact = with_labels(
         commitments=[{"id": "b001.c1", "by": "owner", "source": "b001.m01", "values": []}]
