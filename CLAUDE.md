@@ -13,7 +13,9 @@ Owner decision 2026-10-29. When you delegate work (Agent tool `model`/`effort`, 
 | Very simple file access and doc handling: copying docs, mechanical checks (grep, counts, link and format checks). Not writing or planning documents | Haiku 5.5 (`haiku`) | default |
 | Well-scoped tasks with a clear definition of done: everyday coding, standard features, unit tests, simple refactors | Sonnet 5.5 (`sonnet`) | medium |
 | Harder bugs; tasks that need more thinking | Sonnet 5.5 (`sonnet`) | high |
-| Normal complex features and multi-file edits; planning, specs and design documents | Opus 5.5 (`opus`) | medium |
+| Normal complex features and multi-file edits; a single spec or design document | Opus 5.5 (`opus`) | medium |
+| Multi-file and/or multi-step planning (a milestone plan, a set of related specs, contracts between units) | Opus 5.5 (`opus`) | high |
+| Large multi-step planning across many files and teams (a phase package: research, decomposition, contracts, all unit specs) | Opus 5.5 (`opus`) | xhigh |
 | Bugs in complex features; hard bugs | Opus 5.5 (`opus`) | high |
 | Still not solved after 2–3 attempts at the level above | Opus 5.5 (`opus`) | xhigh, then max |
 
