@@ -147,6 +147,11 @@ def keyboard_labels(markup: Any) -> list[str]:
     return [b.text for row in markup.inline_keyboard for b in row]
 
 
+def keyboard_rows(markup: Any) -> list[list[str]]:
+    """The keyboard's labels row by row: the full layout, not an offset."""
+    return [[b.text for b in row] for row in markup.inline_keyboard]
+
+
 async def open_panel(env: Env, chat_id: int = CONTACT) -> None:
     await deliver(env, private_message(OWNER, f"/start bizChat{chat_id}"))
 
@@ -724,11 +729,12 @@ async def test_assist_is_settable_by_tool_and_panel_and_undoable(env: Env) -> No
     assert "<b>Assist is on</b> for the chat with Kamola." in shown["text"]
     assert "Nothing is sent without your approval." in shown["text"]
     assert panels.ASSIST_PANEL_LINE in shown["text"]
-    assert keyboard_labels(shown["reply_markup"]) == [
-        "Observe",
-        "Ignore",
-        "Assist ✓",
-        "Delete stored data…",
+    # The full combined layout: M04's Assist in the mode row, Delete on its
+    # own row, then M05's contact-priority row (CP4).
+    assert keyboard_rows(shown["reply_markup"]) == [
+        ["Observe", "Ignore", "Assist ✓"],
+        ["Delete stored data…"],
+        ["VIP", "Normal ✓", "Low"],
     ]
     assert env.sender.answered_callbacks[-1]["text"] == "Assist is on"
     await tap(env, panels.PANEL_CARD, "assist")
