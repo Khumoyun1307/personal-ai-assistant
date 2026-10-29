@@ -106,8 +106,15 @@ contact filter and the final answer (synthetic data, for review; E-s, E-t, E-u).
 | 2026-10-26 | `summary-gpt-6-luna-s037-v7-only-low`, `summary-gpt-6-luna-s037-v7-only-medium` (S03.7, `--only c36,c28,c15` effort trials, never a gate) | summarize.v7, fabrication.v2+render.v3+labels.v2, open_loops.v4; effort low / medium | 0.0037 + 0.0081 |
 | 2026-10-26 | `summary-gpt-6-luna-s037-v7` (S03.7) | summarize.v7, fabrication.v2+render.v3+labels.v2, open_loops.v4 | 0.0506 |
 | 2026-10-26 | `retrieval-agent-gpt-6-luna-s037-v7-trial`, `retrieval-agent-gpt-6-luna-s037-v7` (S03.7, agent mode; **incomplete**: r24 not evaluated after 3 provider outages, E-ag) | owner_request.v7 | 0.0011 + 0.0616 |
+| 2026-10-28 | `retrieval-agent-gpt-6-luna-trial`, `retrieval-agent-gpt-6-luna` (P2, M04 re-run after the `owner_request` bump, agent mode) | owner_request.v8 | 0.0014 + 0.0568 |
+| 2026-10-29 | `e2-drafts-gpt-6-luna-trial`, `e2-drafts-gpt-6-luna` (P2, M04 E2 baseline, informational) | draft_reply.v1, draft_intent.v1 | 0.0001 + 0.0602 |
+| 2026-10-29 | `triage-gpt-6-luna-trial`, `triage-gpt-6-luna` (P2, M05 E3) | triage.v1 | 0.0004 + 0.0539 |
+| 2026-10-29 | `monitors-gpt-6-luna-trial`, `monitors-gpt-6-luna-aborted.json` (the shared dev database was recreated under the run by another worktree's compose command, no results), `monitors-gpt-6-luna` (P2, M05 E3) | evaluate_monitor.v1 | 0.0001 + 0.0018 + 0.0030 |
+| 2026-10-29 | `retrieval-agent-gpt-6-luna-trial` (failed: 400 `invalid_function_parameters` from `create_monitor`'s strict tool schema, fixed by #141), `retrieval-agent-gpt-6-luna-trial-2`, `retrieval-agent-gpt-6-luna` (run 1), `retrieval-agent-gpt-6-luna-2` (replicate) (P2, M05 re-run after the `owner_request` bump, agent mode) | owner_request.v9 | 0.0000 + 0.0016 + 0.0703 + 0.0693 |
 
 Total so far: USD 0.4343 of the owner's USD 1 (baseline 0.0435, S03.6 0.1088, S03.7 0.2820 — the sum of `cost.spent_usd` in the S03.7 reports), tracked here and in M03.md S03.6 and S03.7.
+
+P2 so far: USD 0.3190 of the phase cap of USD 2 (P2-O8): 2026-10-28 0.0582, 2026-10-29 0.2608 (the sum of `cost.spent_usd` in each day's reports), tracked here and in M04.md and M05.md. Not in the table on 2026-10-29: a debug re-run of the failing retrieval trial (0 model calls, USD 0; its report was lost because Git Bash path conversion mis-mapped its `--out-dir`, and the stray copy was deleted) and four schema-diagnosis API calls with the synthetic input "hi" (under USD 0.001 together).
 
 The fabrication judge reads the conversation as `evals/render.py` draws it. Reports name it
 `fabrication.v1` up to the summarize.v4 runs and `fabrication.v1+render.v2` from the S03.6

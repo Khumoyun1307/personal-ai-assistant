@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "aborted": true,
+  "error": "OperationalError",
+  "run_date": "2026-10-29",
+  "set": "monitors",
+  "mode": "e3-monitor-cases",
+  "model": "gpt-6-luna",
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.0018064",
+    "calls": 18,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 18,
+        "input_tokens": 14809,
+        "output_tokens": 651,
+        "cost_usd": "0.0018064",
+        "cost_per_100_items_usd": null
+      }
+    }
+  }
+}

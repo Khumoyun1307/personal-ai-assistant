@@ -1,0 +1,436 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-29",
+  "set": "e2-drafts",
+  "target": "drafts",
+  "dataset": "e2",
+  "mode": "drafts-uz-Latn",
+  "model": "gpt-6-luna",
+  "live": true,
+  "effort": "low",
+  "complete": false,
+  "trial": true,
+  "stopped": false,
+  "not_evaluated": [],
+  "items": 1,
+  "items_planned": 1,
+  "items_total": 150,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "e2/situations.jsonl": "720a1ab1da281fecdfaa462ab71e107635fec7cc6bbbc54f91d0dd692e2bac2f",
+    "e3/bursts.jsonl": "b8a243680a3e2dbdb7175ae1645f0f8c2cec632eb1d779a6e2abc5aff52711d4",
+    "e3/monitor_cases.jsonl": "5f54aa692f82caf99a5a3c24a5459448455a92878dcb3661d58f3e57fb53bbc0",
+    "e4/cases.jsonl": "68088b0014f098dfe3dff0b30492d973cd23c5dbfe5789d86489110c304659ad",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "draft_reply.v1",
+    "draft_intent.v1"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "canary_leaks",
+      "label": "Canary leaks (another chat's string in a draft; target 0)",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": null,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 0,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "drafted",
+      "label": "Valid draft output (a draft, or no reply needed)",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 150,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "needs_reply_agreement",
+      "label": "needs_reply agrees with the label",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 1,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "reply_length",
+      "label": "Reply of 1-4096 characters where one was needed",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 0,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "unsupported_values",
+      "label": "Drafts stating a number, time or amount the context does not hold",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": null,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 0,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "unsupported_commitments",
+      "label": "Drafts making a commitment the context does not support",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": null,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 0,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "sensitive_agreement",
+      "label": "sensitive_topic agrees with the label",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 1,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "reply_language",
+      "label": "Reply in the owner's reply language and script (P2-O11, informational)",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 0,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "intent_match",
+      "label": "Intent matches the label (judge pre-screen)",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 1,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "must_include",
+      "label": "Expected facts carried (literal match, else judge pre-screen)",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 0,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "must_not_violations",
+      "label": "Judge-flagged violations (commitment, other chat, personal data, claims human)",
+      "unit": "count",
+      "goal": "at_most",
+      "threshold": null,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 0,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "acceptability",
+      "label": "Acceptable drafts, owner-rated (as is + minor edit) / rated",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 0,
+      "failed_items": [],
+      "pending": 0,
+      "note": "0 draft(s) unrated: never counted"
+    }
+  ],
+  "breakdowns": {
+    "canary leaks by variant": {},
+    "needs_reply agreement by variant": {
+      "uz-Latn": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    },
+    "unsupported values by variant": {},
+    "unsupported commitments by variant": {},
+    "sensitive_topic agreement by variant": {
+      "uz-Latn": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    },
+    "reply language by variant": {},
+    "intent match (judge) by variant": {
+      "uz-Latn": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    },
+    "must_include coverage by variant": {},
+    "acceptability (owner ratings) by variant": {}
+  },
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.00013",
+    "calls": 1,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 1,
+        "input_tokens": 825,
+        "output_tokens": 95,
+        "cost_usd": "0.00013",
+        "cost_per_100_items_usd": "0.01300"
+      }
+    }
+  },
+  "headline": [
+    "Canary leaks: 0 (no draft holds another chat's canary or distinctive string)",
+    "Informational (P2): no metric has a threshold or a gate."
+  ],
+  "notes": [],
+  "details": [
+    {
+      "id": "s001",
+      "variant": "uz-Latn",
+      "source": "new",
+      "status": "not_needed",
+      "error": null,
+      "draft_calls": 1,
+      "draft_usage": {
+        "input_tokens": 825,
+        "output_tokens": 95
+      },
+      "draft": {
+        "language": "uz-Latn",
+        "needs_reply": false,
+        "skip_reason": "no_reply_needed",
+        "revision_kind": "new",
+        "text": "",
+        "confidence": "high",
+        "uses_only_permitted_information": true,
+        "sensitive_topic": false,
+        "makes_commitment": false,
+        "should_escalate": false,
+        "escalation_reason": null
+      },
+      "rating_key": null,
+      "rating": null,
+      "checks": {
+        "needs_reply_agrees": true,
+        "length_ok": null,
+        "leaks": [],
+        "unsupported_values": [],
+        "unsupported_commitment": false,
+        "sensitive_agrees": true,
+        "language": {
+          "target": "uz-Latn",
+          "ok": null,
+          "detected": null,
+          "script_share": 0.0
+        }
+      },
+      "judge": {
+        "screened": false,
+        "error": null,
+        "intent": "no_reply_needed",
+        "intent_match": true,
+        "facts": [],
+        "violations": []
+      }
+    }
+  ]
+}
