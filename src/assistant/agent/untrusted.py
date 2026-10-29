@@ -50,6 +50,19 @@ class Source(StrEnum):
     (the owner confirmed it on a card, S03.3, M03 D70): the words may be
     someone else's."""
 
+    TASK_TITLE = "task_title"
+    """A task's title (S05.1): model-written from a contact's message, so it
+    may carry an injection forward."""
+
+    MONITOR_SPEC = "monitor_spec"
+    """A stored monitor's terms or description (S05.4): the owner confirmed
+    them, but they were written in a run that may have read other people's
+    text, and they may carry names."""
+
+    TRIAGE_REASON = "triage_reason"
+    """A triage verdict's short reason (S05.1 attention v2): model-written
+    from a contact's messages, so it may carry an injection forward."""
+
     DRAFT = "draft"
     """A draft reply written by the assistant from chat content (S04.2): it
     may restate a contact's text, so a revision reads it as data."""

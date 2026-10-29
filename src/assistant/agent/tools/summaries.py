@@ -23,6 +23,12 @@ type (`agent/summarize.py`):
   summary is stale is refreshed first — at most `MAX_INLINE_CHECKS` chats,
   ONE summary call each (plus one retry of a truncated output), never
   chained (M03 D62) — otherwise marked unchecked.
+  **v2** (S05.1 §3.9): a chat whose triage verdict covers its newest contact
+  message also gets the verdict (`triage`: reasons wrapped untrusted), up to
+  five `open_tasks` (titles wrapped untrusted) and deterministic
+  `next_actions` (`draft_reply` only with `tool.propose_reply` on, the
+  drafter wired and the reply window open — ICR-2; `open_panel` always); it
+  needs no summary call and ranks urgent → decision → needs reply → others.
 
 A chat whose summary fails is listed as not summarized (or unchecked); it
 never aborts the other chats. A summary written from messages that changed
@@ -77,7 +83,9 @@ from assistant.agent.tools.registry import (
     ToolOutcome,
     ToolRefs,
 )
+from assistant.agent.untrusted import Source, wrap
 from assistant.conversations.models import Contact, Conversation
+from assistant.conversations.window import window_open
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.memory import catch_up, summaries
@@ -88,6 +96,9 @@ logger = get_logger(__name__)
 
 SUMMARIZE_PERIOD_FLAG = "tool.summarize_period"
 ATTENTION_FLAG = "tool.get_attention_list"
+#: `propose_reply`'s release flag (S04.2b): attention v2 offers
+#: `next_actions: "draft_reply"` only while it is on (ICR-2).
+PROPOSE_REPLY_FLAG = "tool.propose_reply"
 
 #: The longest catch-up range.
 MAX_PERIOD = timedelta(days=31)
@@ -536,12 +547,86 @@ ATTENTION_RULE = (
 )
 
 
+ATTENTION_TRIAGE_RULE = (
+    "triage (when present) is the chat's triage verdict, which has read the contact's newest "
+    "message: relay its reasons as given. open_tasks are the chat's open loops; never present "
+    "one as done. next_actions are what the owner can do now: draft_reply (propose_reply) "
+    "only when listed, open_panel always."
+)
+
+
 def _rank(needs_reply: bool | None, may_be_waiting: bool) -> int:
     """Waiting first (the question rule or the summary's verdict), then the
     chats that could not be checked, then the chats needing nothing."""
     if may_be_waiting or needs_reply:
         return 0
     return 1 if needs_reply is None else 2
+
+
+#: Attention v2 tiers (S05.1 §3.9): urgent → decision → needs reply (or
+#: may be waiting) → not checked → others. A chat without a verdict keeps its
+#: v1 rank, mapped onto the last three tiers.
+_URGENT, _DECISION, _WAITING, _UNCHECKED, _OTHER = range(5)
+_V1_TIER = (_WAITING, _UNCHECKED, _OTHER)
+
+
+def _tier(
+    triage: catch_up.AttentionTriage | None, needs_reply: bool | None, may_be_waiting: bool
+) -> int:
+    if triage is None:
+        return _V1_TIER[_rank(needs_reply, may_be_waiting)]
+    if triage.urgency == "urgent" or triage.category == "urgent_decision":
+        return _URGENT
+    if triage.requests_decision:
+        return _DECISION
+    return _WAITING if triage.needs_reply or may_be_waiting else _OTHER
+
+
+def _order(candidate: catch_up.Unanswered, tier: int, triaged: bool) -> tuple[int, int, float]:
+    """Within a tier, chats with a verdict first, newest contact message
+    first (§3.9); v1 chats keep their order (sorted() is stable)."""
+    newest = -candidate.last_contact_msg_at.timestamp() if triaged else 0.0
+    return (tier, 0 if triaged else 1, newest)
+
+
+def _draft_offered(ctx: ToolContext) -> bool:
+    """Whether `propose_reply` can be offered to this run (ICR-2): its release
+    flag is on **and** the drafter and approval cards it needs are wired
+    (S04.2). Both must hold, so it fails closed: Assist mode wiring the
+    drafter offers nothing while the tool itself is off."""
+    services = ctx.services
+    return (
+        PROPOSE_REPLY_FLAG in services.enabled_flags
+        and services.drafter is not None
+        and services.approval_cards is not None
+    )
+
+
+def _triage_view(
+    triage: catch_up.AttentionTriage, *, tz: str, window_open: bool, can_draft: bool
+) -> dict[str, Any]:
+    return {
+        "triage": {
+            "needs_reply": triage.needs_reply,
+            "urgency": triage.urgency,
+            "category": triage.category,
+            "deadline": local_time(triage.deadline_at, tz),
+            "reasons": [wrap(reason, Source.TRIAGE_REASON) for reason in triage.reasons],
+        },
+        "open_tasks": [
+            {
+                "task_id": task.task_id,
+                "kind": task.kind,
+                "title": wrap(task.title, Source.TASK_TITLE),
+                "due": local_time(task.due_at, tz),
+            }
+            for task in triage.open_tasks
+        ],
+        "next_actions": [
+            *(["draft_reply"] if can_draft and window_open else []),
+            "open_panel",
+        ],
+    }
 
 
 async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) -> ToolOutcome:
@@ -569,6 +654,7 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         }
         fresh_authors = await summaries_authors(session, ctx.account_id, fresh)
         asked_before = await catch_up.waiting_questions(session, ctx.account_id, found_ids)
+        triaged_before = await catch_up.covering_triage(session, ctx.account_id, found_ids)
 
     # The limit applies after ranking (C1): waiting chats first. A fresh
     # stored summary ranks on the verdict the owner will see (`summary_view`:
@@ -581,17 +667,28 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         )
         for conversation_id, summary in fresh.items()
     }
-    first_rank = {
-        c.conversation_id: _rank(known.get(c.conversation_id), c.conversation_id in asked_before)
+    first_tier = {
+        c.conversation_id: _tier(
+            triaged_before.get(c.conversation_id),
+            known.get(c.conversation_id),
+            c.conversation_id in asked_before,
+        )
         for c in found
     }
-    ranked = sorted(found, key=lambda c: first_rank[c.conversation_id])
+    ranked = sorted(
+        found,
+        key=lambda c: _order(c, first_tier[c.conversation_id], c.conversation_id in triaged_before),
+    )
     candidates, cut = ranked[:limit], ranked[limit:]
-    cut_waiting = sum(1 for c in cut if first_rank[c.conversation_id] == 0)
-    cut_unchecked = sum(1 for c in cut if first_rank[c.conversation_id] == 1)
+    cut_waiting = sum(1 for c in cut if first_tier[c.conversation_id] <= _WAITING)
+    cut_unchecked = sum(1 for c in cut if first_tier[c.conversation_id] == _UNCHECKED)
 
+    # A chat with a covering verdict needs no summary call (§3.9).
     stale = [
-        c.conversation_id for c in candidates if c.summary_stale or c.conversation_id not in rolling
+        c.conversation_id
+        for c in candidates
+        if c.conversation_id not in triaged_before
+        and (c.summary_stale or c.conversation_id not in rolling)
     ][:MAX_INLINE_CHECKS]
     summarizer = services.summarizer
     changed: dict[int, StoreResult] = {}
@@ -650,10 +747,24 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         # Read again after the summary calls: a question deleted or expired
         # meanwhile must never be shown (D63).
         asked = await catch_up.waiting_questions(session, ctx.account_id, ids)
+        # Read again too: a task closed or a verdict replaced meanwhile.
+        triaged = await catch_up.covering_triage(session, ctx.account_id, ids)
+        conversations = {
+            row.id: row
+            for row in (
+                await session.execute(
+                    select(Conversation)
+                    .where(Conversation.account_id == ctx.account_id)
+                    .where(Conversation.id.in_(list(triaged)))
+                )
+            ).scalars()
+        }
 
     tz = account.timezone
+    can_draft = _draft_offered(ctx)
     locale = supported_locale(account.locale_pref)
     entries: list[dict[str, Any]] = []
+    tiers: dict[int, int] = {}
     citable: dict[int, CitableMessage] = {}
     for candidate in candidates:
         stored = rolling.get(candidate.conversation_id)
@@ -707,9 +818,33 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
                     ],
                 }
             )
+        triage = triaged.get(candidate.conversation_id)
+        if triage is not None:
+            conversation = conversations.get(candidate.conversation_id)
+            entry.update(
+                _triage_view(
+                    triage,
+                    tz=tz,
+                    window_open=conversation is not None and window_open(conversation, now),
+                    can_draft=can_draft,
+                )
+            )
+            if entry["needs_reply"] is None:
+                entry["needs_reply"] = triage.needs_reply
+                entry["check"] = "triage"
+        tiers[candidate.conversation_id] = _tier(
+            triage, entry["needs_reply"], entry["may_be_waiting"]
+        )
         entries.append(entry)
-    entries.sort(key=lambda e: _rank(e["needs_reply"], e["may_be_waiting"]))
-    waiting_count = sum(1 for e in entries if _rank(e["needs_reply"], e["may_be_waiting"]) == 0)
+    by_id = {c.conversation_id: c for c in candidates}
+    entries.sort(
+        key=lambda e: _order(
+            by_id[e["conversation_id"]],
+            tiers[e["conversation_id"]],
+            e["conversation_id"] in triaged,
+        )
+    )
+    waiting_count = sum(1 for e in entries if tiers[e["conversation_id"]] <= _WAITING)
 
     data: dict[str, Any] = {
         "conversations": entries,
@@ -717,6 +852,7 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         "waiting_count": waiting_count,
         "rule": ATTENTION_RULE,
         "window_days": days,
+        **({"triage_rule": ATTENTION_TRIAGE_RULE} if triaged else {}),
         "timezone": tz,
         "coverage": coverage,
         "attribution_rule": ATTRIBUTION_RULE,

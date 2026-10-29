@@ -270,9 +270,11 @@ def test_manifest_matches_the_dataset_files() -> None:
     names = {p.relative_to(manifest.DATASETS).as_posix() for p in manifest.frozen_files()}
     assert names == {
         "e1/conversations.jsonl",
+        "retrieval/queries.jsonl",
+        "e3/bursts.jsonl",
+        "e3/monitor_cases.jsonl",
         "e2/situations.jsonl",
         "e4/cases.jsonl",
-        "retrieval/queries.jsonl",
     }
 
 

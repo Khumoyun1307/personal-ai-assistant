@@ -182,6 +182,7 @@ async def test_the_blocked_stub_returns_no_message_data_and_makes_no_db_read_of_
         "list_conversations",
         "summarize_period",
         "get_attention_list",
+        "list_monitors",  # S05.4: contact names and the owner's terms, wrapped
         "get_activity",
         # S04.2: their results name the contact (F0-interfaces §9).
         "propose_reply",
@@ -235,8 +236,8 @@ def test_release_flags_still_hide_blocked_stubs() -> None:
     assert contact_run == {}
 
 
-def test_owner_request_v8_is_active_and_older_versions_remain() -> None:
-    assert prompt_registry.ACTIVE["owner_request"] == "v8"
+def test_owner_request_v9_is_active_and_older_versions_remain() -> None:
+    assert prompt_registry.ACTIVE["owner_request"] == "v9"
     for version in ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"):
         assert prompt_registry.load("owner_request", version).text
     v6 = prompt_registry.load("owner_request", "v6").text
@@ -279,6 +280,28 @@ def test_owner_request_v7_is_v6_plus_the_search_and_language_rules() -> None:
     rule16 = _rule(v7, 16)
     assert "whole reply" in rule16
     assert "script" in rule16
+
+
+def test_owner_request_m05_version_is_active_and_older_versions_remain() -> None:
+    """CP4 (P2-T50): retain shipped M04 v8 and append M05 rules 23-25."""
+    assert prompt_registry.ACTIVE["owner_request"] == "v9"
+    for version in ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"):
+        assert prompt_registry.load("owner_request", version).text
+    v8 = prompt_registry.load("owner_request", "v8").text
+    v9 = prompt_registry.load("owner_request", "v9").text
+    assert v9.startswith(v8 + "\n23. ")
+    monitors, priority, attention = _rule(v9, 23), _rule(v9, 24), _rule(v9, 25)
+    assert "`resolve_contact` before `create_monitor`" in monitors
+    assert "`contact_replied`" in monitors
+    assert "`keywords`" in monitors
+    assert "only when the condition is about meaning" in monitors
+    assert "never say it is active or watching until a tool result says `active`" in monitors
+    assert "Relay `list_monitors` as given" in monitors
+    assert "`set_contact_priority`" in priority
+    assert "Relay the triage `reasons` as given" in attention
+    assert "never say a task is done, answered or closed unless a tool result shows it" in (
+        attention
+    )
 
 
 def test_owner_request_v8_is_v7_plus_the_m04_rules() -> None:

@@ -47,6 +47,15 @@ Rules:
   the owner's message to the finished reply, the p95 limit and a verdict.
   It reads `deploy/sql/nfr04.sql` in a read-only transaction: timings, run
   types, statuses and tool names only, never a content column.
+- **Triage and alert latency (NFR-05, M05 onwards).** `just prod <ip> nfr05
+  [days]` (default 1) prints three rows: triage completion (finished run
+  minus the newest message it read; p95 limit 90 s), urgent alert delivery
+  (sent alert minus its newest referenced message; p95 limit 120 s), and the
+  share of immediate alerts the owner marked "not useful" (informational,
+  PRD R2 #7), each with a count and a verdict. It reads
+  `deploy/sql/nfr05.sql` in a read-only transaction: timestamps, ids, run
+  types, kinds, statuses and feedback codes only, never a content column.
+
 - **P2 verification and daily trial audit.** `just prod <ip> p2-verify release` reports the
   schema, flag names and action counts. Other modes are `actions --since
   <ISO timestamp with timezone>`, `action <id>`, `script P2-4 --expect 401-409`,

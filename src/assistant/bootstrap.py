@@ -21,26 +21,37 @@ from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.actions.config import ActionsConfig
-from assistant.actions.drafts import assist_trigger
+from assistant.actions.drafts import assist_trigger, request_draft
 from assistant.actions.executor import ActionExecutor, uncertain_after
 from assistant.actions.ingestion import ActionsIngestionListener
 from assistant.actions.ports import ApprovalCardPresenter
 from assistant.agent.confirmations import ConfirmationApplier
 from assistant.agent.drafting import AssistDraftJob, DraftConfig, Drafter
+from assistant.agent.monitor_eval import MonitorEvalConfig, MonitorEvaluator
 from assistant.agent.persistence import DbCallRecorder, DbConsentReader
 from assistant.agent.ports import ControlChannel
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime
 from assistant.agent.summarize import SummarizeConfig, Summarizer
 from assistant.agent.tools.registry import ToolServices, default_registry
+from assistant.agent.triage import TriageConfig, Triager
+from assistant.automation.monitor_trigger import MonitorIngestionListener
+from assistant.automation.monitors import MON_CARD, MonitorMatchRenderer
+from assistant.automation.schedules import DIGEST_FLAG
 from assistant.config import ConfigError, Settings
 from assistant.conversations.listeners import IngestionListener
 from assistant.core.clock import Clock, SystemClock
+from assistant.core.jobs import DraftReason
 from assistant.core.routing import Route
 from assistant.core.supervisor import Role, Supervisor
 from assistant.db.advisory_lock import NAMESPACE_INBOX, NAMESPACE_POLLER, AdvisoryLock
 from assistant.db.engine import build_engine, build_session_factory
+from assistant.inbox.digest import DIGEST_CARD, DigestDelivery
+from assistant.inbox.notification_types import NotificationKind
+from assistant.inbox.notifications import NTF_CARD, NotificationDelivery
 from assistant.inbox.notify import OwnerAlerts
 from assistant.inbox.processor import InboxProcessor
+from assistant.inbox.triage_store import TriageRepository
+from assistant.inbox.triage_trigger import TriageIngestionListener
 from assistant.jobs.app import QUEUE_SYSTEM, QUEUES, build_app, run_queue_worker
 from assistant.jobs.reconcile import Reconciler
 from assistant.jobs.reconcile_actions import (
@@ -48,11 +59,13 @@ from assistant.jobs.reconcile_actions import (
     UnqueuedDrafts,
     unqueued_executions,
 )
+from assistant.jobs.reconcile_inbox import notification_reconciler, triage_reconciler
+from assistant.jobs.reconcile_monitors import monitor_reconciler
 from assistant.jobs.scheduler import ProcrastinateScheduler
 from assistant.jobs.tasks import JobHandlers, register_tasks
 from assistant.jobs.tasks_actions import ActionsJobHandlers
-from assistant.jobs.tasks_automation import AutomationJobHandlers
-from assistant.jobs.tasks_inbox import InboxJobHandlers
+from assistant.jobs.tasks_automation import AutomationJobHandlers, MonitorJobs, ScheduleJobs
+from assistant.jobs.tasks_inbox import InboxJobHandlers, TriageJob
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.metering import MeteredLLMClient
 from assistant.llm.openai_adapter import OpenAIClient
@@ -66,9 +79,16 @@ from assistant.telegram.business_targets import BusinessTargetResolver
 from assistant.telegram.connections import AiogramConnectionLookup, ConnectionRegistry
 from assistant.telegram.control.activity import handle_activity
 from assistant.telegram.control.agent_channel import GatewayControlChannel
+from assistant.telegram.control.alerts import handle_ntf_press
 from assistant.telegram.control.approvals import DRAFT_EDIT, KIND, ApprovalCards, RevisionJob
+from assistant.telegram.control.digest import (
+    handle_digest_command,
+    handle_digest_press,
+    render_digest,
+)
 from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.inbox_handlers import ControlInboxHandlers, RefusalLimiter
+from assistant.telegram.control.monitors import handle_mon_press
 from assistant.telegram.control.routes import ControlRoutes
 from assistant.telegram.gateway import (
     MAX_THROTTLE_WAIT_SECONDS,
@@ -386,6 +406,143 @@ def _wire_m05(
 ) -> None:
     """M05 units add their adapters and listeners here after F0 (`llm` as
     in `_wire_m04`)."""
+    # S05.3b: the schedule reconciler, `automation.fire`, `digest.build`,
+    # `/digest` and the digest's "Open" buttons are always wired (`/digest`
+    # needs no flag); flag `digest.daily` keeps each account's digest
+    # automation in step with its preference and lets it fire.
+    wiring.automation = replace(
+        wiring.automation or AutomationJobHandlers(),
+        schedules=ScheduleJobs(
+            session_factory=session_factory,
+            clock=clock,
+            scheduler=scheduler,
+            digests=DigestDelivery(
+                session_factory=session_factory, channel=channel, clock=clock, render=render_digest
+            ),
+            digest_enabled=DIGEST_FLAG in settings.feature_flags,
+        ),
+    )
+    wiring.routes = replace(
+        wiring.routes,
+        callbacks={**wiring.routes.callbacks, DIGEST_CARD: handle_digest_press},
+        commands={**wiring.routes.commands, "digest": handle_digest_command},
+    )
+    # S05.2: delivery, its reconciler and the alert cards are always wired;
+    # flag `notifications.deliver` decides whether standard alerts go out
+    # (they wait in `queued` while it is off; system alerts never wait).
+    notifications_on = "notifications.deliver" in settings.feature_flags
+    wiring.notifications_enabled = notifications_on
+    delivery = NotificationDelivery(
+        session_factory=session_factory,
+        channel=channel,
+        clock=clock,
+        scheduler=scheduler,
+        enabled=notifications_on,
+    )
+    wiring.inbox = InboxJobHandlers(notifications=delivery)
+    wiring.reconcilers.append(notification_reconciler(enabled=notifications_on))
+    wiring.routes = replace(
+        wiring.routes, callbacks={**wiring.routes.callbacks, NTF_CARD: handle_ntf_press}
+    )
+    # S05.1: triage only while flag `triage.run` is on — the listener sets the
+    # flag and defers the job, the reconciler recovers lost defers, the job
+    # (worker role: it needs the model) runs the `Triager` with the production
+    # store. The Assist trigger reads the single switch (P2-O6); the draft
+    # request uses S04.2's single coalescing path (CP4).
+    if "triage.run" in settings.feature_flags:
+        debounce = timedelta(seconds=settings.triage_debounce_seconds)
+        wiring.listeners.append(
+            TriageIngestionListener(scheduler=scheduler, clock=clock, debounce=debounce)
+        )
+        wiring.reconcilers.append(triage_reconciler())
+        if llm is not None:
+
+            async def request_triage_draft(
+                session: AsyncSession, account_id: int, conversation_id: int
+            ) -> None:
+                await request_draft(
+                    session,
+                    account_id=account_id,
+                    conversation_id=conversation_id,
+                    reason=DraftReason.TRIAGE_NEEDS_REPLY,
+                    scheduler=scheduler,
+                    clock=clock,
+                    debounce=timedelta(seconds=settings.draft_debounce_seconds),
+                )
+
+            store = TriageRepository(
+                clock=clock,
+                scheduler=scheduler,
+                assist_draft_trigger=(
+                    "off"
+                    if wiring.actions_config is None
+                    else wiring.actions_config.assist_draft_trigger
+                ),
+                draft_requester=request_triage_draft,
+            )
+            triager = Triager(
+                session_factory=session_factory,
+                llm=llm,
+                clock=clock,
+                config=TriageConfig(
+                    model=settings.model_routes.model_for("triage"),
+                    effort=settings.llm_triage_effort,
+                    monthly_budget_usd=settings.llm_monthly_budget_usd,
+                ),
+                store=store,
+            )
+            wiring.inbox = replace(
+                wiring.inbox,
+                triage=TriageJob(
+                    session_factory=session_factory,
+                    triager=triager,
+                    scheduler=scheduler,
+                    clock=clock,
+                    debounce=debounce,
+                    alerts=OwnerAlerts(session_factory, channel, clock),
+                    monthly_budget_usd=settings.llm_monthly_budget_usd,
+                ),
+            )
+    # S05.4: the `MONITOR_MATCH` renderer, the Stop button and the hourly
+    # expiry are always wired; matching (the listener, registered LAST —
+    # after actions and triage, F0-interfaces §5), the evaluation job and
+    # its reconciler only while flag `monitors.run` is on. The tools follow
+    # their own release flags.
+    delivery.register_renderer(NotificationKind.MONITOR_MATCH, MonitorMatchRenderer(clock))
+    wiring.routes = replace(
+        wiring.routes, callbacks={**wiring.routes.callbacks, MON_CARD: handle_mon_press}
+    )
+    monitor_debounce = timedelta(seconds=settings.monitor_debounce_seconds)
+    evaluator = None
+    if "monitors.run" in settings.feature_flags:
+        wiring.listeners.append(
+            MonitorIngestionListener(scheduler=scheduler, clock=clock, debounce=monitor_debounce)
+        )
+        wiring.reconcilers.append(monitor_reconciler())
+        if llm is not None:
+            evaluator = MonitorEvaluator(
+                session_factory=session_factory,
+                llm=llm,
+                clock=clock,
+                config=MonitorEvalConfig(
+                    model=settings.model_routes.model_for("evaluate_monitor"),
+                    effort=settings.llm_evaluate_monitor_effort,
+                    monthly_budget_usd=settings.llm_monthly_budget_usd,
+                ),
+                scheduler=scheduler,
+            )
+    wiring.automation = replace(
+        wiring.automation or AutomationJobHandlers(),
+        monitors=MonitorJobs(
+            session_factory=session_factory,
+            clock=clock,
+            scheduler=scheduler,
+            debounce=monitor_debounce,
+            evaluator=evaluator,
+            alerts=OwnerAlerts(session_factory, channel, clock),
+            monthly_budget_usd=settings.llm_monthly_budget_usd,
+        ),
+    )
 
 
 class InstanceAlreadyRunningError(RuntimeError):

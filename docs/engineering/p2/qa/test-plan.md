@@ -137,6 +137,9 @@ Branch `qa/m04-scenarios` from `int/m04` → PR to `int/m04`. Each file below ho
 
 ## 5. QA-S5 — M05 acceptance scenarios
 
+Implementation evidence, owning units and expected-failure limitations:
+[m05-scenarios.md](m05-scenarios.md). Marker presence is pending acceptance.
+
 Branch `qa/m05-scenarios` from `int/m05` → PR to `int/m05`. Triage responses are `fake.parsed` dicts with the `TriageResult` fields of the S05.1 spec; monitor verdicts per the S05.4 spec; notifications are asserted on `notifications` rows (status, reason code) and on `env.sender.sends` to the control chat.
 
 | File | Test | Asserts | Green by |

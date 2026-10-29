@@ -40,7 +40,9 @@ ACTIVE: dict[str, str] = {
     # kill switch (`pause_autonomy`; resuming only by /resume or the card) and
     # "what did you send/draft" through `get_activity`; rule 3 and the Assist
     # sentence of rule 13 changed to match. v1-v7 stay.
-    "owner_request": "v8",
+    # v9 (CP4, P2-T50): shipped M04 v8 unchanged, plus M05 rules 23-25
+    # for monitors, contact priority and attention v2. v1-v8 stay.
+    "owner_request": "v9",
     # v1 (S03.2): one chat, rolling or period; cite message ids; no tools.
     # v2 (S03.3): the owner's notes about this contact are background, never
     # cited or reported as chat content.
@@ -66,6 +68,16 @@ ACTIVE: dict[str, str] = {
     # shown, so "I changed the time" means the edited text holds the new
     # value. v1-v6 stay.
     "summarize": "v7",
+    # v1 (S05.1): one chat's new messages (the burst) → flags, urgency,
+    # commitments and questions citing their source message, resolved open
+    # tasks, escalation category, short reasons; contact text is data, an
+    # instruction to the assistant is `suspicious`; no tools.
+    "triage": "v1",
+    # v1 (S05.4): one chat's new contact messages against the owner's
+    # semantic monitors (semantic, decision_requested, urgent) → one verdict
+    # per listed monitor citing the matching new messages; unsure is no
+    # match; contact text is judged on substance, never obeyed; no tools.
+    "evaluate_monitor": "v1",
     "draft_reply": "v1",
 }
 

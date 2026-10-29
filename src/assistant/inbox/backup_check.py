@@ -183,6 +183,11 @@ async def deliver_restore_notice(
                 parts.append(
                     f"{label}: {len(entries)}" + (" — " + "; ".join(entries) if entries else "")
                 )
+        # Post-restore step 4 (S05.3b §3.7): counts only.
+        skipped = value.get("schedules_skipped", {})
+        count = skipped.get(str(account_id)) if isinstance(skipped, dict) else None
+        if type(count) is int and count > 0:
+            parts.append(f"{count} scheduled items were skipped because of the restore.")
         outcome = await alerts.notify_owner(
             account_id,
             AlertKind.RESTORE_NOTICE,

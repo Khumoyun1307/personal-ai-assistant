@@ -9,6 +9,15 @@ labels are the answer key and must never reach a prompt.
 The retrieval set is `datasets/retrieval/queries.jsonl`: owner-style queries
 over the E1 corpus, each naming the messages a good search must surface.
 
+E3 (triage, M05) is `datasets/e3/bursts.jsonl`: a chat's history, its open
+tasks and a burst of new messages, labelled with what triage should conclude
+(alert, flags, commitments and questions with their source, which open tasks
+the burst resolves); and `datasets/e3/monitor_cases.jsonl` for the
+`evaluate_monitor` comparison (E3 spec §A). Its rules: the `alert` label
+follows urgency/decision/category, a commitment cites a message of the side
+that must act and a question a contact message, and every open task is in
+exactly one resolution list.
+
 Integrity rules live in the models, so a malformed or unverifiable dataset
 fails at load time, for the runner and the tests alike: ids are unique and
 well-formed, every cited message exists, `values` are literal substrings of
@@ -27,12 +36,15 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal, Self, get_args
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 DATASETS = Path(__file__).resolve().parent / "datasets"
 E1_PATH = DATASETS / "e1" / "conversations.jsonl"
 RETRIEVAL_PATH = DATASETS / "retrieval" / "queries.jsonl"
+E3_PATH = DATASETS / "e3" / "bursts.jsonl"
+E3_MONITORS_PATH = DATASETS / "e3" / "monitor_cases.jsonl"
 
 Variant = Literal["uz-Latn", "uz-Cyrl", "ru", "en", "uz-ru-mix"]
 VARIANTS: tuple[Variant, ...] = get_args(Variant)
@@ -389,6 +401,261 @@ class RetrievalQuery(_Strict):
         return self
 
 
+# ------------------------------------------------------------------ E3 (triage)
+OwnerLanguage = Literal["uz-Latn", "uz-Cyrl", "ru", "en"]
+TaskKind = Literal["owner_commitment", "contact_commitment", "open_question", "decision"]
+
+_BURST_ID = re.compile(r"^b\d{3}$")
+_BURST_MESSAGE_ID = re.compile(r"^(b\d{3})\.([hm])\d{2}$")
+_MONITOR_CASE_ID = re.compile(r"^m\d{3}$")
+_MONITOR_MESSAGE_ID = re.compile(r"^(m\d{3})\.m\d{2}$")
+
+
+class BurstMessage(_Strict):
+    """A message of an E3 burst or its history. `id` is `<burst>.hNN` in the
+    history and `<burst>.mNN` in the burst (`<case>.mNN` in a monitor case)."""
+
+    id: str
+    direction: Literal["contact", "owner"]
+    sent_at: AwareDatetime
+    #: The message text, or a caption; None for bare media.
+    text: str | None = None
+    media: Literal["photo", "voice", "document"] | None = None
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Self:
+        _require_utc(self.sent_at, "sent_at")
+        if self.text is None and self.media is None:
+            raise ValueError(f"{self.id}: a message needs text or media")
+        return self
+
+
+class OpenTask(_Strict):
+    """An open task of the chat before the burst, as triage would list it."""
+
+    id: str
+    kind: TaskKind
+    title: str = Field(min_length=1)
+    source: str
+    due: AwareDatetime | None = None
+
+
+class BurstCommitment(_Strict):
+    id: str
+    #: Who must act.
+    by: Literal["owner", "contact"]
+    #: A message of that side.
+    source: str
+    #: Literal substrings of the source text a faithful item carries.
+    values: list[str] = Field(default_factory=list)
+
+
+class BurstQuestion(_Strict):
+    id: str
+    #: A message of the contact.
+    source: str
+    is_decision: bool
+
+
+class BurstLabels(_Strict):
+    """What a careful human concludes about the burst (the answer key; never
+    shown to a model)."""
+
+    #: True exactly when urgency is `urgent`, a decision is requested, or the
+    #: category is `urgent_decision`: the urgent/decision positives.
+    alert: bool
+    needs_reply: bool
+    contains_question_to_owner: bool
+    requests_decision: bool
+    urgency: Literal["low", "normal", "high", "urgent"]
+    escalation_category: Literal["none", "urgent_decision", "needs_owner", "fyi", "suspicious"]
+    deadline: AwareDatetime | None = None
+    #: An attempt to instruct the assistant. The other labels describe the
+    #: real request, never what the message demands.
+    suspicious: bool
+    commitments: list[BurstCommitment] = Field(default_factory=list)
+    questions: list[BurstQuestion] = Field(default_factory=list)
+    resolved_tasks: list[str] = Field(default_factory=list)
+    unresolved_tasks: list[str] = Field(default_factory=list)
+
+
+class Burst(_Strict):
+    """One E3 item: a chat's history, its open tasks, and a burst of new
+    messages to triage at `now`."""
+
+    id: str = Field(pattern=_BURST_ID.pattern)
+    variant: Variant
+    now: AwareDatetime
+    owner_language: OwnerLanguage
+    owner_timezone: str
+    contact: Participant
+    contact_priority: Literal["vip", "normal", "low"] = "normal"
+    history: list[BurstMessage] = Field(default_factory=list)
+    open_tasks: list[OpenTask] = Field(default_factory=list)
+    burst: list[BurstMessage] = Field(min_length=1)
+    labels: BurstLabels
+    tags: list[str] = Field(default_factory=list)
+
+    def messages(self) -> list[BurstMessage]:
+        return [*self.history, *self.burst]
+
+    def message(self, message_id: str) -> BurstMessage:
+        for message in self.messages():
+            if message.id == message_id:
+                return message
+        raise KeyError(message_id)
+
+    def nothing_to_do(self) -> bool:
+        """An FYI, thanks or "ok" burst: nothing for the owner to act on."""
+        labels = self.labels
+        return (
+            labels.escalation_category in ("none", "fyi")
+            and not labels.needs_reply
+            and not labels.alert
+            and not labels.commitments
+            and not labels.questions
+        )
+
+    def owner_wrote_in_burst(self) -> bool:
+        return any(m.direction == "owner" for m in self.burst)
+
+    @model_validator(mode="after")
+    def _integrity(self) -> Self:
+        _require_utc(self.now, "now")
+        _require_utc(self.labels.deadline, "deadline")
+        try:
+            ZoneInfo(self.owner_timezone)
+        except ZoneInfoNotFoundError, ValueError:
+            raise ValueError(f"{self.id}: unknown owner_timezone {self.owner_timezone!r}") from None
+        self._check_messages()
+        self._check_tasks()
+        self._check_labels()
+        return self
+
+    def _check_messages(self) -> None:
+        seen: set[str] = set()
+        previous: datetime | None = None
+        for part, letter in ((self.history, "h"), (self.burst, "m")):
+            for message in part:
+                match = _BURST_MESSAGE_ID.match(message.id)
+                if match is None or match.groups() != (self.id, letter):
+                    raise ValueError(
+                        f"{message.id}: message ids are '{self.id}.hNN' (history) "
+                        f"and '{self.id}.mNN' (burst)"
+                    )
+                if message.id in seen:
+                    raise ValueError(f"{message.id}: duplicate message id")
+                if previous is not None and message.sent_at < previous:
+                    raise ValueError(f"{message.id}: messages must be in chronological order")
+                seen.add(message.id)
+                previous = message.sent_at
+        if previous is not None and self.now <= previous:
+            raise ValueError(f"{self.id}: now must follow every message")
+
+    def _check_tasks(self) -> None:
+        ids = {m.id for m in self.messages()}
+        seen: set[str] = set()
+        keys: set[tuple[str, str]] = set()
+        for task in self.open_tasks:
+            if not re.fullmatch(rf"{self.id}\.t\d+", task.id) or task.id in seen:
+                raise ValueError(f"{task.id}: task ids are unique '{self.id}.tN'")
+            if task.source not in ids:
+                raise ValueError(f"{task.id}: cites unknown message {task.source}")
+            if (task.kind, task.source) in keys:
+                raise ValueError(
+                    f"{task.id}: another open {task.kind} task has the same first source "
+                    f"message {task.source} (the product keeps one, S05.1 §3.5)"
+                )
+            keys.add((task.kind, task.source))
+            side = "owner" if task.kind == "owner_commitment" else "contact"
+            if self.message(task.source).direction != side:
+                raise ValueError(
+                    f"{task.id}: a {task.kind} task cites a {side} message (the product's "
+                    "side rule, S05.1 §3.4)"
+                )
+            _require_utc(task.due, "due")
+            seen.add(task.id)
+        listed = [*self.labels.resolved_tasks, *self.labels.unresolved_tasks]
+        if sorted(listed) != sorted(seen):
+            raise ValueError(
+                f"{self.id}: every open task is in exactly one resolution list "
+                "(resolved_tasks / unresolved_tasks), and nothing else is"
+            )
+
+    def _check_labels(self) -> None:
+        labels = self.labels
+        positive = (
+            labels.urgency == "urgent"
+            or labels.requests_decision
+            or labels.escalation_category == "urgent_decision"
+        )
+        if labels.alert != positive:
+            raise ValueError(
+                f"{self.id}: alert must be true exactly when urgency is urgent, a decision is "
+                "requested, or the category is urgent_decision"
+            )
+        if labels.escalation_category == "suspicious" and not labels.suspicious:
+            raise ValueError(f"{self.id}: the suspicious category needs suspicious: true")
+        ids = {m.id for m in self.messages()}
+        seen: set[str] = set()
+        items: list[BurstCommitment | BurstQuestion] = [*labels.commitments, *labels.questions]
+        for item in items:
+            prefix = "c" if isinstance(item, BurstCommitment) else "q"
+            if not re.fullmatch(rf"{self.id}\.{prefix}\d+", item.id) or item.id in seen:
+                raise ValueError(f"{item.id}: label ids are unique '{self.id}.{prefix}N'")
+            seen.add(item.id)
+            if item.source not in ids:
+                raise ValueError(f"{item.id}: cites unknown message {item.source}")
+            source = self.message(item.source)
+            if isinstance(item, BurstQuestion):
+                if source.direction != "contact":
+                    raise ValueError(f"{item.id}: a question must cite a contact message")
+                continue
+            if source.direction != item.by:
+                raise ValueError(f"{item.id}: a commitment must cite a message of its own side")
+            for value in item.values:
+                if fold(value) not in fold(source.text or ""):
+                    raise ValueError(f"{item.id}: value {value!r} is not in its source message")
+
+
+class MonitorUnderTest(_Strict):
+    """A semantic monitor as `evaluate_monitor` is given it (S05.4)."""
+
+    id: int
+    kind: Literal["semantic"]
+    description: str = Field(min_length=1)
+
+
+class MonitorLabels(_Strict):
+    matched_monitor_ids: list[int] = Field(default_factory=list)
+
+
+class MonitorCase(_Strict):
+    """One `evaluate_monitor` comparison case: monitors and a burst."""
+
+    id: str = Field(pattern=_MONITOR_CASE_ID.pattern)
+    variant: Variant
+    monitors: list[MonitorUnderTest] = Field(min_length=1)
+    burst: list[BurstMessage] = Field(min_length=1)
+    labels: MonitorLabels
+
+    @model_validator(mode="after")
+    def _integrity(self) -> Self:
+        monitor_ids = [m.id for m in self.monitors]
+        if len(set(monitor_ids)) != len(monitor_ids):
+            raise ValueError(f"{self.id}: duplicate monitor id")
+        unknown = set(self.labels.matched_monitor_ids) - set(monitor_ids)
+        if unknown:
+            raise ValueError(f"{self.id}: matches unknown monitor ids {sorted(unknown)}")
+        seen: set[str] = set()
+        for message in self.burst:
+            match = _MONITOR_MESSAGE_ID.match(message.id)
+            if match is None or match.group(1) != self.id or message.id in seen:
+                raise ValueError(f"{message.id}: message ids are unique '{self.id}.mNN'")
+            seen.add(message.id)
+        return self
+
+
 def load_e1(path: Path = E1_PATH) -> list[Conversation]:
     lines = path.read_text(encoding="utf-8").splitlines()
     return [Conversation.model_validate_json(line) for line in lines if line.strip()]
@@ -397,6 +664,16 @@ def load_e1(path: Path = E1_PATH) -> list[Conversation]:
 def load_queries(path: Path = RETRIEVAL_PATH) -> list[RetrievalQuery]:
     lines = path.read_text(encoding="utf-8").splitlines()
     return [RetrievalQuery.model_validate_json(line) for line in lines if line.strip()]
+
+
+def load_e3(path: Path = E3_PATH) -> list[Burst]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [Burst.model_validate_json(line) for line in lines if line.strip()]
+
+
+def load_monitor_cases(path: Path = E3_MONITORS_PATH) -> list[MonitorCase]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [MonitorCase.model_validate_json(line) for line in lines if line.strip()]
 
 
 # ------------------------------------------------------------------------ E2 drafts
@@ -720,11 +997,18 @@ __all__ = [
     "E1_PATH",
     "E2_PATH",
     "E2_TAGS",
+    "E3_MONITORS_PATH",
+    "E3_PATH",
     "INTENTS",
     "MUST_NOT_KINDS",
     "RETRIEVAL_PATH",
     "TAGS",
     "VARIANTS",
+    "Burst",
+    "BurstCommitment",
+    "BurstLabels",
+    "BurstMessage",
+    "BurstQuestion",
     "Commitment",
     "Conversation",
     "CoverageGap",
@@ -740,10 +1024,14 @@ __all__ = [
     "KeyFact",
     "Labels",
     "Message",
+    "MonitorCase",
+    "MonitorLabels",
+    "MonitorUnderTest",
     "MustInclude",
     "MustNot",
     "MustNotKind",
     "MustNotState",
+    "OpenTask",
     "OwnerPrefs",
     "Participant",
     "PromptInjection",
@@ -756,6 +1044,8 @@ __all__ = [
     "fold",
     "load_e1",
     "load_e2",
+    "load_e3",
+    "load_monitor_cases",
     "load_queries",
     "script_of",
 ]

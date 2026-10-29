@@ -322,8 +322,15 @@ async def test_an_undelivered_alert_is_tried_again(
 
     assert (first.sent, second.sent) == (False, True)
     async with factory() as session:
-        entries = (await session.execute(select(AuditLogEntry))).scalars().all()
-    assert [entry.details["delivered"] for entry in entries] == [False, True]
+        entries = (
+            (await session.execute(select(AuditLogEntry).order_by(AuditLogEntry.id)))
+            .scalars()
+            .all()
+        )
+    # CP4 (#132): each attempt is a claim row, then a resolution row; only
+    # the resolution (`system_alert`) records whether it was delivered.
+    resolutions = [entry for entry in entries if entry.event == "system_alert"]
+    assert [entry.details["delivered"] for entry in resolutions] == [False, True]
     assert all("synthetic" not in str(entry.details) for entry in entries)
 
 

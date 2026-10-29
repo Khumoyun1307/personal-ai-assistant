@@ -147,6 +147,11 @@ def keyboard_labels(markup: Any) -> list[str]:
     return [b.text for row in markup.inline_keyboard for b in row]
 
 
+def keyboard_rows(markup: Any) -> list[list[str]]:
+    """The keyboard's labels row by row: the full layout, not an offset."""
+    return [[b.text for b in row] for row in markup.inline_keyboard]
+
+
 async def open_panel(env: Env, chat_id: int = CONTACT) -> None:
     await deliver(env, private_message(OWNER, f"/start bizChat{chat_id}"))
 
@@ -169,12 +174,18 @@ async def test_the_panel_switches_to_ignore_only_after_a_confirmation(env: Env) 
         "ignore",
         "assist",  # S04.2
         "delete",
-    ]  # S03.5 adds Delete
+        "p_vip",
+        "p_normal",
+        "p_low",
+    ]  # S03.5 adds Delete, S05.2P the contact's priority
     assert keyboard_labels(panel_send["reply_markup"]) == [
         "Observe ✓",
         "Ignore",
         "Assist",
         "Delete stored data…",
+        "VIP",
+        "Normal ✓",
+        "Low",
     ]
 
     await tap(env, panels.PANEL_CARD, "ignore")
@@ -195,6 +206,9 @@ async def test_the_panel_switches_to_ignore_only_after_a_confirmation(env: Env) 
         "Ignore ✓",
         "Assist",
         "Delete stored data…",
+        "VIP",
+        "Normal ✓",
+        "Low",
     ]
 
     # Observe applies at once from the panel.
@@ -670,7 +684,15 @@ async def test_settings_lists_chats_by_mode_page_by_page_and_opens_a_panel(env: 
     await tap(env, panels.LIST_CARD, f"o_{target}")
     panel = env.sender.sends[-1]
     assert panel["text"].startswith("<b>Synth0</b>")
-    assert keyboard_ops(panel["reply_markup"]) == ["observe", "ignore", "assist", "delete"]
+    assert keyboard_ops(panel["reply_markup"]) == [
+        "observe",
+        "ignore",
+        "assist",
+        "delete",
+        "p_vip",
+        "p_normal",
+        "p_low",
+    ]
 
 
 async def test_a_list_cannot_open_another_accounts_chat(env: Env) -> None:
@@ -707,11 +729,12 @@ async def test_assist_is_settable_by_tool_and_panel_and_undoable(env: Env) -> No
     assert "<b>Assist is on</b> for the chat with Kamola." in shown["text"]
     assert "Nothing is sent without your approval." in shown["text"]
     assert panels.ASSIST_PANEL_LINE in shown["text"]
-    assert keyboard_labels(shown["reply_markup"]) == [
-        "Observe",
-        "Ignore",
-        "Assist ✓",
-        "Delete stored data…",
+    # The full combined layout: M04's Assist in the mode row, Delete on its
+    # own row, then M05's contact-priority row (CP4).
+    assert keyboard_rows(shown["reply_markup"]) == [
+        ["Observe", "Ignore", "Assist ✓"],
+        ["Delete stored data…"],
+        ["VIP", "Normal ✓", "Low"],
     ]
     assert env.sender.answered_callbacks[-1]["text"] == "Assist is on"
     await tap(env, panels.PANEL_CARD, "assist")

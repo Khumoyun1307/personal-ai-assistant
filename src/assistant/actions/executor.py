@@ -53,7 +53,7 @@ from assistant.core.clock import Clock
 from assistant.core.delivery import ErrorClass, SendResult
 from assistant.core.jobs import EXECUTE_TASK, JobScheduler
 from assistant.db.uow import transaction
-from assistant.inbox.notify import EVENT_ALERT, AlertKind, OwnerAlerts
+from assistant.inbox.notify import EVENT_ALERT, EVENT_ALERT_CLAIMED, AlertKind, OwnerAlerts
 from assistant.memory.search import detect_script, guess_lang, normalize
 from assistant.memory.summaries import contact_display_name
 from assistant.observability.logging import get_logger
@@ -649,8 +649,10 @@ class ActionExecutor:
     async def _try_alert_uncertain(self, item: _Uncertain) -> None:
         """The outcome is committed; an alert that fails here (a database
         blip, a channel error) must not fail the run — a retried job would
-        only find the action settled and never say it. `mark_uncertain`
-        alerts it later: no alert is on record for it (Viro on #107)."""
+        only find the action settled and never say it. If it failed before
+        its claim committed, `mark_uncertain` alerts it later: no alert is
+        on record for it (Viro on #107). Past the claim it may be on screen
+        and is never replayed (TL ruling on #134)."""
         try:
             await self._alert_uncertain(item)
         except Exception as error:
@@ -776,10 +778,13 @@ async def unalerted_uncertain(session: AsyncSession, *, older_than: datetime) ->
     not): their alert was lost after the outcome committed. The grace
     (`older_than`) keeps the sweep from racing a run still alerting; the
     alert's dedupe key keeps a repeat harmless. One attempt each: an alert
-    on record, even an undelivered one, ends it."""
+    on record, even an undelivered one, ends it. A committed claim counts
+    too, resolved or not: past it the alert may be on screen and is never
+    replayed (CP4 ICR #132), so selecting the action again would only
+    re-lock and re-log it on every sweep (TL ruling on #134)."""
     alert_on_record = exists().where(
         AuditLogEntry.account_id == Action.account_id,
-        AuditLogEntry.event == EVENT_ALERT,
+        AuditLogEntry.event.in_((EVENT_ALERT, EVENT_ALERT_CLAIMED)),
         AuditLogEntry.details["key"].astext
         == func.concat(UNCERTAIN_ALERT_KEY.format(action_id=""), Action.id),
     )

@@ -87,6 +87,113 @@ transliterated-Russian queries. A query is a hit when any of its
 `answer_values` and gives a reference to the contact and date (threshold
 ≥ 80 %).
 
+## E3: triage (`datasets/e3/bursts.jsonl`, M05; P2 spec E3)
+
+150 synthetic bursts (E3D, Junior; provenance and counts in
+`datasets/e3/README.md`). Each is one chat at a moment `now`: its history, the
+open tasks triage already knows, a burst of new messages, and the labels a
+careful human gives the burst (`Burst` in `evals/schema.py`, which checks every
+§A layout rule at load: ids, citations, sides, chronology, the `alert` rule,
+every open task in exactly one of `resolved_tasks`/`unresolved_tasks`, `values`
+as literal substrings). `monitor_cases.jsonl` (30 cases, `MonitorCase`) is for
+the `evaluate_monitor` target and its model comparison (below).
+
+**The triage target** (`evals/triage.py`, `python -m evals run triage`) runs the
+product's `Triager` exactly as shipped (active `triage` prompt, `TriageResult`
+schema, sanitizing and validation, the route's model or `--model`, the
+`LLM_TRIAGE_EFFORT` setting) and the product's effects store
+(`TriageRepository`), per burst under its own throwaway account in a throwaway
+database: consents naming the model's processor, the burst's owner language and
+timezone, the contact's priority, the chat in Observe, the history and the burst
+stored as ingestion stores them, the open tasks as agent tasks, and a
+`conversation_triage` row covering the history, so the burst is exactly what is
+new. The clock is fixed at `now`. The verdict row, the tasks created, updated and
+closed, and the notifications enqueued are read back (nothing is delivered), then
+the account is deleted.
+
+| Metric | Definition | Threshold |
+|---|---|---|
+| Urgent/decision recall | `alert: true` bursts whose run enqueued `triage_urgent` or `triage_decision` | ≥ 90 % |
+| False-alert rate | of the bursts that got one of those alerts, the share labelled `alert: false` | ≤ 20 % |
+| False-closure rate | `unresolved_tasks` the run closed | ≤ 10 % |
+| Resolution recall | `resolved_tasks` the run closed | ≥ 80 % |
+| Informational | negatives alerted; `needs_reply` agreement; commitment recall by side (a commitment task of that side citing the labelled message) and the share carrying its `values`; suspicious recall; reasons and task titles in the owner's language and script (P2-O11) | — |
+
+The gate counts only owner-confirmed bursts (ledger `evals/reviews/e3.json`,
+`confirmed_items` = burst ids; a task id `b004.t1` is confirmed with its burst)
+and needs every item of a metric's set; the false-alert rate also waits for every
+burst of the set. A refused, invalid or truncated answer stores nothing and is a
+miss. A provider outage (`llm_unavailable`, `llm_rate_limited`: 503, 429,
+connection) is run again from a fresh account after 15 s and 60 s, as in the
+agent mode (at most 3 attempts, each billed); a burst that never gets through is
+*not evaluated* and the run is incomplete. An owner-only burst with no open task
+gets no model call, as in the product.
+
+**Model comparison** (mandatory for `triage`, IMPLEMENTATION_PLAN §7, WORKFLOW
+§11): Luna first (`--estimate-only`, `--limit 1`, full); if it misses any
+threshold on the pre-screen, the next tier with `--model`, and the tier after
+that only if that one misses too. `python -m evals compare <the route model's
+full run> <the next tiers' full runs, in the order tried>` prints the decision
+("route stays on …" or "propose `LLM_ROUTE_TRIAGE_MODEL=…`", applied on the
+server only with the owner's approval) with each tier's cost per 100 bursts and
+its refusal count (bursts the product recorded as `refused`: a refusal or the
+provider's content filter; P2-T51). A refused burst alerts and closes nothing,
+so it reads right wherever nothing was needed: the count shows a model whose
+quality leans on refusing. It informs the decision; it is not a threshold.
+The route's current model comes from the configuration (`LLM_ROUTE_TRIAGE_MODEL`,
+else `LLM_DEFAULT_MODEL`) or `--route-model` (name the server's when this
+machine's settings differ), never from the argument order: the first report
+must be that model's run. Runs that differ in their E3 files (`e3/` digests;
+other datasets do not matter), prompt versions or effort are not compared.
+Live runs are started by Antony or the TL with the owner's go-ahead (P2-O8
+phase cap USD 2).
+
+**The `evaluate_monitor` target** (`evals/monitors.py`, `python -m evals run
+monitors`; E3T part 2, P2-T43) runs the product's `MonitorEvaluator` exactly as
+shipped (active `evaluate_monitor` prompt, `MonitorVerdicts` schema, no tools,
+the deterministic validation, the route's model or `--model`, the
+`LLM_EVALUATE_MONITOR_EFFORT` setting) and its effects (a match is recorded and
+enqueues one `monitor_match` notification), per case under its own throwaway
+account in a throwaway database: consents naming the model's processor, the
+owner language of the case's variant (a mixed chat's owner writes Russian
+descriptions in v1, so `ru`) and the E3 timezone, the chat in Observe, the burst
+stored as ingestion stores it (received when sent) with the chat's monitor flag
+raised at its first contact message, and the case's monitors as the owner's
+confirmed semantic monitors of that chat (`automation.monitors.create`,
+confirmed an hour before the burst). The clock is a minute after the newest
+message. One call per case evaluates all its monitors (the product's one call
+per burst). The `monitor_match` notifications are read back (nothing is
+delivered), then the account is deleted.
+
+| Metric (per monitor, item `<case>.<monitor id>`) | Definition | Bar for the model choice |
+|---|---|---|
+| Accuracy | the monitor fired exactly when labelled matching | ≥ 90 % |
+| False-match rate | of the monitors that fired, the share labelled not matching | ≤ 10 % |
+| Informational | match recall; negatives matched (labelled not matching that fired); per variant | — |
+
+The two thresholds are the bar for the model choice (TL decision, spec E3 §B:
+informational), compared on the pre-screen, not an owner-confirmed release gate:
+the report shows them with gate `info` (owner-confirmed cases, ledger
+`evals/reviews/e3.json` with case ids, are counted for information). Failures
+are handled as for triage: a refused, invalid or truncated answer fires nothing
+(a miss wherever a match was needed); an outage is retried (at most 3 attempts)
+and otherwise *not evaluated*; a budget stop ends the run early. A case with no
+contact message gets no model call, as in the product.
+
+**Model comparison for `evaluate_monitor`** follows the same procedure on
+`monitor_cases.jsonl`: `python -m evals compare <the route model's full monitors
+run> <the next tiers' full runs, in the order tried>` prints the decision
+("route stays on …" or "propose `LLM_ROUTE_EVALUATE_MONITOR_MODEL=…`") with each
+tier's cost per 100 cases and its refusal count (P2-T51): a refused case fires
+nothing, so it reads right for every monitor labelled not matching, and the
+count keeps a model that refuses a lot from looking accurate on the negatives.
+The route's current model comes from
+`LLM_ROUTE_EVALUATE_MONITOR_MODEL` (else `LLM_DEFAULT_MODEL`) or `--route-model`;
+only the monitor cases' digest must agree between the runs (a change to
+`bursts.jsonl` does not matter here), with the same prompt and effort. A triage
+run and a monitor run are two routes: `compare` lists them side by side but
+decides nothing.
+
 ## E2: draft situations (`datasets/e2/situations.jsonl`)
 
 One reply situation per line (`E2Situation` in `evals/schema.py`; format in
@@ -207,10 +314,15 @@ python -m evals run retrieval --mode agent --live --calibrate-from docs/evals/<a
 python -m evals run summary --estimate-only             # worst-case cost of the summary run, calls nothing
 python -m evals run summary --live                      # REAL model; owner's go-ahead + cost approval
 python -m evals run summary --live --owner-language ru  # summaries in another owner language (default uz-Latn)
+python -m evals run triage --estimate-only              # worst-case cost of the E3 triage run, calls nothing
+python -m evals run triage --live [--model ID]          # REAL model; owner's go-ahead + cost approval
+python -m evals run monitors --estimate-only            # worst-case cost of the E3 monitor run, calls nothing
+python -m evals run monitors --live [--model ID]        # REAL model; owner's go-ahead + cost approval
 python -m evals run drafts --estimate-only              # worst-case cost of the E2 drafts run, calls nothing
 python -m evals run drafts --live                       # REAL model; owner's go-ahead + cost approval
 python -m evals review drafts --from docs/evals/<run>.json --export sheet.md   # owner's rating sheet
 python -m evals compare docs/evals/<run>.json …         # quality and cost per 100 items per run
+python -m evals compare <luna>.json <sol>.json [--route-model ID]  # triage or monitors: also the model choice
 python -m evals cleanup [--yes]                         # list/drop throwaway databases a killed run left
 ```
 
@@ -225,7 +337,7 @@ flags: `--limit N` (N >= 1: a **trial** run, named `…-trial`, never a gate),
 `--price MODEL=IN:OUT` (positive USD per 1M tokens, for a model the product's price
 table lacks; refused for a model it already prices), `--budget-usd` (default 1),
 `--owner-language uz-Latn|uz-Cyrl|ru|en` (summary, drafts and retrieval `--mode agent`,
-default `uz-Latn`), `--only ID,ID` (summary and drafts: a trial of the named items), `--calibrate-from TRIAL.json` (retrieval `--mode agent` only, E-ab).
+default `uz-Latn`), `--only ID,ID` (summary, drafts, triage and monitors: a trial of the named items), `--calibrate-from TRIAL.json` (retrieval `--mode agent` only, E-ab).
 Exit codes: 0 done (a deliberate trial included), 2 refused or misconfigured, 4 the
 run **stopped before its planned items** (budget cap; its report is still written). A run that fails midway writes a content-free
 `…-aborted.json` with what it spent. A run drops its throwaway database when it ends, fails

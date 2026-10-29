@@ -90,6 +90,10 @@ class ToolServices:
     approval_cards: ApprovalCardPresenter | None = None
     actions_config: ActionsConfig | None = None
     notifications_enabled: bool = False
+    #: The run's enabled feature flags, for a tool that must mirror another
+    #: tool's release flag (ICR-2: attention v2 offers `draft_reply` only
+    #: with `tool.propose_reply` on). Empty by default, so it fails closed.
+    enabled_flags: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +348,8 @@ def default_registry() -> ToolRegistry:
     )
     from assistant.agent.tools.memory import FORGET, LIST_MEMORIES, REMEMBER
     from assistant.agent.tools.modes import SET_CONVERSATION_MODE, UPDATE_PREFERENCES
+    from assistant.agent.tools.monitors import CREATE_MONITOR, LIST_MONITORS, STOP_MONITOR
+    from assistant.agent.tools.priority import SET_CONTACT_PRIORITY
     from assistant.agent.tools.replies import PROPOSE_MESSAGE, PROPOSE_REPLY
     from assistant.agent.tools.search import SEARCH_MESSAGES
     from assistant.agent.tools.status import GET_STATUS
@@ -367,6 +373,10 @@ def default_registry() -> ToolRegistry:
             DELETE_CONVERSATION_DATA,
             DELETE_CONTACT_DATA,
             DELETE_EVERYTHING,
+            SET_CONTACT_PRIORITY,
+            CREATE_MONITOR,
+            LIST_MONITORS,
+            STOP_MONITOR,
             PROPOSE_REPLY,
             PROPOSE_MESSAGE,
             PAUSE_AUTONOMY,

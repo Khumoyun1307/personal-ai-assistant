@@ -18,6 +18,9 @@
 #   deploy/server.sh nfr04 [DAYS]    NFR-04: p50/p95 answer times of owner
 #                                    requests per class, last DAYS (30) days
 #                                    (deploy/sql/nfr04.sql; timings only)
+#   deploy/server.sh nfr05 [DAYS]    NFR-05: triage and urgent-alert latencies,
+#                                    share of alerts marked not useful, last
+#                                    DAYS (1) days (deploy/sql/nfr05.sql)
 #   deploy/server.sh verify-r0 ARGS  tools/acceptance/verify_r0.py in a one-off
 #                                    app container (prints numbers/states only)
 #   deploy/server.sh p2-verify ARGS  P2 read-only views (ids/states/times only)
@@ -213,6 +216,20 @@ case "$action" in
     compose exec -T db sh -c \
       'export PGOPTIONS="-c default_transaction_read_only=on"; exec psql -X -q -v ON_ERROR_STOP=1 -v days="$1" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -' \
       sh "$days" < deploy/sql/nfr04.sql
+    ;;
+  nfr05)
+    require_data_volume
+    # NFR-05 (M05 acceptance, S05.2 §3.9): triage completion and urgent-alert
+    # delivery latencies, and the share of immediate alerts marked not useful.
+    # The query reads timestamps, ids, run types, kinds, statuses and feedback
+    # codes only, never a content column, in a read-only transaction; DAYS
+    # reaches it as a psql variable after this check, never spliced into the SQL.
+    days="${1:-1}"
+    [[ "$days" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "usage: nfr05 [days, 1-9999; default 1]" >&2; exit 2; }
+    # shellcheck disable=SC2016  # expanded inside the db container
+    compose exec -T db sh -c \
+      'export PGOPTIONS="-c default_transaction_read_only=on"; exec psql -X -q -v ON_ERROR_STOP=1 -v days="$1" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -' \
+      sh "$days" < deploy/sql/nfr05.sql
     ;;
   app-stop)
     compose stop app

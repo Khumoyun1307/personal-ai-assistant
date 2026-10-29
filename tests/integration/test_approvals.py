@@ -662,10 +662,12 @@ async def test_concurrent_and_stale_presenters_cannot_send_another_card(s: Scena
     before = len(s.env.sender.sends)
 
     async def no_lock_across_telegram() -> None:
-        async with s.env.factory() as session:
-            await session.execute(
-                select(Action.id).where(Action.id == row.id).with_for_update(nowait=True)
-            )
+        # Waits out the other presenter's short claim transaction, but still
+        # fails (lock_not_available) if the sending presenter holds the row
+        # across this call, since the probe runs inside that send.
+        async with s.env.factory() as session, session.begin():
+            await session.execute(text("SET LOCAL lock_timeout = '2s'"))
+            await session.execute(select(Action.id).where(Action.id == row.id).with_for_update())
 
     s.env.sender.on_call = no_lock_across_telegram
     results = await asyncio.gather(one._send_new(view), two._send_new(view))

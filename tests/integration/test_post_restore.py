@@ -8,11 +8,13 @@ the owner must be told on the next start.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import select, text
 
 from assistant.accounts.models import Account, AuditLogEntry
+from assistant.automation.models import Automation, AutomationOccurrence
 from assistant.conversations.models import CoverageGap
 from assistant.db.models import KEY_RESTORE_PENDING, SystemState
 from assistant.db.uow import transaction
@@ -26,6 +28,7 @@ from assistant.privacy.post_restore import (
 )
 from tests.fakes.channel import FakeChannel
 from tests.integration.business_env import OWNER, Env, connect, deliver, private_message
+from tests.integration.p2_factories import seed_account, seed_automation
 
 pytestmark = pytest.mark.integration
 
@@ -167,6 +170,113 @@ async def test_the_restore_notice_is_delivered_once_on_the_next_run(env: Env) ->
     # /status shows the possible gap.
     await deliver(env, private_message(OWNER, "/status"))
     assert "Latest gap (possible)" in env.sender.texts[-1]
+
+
+async def test_post_restore_skips_past_occurrences_with_a_note_and_reschedules(env: Env) -> None:
+    """Step 4 (S05.3b §3.7): nothing from a rewound backup fires by itself.
+    Missed occurrences of active schedules are recorded `skipped_restore`
+    (at most ten per automation) and the next run is computed from now; a
+    `claimed` occurrence, whose job the restore dropped, is skipped too.
+    Paused automations and event-only monitors are untouched. The owner's
+    notice says how many (counts only)."""
+    now = env.clock.now()  # 2026-10-18 12:00 UTC
+    nine = now.replace(hour=9, minute=0)
+    tomorrow = nine + timedelta(days=1)
+    daily: dict[str, Any] = {
+        "kind": "reminder",
+        "spec": {
+            "schema_version": 1,
+            "max_lateness_minutes": 60,
+            "dtstart_local": "2026-09-01T09:00",
+        },
+        "rrule": "FREQ=DAILY",
+        "timezone": "UTC",
+    }
+    async with env.factory() as session, session.begin():
+        account = await seed_account(session)
+        account_id = account.id
+        behind = await seed_automation(
+            session, account_id=account_id, next_run_at=nine - timedelta(days=3), **daily
+        )
+        far_behind = await seed_automation(
+            session, account_id=account_id, next_run_at=nine - timedelta(days=15), **daily
+        )
+        running = await seed_automation(
+            session, account_id=account_id, next_run_at=tomorrow, **daily
+        )
+        session.add(
+            AutomationOccurrence(
+                account_id=account_id,
+                automation_id=running.id,
+                occurrence_at=nine,
+                status="claimed",
+                created_at=nine,
+            )
+        )
+        paused = await seed_automation(
+            session,
+            account_id=account_id,
+            status="paused",
+            next_run_at=nine - timedelta(days=2),
+            **daily,
+        )
+        monitor = await seed_automation(
+            session, account_id=account_id, next_run_at=nine - timedelta(days=1)
+        )
+        ids = (behind.id, far_behind.id, running.id, paused.id, monitor.id)
+
+    report = await post_restore(env.factory, env.clock, backup_taken_at=now - timedelta(hours=5))
+
+    async with env.factory() as session:
+        automations = {
+            row.id: row
+            for row in await session.scalars(
+                select(Automation).where(Automation.account_id == account_id)
+            )
+        }
+        ledger = list(
+            await session.scalars(
+                select(AutomationOccurrence).order_by(
+                    AutomationOccurrence.automation_id, AutomationOccurrence.occurrence_at
+                )
+            )
+        )
+        notice = await session.get(SystemState, KEY_RESTORE_NOTICE)
+    rows = {
+        automation_id: [
+            (o.occurrence_at, o.status, o.note_code)
+            for o in ledger
+            if o.automation_id == automation_id
+        ]
+        for automation_id in ids
+    }
+    behind_id, far_id, running_id, paused_id, monitor_id = ids
+    # Three missed days and this morning's 09:00, each with the note.
+    assert rows[behind_id] == [
+        (nine - timedelta(days=days), "skipped", "skipped_restore") for days in (3, 2, 1, 0)
+    ]
+    # Fifteen days behind: ten rows, then the jump.
+    assert len(rows[far_id]) == 10
+    assert rows[far_id][0][0] == nine - timedelta(days=15)
+    assert {(status, note) for _, status, note in rows[far_id]} == {("skipped", "skipped_restore")}
+    assert rows[running_id] == [(nine, "skipped", "skipped_restore")]
+    assert rows[paused_id] == rows[monitor_id] == []
+    for automation_id in (behind_id, far_id, running_id):
+        assert automations[automation_id].next_run_at == tomorrow
+        assert automations[automation_id].status == "active"
+    assert automations[paused_id].next_run_at == nine - timedelta(days=2)
+    assert (automations[monitor_id].status, automations[monitor_id].next_run_at) == (
+        "active",
+        nine - timedelta(days=1),
+    )
+    assert report.schedules_skipped == 15
+    assert notice is not None
+    assert notice.value["schedules_skipped"] == {str(account_id): 15}
+
+    channel = FakeChannel()
+    assert await deliver_restore_notice(env.factory, OwnerAlerts(env.factory, channel, env.clock))
+    [sent] = channel.sends
+    assert "15 scheduled items were skipped because of the restore." in sent
 
 
 async def test_post_restore_rejects_a_future_timestamp(env: Env) -> None:

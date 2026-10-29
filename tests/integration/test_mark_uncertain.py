@@ -17,13 +17,15 @@ from sqlalchemy.exc import OperationalError
 
 from assistant.accounts import connections
 from assistant.accounts.models import AuditLogEntry, BusinessConnection
-from assistant.actions.executor import ExecuteStatus, uncertain_after
+from assistant.actions.executor import ExecuteStatus, unalerted_uncertain, uncertain_after
 from assistant.actions.models import Action
 from assistant.actions.states import ActionState
 from assistant.bootstrap import _PhaseWiring, _wire_m04
 from assistant.config import Settings
 from assistant.core.channel import Delivery
+from assistant.inbox import system_notifications
 from assistant.inbox.notify import ALERT_TEXT, AlertKind
+from assistant.inbox.system_notifications import SystemAlertClaim
 from assistant.telegram.gateway import MAX_THROTTLE_WAIT_SECONDS, REQUEST_TIMEOUT_SECONDS
 from tests.fakes.sender import network_error
 from tests.integration.actions_env import Chat
@@ -179,9 +181,51 @@ async def test_an_uncertain_alert_lost_after_tx_b_is_sent_by_a_later_sweep(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Viro on #107: Tx B committed `delivery_uncertain`, then the alert
-    raised (a database blip, a channel error) before its audit row was
-    written. The run still ends normally — nothing is retried or resent —
-    and a later `mark_uncertain` tells the owner, once (invariant 11)."""
+    raised (a database blip) before its claim committed — the claim
+    transaction itself failed, so nothing was sent and nothing is on record.
+    The run still ends normally — nothing is retried or resent — and a
+    later `mark_uncertain` tells the owner, once (invariant 11). An alert
+    interrupted *after* its claim committed is the next test (TL ruling on
+    #134)."""
+    h = harness(env)
+    chat = await seed(env)
+    await caught_up(env)
+    action_id = await approved(env, chat, text="Synthetic approved reply")
+    h.sender.plain_script = [network_error()]
+
+    def failing_claim(*_: Any) -> SystemAlertClaim:
+        # Raised inside the claim transaction, after its rows were flushed:
+        # the transaction rolls back and the claim never commits.
+        raise OperationalError("synthetic", {}, Exception("synthetic"))
+
+    monkeypatch.setattr(system_notifications, "SystemAlertClaim", failing_claim)
+    outcome = await h.execute(action_id)
+    monkeypatch.undo()  # the database works again
+
+    assert outcome.status is ExecuteStatus.UNCERTAIN
+    assert (await action(env, action_id)).state == "delivery_uncertain"
+    assert await alert_audits(env) == []  # the failed claim left nothing
+    await h.executor.mark_uncertain()
+    assert h.channel.sends == []  # too soon: the run may still be alerting
+
+    env.clock.advance(seconds=h.config.mark_uncertain_after.total_seconds() + 1)
+    await h.executor.mark_uncertain()
+    await h.executor.mark_uncertain()
+
+    assert len(h.channel.sends) == 1
+    assert h.channel.sends[0].startswith("⚠️ I'm not sure a reply reached")
+    assert await alert_audits(env) == ["system_alert_claimed", "system_alert"]
+    assert (await h.execute(action_id)).status is ExecuteStatus.SETTLED
+    assert len(h.sender.plain_sends) == 1  # never resent
+
+
+async def test_an_alert_interrupted_after_its_claim_is_never_replayed(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TL ruling on #134 (P2-T24, ICR #132): the alert's claim committed,
+    then the channel call raised. The alert may be on screen, so no sweep
+    replays it, and the sweep stops selecting the action: the committed
+    claim counts as an alert on record. The reply is never resent."""
     h = harness(env)
     chat = await seed(env)
     await caught_up(env)
@@ -196,18 +240,35 @@ async def test_an_uncertain_alert_lost_after_tx_b_is_sent_by_a_later_sweep(
     monkeypatch.undo()  # the channel works again
 
     assert outcome.status is ExecuteStatus.UNCERTAIN
-    assert (await action(env, action_id)).state == "delivery_uncertain"
-    await h.executor.mark_uncertain()
-    assert h.channel.sends == []  # too soon: the run may still be alerting
+    assert await alert_audits(env) == ["system_alert_claimed"]
 
     env.clock.advance(seconds=h.config.mark_uncertain_after.total_seconds() + 1)
-    await h.executor.mark_uncertain()
-    await h.executor.mark_uncertain()
+    async with env.factory() as session:
+        assert await unalerted_uncertain(session, older_than=env.clock.now()) == []
+    for _ in range(3):
+        await h.executor.mark_uncertain()
+        env.clock.advance(minutes=10)
 
-    assert len(h.channel.sends) == 1
-    assert h.channel.sends[0].startswith("⚠️ I'm not sure a reply reached")
+    assert h.channel.sends == []
+    assert await alert_audits(env) == ["system_alert_claimed"]  # unresolved, no new claim
+    assert (await action(env, action_id)).state == "delivery_uncertain"
     assert (await h.execute(action_id)).status is ExecuteStatus.SETTLED
     assert len(h.sender.plain_sends) == 1  # never resent
+
+
+async def alert_audits(env: Env) -> list[str]:
+    """The system-alert claim and resolution events, in order."""
+    events = (system_notifications.EVENT_CLAIMED, system_notifications.EVENT_RESOLVED)
+    async with env.factory() as session:
+        return list(
+            (
+                await session.scalars(
+                    select(AuditLogEntry.event)
+                    .where(AuditLogEntry.event.in_(events))
+                    .order_by(AuditLogEntry.id)
+                )
+            ).all()
+        )
 
 
 async def test_the_lost_alert_sweep_leaves_alerted_and_restored_rows_alone(env: Env) -> None:
