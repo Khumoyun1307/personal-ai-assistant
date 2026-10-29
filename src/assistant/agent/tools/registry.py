@@ -393,9 +393,30 @@ def strict_schema(model: type[BaseModel]) -> dict[str, Any]:
     """
     schema = model.model_json_schema()
     _make_strict(schema)
-    for definition in schema.get("$defs", {}).values():
+    definitions = schema.get("$defs", {})
+    for definition in definitions.values():
         _make_strict(definition)
+    _bare_refs(schema, definitions)
     return schema
+
+
+def _bare_refs(node: Any, definitions: dict[str, Any]) -> None:
+    """Strict mode rejects a `$ref` with sibling keywords (400
+    `invalid_function_parameters`), which Pydantic emits for a described
+    nested model; the description moves to the definition when it has none."""
+    if isinstance(node, list):
+        for item in node:
+            _bare_refs(item, definitions)
+        return
+    if not isinstance(node, dict):
+        return
+    if "$ref" in node:
+        siblings = {key: node.pop(key) for key in list(node) if key != "$ref"}
+        target = definitions.get(node["$ref"].rsplit("/", 1)[-1])
+        if target is not None and "description" in siblings:
+            target.setdefault("description", siblings["description"])
+    for value in node.values():
+        _bare_refs(value, definitions)
 
 
 def _make_strict(node: dict[str, Any]) -> None:
