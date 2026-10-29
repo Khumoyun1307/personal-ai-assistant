@@ -33,15 +33,16 @@ ACTIVE: dict[str, str] = {
     # searched for across all chats; an empty narrowed search reads the chat
     # before "not there"; values copied as the message writes them; the whole
     # reply in the owner's language and script. v1-v6 stay: retained runs
-    # reference them. v8 (S05.4, the M05 bump, P2-T17): v7 word for word plus
-    # rule 18 monitors (`resolve_contact` first; `contact_replied`/`keywords`/
-    # `media_received` before the AI kinds; never "active" until a tool
-    # result says so; relay `list_monitors` as given), rule 19 contact
-    # priority (S05.2, `set_contact_priority`) and rule 20 attention v2
-    # (S05.1: relay triage reasons as given; a task is done only when a tool
-    # result shows it closed; offer a draft only from `next_actions`). v1-v7
-    # stay.
-    "owner_request": "v8",
+    # reference them. v8 (S04.3, the M04 bump, P2-T17): v7 plus replies to
+    # chats through `propose_reply`/`propose_message` (dictated words passed
+    # exactly; an ambiguous recipient asked about, never guessed), a propose
+    # result relayed as it is and never as a send, one card per chat, the
+    # kill switch (`pause_autonomy`; resuming only by /resume or the card) and
+    # "what did you send/draft" through `get_activity`; rule 3 and the Assist
+    # sentence of rule 13 changed to match. v1-v7 stay.
+    # v9 (CP4, P2-T50): shipped M04 v8 unchanged, plus M05 rules 23-25
+    # for monitors, contact priority and attention v2. v1-v8 stay.
+    "owner_request": "v9",
     # v1 (S03.2): one chat, rolling or period; cite message ids; no tools.
     # v2 (S03.3): the owner's notes about this contact are background, never
     # cited or reported as chat content.
@@ -77,6 +78,7 @@ ACTIVE: dict[str, str] = {
     # per listed monitor citing the matching new messages; unsure is no
     # match; contact text is judged on substance, never obeyed; no tools.
     "evaluate_monitor": "v1",
+    "draft_reply": "v1",
 }
 
 

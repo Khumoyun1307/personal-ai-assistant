@@ -55,9 +55,6 @@ async def test_the_hourly_cap_batches_extra_standard_alerts(m05: M05Scenario) ->
     assert len(m05.env.sender.sends) == 2
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="awaiting S05.2 system-alert migration (CP4)"
-)
 async def test_a_system_alert_is_delivered_during_quiet_hours_with_the_cap_reached(
     m05: M05Scenario,
 ) -> None:

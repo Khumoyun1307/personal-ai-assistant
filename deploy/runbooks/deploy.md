@@ -55,6 +55,26 @@ Rules:
   PRD R2 #7), each with a count and a verdict. It reads
   `deploy/sql/nfr05.sql` in a read-only transaction: timestamps, ids, run
   types, kinds, statuses and feedback codes only, never a content column.
+
+- **P2 verification and daily trial audit.** `just prod <ip> p2-verify release` reports the
+  schema, flag names and action counts. Other modes are `actions --since
+  <ISO timestamp with timezone>`, `action <id>`, `script P2-4 --expect 401-409`,
+  `notifications`, `tasks` and `digests` (the last two and notifications also
+  accept `--since`). The one-off container mounts the verifier read-only;
+  one read-only transaction returns ids, states, counts and times. SQL extracts
+  script numbers without returning message text. `just prod <ip> trial-check
+  --since <trial start with timezone> [--until <end with timezone>]` checks
+  approval-before-claim, matching text hashes, one possible delivery per
+  action, no send after a terminal denial, matching recipients and orphan
+  sends. The interval includes `since` and excludes `until`; it defaults to
+  the Unix epoch through the current UTC time. Definite rate-limited
+  non-delivery may be claimed again; uncertain delivery is never retried.
+  Each trial day, record the RESULT line and counts in the M04 trial log;
+  the owner checks `/activity` and the listed uncertain chats. Any incorrect
+  send stops the trial. Exit 0 is clean, 1 reports violations, and 2 rejects
+  bad arguments. See [the verifier record](../../docs/engineering/p2/qa/p2-verifier.md)
+  for checks and evidence limits. Run only in the planned owner-approved
+  server window; the CP3 dry-run and seven trial days remain separate checks.
 - A `backup_upload_stale` alert means dumps are produced but no longer reach
   B2: run `just prod-backup <ip>` and read its log lines (`off-site sync of
   … failed` / `… refused`); see `restore.md` §C for the delete guard —

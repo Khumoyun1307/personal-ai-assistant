@@ -273,6 +273,8 @@ def test_manifest_matches_the_dataset_files() -> None:
         "retrieval/queries.jsonl",
         "e3/bursts.jsonl",
         "e3/monitor_cases.jsonl",
+        "e2/situations.jsonl",
+        "e4/cases.jsonl",
     }
 
 

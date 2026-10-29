@@ -53,6 +53,7 @@ from tests.integration.test_conversation_modes import (
     conversation_row,
     keyboard_labels,
     keyboard_ops,
+    keyboard_rows,
     open_panel,
 )
 
@@ -394,21 +395,16 @@ async def test_a_stale_or_foreign_alerts_card_answers_no_longer_active(env: Env)
 async def test_the_panel_shows_the_contacts_priority_ticked(env: Env) -> None:
     await kamola_panel(env)
     shown = env.sender.sends[-1]
-    assert keyboard_ops(shown["reply_markup"]) == [
-        "observe",
-        "ignore",
-        "delete",
-        "p_vip",
-        "p_normal",
-        "p_low",
-    ]
-    assert keyboard_labels(shown["reply_markup"]) == [
-        "Observe ✓",
-        "Ignore",
-        "Delete stored data…",
-        "VIP",
-        "Normal ✓",
-        "Low",
+    # The full combined layout (CP4): the mode row with M04's Assist, Delete
+    # on its own row, then the contact-priority row.
+    assert [
+        [button.callback_data.rsplit(":", 1)[1] for button in row]
+        for row in shown["reply_markup"].inline_keyboard
+    ] == [["observe", "ignore", "assist"], ["delete"], ["p_vip", "p_normal", "p_low"]]
+    assert keyboard_rows(shown["reply_markup"]) == [
+        ["Observe ✓", "Ignore", "Assist"],
+        ["Delete stored data…"],
+        ["VIP", "Normal ✓", "Low"],
     ]
     for row in shown["reply_markup"].inline_keyboard:
         for button in row:
@@ -424,7 +420,11 @@ async def test_choosing_vip_on_the_panel_sets_the_contacts_priority_and_audits_i
     assert last_answer(env) == "Saved"
     shown = env.sender.edits[-1]
     assert ticked(shown["reply_markup"]) == ["observe", "p_vip"]
-    assert keyboard_labels(shown["reply_markup"])[3:] == ["VIP ✓", "Normal", "Low"]
+    assert keyboard_rows(shown["reply_markup"]) == [
+        ["Observe ✓", "Ignore", "Assist"],
+        ["Delete stored data…"],
+        ["VIP ✓", "Normal", "Low"],
+    ]
     [details] = await audit_details(env, priority.EVENT_PRIORITY_CHANGED)
     assert details == {"contact_id": contact_id, "old": "normal", "new": "vip"}
     async with env.factory() as session:

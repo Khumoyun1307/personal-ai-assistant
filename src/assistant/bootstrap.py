@@ -13,17 +13,20 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
-from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from aiogram import Bot
+from aiogram.client.session.aiohttp import AiohttpSession
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.actions.config import ActionsConfig
-from assistant.actions.drafts import assist_trigger
+from assistant.actions.drafts import assist_trigger, request_draft
+from assistant.actions.executor import ActionExecutor, uncertain_after
+from assistant.actions.ingestion import ActionsIngestionListener
 from assistant.actions.ports import ApprovalCardPresenter
 from assistant.agent.confirmations import ConfirmationApplier
+from assistant.agent.drafting import AssistDraftJob, DraftConfig, Drafter
 from assistant.agent.monitor_eval import MonitorEvalConfig, MonitorEvaluator
 from assistant.agent.persistence import DbCallRecorder, DbConsentReader
 from assistant.agent.ports import ControlChannel
@@ -37,6 +40,7 @@ from assistant.automation.schedules import DIGEST_FLAG
 from assistant.config import ConfigError, Settings
 from assistant.conversations.listeners import IngestionListener
 from assistant.core.clock import Clock, SystemClock
+from assistant.core.jobs import DraftReason
 from assistant.core.routing import Route
 from assistant.core.supervisor import Role, Supervisor
 from assistant.db.advisory_lock import NAMESPACE_INBOX, NAMESPACE_POLLER, AdvisoryLock
@@ -50,6 +54,11 @@ from assistant.inbox.triage_store import TriageRepository
 from assistant.inbox.triage_trigger import TriageIngestionListener
 from assistant.jobs.app import QUEUE_SYSTEM, QUEUES, build_app, run_queue_worker
 from assistant.jobs.reconcile import Reconciler
+from assistant.jobs.reconcile_actions import (
+    UnfinishedRevisions,
+    UnqueuedDrafts,
+    unqueued_executions,
+)
 from assistant.jobs.reconcile_inbox import notification_reconciler, triage_reconciler
 from assistant.jobs.reconcile_monitors import monitor_reconciler
 from assistant.jobs.scheduler import ProcrastinateScheduler
@@ -66,9 +75,12 @@ from assistant.privacy.post_restore import assert_not_restore_pending
 from assistant.privacy.requests import RequestedDeletions
 from assistant.process import InboxRole, PollerRole, WorkerRole, worker_heartbeat_probe
 from assistant.telegram.business import BusinessPipeline
+from assistant.telegram.business_targets import BusinessTargetResolver
 from assistant.telegram.connections import AiogramConnectionLookup, ConnectionRegistry
+from assistant.telegram.control.activity import handle_activity
 from assistant.telegram.control.agent_channel import GatewayControlChannel
 from assistant.telegram.control.alerts import handle_ntf_press
+from assistant.telegram.control.approvals import DRAFT_EDIT, KIND, ApprovalCards, RevisionJob
 from assistant.telegram.control.digest import (
     handle_digest_command,
     handle_digest_press,
@@ -78,14 +90,16 @@ from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.inbox_handlers import ControlInboxHandlers, RefusalLimiter
 from assistant.telegram.control.monitors import handle_mon_press
 from assistant.telegram.control.routes import ControlRoutes
-from assistant.telegram.gateway import AiogramSender, OutboundGateway
+from assistant.telegram.gateway import (
+    MAX_THROTTLE_WAIT_SECONDS,
+    REQUEST_TIMEOUT_SECONDS,
+    AiogramSender,
+    OutboundGateway,
+)
 from assistant.telegram.ingress.aiogram_source import AiogramUpdateSource
 from assistant.telegram.ingress.poller import Poller
 from assistant.telegram.ingress.writer import write_state
 from assistant.telegram.routing import route_update
-
-if TYPE_CHECKING:
-    from assistant.agent.drafting import Drafter  # type: ignore[import-untyped, unused-ignore]
 
 #: SDK-level retries for connection errors, 429 and 5xx. Safe for a model call
 #: (it changes nothing in the world); never applied to Telegram sends.
@@ -250,13 +264,132 @@ def _wire_m04(
     wiring.actions_config = ActionsConfig(
         approval_max_age=timedelta(hours=settings.approval_max_age_hours),
         draft_debounce=timedelta(seconds=settings.draft_debounce_seconds),
-        mark_uncertain_after=timedelta(seconds=settings.mark_uncertain_after_seconds),
+        # S04.4: never below the time a claimed send can still be in flight.
+        mark_uncertain_after=uncertain_after(
+            timedelta(seconds=settings.mark_uncertain_after_seconds),
+            request_timeout=timedelta(seconds=REQUEST_TIMEOUT_SECONDS),
+            throttle_wait=timedelta(seconds=MAX_THROTTLE_WAIT_SECONDS),
+        ),
         connection_stale_alert_after=timedelta(minutes=settings.connection_stale_alert_minutes),
         sending_enabled="actions.send" in settings.feature_flags,
         process_run_id=process_run_id,
         assist_draft_trigger=assist_trigger(settings.feature_flags),
         draft_route_model=settings.model_routes.model_for("draft_reply"),
     )
+    wiring.routes = replace(
+        wiring.routes,
+        commands={**wiring.routes.commands, "activity": handle_activity},
+    )
+    # S04.3: the approval cards, set before S04.4's executor and S04.2's
+    # drafting read `wiring.approval_cards`.
+    cards = ApprovalCards(
+        session_factory=session_factory,
+        gateway=gateway,
+        clock=clock,
+        config=wiring.actions_config,
+    )
+    wiring.approval_cards = cards
+    wiring.routes = replace(
+        wiring.routes,
+        callbacks={**wiring.routes.callbacks, KIND: cards.handle_press},
+        pending_inputs={**wiring.routes.pending_inputs, DRAFT_EDIT: cards.handle_edit_input},
+    )
+    if roles & {"worker", "system"}:
+        # S04.4: verified execution, the uncertain-attempt sweep and the
+        # lost-job reconciler. The only business send path (§9.4). The
+        # executor's gateway resolves business targets at call time; a
+        # process without these roles never sends as the owner.
+        gateway.attach_business_targets(BusinessTargetResolver(session_factory))
+        wiring.actions = replace(
+            wiring.actions or ActionsJobHandlers(),
+            executor=ActionExecutor(
+                session_factory=session_factory,
+                clock=clock,
+                config=wiring.actions_config,
+                sender=gateway,
+                alerts=OwnerAlerts(session_factory, channel, clock),
+                scheduler=scheduler,
+                presenter=wiring.approval_cards,
+            ),
+        )
+        wiring.reconcilers.append(unqueued_executions)
+    _wire_s042_drafting(
+        wiring,
+        settings=settings,
+        session_factory=session_factory,
+        channel=channel,
+        clock=clock,
+        scheduler=scheduler,
+        llm=llm,
+    )
+    if roles & {"worker", "system"}:
+        # S04.3: card expiry and sync, the revising reconciler, and — where
+        # the model runs — `replies.revise`.
+        wiring.actions = replace(wiring.actions or ActionsJobHandlers(), cards=cards)
+        wiring.reconcilers.append(UnfinishedRevisions(cards))
+        if wiring.drafter is not None:
+            wiring.actions = replace(
+                wiring.actions,
+                revisions=RevisionJob(
+                    session_factory=session_factory,
+                    cards=cards,
+                    drafter=wiring.drafter,
+                    clock=clock,
+                    scheduler=scheduler,
+                ),
+            )
+
+
+def draft_config(settings: Settings) -> DraftConfig:
+    return DraftConfig(
+        model=settings.model_routes.model_for("draft_reply"),
+        effort=settings.llm_draft_reply_effort,
+        monthly_budget_usd=settings.llm_monthly_budget_usd,
+    )
+
+
+def _wire_s042_drafting(
+    wiring: _PhaseWiring,
+    *,
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    channel: ControlChannel,
+    clock: Clock,
+    scheduler: ProcrastinateScheduler,
+    llm: LLMClient | None,
+) -> None:
+    """S04.2: the actions listener (first in order, F0-interfaces §5), and —
+    where a role can call the model — the `Drafter` for `propose_reply`, the
+    `replies.draft` job and its reconciler. `wiring.approval_cards` is S04.3's
+    presenter, set before this runs."""
+    config = wiring.actions_config
+    assert config is not None  # built above
+    wiring.listeners.insert(
+        0,
+        ActionsIngestionListener(
+            config=config, scheduler=scheduler, clock=clock, presenter=wiring.approval_cards
+        ),
+    )
+    if llm is None:
+        return
+    drafter = Drafter(
+        session_factory=session_factory, llm=llm, clock=clock, config=draft_config(settings)
+    )
+    wiring.drafter = drafter
+    wiring.actions = replace(
+        wiring.actions or ActionsJobHandlers(),
+        assist_drafts=AssistDraftJob(
+            session_factory=session_factory,
+            drafter=drafter,
+            scheduler=scheduler,
+            clock=clock,
+            config=config,
+            presenter=wiring.approval_cards,
+            alerts=OwnerAlerts(session_factory, channel, clock),
+            monthly_budget_usd=settings.llm_monthly_budget_usd,
+        ),
+    )
+    wiring.reconcilers.append(UnqueuedDrafts(config, drafter.config.model))
 
 
 def _wire_m05(
@@ -315,7 +448,7 @@ def _wire_m05(
     # flag and defers the job, the reconciler recovers lost defers, the job
     # (worker role: it needs the model) runs the `Triager` with the production
     # store. The Assist trigger reads the single switch (P2-O6); the draft
-    # request itself is S04.2's and is wired at CP4 (until then None).
+    # request uses S04.2's single coalescing path (CP4).
     if "triage.run" in settings.feature_flags:
         debounce = timedelta(seconds=settings.triage_debounce_seconds)
         wiring.listeners.append(
@@ -323,6 +456,20 @@ def _wire_m05(
         )
         wiring.reconcilers.append(triage_reconciler())
         if llm is not None:
+
+            async def request_triage_draft(
+                session: AsyncSession, account_id: int, conversation_id: int
+            ) -> None:
+                await request_draft(
+                    session,
+                    account_id=account_id,
+                    conversation_id=conversation_id,
+                    reason=DraftReason.TRIAGE_NEEDS_REPLY,
+                    scheduler=scheduler,
+                    clock=clock,
+                    debounce=timedelta(seconds=settings.draft_debounce_seconds),
+                )
+
             store = TriageRepository(
                 clock=clock,
                 scheduler=scheduler,
@@ -331,7 +478,7 @@ def _wire_m05(
                     if wiring.actions_config is None
                     else wiring.actions_config.assist_draft_trigger
                 ),
-                draft_requester=None,
+                draft_requester=request_triage_draft,
             )
             triager = Triager(
                 session_factory=session_factory,
@@ -421,7 +568,12 @@ async def running_process(
     database_url = settings.database_url.get_secret_value()
     engine = build_engine(database_url)
     session_factory = build_session_factory(engine)
-    bot = Bot(token=settings.bot_token.get_secret_value())
+    # An explicit request timeout, below the outbound queue's shutdown grace:
+    # a send in flight at SIGTERM ends and Tx B records it (S04.4).
+    bot = Bot(
+        token=settings.bot_token.get_secret_value(),
+        session=AiohttpSession(timeout=REQUEST_TIMEOUT_SECONDS),
+    )
     gateway = OutboundGateway(AiogramSender(bot), clock)
     channel = GatewayControlChannel(gateway)
     jobs_app = build_app(database_url)
@@ -535,7 +687,12 @@ async def running_process(
                         {"process_run_id": process_run_id, "caught_up_at": None},
                     )
                 poller = Poller(
-                    AiogramUpdateSource(bot), session_factory, clock, process_run_id=process_run_id
+                    AiogramUpdateSource(bot),
+                    session_factory,
+                    clock,
+                    process_run_id=process_run_id,
+                    # The kill switch's fast lane recognises the owners' /pause.
+                    owner_ids=frozenset(settings.owner_telegram_ids),
                 )
                 await poller.startup()
                 supervisor_roles.append(PollerRole(poller, lock, clock).role())

@@ -146,6 +146,7 @@ def to_json(meta: RunMeta, result: TargetResult, ledger: CallLedger) -> dict[str
             for name, slices in result.breakdowns.items()
         },
         "cost": _cost_json(meta, ledger, items),
+        "headline": list(result.headline),
         "notes": list(result.notes),
         "details": [dict(d) for d in result.details],
     }
@@ -177,6 +178,8 @@ def render_markdown(meta: RunMeta, result: TargetResult, ledger: CallLedger) -> 
     data = to_json(meta, result, ledger)
     title = f"{meta.set_name} ({result.target}) - {meta.model_label} - {meta.run_date.isoformat()}"
     lines = [f"# Evaluation: {title}", ""]
+    for line in result.headline:
+        lines += [f"> **{line}**", ""]
     if result.stopped:
         lines += [
             "> **STOPPED RUN.** "

@@ -65,6 +65,7 @@ from tests.integration.business_env import (
     private_message,
     run_deletion_jobs,
 )
+from tests.integration.execution_env import approved, caught_up, harness, seed
 from tests.integration.p2_factories import seed_triage
 
 pytestmark = pytest.mark.integration
@@ -466,3 +467,32 @@ async def test_a_failed_alert_delivery_logs_no_content(
         assert result.status in ("retry", "uncertain")
     assert any(CANARY in call["text"] for call in env.sender.sends)  # it was rendered
     _assert_clean(json_logs.readouterr().out, caplog.records)
+
+
+async def test_rg10_business_sends_and_an_ambiguous_send_log_no_content(
+    env: Env,
+    json_logs: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """S04.4: the executor and the gateway's business path log ids, states
+    and codes only — a sent reply's text, an ambiguous one's, and a network
+    error carrying the Bot API URL never reach the logs."""
+    caplog.set_level(logging.DEBUG)
+    h = harness(env)
+    chat = await seed(env)
+    await caught_up(env)
+    sent = await approved(env, chat, text=f"{CANARY} sent reply")
+    env.clock.advance(seconds=1)
+    uncertain = await approved(env, chat, text=f"{CANARY} uncertain reply")
+    h.sender.plain_script = [
+        4242,
+        network_error(f"https://api.telegram.org/bot{TOKEN}/sendMessage {CANARY}"),
+    ]
+
+    await h.execute(sent)
+    await h.execute(uncertain)
+
+    output = json_logs.readouterr().out
+    assert "action_claimed" in output
+    assert "action_outcome_recorded" in output
+    _assert_clean(output, caplog.records)

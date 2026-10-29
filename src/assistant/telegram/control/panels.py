@@ -280,9 +280,8 @@ def _after_press(
 
 # ------------------------------------------------------------ the conversation panel
 def panel_rows(panel: ConversationPanel) -> Rows | None:
-    """Observe / Ignore, the current one ticked, then the contact's priority
-    (S05.2P), also ticked. None for a bot chat: it stays ignored (FR-OBS-04).
-    Assist arrives with drafts (M04)."""
+    """Observe / Ignore / Assist, then contact priority, both ticked.
+    None for a bot chat: it stays ignored (FR-OBS-04)."""
     if panel.is_bot:
         return None
     rows: Rows = [
@@ -332,21 +331,26 @@ async def panel_screen(
         )
         if before != after:
             notice = "✅ " + notice
-    return await _screen(
-        session,
-        clock,
-        account.id,
-        PANEL_CARD,
-        render_panel(
-            panel,
-            timezone=account.timezone,
-            deleting=deleting,
-            locale=supported_locale(account.locale_pref),
-            notice=notice,
-        ),
-        panel_rows(panel),
-        ref_id=panel.conversation_id,
+    text = render_panel(
+        panel,
+        timezone=account.timezone,
+        deleting=deleting,
+        locale=supported_locale(account.locale_pref),
+        notice=notice,
     )
+    if panel.mode == modes.MODE_ASSIST and not deleting:
+        text += "\n\n" + ASSIST_PANEL_LINE
+    rows = panel_rows(panel)
+    return await _screen(
+        session, clock, account.id, PANEL_CARD, text, rows, ref_id=panel.conversation_id
+    )
+
+
+#: The conversation panel's line while Assist is on (S04.2 §3.7).
+ASSIST_PANEL_LINE = (
+    "✍️ <b>Assist</b>: when new messages need a reply, I draft one and show it to you "
+    "here; nothing is sent without your approval."
+)
 
 
 def ignore_confirm_text(account: Account, name: str) -> str:
@@ -366,7 +370,11 @@ def ignore_confirm_text(account: Account, name: str) -> str:
 
 
 #: The press's toast (English, like the buttons) once the mode is set.
-MODE_SET_ANSWER = {modes.MODE_OBSERVE: "Observe is on", modes.MODE_IGNORE: "Ignore is on"}
+MODE_SET_ANSWER = {
+    modes.MODE_OBSERVE: "Observe is on",
+    modes.MODE_IGNORE: "Ignore is on",
+    modes.MODE_ASSIST: "Assist is on",
+}
 NOTHING_CHANGED = "Nothing changed"
 
 
@@ -640,7 +648,8 @@ async def settings_screen(session: AsyncSession, clock: Clock, account: Account)
     rows: Rows = [
         [
             ("New chats: " + MODE_LABELS[m] + (" ✓" if default == m else ""), f"d{m}")
-            for m in modes.SETTABLE_MODES
+            # New chats never start in Assist (P2-T11): it is chosen per chat.
+            for m in preferences.SETTABLE_DEFAULT_MODES
         ],
         [
             (f"Observed chats ({counts.get('observe', 0)})", "lobserve"),
@@ -1128,7 +1137,7 @@ async def list_screen(
     chats = await modes.chats_in_mode(
         session, account.id, mode, offset=(page - 1) * PAGE_SIZE, limit=PAGE_SIZE
     )
-    label = {"observe": "Observed", "ignore": "Ignored"}.get(mode, mode)
+    label = {"observe": "Observed", "ignore": "Ignored", "assist": "Assisted"}.get(mode, mode)
     text = f"<b>{label} chats</b> — page {page} of {pages}"
     if not chats:
         text += "\n\nNone."
@@ -1159,7 +1168,7 @@ async def _press_settings(
 ) -> HandlerResult:
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     op = press.op
-    if op in {f"d{m}" for m in modes.SETTABLE_MODES}:
+    if op in {f"d{m}" for m in preferences.SETTABLE_DEFAULT_MODES}:
         change = await preferences.update(
             session, account, new_default_mode=op[1:], actor="owner", clock=clock
         )

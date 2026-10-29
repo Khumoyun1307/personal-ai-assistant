@@ -25,7 +25,7 @@ from typing import Any, Literal, Protocol
 from assistant.llm.port import LLMClient
 from evals.review import ReviewLedger
 
-DatasetName = Literal["e1", "e3", "retrieval"]
+DatasetName = Literal["e1", "e2", "e3", "retrieval"]
 
 
 class Status(StrEnum):
@@ -158,6 +158,9 @@ class TargetResult:
     #: through the retries): neither a hit nor a miss, and not in `items`. Any
     #: makes the run incomplete (S03.7 fix round).
     not_evaluated: tuple[str, ...] = ()
+    #: Findings the report states first, above every table (E2's canary leaks):
+    #: ids and numbers only.
+    headline: tuple[str, ...] = ()
 
     @property
     def trial(self) -> bool:

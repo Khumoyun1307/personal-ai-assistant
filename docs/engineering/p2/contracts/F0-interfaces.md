@@ -160,6 +160,14 @@ Execution-phase outcome → state (S04.4 applies it in Tx A): failed `no_takeove
 
 **`core/delivery.py` (F0, P2-T03):** `ErrorClass` (every current member, including `OK`, `RATE_LIMITED`, `WINDOW_CLOSED`, `PEER_UNAVAILABLE`, `CONNECTION_INVALID`, `CHAT_UNREACHABLE`, `FORBIDDEN`, `BAD_REQUEST`, `CONFLICT`, `AMBIGUOUS`, `TRANSIENT` — move the enum unchanged) and `SendResult` (unchanged fields and properties `ok`, `delivery_uncertain`) move here; `telegram/errors.py` and `telegram/gateway.py` re-export them so existing imports and tests keep working.
 
+**Control aggregate correction (P2-T53, [ICR-5 / #131](https://github.com/Khumoyun1307/personal-ai-assistant/issues/131), 2026-10-28):** `send_text(ControlChat, ...)` returns the last chunk's result only when every chunk succeeds. A first-chunk failure retains its single-call classification. Any later failure after a delivered chunk returns `SendResult(AMBIGUOUS, error_code="partial_delivery")`, with `message_id=None` and `retry_after=None`: the logical message was not fully delivered, its prefix must not be replayed automatically, and a prefix identity must not be mistaken for a complete card. Keyboard stays on the last chunk. Existing port fields and business semantics are unchanged.
+
+`GatewayControlChannel` propagates this as `Delivery(ok=False, uncertain=True)`. `OwnerAlerts` treats an audit-recorded uncertain outcome as settled within its existing dedupe/cooldown (P2-T24 pulled forward into #131); definite non-delivery may retry. CP4 separately adds notification-row routing and claims for system-alert crash/concurrency protection.
+
+Control HTML callers escape untrusted fields once (`telegram.render.escape`) before adding application markup. The gateway preserves existing Telegram entities without interpreting escaped tags as markup; bare special characters and unsupported tags/attributes/links are escaped. Application links accept a single quoted HTTP(S) `href` only. Approval cards additionally keep their existing visible escapes for hidden/bidi characters and tag-shaped content, then HTML-escape their protected fields once (including literal entity-looking strings).
+
+Tag acceptance is pair-consistent: both opening and closing tokens must be supported and form a nested pair before either remains active. Denied attributes on either side make that pair literal; orphan/unclosed/crossed tokens stay literal. Valid surrounding or nested application pairs remain active, and escaped contact tags are never treated as token syntax.
+
 **`actions/ports.py` (F0):**
 ```python
 class BusinessSender(Protocol):  # implemented by telegram/gateway.py OutboundGateway (S04.4)
@@ -365,10 +373,14 @@ async def enqueue(session, *, account_id: int, kind: NotificationKind, priority:
                   bypass_quiet_hours: bool = False,
                   scheduler: JobScheduler | None = None) -> int | None   # None = deduplicated
 ```
-`scheduler` (P2-T40): when given, `enqueue` defers `notify.deliver` after commit; every production caller passes it (S05.1 effects, S05.4's listener and evaluator, `OwnerAlerts` at CP4). `None` (tests) leaves the row to the notifications reconciler.
+`scheduler` (P2-T40): when given, `enqueue` defers `notify.deliver` after commit; every production standard-notification caller passes it (S05.1 effects, S05.4's listener and evaluator). `None` (tests) leaves the row to the notifications reconciler. CP4's synchronous `OwnerAlerts` path uses the separate claim helper below and never queues a system retry.
 `enqueue` inserts the row (`ON CONFLICT (account_id, dedupe_key) DO NOTHING`) and registers an after-commit defer of `notify.deliver`; the policy decision happens at delivery. Dedupe keys are built from ids and enums only (e.g. `triage:{conversation_id}:{covers_through_message_id}:urgent`).
 
 `inbox/notify.py::AlertKind` gains (F0): `DELIVERY_UNCERTAIN = "delivery_uncertain"`, `CONNECTION_STALE = "connection_stale"` (their texts are added by S04.4). M04 uses `OwnerAlerts.notify_owner` for them. At CP4, S05.2 routes `OwnerAlerts.notify_owner` itself through `notifications` (class `system`); **callers do not change**, dedupe keeps reading the `system_alert` audit rows, and an uncertain outcome counts as delivered (R10, P2-T24; S05.2 §3.5 is the definition).
+
+**CP4 ICR #132 (TL approved 2026-10-28).** Public signatures, synchronous buttons/message identity and content-free refs stay compatible. `AlertResult.reason` adds `in_progress` (`sent=False`, `uncertain=False`) for an unresolved concurrent claim; it must not be mistaken for completed delivery or a settled duplicate. System attempts use `inbox/system_notifications.py::SystemNotificationDelivery`: account `FOR KEY SHARE` → transaction advisory → notification/audit; commit `uncertain/claimed` and immutable `system_alert_claimed` details `{kind,key,notification_id,attempt_ms}` before channel I/O. Append one legacy `system_alert` resolution with structural `{claim_id,notification_id}` even if its notification vanished. Success and uncertainty dedupe against historical audits; an unresolved claim blocks retries; for a key with a cooldown, an unresolved claim older than the cooldown counts as an uncertain alert at its claim time (TL amendment on #134), while once-ever keys stay blocked; a proven definite failure is terminal for that attempt and leaves retries to the caller. Standard bounded queued retries are unchanged. Text/values/buttons are never persisted.
+
+The approved two-int4 advisory namespace is `0x53595341` (SYSA), with signed first four SHA-256 bytes of compact UTF-8 JSON `[account_id,dedupe_key]` (literal Unicode) as key; exact account/key predicates remain authoritative. No lock crosses channel I/O. Standard cap locks do not use this namespace. `attempt_ms=max(clock_epoch_ms,previous_claim_attempt_ms+1)`, skipping existing notification-key collisions, makes `sys:{key}:{attempt_ms}` unique under frozen/backward clocks. Audit retention remains one year; notification retention remains 30 days. S05.2 §3.5 specifies resolution and retry semantics.
 
 ### 8.4 Automations (`automation/repository.py` — F0)
 
@@ -466,6 +478,15 @@ M04 — the transition primitive writes exactly one event per applied transition
 | `delivery_uncertain → succeeded` / `failed` | `action_late_result` |
 
 Other M04 events: `assistant_message_deleted`, `draft_skipped` and `draft_failed` (`subject_type = 'conversation'`), `autonomy_paused`, `autonomy_resumed`, `connection_marked_stale` (`subject_type = 'connection'`); existing `takeover_detected`, `source_edited_after_action` (ARCHITECTURE §6.5). M05: `task_created`, `task_closed`, `triage_completed` (counts only), `monitor_created`, `monitor_matched`, `monitor_completed`, `monitor_stopped`, `digest_sent`, `contact_priority_changed`, `automation_invalid` (a stored rule that no longer validates; the automation is paused).
+
+**Approval presentation claims (ICR-5 / #131):** these are control delivery bookkeeping, never business-action state transitions. Both use `actor="system"`, the action's `account_id`, `subject_type="action"` and `subject_id=action.id`:
+
+| Event | Content-free details |
+|---|---|
+| `approval_card_presentation_claimed` | `{"version": <action version>}` |
+| `approval_card_presentation_resolved` | `{"version": <action version>, "claim_id": <claimed audit row id>, "outcome": "shown" or "not_delivered"}` |
+
+Before sending any new presentation (full text plus card), a short transaction locks the account's action, checks the view's version/state/card pointer/card state, checks for unresolved same-account/action/version claims in a fresh statement after locking, and commits a claim. No lock spans Telegram I/O. An unresolved claim blocks automatic presentation replay, including after a crash or fresh process; sync excludes it. `shown` is written only in the same transaction that truthfully records the complete card. `not_delivered` is allowed only for a definite first-send refusal before any full text/chunk was delivered. Successful full text followed by any card failure is partial/uncertain and leaves the claim unresolved; it cannot replay the full text. Claim commit failure prevents I/O; final record/resolution commit failure preserves the unresolved claim. A different action/version is independent. No action state or card-shown field is falsified. Audit retention (one year) exceeds a live action's maximum lifetime; normal audit retention/deletion applies, with no new content class.
 
 ## 12. File and section ownership (after CP1)
 

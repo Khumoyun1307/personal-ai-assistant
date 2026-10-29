@@ -63,6 +63,10 @@ class Source(StrEnum):
     """A triage verdict's short reason (S05.1 attention v2): model-written
     from a contact's messages, so it may carry an injection forward."""
 
+    DRAFT = "draft"
+    """A draft reply written by the assistant from chat content (S04.2): it
+    may restate a contact's text, so a revision reads it as data."""
+
 
 OPEN_TAG = '<untrusted source="{source}" trust="untrusted">'
 CLOSE_TAG = "</untrusted>"

@@ -354,12 +354,13 @@ class NotificationDelivery:
         and two cannot both take the cap's last slot (rule 6, P2-T38; QA B2,
         #87). Held only to this short transaction's commit, never across the
         send. Not FOR UPDATE: ingestion's foreign-key KEY SHARE need not wait.
-        A system alert is never capped, so FOR SHARE is enough for it."""
+        A system alert takes FOR KEY SHARE, compatible with a standard claim
+        (P2-T42); it must never wait for the standard hourly-cap decision."""
         statement = select(Account).where(Account.id == account_id)
         if alert_class == AlertClass.STANDARD:
             statement = statement.with_for_update(key_share=True)
         else:
-            statement = statement.with_for_update(read=True)
+            statement = statement.with_for_update(read=True, key_share=True)
         return (await session.execute(statement)).scalar_one_or_none()
 
     @staticmethod

@@ -14,7 +14,6 @@ from tests.scenarios.m05_drive import M05Scenario, advance, run_queued, triage, 
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="awaiting S04.2b/S04.3/S05.1 (CP4)")
 async def test_with_the_triage_trigger_a_burst_still_produces_one_card(m05: M05Scenario) -> None:
     from assistant.conversations.modes import SETTABLE_MODES
 

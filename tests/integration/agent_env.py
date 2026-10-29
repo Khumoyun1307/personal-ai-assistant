@@ -48,12 +48,18 @@ READ_FLAGS = frozenset(
         "tool.list_conversations",
         "tool.summarize_period",
         "tool.get_attention_list",
+        "tool.get_activity",
     }
 )
 NOTE_FLAG = "tool.test_set_note"
 #: The S05.4 monitor tools (P2-T41).
 MONITOR_FLAGS = frozenset({"tool.create_monitor", "tool.list_monitors", "tool.stop_monitor"})
-ALL_FLAGS = READ_FLAGS | {NOTE_FLAG} | MONITOR_FLAGS
+
+#: The S04.2 propose tools (P2-T41).
+PROPOSE_FLAGS = frozenset({"tool.propose_reply", "tool.propose_message"})
+#: The S04.4 kill-switch tools (P2-T41): control tools that never read chats.
+AUTONOMY_FLAGS = frozenset({"tool.pause_autonomy", "tool.resume_autonomy"})
+ALL_FLAGS = READ_FLAGS | {NOTE_FLAG} | PROPOSE_FLAGS | AUTONOMY_FLAGS | MONITOR_FLAGS
 #: The S03.3 memory, preference and mode tools (not in ALL_FLAGS, so the
 #: S03.1/S03.2 tests keep the tool offer they were written against).
 MEMORY_FLAGS = frozenset(
@@ -95,7 +101,9 @@ PRODUCTION_LINE = (
     "tool.remember,tool.forget,tool.list_memories,tool.set_conversation_mode,"
     "tool.update_preferences,tool.delete_conversation_data,tool.delete_contact_data,"
     "tool.delete_everything,tool.set_contact_priority,tool.create_monitor,tool.list_monitors,"
-    "tool.stop_monitor"
+    "tool.stop_monitor,"
+    "tool.get_activity,tool.propose_reply,tool.propose_message,"
+    "tool.pause_autonomy,tool.resume_autonomy"
 )
 PRODUCTION_FLAGS = frozenset(PRODUCTION_LINE.split(","))
 

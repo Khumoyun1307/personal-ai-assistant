@@ -34,6 +34,10 @@ scenario implementation alone does not make an RG row green.
 
 ## B. Traceability: requirements → units → tests → manual checks
 
+QA-S4's scenario implementations and gate limitations are tracked in
+[m04-scenarios.md](m04-scenarios.md). A scenario marked strict xfail is still
+pending acceptance; its existence does not make the corresponding RG row pass.
+
 | Requirement | Unit(s) | Automated tests | Manual / live check |
 |---|---|---|---|
 | FR-DRF-01 Draft on owner request | S04.2, S04.3 | `test_m04_j4_draft_approve.py::test_j4_draft_edit_approve_sends_exactly_the_approved_text` | M04 checklist 1.1 |
@@ -57,7 +61,7 @@ scenario implementation alone does not make an RG row green.
 | FR-TRI-06 Monitors from natural language, confirmed | S05.4 | `test_m05_j6_monitors.py::*` | M05 checklist 3 |
 | FR-TRI-07 Noise control and feedback | S05.2 | Dedupe, cap and feedback tests | M05 checklist 2.4, 2.6 |
 | NFR-05 Triage < 90 s p95; urgent alert < 2 min p95 | S05.1, S05.2 | — (measured live) | M05 checklist 1.10 (`nfr05`) |
-| NFR-06 Send safety (zero duplicates, zero policy bypass, 100 % recorded) | S04.1, S04.4 | RG-04/05/06/18; `test_m04_r1_assistant_sent.py::*` | Trial: daily `trial-check` |
+| NFR-06 Send safety (zero duplicates, zero policy bypass, 100 % recorded) | S04.1, S04.4, OPS-TV | RG-04/05/06/18; `test_m04_r1_assistant_sent.py::*`; `tests/integration/test_p2_verify.py::test_trial_check_*` checks the independent structural audit (OPS-TV part2 CI/review tracked on #65) | Trial: daily `trial-check`; synthetic audit tests do not replace trial evidence |
 | NFR-09 Restore never sends | F0, S04.4 | `test_m04_restore.py::test_a_restored_database_with_an_approved_action_sends_nothing` | OPS-restore-test |
 | PRD R1 #3 Draft → edit → approve → sent; sent = approved | S04.2–S04.4 | J4 scenario (hash equality) | M04 checklist 2.1 (edit → approve → sent on one action); 1.2–1.3 cover edits alone |
 | PRD R1 #4 Every outdating/expiry condition prevents a stale send | S04.2–S04.4 | `test_m04_outdating_and_expiry.py::*`, `test_m04_j8_takeover.py::*` | M04 checklist 2.3–2.6 |
@@ -84,3 +88,48 @@ These extend the RG evidence; they do not replace or renumber mandatory regressi
 | CP5 | Claimed notification or digest is resent after ambiguity | `test_notifications.py::test_an_uncertain_delivery_is_never_resent`; `test_digest.py::test_an_uncertain_digest_is_never_resent`; QA-S5 `test_an_uncertain_alert_is_never_resent_after_reconciliation` |
 | CP5 | Owner-requested monitor demoted by contact priority or quiet hours | `test_monitors.py::test_a_bypass_monitor_alerts_during_quiet_hours`, `::test_a_low_priority_contacts_monitor_alert_is_not_demoted` |
 | CP5 | E3 pre-screen incorrectly treated as an accepted gate | `test_eval_triage.py::test_gate_needs_owner_confirmed_bursts`; owner-confirmed counts and all four thresholds from E3 §B |
+
+## D. QA-S4 marker ownership (R13)
+
+Every marked scenario is listed below. For a shared scenario, the last listed
+feature dependency to land removes its marker after the entire journey passes.
+S04.4 also settles outcomes used by S04.3; a card assertion may require both.
+CP3 requires zero expected failures. Double-tap and resume rows include both
+parameter cases. The takeover journeys include ingestion listeners; isolated
+Tx A guarantees remain covered by the S04.4 integration regressions.
+
+| Scenario | Required units |
+|---|---|
+| `test_m04_assist_bursts.py::test_a_burst_in_an_assist_chat_produces_one_card` | S04.2b/S04.3 |
+| `test_m04_assist_bursts.py::test_no_card_when_the_draft_says_no_reply_is_needed` | S04.2b |
+| `test_m04_assist_bursts.py::test_owner_messages_never_trigger_drafts` | S04.2b |
+| `test_m04_drafts_only.py::test_with_sending_off_approve_ends_blocked_with_copy_ready_text` | S04.2b/S04.3/S04.4 |
+| `test_m04_j4_draft_approve.py::test_j4_draft_edit_approve_sends_exactly_the_approved_text` | S04.2b/S04.3/S04.4 |
+| `test_m04_j4_draft_approve.py::test_j4_a_revision_instruction_creates_a_new_version_shown_for_approval` | S04.2b/S04.3 |
+| `test_m04_j4_draft_approve.py::test_approve_during_revision_sends_nothing` | S04.2b/S04.3 |
+| `test_m04_j4_draft_approve.py::test_a_revision_finishing_after_outdating_cannot_reactivate_the_card` | S04.2b/S04.3 |
+| `test_m04_j4_draft_approve.py::test_j4_reject_sends_nothing_and_says_rejected` | S04.2b/S04.3 |
+| `test_m04_j4_draft_approve.py::test_j4_owner_dictated_text_is_shown_exactly_with_the_resolved_recipient` | S04.2b/S04.3 |
+| `test_m04_j8_takeover.py::test_an_owner_message_dated_after_the_base_but_ingested_late_blocks_the_send` | S04.4 |
+| `test_m04_j8_takeover.py::test_takeover_outdates_the_card_and_audits_without_messaging_the_contact` | S04.2b |
+| `test_m04_j9_kill_switch.py::test_pause_blocks_an_autonomous_action_at_claim` | S04.4 |
+| `test_m04_j9_kill_switch.py::test_a_model_resume_call_never_resumes` | S04.4 |
+| `test_m04_j9_kill_switch.py::test_pause_does_not_block_an_owner_approved_send` | S04.4 |
+| `test_m04_outdating_and_expiry.py::test_a_new_contact_message_outdates_a_pending_draft` | S04.2b/S04.3 |
+| `test_m04_outdating_and_expiry.py::test_an_owner_manual_reply_outdates_a_pending_draft` | S04.2b |
+| `test_m04_outdating_and_expiry.py::test_deleting_the_source_message_outdates_the_draft` | S04.2b |
+| `test_m04_outdating_and_expiry.py::test_editing_the_source_message_outdates_the_draft` | S04.2b/S04.3 |
+| `test_m04_outdating_and_expiry.py::test_switching_to_ignore_cancels_a_pending_draft` | S04.2b |
+| `test_m04_outdating_and_expiry.py::test_revoking_managed_consent_cancels_a_queued_ai_draft` | S04.4 |
+| `test_m04_outdating_and_expiry.py::test_removing_the_reply_right_blocks_an_approved_draft` | S04.3/S04.4 |
+| `test_m04_outdating_and_expiry.py::test_the_window_closing_expires_the_draft_with_copy_ready_text` | S04.3 |
+| `test_m04_outdating_and_expiry.py::test_a_contact_message_ingested_after_approval_blocks_the_send` | S04.4 |
+| `test_m04_r1_assistant_sent.py::test_each_send_is_recorded_once_as_assistant_sent` | S04.4 |
+| `test_m04_r1_assistant_sent.py::test_an_echo_processed_first_merges_into_the_sent_record` | S04.4 |
+| `test_m04_r1_assistant_sent.py::test_two_zero_id_sends_in_one_chat_both_succeed` | S04.4 |
+| `test_m04_r1_at_most_once.py::test_a_double_tap_on_approve_sends_once` | S04.3/S04.4 |
+| `test_m04_r1_at_most_once.py::test_a_restart_between_claim_and_send_is_uncertain_and_never_resent` | S04.4 |
+| `test_m04_r1_at_most_once.py::test_a_network_timeout_on_send_is_uncertain_not_retried` | S04.4 |
+| `test_m04_r1_at_most_once.py::test_a_rate_limited_send_is_retried_after_retry_after_and_sent_once` | S04.4 |
+| `test_m04_r1_at_most_once.py::test_a_late_result_after_mark_uncertain_settles_to_succeeded` | S04.4 |
+| `test_m04_restore.py::test_a_restored_database_with_an_approved_action_sends_nothing` | S04.4 |

@@ -2,7 +2,7 @@
 
 Datasets for the LLM quality gates in IMPLEMENTATION_PLAN §10.1. This folder sits
 outside `src/`: nothing in the product imports it (`tests/unit/test_layering.py`).
-The S03.4 runner, targets (`retrieval.py`, `summary.py`), metrics, judge rubrics
+The S03.4 runner, targets (`retrieval.py`, `summary.py`, `drafts.py`), metrics, judge rubrics
 (`evals/rubrics/`) and eval prompts (`evals/prompts/`) live here too; see *Running*.
 
 ## Provenance (read first)
@@ -194,6 +194,91 @@ only the monitor cases' digest must agree between the runs (a change to
 run and a monitor run are two routes: `compare` lists them side by side but
 decides nothing.
 
+## E2: draft situations (`datasets/e2/situations.jsonl`)
+
+One reply situation per line (`E2Situation` in `evals/schema.py`; format in
+the P2 spec `docs/engineering/p2/specs/E2-drafts-eval.md` §A.4). A situation
+either cuts an E1 chat after one of its contact messages (`source`; the drafter
+sees the chat up to and including `cut_after`) or brings a new chat with a
+`canary` that must occur exactly once in E2 and nowhere in E1. The loader
+rejects malformed or unverifiable records: ids consecutive from `s001`; the
+cut's variant equals its E1 chat's; every `must_include.fact` folds into a
+message the drafter is shown (never one after the cut); `no_reply_needed` and
+`sensitive` tags agree with `expected`. The coverage minimums per variant are
+checked by `tests/unit/test_e2_dataset.py`, so partial data loads while
+authoring. Validate and print the coverage per variant with:
+
+    uv run python -m evals.schema e2 [<path>]
+
+### How the drafts target scores it (`evals/drafts.py`, P2 spec E2 §B)
+
+`python -m evals run drafts` runs the **product's** `Drafter` (S04.2) on every
+situation: its context builder, the active `draft_reply` prompt, the `DraftResult`
+schema and validation, the route's model (`LLM_ROUTE_DRAFT_REPLY_MODEL`, else the
+default) and the product's fixed effort (`DraftConfig`, `low`), with
+`reason="eval"`: no tools, no proposal, no card. In a throwaway database, **one**
+synthetic account holds every situation's chat (an E1 cut up to and including
+`cut_after`, a new chat whole), each with its own contact, plus `ai_control` and
+`ai_managed` consents naming the processor of the run's model; `locale_pref` is
+`--owner-language` (default `uz-Latn`). Before each draft the account's memory
+is cleared and the situation's `owner_prefs` become the reply settings, its
+`style_notes` owner instructions that apply to replies and its `contact_notes`
+notes on its contact, so **no situation sees another's preferences or notes**. The
+clock is fixed five minutes after the situation's last message. Status: **always
+informational in P2** (no threshold, no gate; E2 is the M06 baseline, S06.5).
+
+Deterministic checks per draft (pure functions, reported per variant):
+
+- **Canary leaks** (target 0, stated first in the report with the situation ids):
+  another situation's `canary`, or a `key_facts` value (at least 5 characters) that
+  another E1 chat's loaded part shows, in the draft (case and apostrophes folded). A
+  string the situation's own context shows is not a leak; situations cut from the
+  same E1 chat do not count as each other's leak.
+- `needs_reply` agreement; a reply of 1–4096 characters where one was needed.
+- **Unsupported values**: a number, clock time or amount in the draft that the shown
+  context (messages with their local times, the notes, the contact's name, the
+  current time) does not hold, compared as values (`agent_mode.value_key`: `18:00` =
+  `6:00 p.m.`, `250 000` = `250000`). A flag for review, not M06's grounding rule.
+- A commitment (`makes_commitment`) where `makes_commitment_ok` is false;
+  `sensitive_topic` agreement.
+- Language and script against `owner_prefs.reply_language` (`match` reads the
+  contact's last message, else the situation's variant; a mixed one is listed as not
+  determined; so is a draft too short to name its language whose script is right; a
+  wrong script is always a miss): informational only (P2-O11).
+
+The judge pre-screen (rubric `draft_intent.v1`, one call per draft with text) names
+the draft's intent, which `must_include` facts it conveys (a fact found literally
+needs no judge) and violations of the kinds `commitment`, `other_conversation`,
+`personal_data`, `claim_human`. A draft that declines to reply has intent
+`no_reply_needed` without a call. A judge failure leaves the draft unscreened
+(listed).
+
+**Owner ratings.** The ledger (`evals/reviews/e2.json`, or `--reviews`) has
+`ratings`, keyed by the situation and a digest of the exact draft rated
+(`s001#1a2b3c4d`, `review.rating_key`; each JSON record carries its `rating_key`):
+`as_is`, `minor`, `major` or `unusable`. Acceptability = (as_is + minor) / rated, per
+variant; unrated drafts are listed and never counted. Older ledger files without
+`ratings` still load.
+
+    python -m evals review drafts --from docs/evals/<drafts run>.json                  # ratings status
+    python -m evals review drafts --from docs/evals/<drafts run>.json --export sheet.md  # the sheet to rate
+
+The sheet shows, per draft, the situation, its preferences and notes, the last six
+messages it answers and the draft, with the key to record the rating under. It
+refuses a report made on another version of E2.
+
+**Cost and run procedure (WORKFLOW §11).** Per situation: the draft call, its one
+truncation retry at the larger budget and the judge, each priced at its worst case.
+For 150 situations on `gpt-6-luna` the worst case is about USD 0.59 (a proxy over E1
+cuts with the longest contexts; the real figure prints with `--estimate-only`), under
+the USD 1 cap; a typical run costs a small fraction of it. Steps: (1) `python -m evals
+verify`; (2) `python -m evals run drafts --estimate-only` and state the cost to the
+owner; (3) with the owner's go-ahead, a trial `--live --only s001,s031` or `--limit
+N`; (4) the full `python -m evals run drafts --live`; the report is
+`docs/evals/<date>-e2-drafts-<model>.md` and `.json` (the JSON keeps every draft,
+check and judge verdict; synthetic data); (5) export the sheet for the owner's
+ratings.
+
 ## Freezing
 
 `datasets/MANIFEST.sha256` holds the SHA-256 of every `*.jsonl` under
@@ -233,6 +318,9 @@ python -m evals run triage --estimate-only              # worst-case cost of the
 python -m evals run triage --live [--model ID]          # REAL model; owner's go-ahead + cost approval
 python -m evals run monitors --estimate-only            # worst-case cost of the E3 monitor run, calls nothing
 python -m evals run monitors --live [--model ID]        # REAL model; owner's go-ahead + cost approval
+python -m evals run drafts --estimate-only              # worst-case cost of the E2 drafts run, calls nothing
+python -m evals run drafts --live                       # REAL model; owner's go-ahead + cost approval
+python -m evals review drafts --from docs/evals/<run>.json --export sheet.md   # owner's rating sheet
 python -m evals compare docs/evals/<run>.json …         # quality and cost per 100 items per run
 python -m evals compare <luna>.json <sol>.json [--route-model ID]  # triage or monitors: also the model choice
 python -m evals cleanup [--yes]                         # list/drop throwaway databases a killed run left
@@ -248,8 +336,8 @@ flags: `--limit N` (N >= 1: a **trial** run, named `…-trial`, never a gate),
 `--model ID` (model-choice comparison; default is the route's configured model),
 `--price MODEL=IN:OUT` (positive USD per 1M tokens, for a model the product's price
 table lacks; refused for a model it already prices), `--budget-usd` (default 1),
-`--owner-language uz-Latn|uz-Cyrl|ru|en` (summary and retrieval `--mode agent`, default
-`uz-Latn`), `--calibrate-from TRIAL.json` (retrieval `--mode agent` only, E-ab).
+`--owner-language uz-Latn|uz-Cyrl|ru|en` (summary, drafts and retrieval `--mode agent`,
+default `uz-Latn`), `--only ID,ID` (summary, drafts, triage and monitors: a trial of the named items), `--calibrate-from TRIAL.json` (retrieval `--mode agent` only, E-ab).
 Exit codes: 0 done (a deliberate trial included), 2 refused or misconfigured, 4 the
 run **stopped before its planned items** (budget cap; its report is still written). A run that fails midway writes a content-free
 `…-aborted.json` with what it spent. A run drops its throwaway database when it ends, fails

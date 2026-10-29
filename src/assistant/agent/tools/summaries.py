@@ -51,6 +51,7 @@ from typing import Annotated, Any, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
 from assistant.agent import owner_texts
@@ -83,7 +84,7 @@ from assistant.agent.tools.registry import (
     ToolRefs,
 )
 from assistant.agent.untrusted import Source, wrap
-from assistant.conversations.models import Conversation
+from assistant.conversations.models import Contact, Conversation
 from assistant.conversations.window import window_open
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
@@ -302,6 +303,16 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
         coverage = await catch_up.period_coverage(
             session, ctx.account_id, start=start, end=query_end, conversation_ids=scope
         )
+        activity_counts = await catch_up.assistant_activity(
+            session,
+            account_id=ctx.account_id,
+            start=start,
+            end=query_end,
+            conversation_ids=scope,
+        )
+        activity_entries = await _assistant_activity_entries(
+            session, ctx.account_id, activity_counts
+        )
 
     chosen = active[:MAX_CATCH_UP_CONVERSATIONS]
     summarizer = services.summarizer
@@ -431,6 +442,7 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
         "not_summarized": not_summarized,
         "coverage_caveats": lines,
         "coverage_rule": COVERAGE_RULE,
+        "assistant_activity": activity_entries,
     }
     if lines:
         data["note"] = "Relay every coverage caveat to the owner; none may be dropped."
@@ -442,16 +454,52 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
             "see the coverage caveats and rule."
         )
     involved = [*chosen, *active[MAX_CATCH_UP_CONVERSATIONS:]]
+    extra_conv_ids = frozenset(c.conversation_id for c in activity_counts)
+    extra_contact_ids = frozenset(c.contact_id for c in activity_counts)
     return ToolOutcome(
         "ok",
         data,
         contains_managed=True,
         refs=ToolRefs(
-            conversation_ids=frozenset(i.conversation_id for i in involved),
-            contact_ids=frozenset(i.contact_id for i in involved),
+            conversation_ids=frozenset(i.conversation_id for i in involved) | extra_conv_ids,
+            contact_ids=frozenset(i.contact_id for i in involved) | extra_contact_ids,
         ),
         citable=citable,
     )
+
+
+async def _assistant_activity_entries(
+    session: AsyncSession,
+    account_id: int,
+    counts: Sequence[catch_up.ActivityCount],
+) -> list[dict[str, Any]]:
+    if not counts:
+        return []
+    contact_ids = list({c.contact_id for c in counts})
+    contacts = (
+        await session.execute(
+            select(Contact.id, Contact.display_name, Contact.username)
+            .where(Contact.account_id == account_id)
+            .where(Contact.id.in_(contact_ids))
+        )
+    ).all()
+    names_by_id = {c_id: disp or (f"@{user}" if user else None) for c_id, disp, user in contacts}
+    entries: list[dict[str, Any]] = []
+    for c in counts:
+        contact_name = names_by_id.get(c.contact_id)
+        entries.append(
+            {
+                "conversation_id": c.conversation_id,
+                "contact_id": c.contact_id,
+                "contact_name": name(contact_name),
+                "sent": c.sent,
+                "awaiting": c.awaiting,
+                "not_sent": c.not_sent,
+                "problems": c.problems,
+                "deleted_after_send": c.deleted_after_send,
+            }
+        )
+    return entries
 
 
 SUMMARIZE_PERIOD = ToolDefinition(

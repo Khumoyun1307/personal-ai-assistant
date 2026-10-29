@@ -9,13 +9,15 @@
     python -m evals run summary --live --only c36,c28,c15   # a trial of chosen chats
     python -m evals run triage [--live] [--model ID] ...      # the product's triage over E3
     python -m evals run monitors [--live] [--model ID] ...    # evaluate_monitor over E3's cases
+    python -m evals run drafts [--owner-language uz-Latn|uz-Cyrl|ru|en] [--live] ...
+    python -m evals review drafts --from docs/evals/<drafts run>.json [--export SHEET.md]
     python -m evals compare docs/evals/<run>.json [...]
     python -m evals compare <route model>.json <next tier>.json [--route-model ID]  # model choice
     python -m evals cleanup [--yes]        # list (or drop) throwaway databases a killed run left
 
 Safe by default: `run retrieval` is the deterministic, model-free baseline, and
-`run summary`, `run triage` and `run monitors` (which always call a model) refuse without
-`--live`. Any run
+`run summary`, `run drafts`, `run triage` and `run monitors` (which always call a
+model) refuse without `--live`. Any run
 that calls a model refuses without `--live`, refuses when the worst-case cost
 exceeds the cap, and stops mid-run before overspending. See `evals/README.md`
 "Running". Exit codes: 0 done, 2 refused or misconfigured, 4 stopped early or
@@ -50,6 +52,8 @@ from evals.corpus import (
     isolated_corpus,
     leftover_databases,
 )
+from evals.drafts import SET_NAME as DRAFTS_SET_NAME
+from evals.drafts import DraftsTarget, isolated_drafts, rating_sheet, rating_status
 from evals.errors import EvalsError
 from evals.live import (
     LiveSetupError,
@@ -68,16 +72,20 @@ from evals.runner import (
     RefusedError,
     RunOutcome,
     check_estimate,
+    dataset_digests,
     ensure_frozen,
     require_live,
     run_target,
 )
 from evals.schema import (
+    E2_PATH,
     E3_MONITORS_PATH,
     E3_PATH,
     Burst,
+    E2Situation,
     MonitorCase,
     load_e1,
+    load_e2,
     load_e3,
     load_monitor_cases,
     load_queries,
@@ -139,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("verify", help="check the datasets against the frozen manifest")
 
     run = sub.add_parser("run", help="run a target and record the result")
-    run.add_argument("target", choices=["retrieval", "summary", "triage", "monitors"])
+    run.add_argument("target", choices=["retrieval", "summary", "drafts", "triage", "monitors"])
     run.add_argument(
         "--mode",
         choices=[m.value for m in RetrievalMode] + ["both"],
@@ -170,8 +178,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=get_args(OwnerLanguage),
         default="uz-Latn",
         help=(
-            "summary and retrieval --mode agent: the owner's language and script "
-            "(summaries are written in it; the agent's owner preference)"
+            "summary, drafts and retrieval --mode agent: the owner's language and script "
+            "(summaries are written in it; the owner's preferred language)"
         ),
     )
     run.add_argument(
@@ -202,8 +210,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=_ids,
         metavar="ID,ID,...",
         help=(
-            "summary, triage and monitors: evaluate only these conversations, bursts or cases "
-            "(e.g. c36,c28,c15, b001,b002 or m001,m002), in set order: a trial run, never a gate"
+            "summary, drafts, triage and monitors: evaluate only these conversations, "
+            "situations, bursts or cases (e.g. c36, s001, b001 or m001), in set order: "
+            "a trial run, never a gate"
         ),
     )
     run.add_argument("--estimate-only", action="store_true", help="print the cost and stop")
@@ -216,6 +225,21 @@ def build_parser() -> argparse.ArgumentParser:
         "cleanup", help="list (or, with --yes, drop) throwaway databases a killed run left behind"
     )
     cleanup.add_argument("--yes", action="store_true", help="drop them (default: only list)")
+
+    review = sub.add_parser(
+        "review", help="the owner's review of a recorded run: E2 draft ratings and the sheet"
+    )
+    review.add_argument("target", choices=["drafts"])
+    review.add_argument(
+        "--from",
+        dest="report",
+        type=Path,
+        required=True,
+        metavar="REPORT.json",
+        help="the JSON report of the drafts run to review",
+    )
+    review.add_argument("--export", type=Path, metavar="SHEET.md", help="write the rating sheet")
+    review.add_argument("--reviews", type=Path, help="owner review ledger (JSON)")
 
     compare = sub.add_parser("compare", help="compare recorded runs (quality and cost)")
     compare.add_argument("reports", nargs="+", type=Path, help="JSON reports from docs/evals/")
@@ -272,12 +296,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cleanup(drop=args.yes)
         if args.command == "compare":
             return _compare(args.reports, route_model=args.route_model)
+        if args.command == "review":
+            return _review(args)
         if args.target == "summary":
             return asyncio.run(_summary(args))
         if args.target == "triage":
             return asyncio.run(_triage(args))
         if args.target == "monitors":
             return asyncio.run(_monitors(args))
+        if args.target == "drafts":
+            return asyncio.run(_drafts(args))
         return asyncio.run(_retrieval(args))
     except EvalsError as error:  # the tool's own, explainable failures; a bug keeps its traceback
         return _refuse(str(error))
@@ -559,10 +587,117 @@ async def _monitors(args: argparse.Namespace) -> int:
     return exit_code(outcome.result)
 
 
+#: The E2 file as the frozen manifest names it.
+E2_MANIFEST_NAME = "e2/situations.jsonl"
+
+
+def _situations() -> list[E2Situation]:
+    """E2, or a clean refusal while it is not authored yet or does not load."""
+    try:
+        return load_e2()
+    except FileNotFoundError:
+        raise RefusedError(
+            f"E2 is not authored yet: {E2_PATH.name} does not exist (P2 spec E2 §A)"
+        ) from None
+    except ValueError:
+        # Not the message: a validation error can echo dataset text.
+        raise RefusedError(
+            "E2 does not pass its integrity checks; run `python -m evals.schema e2`"
+        ) from None
+
+
+async def _drafts(args: argparse.Namespace) -> int:
+    """The drafts target: the product's `Drafter` over E2, in a throwaway
+    database. It always calls a model, so every guard applies."""
+    _require_recorded(args)
+    if args.calibrate_from is not None:
+        raise RefusedError("--calibrate-from is only for retrieval --mode agent")
+    digests = ensure_frozen()
+    cap, prices = _cap(args.budget_usd), _prices(args.price)
+    reviews = _reviews(args.reviews, "e2")
+    target = DraftsTarget(_situations(), load_e1(), owner_language=args.owner_language)
+    if args.only is not None:
+        try:
+            target.named(args.only, limit=args.limit)
+        except ValueError as error:
+            raise RefusedError(f"--only: {error}") from None
+    (choice,) = _guard([target], [target.label], args, cap, prices, reviews)
+    if args.estimate_only:
+        return 0
+    assert choice is not None  # the drafts target always uses a model
+    live_client = build_client(load_live_config(target.route, args.model))
+    run_date = args.date or SystemClock().now().date()
+    out_dir = None if args.no_write else args.out_dir
+    ledger = CallLedger()
+    llm = BudgetedLLMClient(live_client, cap_usd=cap, overrides=prices, ledger=ledger)
+    context = RunContext(
+        llm=llm,
+        model=choice.model,
+        effort=choice.effort,
+        reviews=reviews,
+        limit=args.limit,
+        only=args.only,
+    )
+    meta = RunMeta(
+        run_date=run_date,
+        set_name=DRAFTS_SET_NAME,
+        mode=target.label,
+        model=choice.model,
+        live=True,
+        effort=choice.effort,
+        dataset_files=digests,
+        cap_usd=cap,
+        reviews=reviews,
+    )
+    async with isolated_drafts(eval_database_url(), target) as bound:
+        try:
+            outcome = await run_target(bound, context, meta=meta, ledger=ledger, out_dir=out_dir)
+        except BaseException:
+            if ledger.entries:
+                _refuse(f"the run failed after spending ${ledger.spent:.4f} of ${cap}")
+            raise
+    for line in outcome.result.headline:
+        _say(line)
+    _print_outcome(f"drafts ({target.label})", outcome, ledger=ledger, cap=cap, spent=True)
+    return exit_code(outcome.result)
+
+
+def _review(args: argparse.Namespace) -> int:
+    """`review drafts --from REPORT.json [--export SHEET.md]`: how many of a
+    recorded run's drafts the owner has rated, acceptability per variant, and
+    the sheet to rate the rest on. No model, no database."""
+    try:
+        report = json.loads(args.report.read_text(encoding="utf-8"))
+    except OSError, ValueError:
+        raise RefusedError(f"{args.report.name} is not a readable JSON report") from None
+    if not isinstance(report, dict) or report.get("target") != DraftsTarget.name:
+        raise RefusedError(f"{args.report.name} is not the report of a drafts run")
+    if report.get("dataset_files", {}).get(E2_MANIFEST_NAME) != dataset_digests().get(
+        E2_MANIFEST_NAME
+    ):
+        raise RefusedError(
+            "the run was made on another version of E2: its drafts cannot be shown "
+            "against the current situations"
+        )
+    reviews = _reviews(args.reviews, "e2")
+    status = rating_status(report, reviews)
+    rated = status.acceptability
+    _say(f"{rated.overall.denominator} of {status.drafts} drafts rated")
+    _say(f"  acceptable (as is + minor edit): {fmt_measure(rated.overall)}")
+    for variant, measure in rated.per_variant.items():
+        _say(f"  {variant}: {fmt_measure(measure)}")
+    if args.export is not None:
+        sheet = rating_sheet(report, _situations(), load_e1(), reviews)
+        args.export.parent.mkdir(parents=True, exist_ok=True)
+        args.export.write_text(sheet, encoding="utf-8", newline="\n")
+        _say(f"  sheet: {args.export}")
+    return 0
+
+
 async def _retrieval(args: argparse.Namespace) -> int:
     _require_recorded(args)
     if args.only is not None:
-        raise RefusedError("--only is only for the summary, triage and monitors targets")
+        raise RefusedError("--only is only for the summary, drafts, triage and monitors targets")
     digests = ensure_frozen()
     cap, prices = _cap(args.budget_usd), _prices(args.price)
     reviews = _reviews(args.reviews, "retrieval")
