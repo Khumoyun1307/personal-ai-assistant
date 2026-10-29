@@ -3,6 +3,14 @@
 The audit claim survives notification retention and a process interruption.
 Only a proven failed resolution permits another attempt. Text and buttons
 remain in memory; unlike standard notifications, callers own retries.
+
+An unresolved claim (the send was cut off after the claim committed) may have
+reached the owner, so it is never replayed early. For a once-ever key
+(`cooldown=None`, e.g. `uncertain:{action_id}`) it blocks forever. For a key
+with a cooldown it counts as an uncertain resolution at its claim time (TL
+amendment to ICR #132, P2-T24): `in_progress` while it is within the
+cooldown, then a new claim is allowed, exactly as after a recorded uncertain
+alert, so one interrupted send cannot mute a recurring alert kind.
 """
 
 from __future__ import annotations
@@ -113,17 +121,17 @@ class SystemNotificationDelivery:
                 resolution.event == EVENT_RESOLVED,
                 resolution.details["claim_id"].astext == cast(AuditLogEntry.id, String),
             )
-            unresolved = await session.scalar(
-                select(AuditLogEntry.id)
-                .where(
-                    AuditLogEntry.account_id == account_id,
-                    AuditLogEntry.event == EVENT_CLAIMED,
-                    AuditLogEntry.details["key"].astext == key,
-                    ~resolved,
-                )
-                .limit(1)
+            pending = select(AuditLogEntry.id).where(
+                AuditLogEntry.account_id == account_id,
+                AuditLogEntry.event == EVENT_CLAIMED,
+                AuditLogEntry.details["key"].astext == key,
+                ~resolved,
             )
-            if unresolved is not None:
+            if cooldown is not None:
+                # Older than the cooldown, an unresolved claim is treated as an
+                # uncertain alert dated at its claim time, which no longer blocks.
+                pending = pending.where(AuditLogEntry.at >= now - cooldown)
+            if await session.scalar(pending.limit(1)) is not None:
                 return SystemAlertOutcome(False, "in_progress")
             recent = select(AuditLogEntry.id).where(
                 AuditLogEntry.account_id == account_id,
@@ -196,7 +204,12 @@ class SystemNotificationDelivery:
         uncertain = not delivery.ok and delivery.uncertain
         async with transaction(self._session_factory) as uow:
             session = uow.session
-            await _serialize(session, claim.account_id, claim.key)
+            if await _serialize(session, claim.account_id, claim.key) is None:
+                # The account was deleted during the send; its history went with it.
+                ok = delivery.ok
+                return SystemAlertOutcome(
+                    ok, "not_recorded", delivery.message_id if ok else None, uncertain
+                )
             previous = await session.scalar(
                 select(AuditLogEntry).where(
                     AuditLogEntry.account_id == claim.account_id,

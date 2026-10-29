@@ -197,26 +197,84 @@ async def test_an_existing_attempt_key_collision_is_skipped(env: Env) -> None:
     assert audits[0].details["attempt_ms"] == epoch_ms + 1
 
 
-async def test_a_claim_survives_crash_notification_sweep_and_cooldown(env: Env) -> None:
+async def test_a_once_ever_claim_survives_crash_notification_sweep_and_any_clock_advance(
+    env: Env,
+) -> None:
+    """A `cooldown=None` key (incl. `uncertain:{action_id}`) whose send was cut
+    off after the claim committed is never sent again (ICR #132, P2-T24)."""
     account = await account_id(env)
-    channel = HeldChannel(crash=True)
-    channel.release.set()
-    alerts = OwnerAlerts(env.factory, channel, env.clock)
+    crashing = HeldChannel(crash=True)
+    crashing.release.set()
     with pytest.raises(RuntimeError, match="synthetic process interruption"):
-        await notify(alerts, account)
+        await notify(OwnerAlerts(env.factory, crashing, env.clock), account)
     async with env.factory() as session, session.begin():
         await session.execute(delete(Notification))
-    env.clock.advance(days=31)
-    result = await alerts.notify_owner(
-        account,
-        AlertKind.BUDGET_THRESHOLD,
-        dedupe_key="synthetic:system",
-        cooldown=timedelta(seconds=1),
-        percent=80,
-    )
-    assert result.reason == "in_progress"
+    channel = FakeChannel()
+    alerts = OwnerAlerts(env.factory, channel, env.clock)
+    for days in (1, 30, 300):
+        env.clock.advance(days=days)
+        assert (await notify(alerts, account)).reason == "in_progress"
     assert channel.sends == []
-    assert len((await records(env))[1]) == 1
+    assert [a.event for a in (await records(env))[1]] == ["system_alert_claimed"]
+
+
+async def test_an_interrupted_cooldown_claim_blocks_like_an_uncertain_alert_then_resends_once(
+    env: Env,
+) -> None:
+    """TL amendment to ICR #132: with a cooldown, an unresolved claim older than
+    the cooldown counts as an uncertain resolution at its claim time."""
+    account = await account_id(env)
+    cooldown = timedelta(hours=1)
+
+    async def stall(alerts: OwnerAlerts) -> AlertResult:
+        return await alerts.notify_owner(
+            account, AlertKind.INGESTION_STALL, dedupe_key="synthetic:stall", cooldown=cooldown
+        )
+
+    crashing = HeldChannel(crash=True)
+    crashing.release.set()
+    with pytest.raises(RuntimeError, match="synthetic process interruption"):
+        await stall(OwnerAlerts(env.factory, crashing, env.clock))
+    async with env.factory() as session, session.begin():
+        await session.execute(delete(Notification))
+    channel = FakeChannel()
+    alerts = OwnerAlerts(env.factory, channel, env.clock)
+    env.clock.advance(minutes=59)
+    assert (await stall(alerts)).reason == "in_progress"
+    env.clock.advance(minutes=1)  # the same boundary a recorded uncertain alert blocks to
+    assert (await stall(alerts)).reason == "in_progress"
+    assert channel.sends == []
+    env.clock.advance(seconds=1)
+    assert (await stall(alerts)).sent
+    assert (await stall(alerts)).reason == "duplicate"
+    assert len(channel.sends) == 1
+    audits = (await records(env))[1]
+    assert [a.event for a in audits] == [
+        "system_alert_claimed",
+        "system_alert_claimed",
+        "system_alert",
+    ]
+    # The interrupted claim stays unresolved; no history is rewritten.
+    assert audits[2].details["claim_id"] == audits[1].id
+    assert audits[2].details["delivered"] is True
+
+
+async def test_a_resolution_for_a_deleted_account_is_explicitly_not_recorded(env: Env) -> None:
+    account = await account_id(env)
+    service = SystemNotificationDelivery(env.factory, FakeChannel(), env.clock)
+    claim = await service._claim(account, "budget_threshold", "synthetic:deleted", None)
+    assert isinstance(claim, SystemAlertClaim)
+    async with env.factory() as session, session.begin():
+        await session.execute(delete(Account).where(Account.id == account))
+    outcome = await service._record(claim, Delivery(ok=True, message_id=777))
+    assert (outcome.sent, outcome.reason, outcome.message_id, outcome.uncertain) == (
+        True,
+        "not_recorded",
+        777,
+        False,
+    )
+    rows, audits = await records(env)
+    assert (rows, audits) == ([], [])
 
 
 @pytest.mark.parametrize("uncertain", [False, True])
