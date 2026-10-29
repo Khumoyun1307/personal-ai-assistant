@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from assistant.agent import prompt_registry
 from assistant.agent.models import RUN_TYPES
@@ -378,12 +378,44 @@ def _keywords(node: Any) -> set[str]:
     return set()
 
 
+def _refs_with_siblings(node: Any) -> list[dict[str, Any]]:
+    if isinstance(node, dict):
+        own = [node] if "$ref" in node and len(node) > 1 else []
+        return own + [found for value in node.values() for found in _refs_with_siblings(value)]
+    if isinstance(node, list):
+        return [found for value in node for found in _refs_with_siblings(value)]
+    return []
+
+
 def test_every_registered_tool_schema_is_strict() -> None:
     for definition in default_registry().all():
         schema = definition.spec().parameters
         assert schema["additionalProperties"] is False, definition.name
         assert sorted(schema["required"]) == sorted(schema["properties"]), definition.name
         assert not _keywords(schema) & _UNUSED_KEYWORDS, definition.name
+        # The API rejects the whole request otherwise (400
+        # invalid_function_parameters: "$ref cannot have keywords").
+        assert not _refs_with_siblings(schema), definition.name
+
+
+class Scope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    all_observed: bool
+
+
+class Described(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scope: Scope = Field(description="Which chats to watch.")
+    again: Scope = Field(description="A second description of the same model.")
+
+
+def test_a_described_nested_model_keeps_its_description_on_the_definition() -> None:
+    schema = strict_schema(Described)
+
+    assert schema["properties"]["scope"] == {"$ref": "#/$defs/Scope"}
+    assert schema["properties"]["again"] == {"$ref": "#/$defs/Scope"}
+    assert schema["$defs"]["Scope"]["description"] == "Which chats to watch."
+    assert schema["$defs"]["Scope"]["additionalProperties"] is False
 
 
 def test_the_confirmation_gate_covers_state_changes_in_tainted_runs_only() -> None:
