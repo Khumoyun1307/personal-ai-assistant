@@ -2,7 +2,7 @@
 
 *Engineering plan for the phase after M03. Owner-approved 2026-10-26 (see [decisions.md](decisions.md)). Written by the Technical Lead. This folder is the **single entry point** for every engineer in P2: start here, then read your handoff in [handoffs/](handoffs/).*
 
-**Status (2026-10-27):** **P2 has started.** The owner said "M03 OK" on 2026-10-27 and gave every engineer the go-ahead the same day (D0 = 2026-10-27; [decisions.md](decisions.md) B4). CP0 is done: labels, one GitHub issue per work unit (#44–#66), the `P2 integration` issue (#43) and the owner-gate issues. Wave 1 is running; the datasets (E2D, E3D) and QA-P are authorised with the go-ahead and run as ordinary units.
+**Status (2026-10-28):** **M04 source is on `main`; M05 units are on `int/m05`.** The earlier M04 deployment (`de19e05`) kept every new flag off. Trial-verifier, restore-tool and gateway fixes have since merged; CP4 sync (#132) is tracked in the [current TL handoff](handoffs/tech-lead.md#9-resumed-source-work-2026-10-28). The owner deferred further production until they initiate it. Live acceptance, trials, paid evaluations and owner review remain pending; both milestones stay `in progress` (interim [M04](../../milestones/M04.md), [M05](../../milestones/M05.md)). D0 remains 2026-10-27 ([decisions.md](decisions.md) B4); #43 is the integration record.
 
 ---
 
