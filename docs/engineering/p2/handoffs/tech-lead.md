@@ -59,6 +59,8 @@ The TL session (Claude Code, ultracode) runs **Neryn, Viro, Jack and Junior** as
 
 ## 8. State at the end of the 2026-10-28 TL session (start here)
 
+**Historical baseline:** this section describes the earlier session. For the resumed source work and current next steps, continue with §9 below.
+
 **Done.** M04 is on `main` (#125, de19e05) and **deployed to production with every new M04 flag off** (backup 20261028T184105Z first; healthy). CP2 is signed off (decisions §D). All M05 units are merged into `int/m05` (327e5d0): S05.1, S05.2, S05.2P, S05.3a, S05.3b, S05.4, E3D, E3T parts 1 and 2, QA-S5. The retrieval agent-mode re-run for `owner_request.v8` passed its pre-screen (USD 0.058; #72). No role agent is running; no unit has unpushed work.
 
 **Next, in order:**
@@ -69,4 +71,39 @@ The TL session (Claude Code, ultracode) runs **Neryn, Viro, Jack and Junior** as
 5. **Owner gates:** E2 ratings and E3 label confirmation plus the uz/ru dataset review (#73); the E2/E3 live runs (#72); the trials; CP6 reports (#74).
 
 **Open items** for M04.md and M05.md are in each unit PR's description and in decisions P2-T42…T54. **Workflow scripts** and the role setup: §7 above; their stable copies are in the TL's memory folder.
+
+## 9. Resumed source work (2026-10-28)
+
+The owner requested a safe stop after the current step, with work saved and temporary resources cleaned. The production process remains deferred until the owner initiates it. No production/server/bot action or paid evaluation ran in this resumed session. Do not request production approval as part of resuming ordinary source work.
+
+**Completed:**
+
+- OPS-TV #123 was fixed, independently rechecked and merged into `int/m04`; the small promotion #129 reached `main` at `f8803c8`. The verifier now rejects missing/ambiguous attempt evidence and narrowly recognizes successful deletion receipts. Current-base CI passed all nine jobs; #65 remains open for production dry-run/trial records.
+- OPS-RT #130 reached `main` at `db0071c` after fresh peer and QA rechecks and nine green CI jobs. Structural verification and isolated restore tooling are ready. Review caught unsafe URL suffix replacement; the fixed launcher structurally selects `restore_test` and rejects unsupported URL shapes before child execution. #66 remains open for the live rehearsal. The merged unit worktree and local/remote branch were removed with the owner's explicit cleanup approval.
+- Gateway/ICR-5 #131 (PR #133) reached `main` at `b108027`. Existing control entities are preserved without activating escaped contact markup; rejected tag pairs stay literal. Later control-chunk failures return partial/uncertain, with no complete-message id or retry hint. Durable approval-presentation claims prevent replay after uncertain delivery or a crash; late old-version completion cannot overwrite a newer card. Peer, fresh QA and TL rechecks were clear after one fix round; CI passed all nine jobs. CP4 must retain this correction and the narrow legacy OwnerAlerts delivered-or-uncertain dedupe.
+- Junior checked owner-gate readiness: E2 has 150 situations; E3 has 150 bursts and 30 monitor cases. Specific real-model runs (#72), owner ratings/confirmed labels (#73), live checks and final acceptance (#74) remain pending. The earlier v8 retrieval run cost USD 0.0582; the phase cap is not per-run spending authorization.
+
+**CP4 clean-stop checkpoint:** #132, [draft PR #134](https://github.com/Khumoyun1307/personal-ai-assistant/pull/134), branch `int-sync/main-into-m05`, saved and pushed at **`a0e4bf0b8c5652d665416794da8524ac7d06ac13`**. The unit is based on `int/m05` `327e5d0a14656c922e36fae81dcadf213a4df59d`; its merge parents are the synchronous system-notification checkpoint `3136ac200c4e818f12e6d103835ac2f72c13bef5` and exact reviewed `main` `b108027c90d493ae80bbd91ef5259cb692dc3154`. This is the one actual main merge, with all 26 conflict groups resolved and recorded in the draft PR. CP4 is not merged into `int/m05` in this run.
+
+The checkpoint preserves shipped v8 byte-for-byte (blob `f492c9cadfba90fd6ffb38e051adf995eb7521a6`), adds v9 with the M05 rules numbered 23–25, retains both Assist and priority panel appends, wires the triage draft callback, and removes only the two CP4 strict-xfail markers after their unchanged scenario bodies passed. Author evidence: 105 final targeted tests passed; 15 synchronous system regressions also passed; mypy checked 216 source files; all five import contracts and normal gitleaks/Ruff/format hooks passed. Fresh peer/QA/TL reviews remain pending; these results are not integration approval.
+
+[CI run 40775826448](https://github.com/Khumoyun1307/personal-ai-assistant/actions/runs/40775826448) **failed**: test shards 2 and 5 and the aggregate check are red; lint, images, deploy scripts and shards 1/3/4 passed. The draft remains unmerged. Exact failure names and concise diagnostics are recorded on #134/#132 and in the latest #43 stop summary. No implementation loop was reopened after the stop request. No full local suite was run.
+
+The five reported failures are:
+
+- `test_conversation_modes::test_assist_is_settable_by_tool_and_panel_and_undoable`: old M04 keyboard expectation omits the new priority row.
+- `test_settings_m05_panels::{test_the_panel_shows_the_contacts_priority_ticked,test_choosing_vip_on_the_panel_sets_the_contacts_priority_and_audits_it}`: old M05 keyboard/slice expectations omit Assist or include the adjacent Delete row.
+- `test_system_tasks::test_an_undelivered_alert_is_tried_again`: its unfiltered audit assertion now reads a preclaim row with no `delivered` field.
+- `test_mark_uncertain::test_an_uncertain_alert_lost_after_tx_b_is_sent_by_a_later_sweep`: the old raised-channel recovery expectation conflicts with CP4's unresolved claim blocking replay. **Needs a TL safety disposition after inspecting the crash point and contracts; do not weaken an invariant/regression assertion simply to make CI green.** Preserve meaningful coverage for definite non-delivery retry and uncertain/crashed delivery suppression.
+
+**Next TL, in order:**
+
+1. Read the latest clean-stop summary on #43, #132 and its draft PR, then fetch the saved unit branch. Recreate an isolated author/reviewer worktree from the recorded head as needed; inspect status first and never reset/discard unexpected work. Use a separate `COMPOSE_PROJECT_NAME` (`jack-cp4` for the author).
+2. Resolve the recorded CI failures in the author branch using only directly relevant short local tests, then push for the full CI gate. Run fresh independent Neryn peer and Antony QA reviews of the fixed exact CP4 head, then TL contract/safety review. Inspect the recorded conflict-resolution map, system-notification claims/locks/retries, byte-identical shipped v8, new v9, both panel appends and both CP4 scenarios. No reviewer from this run has approved CP4. Fix only accepted review blockers under the one-fix-round rule; keep every review/recheck independent of the author. Session setup follows §7 and the owner's current instructions.
+3. Verify current-base CI is green before merging the CP4 unit into `int/m05` (P2-T30). Open the final integration PR as a draft for the owner when ready. Do not merge that final PR, run production or real-model evals, or mark either milestone done. The v9 retrieval rerun still needs specific owner approval before shipping.
+4. Keep `triage.assist_trigger` off through the seven-day M04 trial. Resume deferred live/eval/owner gates only within their explicit authorizations. Update the interim [M04](../../../milestones/M04.md) and [M05](../../../milestones/M05.md) reports only with evidence actually obtained.
+
+**Cleanup boundary:** preserve the unmerged CP4 remote branch and its commits. Remove only this run's verified disposable worktrees and synthetic Compose resources after their work is saved. Existing shared development resources and the separate P3 worktrees are outside this cleanup. The root checkout returns to clean `main`; no role agents or test commands should remain active at close.
+
+The reusable scripts remain in the TL memory folder. They target the earlier Claude workflow runtime; this Codex run follows their author → fresh peer/QA → one fix round → recheck steps through role agents. Standing role/session policy in §7 is unchanged; any session-specific QA arrangement comes from the owner's current prompt.
 
