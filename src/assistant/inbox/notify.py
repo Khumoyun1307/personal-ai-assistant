@@ -24,12 +24,19 @@ from assistant.accounts.models import Account
 from assistant.core.channel import Button, ControlChannel
 from assistant.core.clock import Clock
 from assistant.db.uow import transaction
-from assistant.inbox.system_notifications import EVENT_RESOLVED, SystemNotificationDelivery
+from assistant.inbox.system_notifications import (
+    EVENT_CLAIMED,
+    EVENT_RESOLVED,
+    SystemNotificationDelivery,
+)
 from assistant.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 EVENT_ALERT = EVENT_RESOLVED
+#: Committed before the channel call (CP4 ICR #132); unresolved, the alert
+#: may be on screen.
+EVENT_ALERT_CLAIMED = EVENT_CLAIMED
 
 
 class AlertKind(StrEnum):
