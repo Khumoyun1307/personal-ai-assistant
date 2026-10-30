@@ -292,19 +292,19 @@ def test_sendable_until_is_the_earlier_of_max_age_and_window_close_in_local_time
     )
     assert earlier_window.sendable_until == NOW + timedelta(hours=2)
     text = shown(render_card(earlier_window).text)
-    assert "Sendable until 2026-10-28 19:00 +05" in text  # 14:00 UTC, Tashkent
+    assert "Approve by 2026-10-28 19:00 +05" in text  # 14:00 UTC, Tashkent
     # An owner-approved card: the approval period alone, Telegram decides the window.
     for origin in (ActionOrigin.OWNER_DICTATED, ActionOrigin.AGENT_PROPOSAL):
         owner = replace(earlier_window, origin=origin)
         assert owner.sendable_until == NOW + timedelta(hours=3)
     earlier_expiry = view(expires_at=NOW + timedelta(minutes=30))
-    assert "Sendable until 2026-10-28 12:30 UTC" in shown(render_card(earlier_expiry).text)
+    assert "Approve by 2026-10-28 12:30 UTC" in shown(render_card(earlier_expiry).text)
     # Explicit timezone override (previews, tests).
-    assert "Sendable until 2026-10-28 13:30 CET" in shown(
+    assert "Approve by 2026-10-28 13:30 CET" in shown(
         render_card(earlier_expiry, timezone="Europe/Berlin").text
     )
     # Only a live card is "sendable until".
-    assert "Sendable until" not in shown(render_card(in_state(ActionState.APPROVED)).text)
+    assert "Approve by" not in shown(render_card(in_state(ActionState.APPROVED)).text)
 
 
 def test_keyboards_per_state() -> None:
@@ -429,7 +429,7 @@ def test_an_owner_approved_card_with_a_closed_window_warns_and_stays_approvable(
         "this send." in text
     )
     assert ops(rendered.keyboard) == ["ok", "ed", "rj"]
-    assert "Sendable until 2026-10-28 13:00 UTC" in text  # max age only
+    assert "Approve by 2026-10-28 13:00 UTC" in text  # max age only
     # Open window: no warning.
     assert "hasn't written" not in shown(render_card(view(origin=origin)).text)
     # A finished card never warns.
@@ -464,3 +464,11 @@ def test_telegram_refusing_the_window_gives_a_not_sent_card_with_copy_ready_text
     # Our own (autonomous) pre-check expiry keeps the old wording.
     estimate = in_state(ActionState.EXPIRED, reason=StateReason.WINDOW_CLOSED)
     assert "Telegram didn't allow" not in shown(render_card(estimate).text)
+
+
+def test_pf02_a_card_without_excerpts_has_no_answering_section() -> None:
+    """A dictated or standalone card answers no message: nothing to quote."""
+    text = shown(render_card(view(excerpts=())).text)
+    assert "Answering" not in text
+    assert "›" not in text  # noqa: RUF001
+    assert "Answering (their words):" in shown(render_card(view()).text)
