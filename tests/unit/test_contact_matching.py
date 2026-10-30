@@ -72,7 +72,7 @@ NAMES = [
     entry(12, "Xurshida Nazarova"),
     entry(13, "Dilnoza"),
     entry(14, "Rustam Gʻaniyev"),
-    entry(15, "Bahtiyor"),
+    entry(15, "Jahongir"),
 ]
 
 
@@ -97,8 +97,8 @@ def test_pf03_every_apostrophe_variant_finds_the_same_name() -> None:
 def test_pf03_a_nickname_style_short_form_is_a_weak_match() -> None:
     [(first, kind)] = match("Shuxa")
     assert (first, kind) == (11, "short_form")
-    [bah] = match_contacts(NAMES, "Baxa")
-    assert (bah.entry.contact_id, bah.kind, bah.is_weak) == (15, "short_form", True)
+    [jah] = match_contacts(NAMES, "Jaha")
+    assert (jah.entry.contact_id, jah.kind, jah.is_weak) == (15, "short_form", True)
 
 
 def test_pf03_a_short_form_ranks_below_every_real_match() -> None:
