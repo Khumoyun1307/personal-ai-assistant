@@ -116,10 +116,11 @@ contact filter and the final answer (synthetic data, for review; E-s, E-t, E-u).
 | 2026-10-30 | `retrieval-agent-gpt-6-luna-trial`, `retrieval-agent-gpt-6-luna` (P2 playtest fixes, agent mode, effort low) | owner_request.v10 | 0.0019 + 0.0819 |
 | 2026-10-30 | `owner-drafting-effort-low-gpt-6-luna-trial`, `owner-drafting-effort-low-gpt-6-luna` (PF-16b, informational) | owner_request.v10, draft_owner.v2, owner_drafting.v1 (rubric); effort low | 0.0008 + 0.0836 |
 | 2026-10-30 | `owner-drafting-effort-medium-gpt-6-luna-trial`, `owner-drafting-effort-medium-gpt-6-luna` (PF-16b, informational) | owner_request.v10, draft_owner.v2, owner_drafting.v1 (rubric); effort medium | 0.0008 + 0.0863 |
+| 2026-10-30 | `owner-drafting-effort-medium-gpt-6-luna-trial-2` (after PF-F #233: `--only od16,od17,od18,od03`; all 4 passed — the three reply-to-an-earlier-message cases now answer the named message, od03 accepts the Cyrillic name) | owner_request.v10, draft_owner.v3, owner_drafting.v1.1; effort medium | 0.0110 |
 
 Total so far: USD 0.4343 of the owner's USD 1 (baseline 0.0435, S03.6 0.1088, S03.7 0.2820 — the sum of `cost.spent_usd` in the S03.7 reports), tracked here and in M03.md S03.6 and S03.7.
 
-P2 so far: USD 0.5743 of the phase cap of USD 2 (P2-O8): 2026-10-28 0.0582, 2026-10-29 0.2608, 2026-10-30 0.2553 (the sum of `cost.spent_usd` in each day's reports), tracked here and in M04.md and M05.md. Not in the table on 2026-10-29: a debug re-run of the failing retrieval trial (0 model calls, USD 0; its report was lost because Git Bash path conversion mis-mapped its `--out-dir`, and the stray copy was deleted) and four schema-diagnosis API calls with the synthetic input "hi" (under USD 0.001 together).
+P2 so far: USD 0.5853 of the phase cap of USD 2 (P2-O8): 2026-10-28 0.0582, 2026-10-29 0.2608, 2026-10-30 0.2663 (the sum of `cost.spent_usd` in each day's reports), tracked here and in M04.md and M05.md. Not in the table on 2026-10-29: a debug re-run of the failing retrieval trial (0 model calls, USD 0; its report was lost because Git Bash path conversion mis-mapped its `--out-dir`, and the stray copy was deleted) and four schema-diagnosis API calls with the synthetic input "hi" (under USD 0.001 together).
 
 The fabrication judge reads the conversation as `evals/render.py` draws it. Reports name it
 `fabrication.v1` up to the summarize.v4 runs and `fabrication.v1+render.v2` from the S03.6
