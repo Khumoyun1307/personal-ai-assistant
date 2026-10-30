@@ -351,10 +351,12 @@ async def load_card_view(
 
 async def _excerpts(session: AsyncSession, account_id: int, action: Action) -> tuple[str, ...]:
     """The contact messages after the last owner/assistant message, up to the
-    draft's base message (or what a dictated message was shown through): at
-    most three, oldest first, each cut to 300 characters. An automated owner
-    message (away, greeting) answers nothing (M03), so it is no boundary."""
-    upper = action.base_message_id or action.shown_through_message_id
+    draft's base message: at most three, oldest first, each cut to 300
+    characters. A card with no base message (dictated by the owner, or a
+    standalone message) answers nothing, so it quotes nothing (PF-02). An
+    automated owner message (away, greeting) answers nothing (M03), so it is
+    no boundary."""
+    upper = action.base_message_id
     if upper is None:
         return ()
     alive = (
@@ -418,7 +420,7 @@ def shown(text: str, *, one_line: bool = False) -> str:
 def _their_words(excerpt: str) -> list[str]:
     """One excerpt of the contact's words, every line marked as theirs, so a
     line break in them can never start what looks like a card line of its
-    own ("Sendable until …", a state line)."""
+    own ("Approve by …", a state line)."""
     return [
         f"› <i>{shown(line)}</i>" if line else "›"  # noqa: RUF001
         for line in excerpt.split("\n")
@@ -631,7 +633,7 @@ def _compose(
     parts.append("")
     until = view.sendable_until
     if view.state in LIVE_CARD and until is not None:
-        parts.append(f"Sendable until {local_time(until, view.timezone)}")
+        parts.append(f"Approve by {local_time(until, view.timezone)}")
     parts.append(state_line(view))
     if (explanation := _explanation(view)) is not None:
         parts.append(f"<i>{explanation}</i>")
@@ -1387,8 +1389,14 @@ class ApprovalCards:
             # how long the revision has been waiting from this time.
             created_at=clock.now(),
             # The owner's own words; `refs` lets deleting that chat redact it.
+            # `revision_action_id` marks the turn as the revision's, so the
+            # lost-owner-turn reconciler never re-runs it as a request (PF-01).
             contains_managed=False,
-            refs={"conversation_ids": [row.conversation_id], "contact_ids": [row.contact_id]},
+            refs={
+                "conversation_ids": [row.conversation_id],
+                "contact_ids": [row.contact_id],
+                "revision_action_id": [row.id],
+            },
         )
         recorded = await lifecycle.set_revision_turn(
             session,
