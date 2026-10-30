@@ -14,7 +14,10 @@ from assistant.agent import prompt_registry
 from assistant.agent.draft_context import DraftContext, OwnerDraftInputs, build_draft_owner
 from assistant.agent.draft_owner_schemas import (
     OwnerDraftResult,
+    OwnerRevisionResult,
     WordBounds,
+    chosen_answer,
+    output_model_for,
     validate_owner_draft,
     word_count,
 )
@@ -33,6 +36,7 @@ DRAFT_REPLY_V1_SHA256 = "ebd4be103bebd0b83f81433b8740e32abe15fa1e53eb827e3f9a6b3
 def owner_output(**changes: object) -> dict[str, object]:
     values: dict[str, object] = {
         "language": "en",
+        "answers_message_id": None,
         "text": "Synthetic owner draft.",
         "confidence": "high",
         "sensitive_topic": False,
@@ -73,9 +77,11 @@ def joined(built: DraftContext) -> str:
 
 # ------------------------------------------------------------ prompt registry
 def test_draft_owner_is_its_own_key_and_draft_reply_v1_is_byte_identical() -> None:
-    # v2 (PF-13) adds `revision_kind` for revisions; v1 stays on disk.
-    assert prompt_registry.active("draft_owner").label == "draft_owner.v2"
+    # v2 (PF-13) adds `revision_kind` for revisions; v3 (PF-F) adds
+    # `answers_message_id`. Used versions stay on disk.
+    assert prompt_registry.active("draft_owner").label == "draft_owner.v3"
     assert (prompt_registry.PROMPT_DIR / "draft_owner.v1.md").is_file()
+    assert (prompt_registry.PROMPT_DIR / "draft_owner.v2.md").is_file()
     assert prompt_registry.active("draft_reply").label == "draft_reply.v1"
     raw = (prompt_registry.PROMPT_DIR / "draft_reply.v1.md").read_bytes()
     assert hashlib.sha256(raw).hexdigest() == DRAFT_REPLY_V1_SHA256
@@ -92,8 +98,10 @@ def test_the_owner_prompt_never_offers_a_no_reply_needed_veto() -> None:
 def test_the_owner_schema_is_strict_with_language_first_and_no_veto_or_decline() -> None:
     schema = OwnerDraftResult.model_json_schema()
     assert next(iter(schema["properties"])) == "language"
+    assert list(schema["properties"])[:2] == ["language", "answers_message_id"]
     assert set(schema["properties"]) == {
         "language",
+        "answers_message_id",
         "text",
         "confidence",
         "sensitive_topic",
@@ -181,7 +189,12 @@ def test_without_a_request_no_owner_words_item_is_added() -> None:
 @pytest.mark.parametrize(
     ("inputs", "base", "task"),
     [
-        (OwnerDraftInputs(), 4, "Task: reply. Write the owner's reply to the contact's latest"),
+        (
+            OwnerDraftInputs(),
+            4,
+            "Task: reply. Write the owner's reply to the contact message the owner's request "
+            "points at, or else to the contact's latest messages.",
+        ),
         (
             OwnerDraftInputs(answered_message_id=2),
             2,
@@ -198,6 +211,41 @@ def test_the_mode_sets_the_task_and_the_base_message(
     assert built.shown_through_message_id == 4
     assert built.contact_ids == frozenset({2, 4})
     assert task in joined(built)
+
+
+def test_every_mode_returns_answers_message_id_and_only_revise_its_kind() -> None:
+    assert output_model_for("reply") is OwnerDraftResult
+    assert output_model_for("new_message") is OwnerDraftResult
+    assert output_model_for("revise") is OwnerRevisionResult
+    without = {k: v for k, v in owner_output().items() if k != "answers_message_id"}
+    with pytest.raises(ValidationError):  # strict: the model must say it, null or an id
+        OwnerDraftResult.model_validate(without)
+    with pytest.raises(ValidationError):
+        OwnerDraftResult.model_validate(owner_output(answers_message_id="msg:2"))
+
+
+def test_the_v3_prompt_states_the_answered_message_rule() -> None:
+    text = prompt_registry.active("draft_owner").text
+    assert "answers_message_id" in text
+    assert "null" in text
+
+
+@pytest.mark.parametrize(
+    ("chosen", "expected"),
+    [
+        (None, (None, None)),
+        (2, (2, None)),  # a shown contact message
+        (4, (4, None)),
+        (3, (None, "not_contact")),  # shown, but the owner's own message
+        (99, (None, "not_shown")),  # another chat's, or unknown
+    ],
+)
+def test_the_drafters_choice_must_be_a_shown_contact_message(
+    chosen: int | None, expected: tuple[int | None, str | None]
+) -> None:
+    built = context()
+    result = OwnerDraftResult.model_validate(owner_output(answers_message_id=chosen))
+    assert chosen_answer(result, built) == expected
 
 
 def test_a_revision_reads_the_current_draft_as_untrusted_managed_data() -> None:

@@ -315,7 +315,8 @@ message has no base message) and answered message; the exact text; words that mu
 must not be in the card (values compared as in `agent_mode.value_key`); word bounds and
 "fewer words" with the product's `word_count`; an append that keeps the old text as its
 prefix; the **same** card revised (a higher version, never a new card); names in the
-reply and the live draft's exact word count. The judge (`rubrics/owner_drafting.v1`)
+reply (since v1.1 a required value may be a list of alternatives, one of which must
+appear: od03 accepts the name in Latin or Cyrillic) and the live draft's exact word count. The judge (`rubrics/owner_drafting.v1`)
 pre-screens only tone and carried substance; a judge failure leaves the case
 unscreened. Metrics: case passed, routing, card, reply and judge, with case passed by
 category and by variant. **Informational**: no threshold and no gate.
@@ -326,7 +327,9 @@ compare, run once with both at `low` and once with both at `medium` (for example
 compose -f compose.dev.yml run --rm -e LLM_OWNER_REQUEST_EFFORT=medium -e
 LLM_DRAFT_REPLY_EFFORT=medium app uv run python -m evals run owner_drafting …`). The report
 names carry the efforts (`owner-drafting-effort-low-…`, `owner-drafting-effort-medium-…`),
-and a trial calibrates only a run at the same efforts.
+and a trial calibrates only a run at the same efforts. D10 resolved to **medium** on the
+2026-10-30 runs (27/31 vs 26/31, about +3 % cost): both settings default to `medium` since
+PF-F (`docs/evals/README.md`).
 
 **Cost and run procedure.** The agent loop's worst case for the full set is about USD 1.33
 on `gpt-6-luna` (over the USD 1 cap; USD 0.04 for one case), so a full run starts as the

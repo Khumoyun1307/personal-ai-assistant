@@ -145,7 +145,9 @@ async def test_the_target_runs_the_owner_runtime_and_scores_each_case(
         # od01 identity: a plain answer.
         text_response("Men Alviro, sizning AI yordamchingizman."),
         # od02 dictate: the owner's words, word for word.
-        calling("propose_message", contact_id=None, text="SYNTH ertaga keldim"),
+        calling(
+            "propose_message", contact_id=None, text="SYNTH ertaga keldim", answered_message_id=None
+        ),
         text_response("Karta tasdiqlashingizni kutmoqda."),
         # od03 compose: a new message through draft_owner.
         calling(

@@ -199,7 +199,7 @@ async def test_an_instruction_revises_through_draft_owner_with_the_current_text_
             select(AgentRun).where(AgentRun.id == revised.draft_run_id)
         )
     assert draft_run is not None
-    assert draft_run.prompt_version == "draft_owner.v2"
+    assert draft_run.prompt_version == "draft_owner.v3"
     assert draft_run.trigger_ref.startswith(f"revise:action:{row.id}:turn:")
     output = last_output(s)
     assert (output["status"], output["version"], output["changed"]) == ("revised", 2, "rewritten")
@@ -330,7 +330,7 @@ async def test_the_edit_button_revises_through_the_same_draft_owner_path(s: Scen
     async with s.env.factory() as session:
         run = await session.scalar(select(AgentRun).where(AgentRun.id == revised.draft_run_id))
     assert run is not None
-    assert run.prompt_version == "draft_owner.v2"
+    assert run.prompt_version == "draft_owner.v3"
 
 
 async def test_a_chat_revision_recovered_by_the_job_keeps_its_chat_semantics(s: Scenario) -> None:

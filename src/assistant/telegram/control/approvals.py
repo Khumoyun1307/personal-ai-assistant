@@ -1716,6 +1716,10 @@ class RevisionJob:
             return None
         flags = row[5] or {}
         target, mode = flags.get(FLAG_TARGET), flags.get("mode")
+        if row[3] == ActionOrigin.OWNER_DICTATED.value and row[4] is not None:
+            # A dictated card has no flags (R8); its base message is one the
+            # owner named (`propose_message`, PF-F), kept like any named one.
+            target = TARGET_ANSWERED
         return _Revising(
             row[0],
             row[1],
@@ -1816,7 +1820,8 @@ class RevisionJob:
                 logger.info("revision_stale", action_id=action_id)
                 return RevisionResult("stale")
             flags: dict[str, Any] | None = None
-            base_message_id: int | None = None
+            # A dictated card answers the message the owner named, or none.
+            base_message_id: int | None = before.base_message_id if before.keeps_target else None
             if not dictated:
                 # The owner chose what this answers (PF-12): a revision keeps it.
                 target = before.target if before.keeps_target else outcome.target

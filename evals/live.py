@@ -63,7 +63,9 @@ def _settings() -> Settings:
 
 
 #: Routes whose effort is the product's fixed default, not a setting: drafting
-#: (S04.2) sends `DraftConfig.effort`.
+#: (S04.2) sends `DraftConfig.effort`. E2's baseline stays pinned at that `low`
+#: on purpose: D10 (2026-10-30) moved the product's `LLM_DRAFT_REPLY_EFFORT` to
+#: `medium`, but E2's runs stay one series (re-pinning it is a TL decision).
 _FIXED_EFFORTS: dict[str, str | None] = {"draft_reply": DraftConfig(model="").effort}
 
 
@@ -98,7 +100,7 @@ def draft_owner_choice(override: str | None) -> ModelChoice:
     except LiveSetupError:
         if override is None:
             raise
-        return ModelChoice(override, DraftConfig(model="").effort)
+        return ModelChoice(override, Settings.model_fields["llm_draft_reply_effort"].default)
     model = override or settings.model_routes.model_for("draft_reply")
     return ModelChoice(model, settings.llm_draft_reply_effort)
 

@@ -63,6 +63,7 @@ from assistant.agent.draft_owner_schemas import (
     OwnerDraftResult,
     OwnerRevisionResult,
     WordBounds,
+    chosen_answer,
     output_model_for,
     validate_owner_draft,
     word_count,
@@ -104,13 +105,16 @@ FLAG_SOURCE = "source"
 SOURCE_OWNER_DRAFT = "draft_owner"
 SOURCE_ASSISTANT_SUGGESTION = "assistant_suggestion"
 FLAG_TARGET = "target"
-#: The contact message the owner named; none (a standalone message); or the
-#: newest contact message when the draft was made (today's default).
+#: The contact message the owner named (by the owner_request model's id, or
+#: found by the draft writer in the owner's words, PF-F); none (a standalone
+#: message); or the newest contact message when the draft was made (the
+#: default).
 TARGET_ANSWERED = "answered"
 TARGET_NONE = "none"
 TARGET_NEWEST = "newest"
 #: Targets the owner chose: a revision keeps the base message (PF-12).
 EXPLICIT_TARGETS = frozenset({TARGET_ANSWERED, TARGET_NONE})
+AnsweredBy = Literal["owner_request", "draft_writer"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +156,10 @@ class DraftOutcome:
     bounds_retry: bool = False
     #: None when the owner asked for no length.
     bounds_met: bool | None = None
+    #: Who chose the answered message of a `reply` (PF-F, content-free):
+    #: `owner_request` (the tool's `answered_message_id`), `draft_writer`
+    #: (`answers_message_id`, checked), or None (the newest, or no target).
+    answered_by: AnsweredBy | None = None
 
     @property
     def text(self) -> str | None:
@@ -349,7 +357,9 @@ class Drafter:
         nothing third-party (PF-11); `guidance` is model-written and a
         tainted run never passes it (decisions R2). `answered_message_id`
         must be a contact message among the shown ones, else
-        `NOT_DRAFTABLE`/`answered_not_shown`. `revise` rewrites the live
+        `NOT_DRAFTABLE`/`answered_not_shown`; without it, a `reply` answers
+        the shown contact message the draft writer finds the owner's request
+        pointing at (PF-F, checked), or else the newest. `revise` rewrites the live
         action `revise_action_id` of this chat (its text is loaded here,
         never taken from the caller). With `bounds`, a draft outside the word
         range is written once more with its count fed back; the closer one
@@ -424,7 +434,12 @@ class Drafter:
             return replace(
                 result,
                 run_id=prepared.run_id,
-                base_message_id=prepared.context.base_message_id,
+                # The draft writer's checked choice (PF-F), else the context's.
+                base_message_id=(
+                    result.base_message_id
+                    if result.base_message_id is not None
+                    else prepared.context.base_message_id
+                ),
                 shown_through_message_id=prepared.shown_through_message_id,
             )
         except BaseException as error:
@@ -644,7 +659,7 @@ class Drafter:
         bounds = inputs.bounds
         count = word_count(first.text)
         if bounds is None or bounds.contains(count):
-            return self._owner_outcome(inputs, first, retried=False), calls
+            return self._owner_outcome(prepared, first, retried=False), calls
         again = replace(
             request,
             items=(
@@ -666,23 +681,45 @@ class Drafter:
         second, more = await self._parse_owner(again, schema)
         candidates = [first] if isinstance(second, DraftOutcome) else [first, second]
         best = min(reversed(candidates), key=lambda draft: bounds.distance(word_count(draft.text)))
-        return self._owner_outcome(inputs, best, retried=True), calls + more
+        return self._owner_outcome(prepared, best, retried=True), calls + more
 
     @staticmethod
     def _owner_outcome(
-        inputs: OwnerDraftInputs, result: OwnerDraftResult, *, retried: bool
+        prepared: _Prepared, result: OwnerDraftResult, *, retried: bool
     ) -> DraftOutcome:
+        """The drafted outcome and what it answers. A `reply` with no message
+        named by the owner_request model answers the shown contact message
+        the draft writer found the owner's request pointing at (PF-F), once
+        `chosen_answer` accepts it; otherwise the newest (the context's base).
+        A named message always wins; other modes ignore the field."""
+        inputs = prepared.owner
+        assert inputs is not None
         count = word_count(result.text)
+        base: int | None = None
+        answered_by: AnsweredBy | None = None
         if inputs.mode == "new_message":
             target = TARGET_NONE
         elif inputs.answered_message_id is not None:
-            target = TARGET_ANSWERED
+            target, answered_by = TARGET_ANSWERED, "owner_request"
         else:
             target = TARGET_NEWEST
+            if inputs.mode == "reply":
+                chosen, ignored = chosen_answer(result, prepared.context)
+                if chosen is not None:
+                    target, base, answered_by = TARGET_ANSWERED, chosen, "draft_writer"
+                elif ignored is not None:
+                    logger.info(
+                        "owner_draft_answer_ignored",
+                        account_id=prepared.account_id,
+                        run_id=prepared.run_id,
+                        reason=ignored,
+                    )
         return DraftOutcome(
             DraftStatus.DRAFTED,
             owner_result=result,
             owner_mode=inputs.mode,
+            base_message_id=base,
+            answered_by=answered_by,
             target=target,
             word_count=count,
             bounds_retry=retried,
@@ -890,6 +927,7 @@ async def propose_draft(
     presenter: ApprovalCardPresenter | None,
     dictated_text: str | None = None,
     suggested_text: str | None = None,
+    answered_message_id: int | None = None,
 ) -> ProposalResult | Stale:
     """One proposal, in the caller's transaction (§3.4).
 
@@ -906,8 +944,11 @@ async def propose_draft(
     for a new action, the card after commit. A text the assistant suggested
     earlier in the control chat (`suggested_text`, origin `agent_proposal`,
     PF-12) is proposed like a dictated one — no model run, no base message
-    — with `SUGGESTION_FLAGS`. Raises `ProposalRefused` and
-    `NotInAccountError` from `propose()`."""
+    — with `SUGGESTION_FLAGS`. Either may answer a message the owner named
+    (`answered_message_id`, PF-F: a shown contact message of this chat, checked
+    by the caller): it becomes the base message, so the card quotes it and a
+    revision keeps it. Raises `ProposalRefused` and `NotInAccountError` from
+    `propose()`."""
     await _lock_for_proposal(session, account_id, conversation_id)
     flags: Mapping[str, Any] | None
     if origin is ActionOrigin.OWNER_DICTATED or suggested_text is not None:
@@ -917,13 +958,19 @@ async def propose_draft(
             raise ValueError("a suggestion is the assistant's proposal")
         text = dictated_text if dictated_text is not None else suggested_text
         assert text is not None
-        base_message_id = None
-        flags = None if suggested_text is None else dict(SUGGESTION_FLAGS)
+        base_message_id = answered_message_id
+        flags = None
+        if suggested_text is not None:
+            flags = dict(SUGGESTION_FLAGS)
+            if answered_message_id is not None:
+                flags[FLAG_TARGET] = TARGET_ANSWERED
         shown_through = await _newest_message_id(session, account_id, conversation_id)
     else:
         drafted = outcome.text
         if outcome.status is not DraftStatus.DRAFTED or drafted is None:
             raise ValueError("only a drafted outcome can be proposed")
+        if answered_message_id is not None:
+            raise ValueError("a draft's answered message comes from its outcome")
         newest_contact = await _newest_message_id(
             session, account_id, conversation_id, direction="contact"
         )

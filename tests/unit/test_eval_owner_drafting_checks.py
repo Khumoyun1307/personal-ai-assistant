@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 from evals.owner_drafting import (
     CardRecord,
     Observed,
@@ -17,6 +18,7 @@ from evals.owner_drafting import (
     judge_input,
     judged_text,
 )
+from pydantic import ValidationError
 
 from tests.unit.test_owner_drafting_dataset import card_expectation, case_record
 
@@ -195,6 +197,25 @@ def test_reply_identity_checks_fold_case() -> None:
         "reply:missing:Alviro",
         "reply:contains:ChatGPT",
     )
+
+
+def test_a_reply_value_may_list_alternatives_in_another_script() -> None:
+    """v1.1 (od03): the 2026-10-30 eval failed "Меня зовут Алвиро." though
+    the name was right, only written in Cyrillic."""
+    record = case_record()
+    record["expect"].update(
+        card=None, tools_called=[], reply_includes=[["Alviro", "Алвиро", "Альвиро"]]
+    )
+    identity = OwnerDraftingCase.model_validate_json(json.dumps(record))
+    for reply in ("Меня зовут Алвиро.", "Я Альвиро.", "Меня зовут Alviro."):
+        assert check_case(identity, seen(reply=reply)) == (), reply
+    assert check_case(identity, seen(reply="Я ассистент.")) == (
+        "reply:missing:Alviro|Алвиро|Альвиро",
+    )
+    for bad in ([[]], [["Alviro", ""]]):
+        record["expect"]["reply_includes"] = bad
+        with pytest.raises(ValidationError):
+            OwnerDraftingCase.model_validate_json(json.dumps(record))
 
 
 # ------------------------------------------------------------ the judge's input

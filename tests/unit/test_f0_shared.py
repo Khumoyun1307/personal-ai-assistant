@@ -52,8 +52,14 @@ def test_p2_settings_defaults_and_effort_blank(clean_env: None) -> None:
     assert settings.monitor_debounce_seconds == 20
     assert settings.mark_uncertain_after_seconds == 120
     assert settings.connection_stale_alert_minutes == 30
-    for name in ("llm_draft_reply_effort", "llm_triage_effort", "llm_evaluate_monitor_effort"):
-        assert getattr(settings, name) == "low"
+    # D10 (2026-10-30): the draft writer moved to medium with owner_request.
+    defaults = {
+        "llm_draft_reply_effort": "medium",
+        "llm_triage_effort": "low",
+        "llm_evaluate_monitor_effort": "low",
+    }
+    for name, default in defaults.items():
+        assert getattr(settings, name) == default
         blank = Settings(
             _env_file=None, database_url="postgresql+psycopg://u:p@db/test", **{name: ""}
         )

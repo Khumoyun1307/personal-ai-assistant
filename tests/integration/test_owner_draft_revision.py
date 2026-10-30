@@ -90,3 +90,35 @@ async def test_a_revision_keeps_an_explicit_target_and_re_anchors_the_default(
     assert revised.draft_flags is not None
     # PF-13: revisions run `draft_owner`, whose flags always name the target.
     assert revised.draft_flags["target"] == target
+
+
+@pytest.mark.parametrize(("base", "kept"), [("earlier", "earlier"), (None, None)])
+async def test_a_dictated_card_keeps_the_message_it_answers_through_a_revision(
+    s: Scenario, base: str | None, kept: str | None
+) -> None:
+    """PF-F: `propose_message` may name the message the owner's words answer;
+    a revision keeps it like any explicit target (a dictated card carries no
+    draft flags, R8, so its base message is the record)."""
+    await deliver(
+        s.env, business_message(message_id=4402, message_text="SYNTH-LATER", date=s.date + 1)
+    )
+    earlier, *_, newest = await contact_ids(s)
+    named = {"earlier": earlier, None: None}
+    row = await s.seed(
+        origin="owner_dictated",
+        base_message_id=named[base],
+        shown_through_message_id=newest,
+        draft_flags=None,
+        trigger_turn_id=None,
+    )
+    s.fake.parsed.append(revision_result(text="Synthetic shorter reply."))
+    await start_edit(s, row, "Synthetic: shorter please.")
+    assert await run_queued(s, "replies.revise") == 1
+    revised = await s.action(row.id)
+    assert (revised.state, revised.version) == ("awaiting_approval", 2)
+    assert revised.base_message_id == named[kept]
+    assert revised.draft_flags is None
+    if kept is not None:
+        [draft] = [r for r in s.fake.requests if r.purpose == "draft_reply"]
+        shown = "\n".join(getattr(item, "text", "") for item in draft.items)
+        assert f"[msg:{earlier}]." in shown

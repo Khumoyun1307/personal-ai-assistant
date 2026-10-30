@@ -1,0 +1,2553 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-30",
+  "set": "retrieval-agent",
+  "target": "retrieval",
+  "dataset": "retrieval",
+  "mode": "agent",
+  "model": "gpt-6-luna",
+  "live": true,
+  "effort": "low",
+  "complete": true,
+  "trial": false,
+  "stopped": false,
+  "not_evaluated": [],
+  "items": 38,
+  "items_planned": 38,
+  "items_total": 38,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "e2/situations.jsonl": "720a1ab1da281fecdfaa462ab71e107635fec7cc6bbbc54f91d0dd692e2bac2f",
+    "e3/bursts.jsonl": "b8a243680a3e2dbdb7175ae1645f0f8c2cec632eb1d779a6e2abc5aff52711d4",
+    "e3/monitor_cases.jsonl": "5f54aa692f82caf99a5a3c24a5459448455a92878dcb3661d58f3e57fb53bbc0",
+    "e4/cases.jsonl": "68088b0014f098dfe3dff0b30492d973cd23c5dbfe5789d86489110c304659ad",
+    "owner_drafting/cases.jsonl": "709dad6042c3e79f8b9bd0708bb1a91f5df324eda0000f3ceaa6a2e43346de09",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "owner_request.v10"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "top5_hit",
+      "label": "Target message in the top 5 of any search in the agent run",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.85,
+      "all_items": {
+        "numerator": 31,
+        "denominator": 38,
+        "ratio": 0.8157894736842105
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "fail",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 38,
+      "failed_items": [
+        "r03",
+        "r04",
+        "r05",
+        "r11",
+        "r24",
+        "r26",
+        "r30"
+      ],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "answer_correct",
+      "label": "Correct reply with a verified citation of a target",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.8,
+      "all_items": {
+        "numerator": 31,
+        "denominator": 38,
+        "ratio": 0.8157894736842105
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "not evaluable",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 38,
+      "failed_items": [
+        "r08",
+        "r11",
+        "r15",
+        "r29",
+        "r30",
+        "r35",
+        "r36"
+      ],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "target_reached_model",
+      "label": "Target message reached the model (any search result or chat read)",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": 0.85,
+      "all_items": {
+        "numerator": 36,
+        "denominator": 38,
+        "ratio": 0.9473684210526315
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "pass",
+      "gate_status": "info",
+      "gated": false,
+      "confirmed_items": 0,
+      "set_size": 38,
+      "failed_items": [
+        "r11",
+        "r30"
+      ],
+      "pending": 0,
+      "note": "Pipeline signal next to the gated top 5: it also counts search results past the fifth and messages get_conversation showed, which can hide a ranking regression; the answer metric already scores the pipeline end to end."
+    }
+  ],
+  "breakdowns": {
+    "top-5 hit by intent": {
+      "cross_language": {
+        "numerator": 2,
+        "denominator": 5,
+        "ratio": 0.4
+      },
+      "cross_script": {
+        "numerator": 13,
+        "denominator": 14,
+        "ratio": 0.9285714285714286
+      },
+      "exact": {
+        "numerator": 10,
+        "denominator": 10,
+        "ratio": 1.0
+      },
+      "new_alphabet": {
+        "numerator": 2,
+        "denominator": 3,
+        "ratio": 0.6666666666666666
+      },
+      "no_apostrophe": {
+        "numerator": 4,
+        "denominator": 5,
+        "ratio": 0.8
+      },
+      "paraphrase": {
+        "numerator": 18,
+        "denominator": 25,
+        "ratio": 0.72
+      },
+      "translit": {
+        "numerator": 3,
+        "denominator": 3,
+        "ratio": 1.0
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.0819259",
+    "calls": 86,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 86,
+        "input_tokens": 792014,
+        "output_tokens": 5449,
+        "cost_usd": "0.0819259",
+        "cost_per_100_items_usd": "0.2155944736842105263157894737"
+      }
+    }
+  },
+  "headline": [],
+  "notes": [
+    "Agent mode: the real owner_request runtime with the shipped prompt, the production release flags and the product's citation step (E-aa).",
+    "1 item(s) made no search_messages call (a top-5 miss, `no_search`): r30"
+  ],
+  "details": [
+    {
+      "id": "r01",
+      "intents": [
+        "exact"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "Qorasuv-3 17-uy",
+            "Қорасув-3 17-уй",
+            "Корасув-3 17 дом",
+            "Qorasuv 3 house 17"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c09.m05",
+            "c16.m02",
+            "c17.m03",
+            "c35.m02",
+            "c08.m05"
+          ],
+          "results": [
+            "c09.m05",
+            "c16.m02",
+            "c17.m03",
+            "c35.m02",
+            "c08.m05",
+            "c09.m04",
+            "c25.m03",
+            "c11.m03",
+            "c14.m02",
+            "c02.m04"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c09.m05"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Kamola yozgan manzil: Mirzo Ulugbek tumani, Qorasuv-3 mavzesi, 17-uy, 45-xonadon. Mo‘ljal: 64-maktab yonida. (Kamola, 2026-10-20 10:22)"
+    },
+    {
+      "id": "r02",
+      "intents": [
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 2,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "Kamola yuborgan manzil",
+            "Камола адрес отправила",
+            "адрес манзил",
+            "address location"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c17.m03",
+            "c09.m05",
+            "c19.m10",
+            "c35.m05",
+            "c35.m01"
+          ],
+          "results": [
+            "c17.m03",
+            "c09.m05",
+            "c19.m10",
+            "c35.m05",
+            "c35.m01",
+            "c29.m03",
+            "c19.m08",
+            "c22.m05",
+            "c08.m05",
+            "c27.m07"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c09.m05"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Kamola yuborgan manzil: Mirzo Ulugbek tumani, Qorasuv-3 mavzesi, 17-uy, 45-xonadon. Mo‘ljal: 64-maktab yonida. (Kamola, 2026-10-20 10:22)"
+    },
+    {
+      "id": "r03",
+      "intents": [
+        "paraphrase",
+        "cross_language"
+      ],
+      "not_evaluated": false,
+      "hit_top5": false,
+      "rank": null,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "the address Kamola sent",
+            "Kamola manzil",
+            "Камола адрес",
+            "Kamola address"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c35.m04",
+            "c35.m03",
+            "c35.m02",
+            "c29.m03",
+            "c17.m03"
+          ],
+          "results": [
+            "c35.m04",
+            "c35.m03",
+            "c35.m02",
+            "c29.m03",
+            "c17.m03",
+            "c09.m05",
+            "c27.m07",
+            "c19.m10",
+            "c35.m05",
+            "c35.m01"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c09.m05"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Kamola yuborgan manzil: Mirzo Ulugbek tumani, Qorasuv-3 mavzesi, 17-uy, 45-xonadon. Mo‘ljal: 64-maktab yonida. (Kamola, 2026-10-20 10:22)"
+    },
+    {
+      "id": "r04",
+      "intents": [
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": false,
+      "rank": null,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "status": "ok"
+        },
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        },
+        {
+          "tool": "get_conversation",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "uchrashuv vaqt",
+            "учрашув вақти",
+            "встреча время",
+            "meeting time"
+          ],
+          "contact": "Nilufar opa (rahbar)",
+          "widened": false,
+          "top5": [
+            "c11.m06",
+            "c11.m04"
+          ],
+          "results": [
+            "c11.m06",
+            "c11.m04"
+          ]
+        }
+      ],
+      "reads": [
+        {
+          "conversation": "c11",
+          "messages": [
+            "c11.m01",
+            "c11.m02",
+            "c11.m03",
+            "c11.m04",
+            "c11.m05",
+            "c11.m06",
+            "c11.m07",
+            "c11.m08",
+            "c11.m09"
+          ]
+        }
+      ],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c11.m03",
+        "c11.m05"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Nilufar opa bilan uchrashuvni payshanba, 22-oktabr soat 14:30 da ofisdagi 3-qavatning kichik majlislar zalida kelishgansizlar. Keyin u 14:00 dagi boshqa yig‘ilishi borligini aytgan, lekin siz 14:30 da borishingizni tasdiqlagansiz. (Nilufar opa (rahbar), 2026-10-19 09:45; siz, 2026-10-19 10:35)"
+    },
+    {
+      "id": "r05",
+      "intents": [
+        "paraphrase",
+        "cross_language"
+      ],
+      "not_evaluated": false,
+      "hit_top5": false,
+      "rank": null,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "status": "ok"
+        },
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        },
+        {
+          "tool": "get_conversation",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "meeting time",
+            "uchrashuv vaqti",
+            "учрашув вақти",
+            "время встречи",
+            "встретиться время"
+          ],
+          "contact": "Nilufar opa (rahbar)",
+          "widened": false,
+          "top5": [
+            "c11.m06",
+            "c11.m04"
+          ],
+          "results": [
+            "c11.m06",
+            "c11.m04"
+          ]
+        }
+      ],
+      "reads": [
+        {
+          "conversation": "c11",
+          "messages": [
+            "c11.m01",
+            "c11.m02",
+            "c11.m03",
+            "c11.m04",
+            "c11.m05",
+            "c11.m06",
+            "c11.m07",
+            "c11.m08",
+            "c11.m09"
+          ]
+        }
+      ],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c11.m03",
+        "c11.m04",
+        "c11.m05"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Nilufar opangiz bilan suhbat — “Nilufar opa (rahbar)”. Uchrashuv payshanba, 22-oktabr soat 14:30 ga kelishilgan, ammo keyin u vaqtni biroz surganini va 14:00 da boshqa yig‘ilishi borligini yozgan; siz esa 14:30 da borishingizni tasdiqlagansiz. (Nilufar opa (rahbar), 2026-10-19 09:45; Nilufar opa (rahbar), 2026-10-19 10:31; siz, 2026-10-19 10:35)"
+    },
+    {
+      "id": "r06",
+      "intents": [
+        "cross_script",
+        "exact"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "Chilonzor 9 mavze 15 uy",
+            "Чилонзор 9 мавзе 15 уй",
+            "Чиланзар 9 квартал дом 15",
+            "Chilonzor 9 district house 15"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c17.m03"
+          ],
+          "results": [
+            "c17.m03"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c17.m03"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Шоира манзилни «Чилонзор тумани, 9-мавзе, 15-уй, 33-хонадон» деб ёзган. Мўлжал: «Чинор» ресторани рўпараси. (Шоира, 2026-10-21 15:10)"
+    },
+    {
+      "id": "r07",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "Қорасув манзили",
+            "Qorasuv manzili",
+            "Карасу адрес",
+            "Qorasuv address"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c09.m05"
+          ],
+          "results": [
+            "c09.m05"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c09.m05"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Қорасув манзили: Mirzo Ulugbek tumani, Qorasuv-3 mavzesi, 17-uy, 45-xonadon. Мўлжал: 64-maktab yonida. (Kamola, 2026-10-20 10:22)"
+    },
+    {
+      "id": "r08",
+      "intents": [
+        "no_apostrophe",
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 2,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "tog asali narxi",
+            "тоғ асали нархи",
+            "цена горного мёда",
+            "mountain honey price"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c37.m01",
+            "c12.m02",
+            "c08.m02",
+            "c02.m08",
+            "c02.m02"
+          ],
+          "results": [
+            "c37.m01",
+            "c12.m02",
+            "c08.m02",
+            "c02.m08",
+            "c02.m02",
+            "c12.m07",
+            "c38.m06",
+            "c23.m01",
+            "c16.m09",
+            "c08.m03"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": false,
+      "answer_problems": [
+        "missing_value"
+      ],
+      "citations": [
+        "c12.m02"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Tog‘ asali 1 kg — 150 ming so‘m. (siz, 2026-10-21 11:10)"
+    },
+    {
+      "id": "r09",
+      "intents": [
+        "no_apostrophe",
+        "exact"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "yolak tamiri uchun pul",
+            "йўлак таъмири учун пул",
+            "деньги на ремонт тротуара",
+            "money for sidewalk repair"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c14.m02",
+            "c21.m04",
+            "c23.m03",
+            "c15.m09",
+            "c12.m07"
+          ],
+          "results": [
+            "c14.m02",
+            "c21.m04",
+            "c23.m03",
+            "c15.m09",
+            "c12.m07",
+            "c16.m08",
+            "c35.m13",
+            "c35.m07",
+            "c17.m08",
+            "c09.m09"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c14.m02"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Yo‘lak ta’miri uchun har bir xonadondan 120 ming so‘m yig‘ilayotgani yozilgan. (Gulnora opa (qo'shni), 2026-10-18 10:01)"
+    },
+    {
+      "id": "r10",
+      "intents": [
+        "no_apostrophe",
+        "exact"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 2,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "sovga uchun 300 ming",
+            "совға учун 300 минг",
+            "подарок 300 тысяч",
+            "gift for 300 thousand"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c15.m08",
+            "c01.m07"
+          ],
+          "results": [
+            "c15.m08",
+            "c01.m07"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c01.m07"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Dilnoza bilan sovg‘aga har kim 300 ming so‘mdan tashlashga kelishilgan; u katta ro‘mol va chiroyli choynak to‘plami olmoqchi ekan. (Dilnoza, 2026-10-14 11:30)"
+    },
+    {
+      "id": "r11",
+      "intents": [
+        "no_apostrophe",
+        "new_alphabet",
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": false,
+      "rank": null,
+      "target_reached_model": false,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "Sherzod oglini drelga yuboraman",
+            "Шерзод ўғлини дрелга юбораман",
+            "Шерзод сына дрель отправлю",
+            "Sherzod son drill send"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c10.m09",
+            "c31.m06",
+            "c29.m05",
+            "c34.m06",
+            "c27.m07"
+          ],
+          "results": [
+            "c10.m09",
+            "c31.m06",
+            "c29.m05",
+            "c34.m06",
+            "c27.m07",
+            "c18.m07",
+            "c03.m05",
+            "c29.m06",
+            "c27.m06",
+            "c10.m07"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": false,
+      "answer_problems": [
+        "no_target_cited",
+        "missing_value"
+      ],
+      "citations": [
+        "c10.m09",
+        "c10.m07"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Sherzod drel haqida so‘ragan: «Dreling masalasi nima bo‘ldi? O‘g‘lim chiqishga tayyor» (Sherzod, 2026-10-17 08:30). Yana shanba kuni javon ilmoqchi ekanini aytib, drelingni bir kunga berib turishni so‘ragan (Sherzod, 2026-10-16 19:50). “Sherzod o‘g‘lini drelga yuboraman” degan xabarni topmadim."
+    },
+    {
+      "id": "r12",
+      "intents": [
+        "new_alphabet",
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "yakshanba futbol qaysi stadionda",
+            "якшанба футбол қайси стадионда",
+            "в воскресенье футбол на каком стадионе",
+            "Sunday football which stadium"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c10.m01"
+          ],
+          "results": [
+            "c10.m01"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c10.m01"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Yakshanba futbol Tinchlik stadionida, soat 9:00 da bo‘lishi aytilgan. (Sherzod, 2026-10-16 19:00)"
+    },
+    {
+      "id": "r13",
+      "intents": [
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "когда придёт сантехник",
+            "сантехник придёт",
+            "сантехник когда",
+            "santexnik qachon keladi",
+            "сантехник қачон келади",
+            "plumber when arrive"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c07.m03",
+            "c07.m09"
+          ],
+          "results": [
+            "c07.m03",
+            "c07.m09"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c07.m03",
+        "c07.m09"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Ольга Петровна писала, что сантехник должен был прийти в четверг, 8 октября, с 11:00 до 13:00, чтобы заменить смеситель на кухне. (Ольга Петровна, 2026-10-06 10:03) Позже она сообщила, что он уже всё поменял. (Ольга Петровна, 2026-10-09 18:10)"
+    },
+    {
+      "id": "r14",
+      "intents": [
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "сколько будет аренда с декабря",
+            "аренда с декабря",
+            "декабрдан ижара қанча",
+            "December rent how much"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c07.m07"
+          ],
+          "results": [
+            "c07.m07"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c07.m07"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Ольга Петровна написала, что с декабря аренда будет 5 000 000 сум. (Ольга Петровна, 2026-10-06 12:28)"
+    },
+    {
+      "id": "r15",
+      "intents": [
+        "translit",
+        "cross_script"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "adres Iriny Yunusabad",
+            "адрес Ирины Юнусабад",
+            "адрес Ирина Юнусабад",
+            "Irina Yunusabad address"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c08.m05",
+            "c29.m03",
+            "c27.m07",
+            "c35.m05",
+            "c35.m01"
+          ],
+          "results": [
+            "c08.m05",
+            "c29.m03",
+            "c27.m07",
+            "c35.m05",
+            "c35.m01",
+            "c22.m05",
+            "c23.m04"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": false,
+      "answer_problems": [
+        "missing_value"
+      ],
+      "citations": [
+        "c08.m05"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Irina manzili: Yunusobod, 14-kvartal, 22-uy, 15-xonadon. 3-qavat, domofon 15. (Ирина, 2026-10-12 13:30)"
+    },
+    {
+      "id": "r16",
+      "intents": [
+        "cross_script",
+        "translit"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "подарок Лене наушники",
+            "Лена подарок наушники",
+            "совға Лена қулоқчин",
+            "gift Lena headphones"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c21.m02",
+            "c12.m03",
+            "c21.m07",
+            "c15.m08",
+            "c15.m09"
+          ],
+          "results": [
+            "c21.m02",
+            "c12.m03",
+            "c21.m07",
+            "c15.m08",
+            "c15.m09",
+            "c01.m07",
+            "c03.m02",
+            "c05.m05",
+            "c14.m07"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c21.m02",
+        "c21.m07"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Дима написал, что собираются скинуться по 200 000 сум и купить Лене наушники. Ещё он сказал, что это сюрприз и Лена не должна знать. (Дима, 2026-10-22 17:01; Дима, 2026-10-22 17:40)"
+    },
+    {
+      "id": "r17",
+      "intents": [
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 2,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "glass jar price per piece",
+            "shisha banka dona narxi",
+            "стеклянная банка цена за штуку",
+            "shisha idish narxi dona"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c27.m01",
+            "c27.m04",
+            "c27.m02",
+            "c27.m08",
+            "c27.m03"
+          ],
+          "results": [
+            "c27.m01",
+            "c27.m04",
+            "c27.m02",
+            "c27.m08",
+            "c27.m03",
+            "c08.m10",
+            "c12.m03",
+            "c29.m05",
+            "c29.m04",
+            "c23.m01"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c27.m02",
+        "c27.m04"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Shisha bankalar narxi: 500 dona (250 ml, oltin qopqoqli) — har biri $0.42; 1,000 dona — har biri $0.38. Yetkazib berish alohida: mos ravishda $60 va $90. (Aidana (JarPack), 2026-10-05 09:02; Aidana (JarPack), 2026-10-05 09:45)"
+    },
+    {
+      "id": "r18",
+      "intents": [
+        "exact"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "market stall number",
+            "bozor rastasi raqami",
+            "номер торгового места",
+            "номер рыночного прилавка"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c32.m06",
+            "c32.m01",
+            "c32.m03",
+            "c09.m07",
+            "c16.m03"
+          ],
+          "results": [
+            "c32.m06",
+            "c32.m01",
+            "c32.m03",
+            "c09.m07",
+            "c16.m03",
+            "c32.m02",
+            "c15.m07",
+            "c15.m06",
+            "c11.m07",
+            "c12.m05"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c32.m06"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Rastangiz raqami — 14, shimoliy kirish yonida. (Sarah (Makers Market), 2026-10-21 11:20)"
+    },
+    {
+      "id": "r19",
+      "intents": [
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "status": "ok"
+        },
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "land landing flight arrive",
+            "qo‘nish qo'nadi yetib keladi",
+            "приземляется прилетает прилёт",
+            "landing arrives"
+          ],
+          "contact": "Daniel",
+          "widened": false,
+          "top5": [
+            "c30.m02",
+            "c30.m01"
+          ],
+          "results": [
+            "c30.m02",
+            "c30.m01"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c30.m01",
+        "c30.m02"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Daniel aytishicha, 27-oktabr, seshanba kuni Toshkentga qo‘nadi; parvozi 03:15 da yetib keladi. (Daniel, 2026-10-17 08:00; Daniel, 2026-10-17 08:01)"
+    },
+    {
+      "id": "r20",
+      "intents": [
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        },
+        {
+          "tool": "get_conversation",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "томни таъмирлаш пули",
+            "томни таъмирлаш",
+            "ремонт крыши деньги",
+            "roof repair money"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c03.m03",
+            "c21.m04",
+            "c23.m03",
+            "c17.m08",
+            "c31.m06"
+          ],
+          "results": [
+            "c03.m03",
+            "c21.m04",
+            "c23.m03",
+            "c17.m08",
+            "c31.m06",
+            "c29.m05",
+            "c06.m03",
+            "c04.m10",
+            "c03.m02",
+            "c17.m03"
+          ]
+        }
+      ],
+      "reads": [
+        {
+          "conversation": "c03",
+          "messages": [
+            "c03.m01",
+            "c03.m02",
+            "c03.m03",
+            "c03.m04",
+            "c03.m05",
+            "c03.m06",
+            "c03.m07",
+            "c03.m08",
+            "c03.m09",
+            "c03.m10",
+            "c03.m11"
+          ]
+        }
+      ],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c03.m03",
+        "c03.m04",
+        "c03.m08",
+        "c03.m11"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Томни тўлиқ таъмирлаш учун шифер ва иш ҳақи билан жами 6 миллион сўм сўралган. Амакингиз сиздан 2 миллион сўмни жумагача юборишни сўраган, сиз юборишингизни айтгансиз (Рустам амаки, 2026-10-08 07:45; Рустам амаки, 2026-10-08 07:46). Кейин пулни Дилшод ака орқали бериб юборганингизни айтгансиз (siz, 2026-10-08 20:30), амакингиз эса Дилшод пулни тўлиқ олиб келганини тасдиқлаган (Рустам амаки, 2026-10-09 08:15)."
+    },
+    {
+      "id": "r21",
+      "intents": [
+        "cross_script",
+        "exact"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "tom ustasi Hamid",
+            "том устаси Ҳамид",
+            "крыша мастер Хамид",
+            "roof repair Hamid"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c03.m02",
+            "c03.m03",
+            "c29.m05",
+            "c31.m06",
+            "c06.m03"
+          ],
+          "results": [
+            "c03.m02",
+            "c03.m03",
+            "c29.m05",
+            "c31.m06",
+            "c06.m03",
+            "c04.m10",
+            "c17.m03",
+            "c09.m05",
+            "c19.m10"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c03.m02",
+        "c03.m03"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Rustam amakining yozishicha, qishloqdagi uyning tomi oqayotgan, oshxonaga suv tushgan va u usta Hamid bilan gaplashgan. Usta tomni to‘liq yangilash kerakligini, shifer va ish haqi bilan jami 6 million so‘m so‘ragan. (Рустам амаки, 2026-10-08 07:42; Рустам амаки, 2026-10-08 07:45)"
+    },
+    {
+      "id": "r22",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "ota-onalar majlisi",
+            "ота-оналар мажлиси",
+            "родительское собрание",
+            "parents meeting"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c18.m01"
+          ],
+          "results": [
+            "c18.m01"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c18.m01"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Ota-onalar majlisi 16-oktyabr, soat 18:00 da bo‘ladi. Ishtirok etish shart. (Гавҳар Раҳимовна (синф раҳбари), 2026-10-12 14:00)"
+    },
+    {
+      "id": "r23",
+      "intents": [
+        "cross_script",
+        "exact"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        },
+        {
+          "tool": "get_conversation",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "kadastr hokimiyat dushanba",
+            "кадастр хокимият душанба",
+            "кадастр хокимият понедельник",
+            "cadastral authority Monday"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c19.m01",
+            "c39.m05",
+            "c25.m02",
+            "c13.m07",
+            "c13.m05"
+          ],
+          "results": [
+            "c19.m01",
+            "c39.m05",
+            "c25.m02",
+            "c13.m07",
+            "c13.m05",
+            "c05.m11",
+            "c06.m02",
+            "c19.m02",
+            "c38.m07",
+            "c06.m08"
+          ]
+        }
+      ],
+      "reads": [
+        {
+          "conversation": "c19",
+          "messages": [
+            "c19.m01",
+            "c19.m02",
+            "c19.m03",
+            "c19.m04",
+            "c19.m05",
+            "c19.m06",
+            "c19.m07",
+            "c19.m08",
+            "c19.m09",
+            "c19.m10",
+            "c19.m11",
+            "c19.m12"
+          ]
+        }
+      ],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c19.m01",
+        "c19.m02",
+        "c19.m03"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Xayrulla tog‘a kadastr hujjatlari uchun hokimiyatga borishga yozilganini aytgan. Dushanba, 19-oktabr kuni ertalab soat 9:00 da siz ham u bilan borishingiz kerak bo‘lgan; pasportingizdan 2 ta nusxa va uyning eski texpasportini olib kelishingizni so‘ragan. (Хайрулла тоға, 2026-10-13 08:00; Хайрулла тоға, 2026-10-13 08:01; Хайрулла тоға, 2026-10-13 08:03)"
+    },
+    {
+      "id": "r24",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": false,
+      "rank": null,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        },
+        {
+          "tool": "get_conversation",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "Зоминдаги дача нархи",
+            "Зоминдаги дача нарх",
+            "Джизак дача цена",
+            "дача в Зомине цена",
+            "Zomin dacha narxi"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c02.m08",
+            "c02.m02",
+            "c20.m07",
+            "c12.m07",
+            "c05.m08"
+          ],
+          "results": [
+            "c02.m08",
+            "c02.m02",
+            "c20.m07",
+            "c12.m07",
+            "c05.m08",
+            "c05.m04",
+            "c05.m01",
+            "c16.m09",
+            "c38.m06",
+            "c38.m05"
+          ]
+        }
+      ],
+      "reads": [
+        {
+          "conversation": "c05",
+          "messages": [
+            "c05.m01",
+            "c05.m02",
+            "c05.m03",
+            "c05.m04",
+            "c05.m05",
+            "c05.m06",
+            "c05.m07",
+            "c05.m08",
+            "c05.m09",
+            "c05.m10",
+            "c05.m11",
+            "c05.m12"
+          ]
+        }
+      ],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c05.m04",
+        "c05.m12"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Тимурнинг ёзишича, Зоминда дачанинг 2 кечага нархи 1 million 500 ming; 4 кишига бўлинса, ҳар бирига 600 ming чиқади. Жасур ҳам қўшилса, ҳар бирига 480 ming бўлади (Timur, 2026-10-19 20:18; Timur, 2026-10-19 21:31)"
+    },
+    {
+      "id": "r25",
+      "intents": [
+        "cross_script",
+        "exact",
+        "new_alphabet"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 4,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "Шерзодга қарз 500 минг",
+            "Шерзод қарз 500 минг",
+            "Шерзодга қарыз 500 минг",
+            "Шерзод долг 500 тысяч",
+            "Sherzod qarz 500 ming"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c05.m04",
+            "c20.m02",
+            "c15.m08",
+            "c10.m04",
+            "c17.m02"
+          ],
+          "results": [
+            "c05.m04",
+            "c20.m02",
+            "c15.m08",
+            "c10.m04",
+            "c17.m02",
+            "c09.m02",
+            "c10.m02",
+            "c19.m05",
+            "c16.m02",
+            "c36.m06"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c10.m04"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Sherzod 500 ming so‘mni o‘tgan oy olganini va qachon qaytarishingizni so‘ragan. (Sherzod, 2026-10-16 19:25)"
+    },
+    {
+      "id": "r26",
+      "intents": [
+        "cross_language",
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": false,
+      "rank": null,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "предоплата за мёд Эргаш",
+            "Ergash asal uchun oldindan to‘lov",
+            "Эргаш асал учун олдиндан тўлов",
+            "аванс за мед Эргаш"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c01.m10",
+            "c37.m06",
+            "c05.m10",
+            "c22.m10",
+            "c22.m07"
+          ],
+          "results": [
+            "c01.m10",
+            "c37.m06",
+            "c05.m10",
+            "c22.m10",
+            "c22.m07",
+            "c37.m04",
+            "c37.m03",
+            "c22.m19",
+            "c37.m01",
+            "c23.m03"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c37.m04",
+        "c37.m06"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Эргаш ака учун 40 кг асалга келишилган нарх — 3 миллион 600 минг. У 50% олдиндан тўлов, қолганини асални олганда беришни айтган (Ergash aka (asalchi), 2026-10-06 09:10). Сиз олдиндан тўловни бугун унинг картасига ўтказишингизни ёзгансиз (siz, 2026-10-06 09:30)."
+    },
+    {
+      "id": "r27",
+      "intents": [
+        "cross_script",
+        "cross_language"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 2,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "kuraga narxi",
+            "қурага нархи",
+            "курага цена",
+            "dried apricot price"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c22.m03",
+            "c08.m02",
+            "c02.m08",
+            "c02.m02",
+            "c12.m07"
+          ],
+          "results": [
+            "c22.m03",
+            "c08.m02",
+            "c02.m08",
+            "c02.m02",
+            "c12.m07",
+            "c08.m03",
+            "c08.m01",
+            "c16.m09",
+            "c29.m05",
+            "c29.m04"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c08.m02"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Suhbatdagi ma’lumotga ko‘ra, quraga narxi 1 kg uchun 120 000 so‘m. (siz, 2026-10-12 13:20)"
+    },
+    {
+      "id": "r28",
+      "intents": [
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "who covers for Rob on Friday",
+            "Rob juma kuni kim o'rnini bosadi",
+            "Роб кто подменяет в пятницу",
+            "Rob Friday cover"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c33.m07",
+            "c02.m09",
+            "c18.m05",
+            "c18.m04",
+            "c05.m06"
+          ],
+          "results": [
+            "c33.m07",
+            "c02.m09",
+            "c18.m05",
+            "c18.m04",
+            "c05.m06",
+            "c18.m01",
+            "c16.m05",
+            "c10.m05",
+            "c01.m05",
+            "c33.m01"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c33.m07"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Dilfuza Robning o‘rnini juma kuni qoplaydi. (Rob (colleague), 2026-10-19 10:32)"
+    },
+    {
+      "id": "r29",
+      "intents": [
+        "exact"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "+998 90 000 00 12",
+            "+998900000012",
+            "+998 90 000 00 12 номер",
+            "998 90 000 00 12"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c06.m03",
+            "c17.m07",
+            "c09.m07",
+            "c08.m08",
+            "c08.m02"
+          ],
+          "results": [
+            "c06.m03",
+            "c17.m07",
+            "c09.m07",
+            "c08.m08",
+            "c08.m02",
+            "c26.m08",
+            "c22.m18",
+            "c22.m17",
+            "c26.m03",
+            "c26.m02"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": false,
+      "answer_problems": [
+        "missing_value"
+      ],
+      "citations": [
+        "c06.m03"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Бу рақам чатда мижоз Шаҳло Каримованики деб кўрсатилган: +998 90 000 00 12 (Anvar (hamkasb), 2026-10-15 09:05)"
+    },
+    {
+      "id": "r30",
+      "intents": [
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": false,
+      "rank": null,
+      "target_reached_model": false,
+      "miss": "no_search",
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "status": "ok"
+        }
+      ],
+      "searches": [],
+      "reads": [],
+      "answer_correct": false,
+      "answer_problems": [
+        "no_citation",
+        "missing_value"
+      ],
+      "citations": [],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "«Шаҳло Каримова» номи аниқ мос келмади. Кўринаётган ягона тахмин — «Гавҳар Раҳимовна (синф раҳбари)». Шу кишини назарда тутдингизми?"
+    },
+    {
+      "id": "r31",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 5,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        },
+        {
+          "tool": "get_conversation",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "ombor ijarasi va elektr puli",
+            "омбор ижараси ва электр пули",
+            "аренда склада и электричество",
+            "warehouse rent and electricity"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c16.m01",
+            "c32.m07",
+            "c33.m02",
+            "c10.m02",
+            "c16.m02"
+          ],
+          "results": [
+            "c16.m01",
+            "c32.m07",
+            "c33.m02",
+            "c10.m02",
+            "c16.m02",
+            "c22.m05",
+            "c05.m03",
+            "c16.m05",
+            "c07.m07",
+            "c35.m14"
+          ]
+        }
+      ],
+      "reads": [
+        {
+          "conversation": "c16",
+          "messages": [
+            "c16.m01",
+            "c16.m02",
+            "c16.m03",
+            "c16.m04",
+            "c16.m05",
+            "c16.m06",
+            "c16.m07",
+            "c16.m08",
+            "c16.m09"
+          ]
+        }
+      ],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c16.m02",
+        "c16.m03",
+        "c16.m08"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Omborning oktyabr oyi ijarasi 3 million so‘m, elektr puli 380 ming so‘m — jami 3 million 380 ming so‘m bo‘lgan. Pulni 7-oktyabrgacha o‘tkazish so‘ralgan, keyin Abdulla aka pul kelganini tasdiqlagan. (Абдулла ака (омбор), 2026-10-05 09:01; Абдулла ака (омбор), 2026-10-05 09:03; Абдулла ака (омбор), 2026-10-07 19:30)"
+    },
+    {
+      "id": "r32",
+      "intents": [
+        "cross_script",
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        },
+        {
+          "tool": "get_conversation",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "notariusga qachon borish kerak",
+            "нотариусга қачон бориш керак",
+            "когда идти к нотариусу",
+            "when to go to notary"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c19.m07",
+            "c40.m06",
+            "c05.m09",
+            "c38.m06",
+            "c19.m10"
+          ],
+          "results": [
+            "c19.m07",
+            "c40.m06",
+            "c05.m09",
+            "c38.m06",
+            "c19.m10",
+            "c19.m05",
+            "c11.m09",
+            "c06.m04",
+            "c12.m07",
+            "c13.m04"
+          ]
+        }
+      ],
+      "reads": [
+        {
+          "conversation": "c19",
+          "messages": [
+            "c19.m01",
+            "c19.m02",
+            "c19.m03",
+            "c19.m04",
+            "c19.m05",
+            "c19.m06",
+            "c19.m07",
+            "c19.m08",
+            "c19.m09",
+            "c19.m10",
+            "c19.m11",
+            "c19.m12"
+          ]
+        }
+      ],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c19.m07",
+        "c19.m10",
+        "c19.m12"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Хайрулла тоға сиздан эски ишончноманинг муддати тугагани учун уни нотариусда янгилаш кераклигини айтган. Келишилган вақт — эртаси куни соат 16:30; нотариус Олмазорда эди. Паспортни унутмаслик ва аслини олиб бориш кераклиги ҳам айтилган. (Хайрулла тоға, 2026-10-13 18:00; Хайрулла тоға, 2026-10-13 18:45; Хайрулла тоға, 2026-10-13 18:55)"
+    },
+    {
+      "id": "r33",
+      "intents": [
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 2,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "сколько стоит замена колодок",
+            "тormoz kolodkalarini almashtirish narxi",
+            "тормоз колодкалар алмаштириш нархи",
+            "brake pad replacement cost"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c13.m04",
+            "c24.m02",
+            "c12.m07",
+            "c16.m09",
+            "c38.m06"
+          ],
+          "results": [
+            "c13.m04",
+            "c24.m02",
+            "c12.m07",
+            "c16.m09",
+            "c38.m06",
+            "c02.m08",
+            "c38.m05",
+            "c02.m02",
+            "c20.m07"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c24.m02"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Автосервис «Равшан» указал 1 250 000 сум за замену передних колодок и диска вместе с работой. (Равшан (автосервис), 2026-10-14 13:10)"
+    },
+    {
+      "id": "r34",
+      "intents": [
+        "cross_language",
+        "cross_script",
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "suzish uchun noyabr to'lovi",
+            "сузиш учун ноябрь тўлови",
+            "оплата за плавание ноябрь",
+            "swimming November payment"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c25.m04",
+            "c07.m02",
+            "c07.m06",
+            "c07.m10",
+            "c34.m07"
+          ],
+          "results": [
+            "c25.m04",
+            "c07.m02",
+            "c07.m06",
+            "c07.m10",
+            "c34.m07",
+            "c27.m05",
+            "c25.m06",
+            "c25.m02",
+            "c26.m05",
+            "c04.m02"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c25.m04"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Suzish uchun noyabr to‘lovi — 400 000 so‘m, 1-noyabrgacha. Naqd pulni resepshenda yoki o‘tkazma orqali to‘lash mumkin. (Алексей (тренер), 2026-10-19 18:22)"
+    },
+    {
+      "id": "r35",
+      "intents": [
+        "no_apostrophe",
+        "cross_script",
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 4,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "yongoq magzi narxi",
+            "ёнғоқ мағзи нархи",
+            "цена ядра грецкого ореха",
+            "walnut kernel price"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c17.m01",
+            "c09.m10",
+            "c09.m03",
+            "c09.m02",
+            "c09.m01"
+          ],
+          "results": [
+            "c17.m01",
+            "c09.m10",
+            "c09.m03",
+            "c09.m02",
+            "c09.m01",
+            "c02.m08",
+            "c02.m02",
+            "c29.m05",
+            "c29.m04",
+            "c12.m07"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": false,
+      "answer_problems": [
+        "missing_value"
+      ],
+      "citations": [
+        "c09.m02"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Sizning yozishmalaringizda yong‘oqning narxi 1 kg uchun 140 ming so‘m deb yozilgan. (siz, 2026-10-20 10:10)"
+    },
+    {
+      "id": "r36",
+      "intents": [
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "Laylo study room booking",
+            "Laylo study room",
+            "Лайло учебная комната бронирование",
+            "Лайло study room бронь",
+            "o‘quv xonasi bron",
+            "учебная комната бронь"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c28.m05",
+            "c05.m04",
+            "c30.m01",
+            "c30.m05"
+          ],
+          "results": [
+            "c28.m05",
+            "c05.m04",
+            "c30.m01",
+            "c30.m05"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": false,
+      "answer_problems": [
+        "missing_value"
+      ],
+      "citations": [
+        "c28.m05"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Laylo so‘nggi xabarida yakshanba kuni soat 5 da study room bron qilishni so‘ragan va sizda kutubxonaga kirish huquqi bor-yo‘qligini so‘ragan. (Laylo, 2026-10-22 20:32)"
+    },
+    {
+      "id": "r37",
+      "intents": [
+        "translit",
+        "exact"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "sobranie opazdyvayu",
+            "собрание опаздываю",
+            "опоздаю на собрание",
+            "late to meeting"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c38.m01"
+          ],
+          "results": [
+            "c38.m01"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c38.m01"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Kamron yozgan: «Bugun sobranie bo'ladimi? Ya nemnogo opazdyvayu, probka» — bugun yig‘ilish bo‘ladimi, tirbandlik sabab biroz kechikayotganini aytgan. (Kamron (hamkasb), 2026-10-20 08:40)"
+    },
+    {
+      "id": "r38",
+      "intents": [
+        "paraphrase"
+      ],
+      "not_evaluated": false,
+      "hit_top5": true,
+      "rank": 1,
+      "target_reached_model": true,
+      "miss": null,
+      "tools": [
+        {
+          "tool": "search_messages",
+          "status": "ok"
+        }
+      ],
+      "searches": [
+        {
+          "queries": [
+            "тоғамнинг техпаспорти",
+            "tog'amning texpasporti",
+            "техпаспорт tog'am",
+            "техпаспорт uncle car documents"
+          ],
+          "contact": null,
+          "widened": false,
+          "top5": [
+            "c19.m03",
+            "c19.m04",
+            "c30.m06",
+            "c30.m07",
+            "c32.m04"
+          ],
+          "results": [
+            "c19.m03",
+            "c19.m04",
+            "c30.m06",
+            "c30.m07",
+            "c32.m04"
+          ]
+        }
+      ],
+      "reads": [],
+      "answer_correct": true,
+      "answer_problems": [],
+      "citations": [
+        "c19.m03",
+        "c19.m04"
+      ],
+      "unverified_citations": 0,
+      "run_status": "succeeded",
+      "error": null,
+      "exc_type": null,
+      "attempts": 1,
+      "failed_attempts": [],
+      "reply": "Тоғangiz 13 октябрда паспортингизнинг 2 та нусхаси ва уйнинг эски техпас퍼тини олиб келишингизни сўраган. Техпаспорт ойингизда эканини айтгансиз. (Хайрулла тоға, 2026-10-13 08:03; siz, 2026-10-13 09:15)"
+    }
+  ]
+}

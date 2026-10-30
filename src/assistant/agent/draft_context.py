@@ -134,7 +134,12 @@ class OwnerDraftInputs:
 
 #: The task line per mode: what kind of message the owner asked for.
 OWNER_TASKS: dict[OwnerDraftMode, str] = {
-    "reply": "Task: reply. Write the owner's reply to the contact's latest messages.",
+    # No message named (PF-F): the draft writer finds the one the owner's
+    # request points at, if any, and says so in `answers_message_id`.
+    "reply": (
+        "Task: reply. Write the owner's reply to the contact message the owner's request "
+        "points at, or else to the contact's latest messages."
+    ),
     "new_message": (
         "Task: new_message. Write a new message from the owner, built from the owner's "
         "request; it does not have to answer any message in this chat."

@@ -110,14 +110,13 @@ async def propose(
         shown_through_message_id=shown_through,
         owner_retry=False,
     )
-    # Decisions R3: an owner request is measured from its own creation, and a
-    # dictated message has no base message.
+    # Decisions R3: an owner request is measured from its own creation, never
+    # from its base message. A dictated message has a base message only when
+    # the owner named the message it answers (PF-F); the card then quotes it.
     owner_requested = (
         request.origin is ActionOrigin.OWNER_DICTATED or request.trigger_turn_id is not None
     )
-    base_message_id = (
-        None if request.origin is ActionOrigin.OWNER_DICTATED else request.base_message_id
-    )
+    base_message_id = request.base_message_id
     context = await load_context(
         session,
         account_id=request.account_id,

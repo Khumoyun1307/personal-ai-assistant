@@ -89,6 +89,7 @@ contact filter and the final answer (synthetic data, for review; E-s, E-t, E-u).
 | Date | Set | Version | Change | Manifest |
 |---|---|---|---|---|
 | 2026-10-23 | E1 + retrieval | v1 | Initial synthetic set: 40 conversations (8 per variant; c01–c08 = S00.3 smoke set), 262 labelled items, 38 retrieval queries. Hand-written by an AI coding agent; pending the owner's Uzbek and label review. | `evals/datasets/MANIFEST.sha256` at this commit |
+| 2026-10-30 | owner_drafting | v1.1 | od03 (ru identity) only: `reply_includes` accepts the name in Cyrillic (`["Alviro", "Алвиро", "Альвиро"]`, a list of alternatives — the check's new, minimal form; `evals/owner_drafting.py::ReplyValue`). Both 2026-10-30 runs (low and medium) failed od03 on replies such as "Меня зовут Алвиро.", a correct answer in the reply's own script; the check was wrong, not the model. No other case changed. | `evals/datasets/MANIFEST.sha256` at this commit |
 | 2026-10-30 | owner_drafting | v1 | PF-16b: 31 hand-written synthetic cases (17 uz-Latn, 6 ru, 8 en) for owner-requested drafting and routing: identity, suggest contacts, advice, dictate (an instruction prefix left out), command words never staged, compose where no reply is needed, reply to a named earlier message, carried substance, append, shorter, 5-7 words, tone, word count, pick suggestion #2. Never derived from the 2026-10-30 playtest chats (AGENTS §8). Run by the TL only (`python -m evals run owner_drafting`, estimate, `--limit 1`, `--calibrate-from`), at low and at medium effort (D10); pending the owner's Uzbek review. | `evals/datasets/MANIFEST.sha256` at this commit |
 
 ## Real-model runs so far (pre-screen only)
@@ -112,10 +113,13 @@ contact filter and the final answer (synthetic data, for review; E-s, E-t, E-u).
 | 2026-10-29 | `triage-gpt-6-luna-trial`, `triage-gpt-6-luna` (P2, M05 E3) | triage.v1 | 0.0004 + 0.0539 |
 | 2026-10-29 | `monitors-gpt-6-luna-trial`, `monitors-gpt-6-luna-aborted.json` (the shared dev database was recreated under the run by another worktree's compose command, no results), `monitors-gpt-6-luna` (P2, M05 E3) | evaluate_monitor.v1 | 0.0001 + 0.0018 + 0.0030 |
 | 2026-10-29 | `retrieval-agent-gpt-6-luna-trial` (failed: 400 `invalid_function_parameters` from `create_monitor`'s strict tool schema, fixed by #141), `retrieval-agent-gpt-6-luna-trial-2`, `retrieval-agent-gpt-6-luna` (run 1), `retrieval-agent-gpt-6-luna-2` (replicate) (P2, M05 re-run after the `owner_request` bump, agent mode) | owner_request.v9 | 0.0000 + 0.0016 + 0.0703 + 0.0693 |
+| 2026-10-30 | `retrieval-agent-gpt-6-luna-trial`, `retrieval-agent-gpt-6-luna` (P2 playtest fixes, agent mode, effort low) | owner_request.v10 | 0.0019 + 0.0819 |
+| 2026-10-30 | `owner-drafting-effort-low-gpt-6-luna-trial`, `owner-drafting-effort-low-gpt-6-luna` (PF-16b, informational) | owner_request.v10, draft_owner.v2, owner_drafting.v1 (rubric); effort low | 0.0008 + 0.0836 |
+| 2026-10-30 | `owner-drafting-effort-medium-gpt-6-luna-trial`, `owner-drafting-effort-medium-gpt-6-luna` (PF-16b, informational) | owner_request.v10, draft_owner.v2, owner_drafting.v1 (rubric); effort medium | 0.0008 + 0.0863 |
 
 Total so far: USD 0.4343 of the owner's USD 1 (baseline 0.0435, S03.6 0.1088, S03.7 0.2820 — the sum of `cost.spent_usd` in the S03.7 reports), tracked here and in M03.md S03.6 and S03.7.
 
-P2 so far: USD 0.3190 of the phase cap of USD 2 (P2-O8): 2026-10-28 0.0582, 2026-10-29 0.2608 (the sum of `cost.spent_usd` in each day's reports), tracked here and in M04.md and M05.md. Not in the table on 2026-10-29: a debug re-run of the failing retrieval trial (0 model calls, USD 0; its report was lost because Git Bash path conversion mis-mapped its `--out-dir`, and the stray copy was deleted) and four schema-diagnosis API calls with the synthetic input "hi" (under USD 0.001 together).
+P2 so far: USD 0.5743 of the phase cap of USD 2 (P2-O8): 2026-10-28 0.0582, 2026-10-29 0.2608, 2026-10-30 0.2553 (the sum of `cost.spent_usd` in each day's reports), tracked here and in M04.md and M05.md. Not in the table on 2026-10-29: a debug re-run of the failing retrieval trial (0 model calls, USD 0; its report was lost because Git Bash path conversion mis-mapped its `--out-dir`, and the stray copy was deleted) and four schema-diagnosis API calls with the synthetic input "hi" (under USD 0.001 together).
 
 The fabrication judge reads the conversation as `evals/render.py` draws it. Reports name it
 `fabrication.v1` up to the summarize.v4 runs and `fabrication.v1+render.v2` from the S03.6
@@ -124,6 +128,28 @@ summarize.v4 runs' judge **local** times (render v2), though their reports say `
 From S03.7 the label also names the attribution wording the judges read (`labels.v2`, D98), and
 from summarize.v6 the rubric (`fabrication.v2`: "you" is the owner) and the rendering (`render.v3`:
 edit times) changed (E-ae); counts under different labels are not one series.
+
+### 2026-10-30: the P2 playtest fixes (owner_request.v10, draft_owner.v2)
+
+- **Retrieval, agent mode (`owner_request.v10`, effort low):** verified citation 31/38 = 81.6 %,
+  which recovers the ≥ 80 % threshold that v9 missed (76.3 %); top-5 31/38 = 81.6 %, still
+  below its 85 % threshold. Pre-screen only, as before (the dataset is not owner-reviewed).
+- **Owner drafting (dataset v1, informational, no threshold):** 26/31 cases at low effort,
+  27/31 at medium, for about 3 % more cost (USD 0.0836 vs 0.0863 for the full set). Misses:
+  `reply_earlier` 0/3 at both efforts (od16 uz-Latn, od17 en, od18 ru: the card did not answer
+  the message the owner named; at medium od17 also used `propose_message` with the owner's
+  words instead of `propose_reply`); od03 at both efforts, only because the reply wrote the
+  name in Cyrillic (fixed in dataset v1.1, not in the model); and at low only, od10 (a
+  dictated message got no card).
+- **Decision D10 (owner, 2026-10-30): medium.** `LLM_OWNER_REQUEST_EFFORT` and
+  `LLM_DRAFT_REPLY_EFFORT` default to `medium` from PF-F (ARCHITECTURE §7.4 "efforts move up
+  only when an eval shows it"). The draft writer's effort also serves Assist drafts
+  (`draft_reply.v1`), which share the route. E2's baseline keeps its fixed `low` pin
+  (`evals/live._FIXED_EFFORTS`) so its runs stay comparable. A production `.env` that sets
+  either key explicitly keeps its own value.
+- **Follow-up (PF-F):** the `reply_earlier` misses are addressed in code by `draft_owner.v3`
+  (the draft writer picks the answered message) and `propose_message`'s optional
+  `answered_message_id`; not re-measured yet (a re-run needs the owner's go-ahead for its cost).
 
 ## Model-free runs (no cost)
 

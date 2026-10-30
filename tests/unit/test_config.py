@@ -163,8 +163,11 @@ def test_known_processor_models_are_accepted_per_route(clean_env: None) -> None:
     assert settings.model_routes.model_for("triage") == "gpt-6-luna"
 
 
-def test_owner_request_effort_defaults_to_low_and_blank_sends_none(clean_env: None) -> None:
-    assert _settings().llm_owner_request_effort == "low"
+def test_owner_request_effort_defaults_to_medium_and_blank_sends_none(
+    clean_env: None,
+) -> None:
+    # Owner decision D10 (2026-10-30 owner_drafting eval).
+    assert _settings().llm_owner_request_effort == "medium"
     assert _settings(llm_owner_request_effort="").llm_owner_request_effort is None
     with pytest.raises(ValidationError):
         _settings(llm_owner_request_effort="extreme")
