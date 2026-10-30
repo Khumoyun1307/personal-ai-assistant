@@ -6,12 +6,20 @@ pattern) writes every draft the owner asks for. Owner decision D1
 no `needs_reply`, no skip reason and no way to decline — the model writes
 the message. Only a provider refusal or an invalid output ends without a
 draft, and that is reported as a failure. Pure: no I/O.
+
+`draft_owner.v3` (PF-F, after the 2026-10-30 owner_drafting eval) adds
+`answers_message_id`: in `reply` mode with no message named by the
+owner_request model, the draft writer — which sees the chat's message ids
+and the owner's own words — says which shown contact message the owner's
+request answers, or null. The application accepts only a shown contact
+message of that chat (`chosen_answer`); anything else is ignored and the
+newest contact message is answered, as before.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
@@ -26,6 +34,10 @@ class OwnerDraftResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     language: str
+    #: The shown contact message the owner's request answers (`[msg:<id>]`),
+    #: or null (v3). Used only in `reply` mode without a named message, and
+    #: only after `chosen_answer` checked it.
+    answers_message_id: int | None
     text: str
     confidence: Literal["low", "medium", "high"]
     sensitive_topic: bool
@@ -44,6 +56,37 @@ class OwnerRevisionResult(OwnerDraftResult):
 def output_model_for(mode: OwnerDraftMode) -> type[OwnerDraftResult]:
     """The structured output a `draft_owner` run of this mode returns."""
     return OwnerRevisionResult if mode == "revise" else OwnerDraftResult
+
+
+class ShownMessages(Protocol):
+    """What a draft was shown (`draft_context.DraftContext`)."""
+
+    @property
+    def shown_ids(self) -> frozenset[int]: ...
+
+    @property
+    def contact_ids(self) -> frozenset[int]: ...
+
+
+#: Why a draft writer's `answers_message_id` was ignored (content-free codes).
+AnswerIgnored = Literal["not_shown", "not_contact"]
+
+
+def chosen_answer(
+    result: OwnerDraftResult, shown: ShownMessages
+) -> tuple[int | None, AnswerIgnored | None]:
+    """The draft writer's answered message, checked deterministically: only
+    a contact message the draft was shown, in that chat, is accepted.
+    Returns `(message_id, None)`, `(None, None)` when it named none, or
+    `(None, reason)` when its choice is ignored."""
+    chosen = result.answers_message_id
+    if chosen is None:
+        return None, None
+    if chosen in shown.contact_ids:
+        return chosen, None
+    if chosen in shown.shown_ids:
+        return None, "not_contact"
+    return None, "not_shown"
 
 
 @dataclass(frozen=True, slots=True)

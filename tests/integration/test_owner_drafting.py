@@ -31,6 +31,7 @@ from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.errors import NotInAccountError
 from assistant.core.jobs import DraftReason
 from assistant.llm.port import LLMRequest, Provenance, StopReason, TextItem
+from assistant.telegram.control.approvals import load_card_view
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import text_response, tool_response
 from tests.integration.agent_env import PRODUCTION_FLAGS, args, ask, gated
@@ -123,7 +124,7 @@ async def test_the_owner_turn_reaches_the_draft_after_resolve_contact_tainted_th
     chat = next(item for item in owner_items if item.text.startswith("Messages in this chat"))
     assert chat.provenance is Provenance.MANAGED  # ai_managed, the contact's text
     [draft_run] = await runs(denv, "draft_reply")
-    assert draft_run.prompt_version == "draft_owner.v2"
+    assert draft_run.prompt_version == "draft_owner.v3"
     assert prompt_registry.active("draft_owner").text in draft.instructions
     [card] = await actions_of(denv.env, conversation)
     assert (card.origin, card.state, card.trigger_turn_id) == (
@@ -283,6 +284,206 @@ async def test_a_reply_answers_the_message_the_owner_named(denv: DraftEnv) -> No
     [line] = [entry for entry in logs if entry.get("tool") == "propose_reply" and "code" in entry]
     assert line["has_answered_target"] is True
     assert line["mode"] == "reply"
+
+
+# ------------------------------------------------------------ PF-F: the draft writer's target
+async def _card_excerpts(denv: DraftEnv, account_id: int, action_id: int) -> tuple[str, ...]:
+    async with denv.env.factory() as session:
+        view = await load_card_view(
+            session, account_id=account_id, action_id=action_id, sending_enabled=True
+        )
+    assert view is not None
+    return view.excerpts
+
+
+async def _other_chat_message(denv: DraftEnv, account_id: int) -> int:
+    """A contact message in another chat of the same account."""
+    async with denv.env.factory() as session, session.begin():
+        other = Contact(account_id=account_id, telegram_user_id=OTHER_CONTACT)
+        session.add(other)
+        await session.flush()
+        chat = Conversation(
+            account_id=account_id, contact_id=other.id, business_chat_id=OTHER_CONTACT
+        )
+        session.add(chat)
+        await session.flush()
+        row = Message(
+            account_id=account_id,
+            conversation_id=chat.id,
+            telegram_message_id=1,
+            direction="contact",
+            content_type="text",
+            text="SYNTH-OTHER-CHAT",
+            sent_at=denv.env.clock.now(),
+        )
+        session.add(row)
+        await session.flush()
+        return int(row.id)
+
+
+async def test_the_draft_writer_picks_the_earlier_message_the_owner_meant(
+    denv: DraftEnv,
+) -> None:
+    """The eval's reply_earlier cases (0/3): the owner names an earlier
+    message by its topic and the owner_request model passes no id. The draft
+    writer, which sees the chat's ids, picks it; the card answers it."""
+    account_id, conversation = await seed_chat(denv, mode="observe", first="SYNTH-EARLIER-ASK")
+    await contact_says(denv, "SYNTH-LATER-REMARK")
+    earlier = await _first_contact_message(denv, conversation)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    denv.script(owner_output(text="SYNTH answer to the price", answers_message_id=earlier))
+    with capture_logs() as logs:
+        result = await call(
+            context(denv, account_id, run_id, turn_id, said="Javob yoz narx savoliga: SYNTH"),
+            "propose_reply",
+            **reply_args(conversation),
+        )
+    assert result["status"] == "awaiting_approval"
+    assert result["answers_message_id"] == earlier
+    [card] = await actions_of(denv.env, conversation)
+    assert card.base_message_id == earlier
+    assert card.draft_flags is not None
+    assert card.draft_flags["target"] == "answered"  # kept by revisions, like a named one
+    assert await _card_excerpts(denv, account_id, card.id) == ("SYNTH-EARLIER-ASK",)
+    [prompt] = draft_prompts(denv)
+    assert "or else to the contact's latest messages" in prompt
+    [line] = [entry for entry in logs if entry.get("tool") == "propose_reply" and "code" in entry]
+    assert (line["has_answered_target"], line["answered_by"]) == (False, "draft_writer")
+
+
+@pytest.mark.parametrize("pick", ["other_chat", "owner_message", "unknown"])
+async def test_a_choice_that_is_not_a_shown_contact_message_falls_back_to_the_newest(
+    denv: DraftEnv, pick: str
+) -> None:
+    account_id, conversation = await seed_chat(denv, mode="observe", first="SYNTH-EARLIER-ASK")
+    mine = await message_row_id(denv.env, await owner_says(denv, "SYNTH-OWNER-OWN", date=later(60)))
+    newest = await message_row_id(
+        denv.env, await contact_says(denv, "SYNTH-NEWEST", date=later(90))
+    )
+    denv.env.clock.set(datetime.fromtimestamp(later(120), tz=UTC))  # then the owner asked
+    choices = {
+        "other_chat": await _other_chat_message(denv, account_id),
+        "owner_message": mine,
+        "unknown": 999_999_999,
+    }
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    denv.script(owner_output(answers_message_id=choices[pick]))
+    with capture_logs() as logs:
+        result = await call(
+            context(denv, account_id, run_id, turn_id), "propose_reply", **reply_args(conversation)
+        )
+    assert result["status"] == "awaiting_approval"
+    assert "answers_message_id" not in result
+    [card] = await actions_of(denv.env, conversation)
+    assert card.base_message_id == newest  # today's default
+    assert card.draft_flags is not None
+    assert card.draft_flags["target"] == "newest"
+    [ignored] = [entry for entry in logs if entry.get("event") == "owner_draft_answer_ignored"]
+    assert ignored["reason"] == ("not_contact" if pick == "owner_message" else "not_shown")
+    assert "SYNTH" not in json.dumps(ignored, default=str)  # content-free
+
+
+async def test_an_explicit_answered_id_wins_over_the_draft_writers_choice(
+    denv: DraftEnv,
+) -> None:
+    account_id, conversation = await seed_chat(denv, mode="observe", first="SYNTH-EARLIER-ASK")
+    later_id = await message_row_id(denv.env, await contact_says(denv, "SYNTH-LATER-ASK"))
+    earlier = await _first_contact_message(denv, conversation)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    denv.script(owner_output(answers_message_id=later_id))
+    with capture_logs() as logs:
+        result = await call(
+            context(denv, account_id, run_id, turn_id),
+            "propose_reply",
+            **reply_args(conversation, answered=earlier),
+        )
+    assert result["answers_message_id"] == earlier
+    [card] = await actions_of(denv.env, conversation)
+    assert card.base_message_id == earlier
+    [line] = [entry for entry in logs if entry.get("tool") == "propose_reply" and "code" in entry]
+    assert line["answered_by"] == "owner_request"
+
+
+async def test_a_new_message_ignores_any_answered_choice(denv: DraftEnv) -> None:
+    account_id, conversation = await seed_chat(denv, mode="observe")
+    earlier = await _first_contact_message(denv, conversation)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    denv.script(owner_output(answers_message_id=earlier))
+    await call(
+        context(denv, account_id, run_id, turn_id),
+        "propose_reply",
+        **reply_args(conversation, mode="new_message"),
+    )
+    [card] = await actions_of(denv.env, conversation)
+    assert card.base_message_id is None
+    assert card.draft_flags is not None
+    assert card.draft_flags["target"] == "none"
+
+
+async def test_a_dictated_message_can_answer_a_named_earlier_message(denv: DraftEnv) -> None:
+    account_id, conversation = await seed_chat(denv, first="SYNTH-EARLIER-ASK")
+    await contact_says(denv, "SYNTH-LATER-REMARK")
+    earlier = await _first_contact_message(denv, conversation)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    said = "Answer the earlier one: SYNTH room 3 is free"
+    with capture_logs() as logs:
+        result = await call(
+            context(denv, account_id, run_id, turn_id, said=said),
+            "propose_message",
+            **message_args(conversation, "SYNTH room 3 is free", answered=earlier),
+        )
+    assert result["status"] == "awaiting_approval"
+    assert result["answers_message_id"] == earlier
+    [card] = await actions_of(denv.env, conversation)
+    assert (card.origin, card.base_message_id, card.draft_flags) == (
+        "owner_dictated",
+        earlier,
+        None,
+    )
+    assert await _card_excerpts(denv, account_id, card.id) == ("SYNTH-EARLIER-ASK",)
+    assert denv.fake.requests == []  # no model run
+    [line] = [entry for entry in logs if entry.get("tool") == "propose_message" and "code" in entry]
+    assert line["has_answered_target"] is True
+
+
+async def test_a_picked_suggestion_can_answer_a_named_message(denv: DraftEnv) -> None:
+    account_id, conversation = await seed_chat(denv, first="SYNTH-EARLIER-ASK")
+    earlier = await _first_contact_message(denv, conversation)
+    suggestion = "SYNTH suggested answer"
+    async with denv.env.factory() as session, session.begin():
+        session.add(ControlTurn(account_id=account_id, role="assistant", text=suggestion))
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    result = await call(
+        context(denv, account_id, run_id, turn_id, said="Shuni yubor"),
+        "propose_message",
+        **message_args(conversation, suggestion, answered=earlier),
+    )
+    assert result["status"] == "awaiting_approval"
+    [card] = await actions_of(denv.env, conversation)
+    assert card.base_message_id == earlier
+    assert card.draft_flags is not None
+    assert card.draft_flags["target"] == "answered"
+
+
+async def test_propose_message_refuses_an_answered_id_that_is_not_a_shown_contact_message(
+    denv: DraftEnv,
+) -> None:
+    account_id, conversation = await seed_chat(denv)
+    mine = await message_row_id(denv.env, await owner_says(denv, "SYNTH-OWNER-OWN"))
+    other = await _other_chat_message(denv, account_id)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    said = "Shuhratga yoz: SYNTH ertaga"
+    ctx = context(denv, account_id, run_id, turn_id, said=said)
+    for index, answered in enumerate((other, mine, 999_999_999)):
+        result = await call(
+            ctx,
+            "propose_message",
+            call_id=f"m{index}",
+            **message_args(conversation, "SYNTH ertaga", answered=answered),
+        )
+        assert result["status"] == "error", answered
+        assert result["fields"] == ["answered_message_id"]
+    assert await actions_of(denv.env, conversation) == []
 
 
 async def test_an_answered_id_that_is_not_a_shown_contact_message_is_an_argument_error(

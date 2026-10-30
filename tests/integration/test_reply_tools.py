@@ -182,9 +182,19 @@ def reply_args(
 
 
 def message_args(
-    conversation_id: int | None, words: str, *, contact_id: int | None = None
+    conversation_id: int | None,
+    words: str,
+    *,
+    contact_id: int | None = None,
+    answered: int | None = None,
 ) -> dict[str, Any]:
-    return {"conversation_id": conversation_id, "contact_id": contact_id, "text": words}
+    """Every field: the strict schema requires them all (null = not given)."""
+    return {
+        "conversation_id": conversation_id,
+        "contact_id": contact_id,
+        "text": words,
+        "answered_message_id": answered,
+    }
 
 
 async def close_window(denv: DraftEnv, conversation_id: int) -> None:

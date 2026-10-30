@@ -17,21 +17,26 @@ invariants 1, 2): a result says `awaiting_approval` (a card is on its way),
   an untainted run (decisions R2). `mode` is `reply` (answer the contact's
   message `answered_message_id`, or their newest) or `new_message` (a
   standalone message: no base message, nothing "answered"); a word range is
-  checked by counting (one retry, then the honest count).
+  checked by counting (one retry, then the honest count). With no
+  `answered_message_id`, the draft writer picks the shown contact message
+  the owner's words point at, if any (PF-F; checked by the Drafter).
 - `propose_message` proposes a given text with no model run (decisions R3)
   after a deterministic provenance check (PF-12): text found in the owner's
   own words of the current turn is `owner_dictated` (R-05, FR-DRF-08); text
   found in one of the last assistant replies is the assistant's suggestion
   the owner picked (`agent_proposal`, labelled so on the card); anything
-  else is refused, pointing at `propose_reply` `mode='new_message'`.
+  else is refused, pointing at `propose_reply` `mode='new_message'`. It may
+  name the message the text answers (`answered_message_id`, PF-F: checked as
+  `propose_reply`'s; the card quotes it).
 
 Not gated by taint: the approval card is the gate (§7.1). Idempotent on
 `(run_id, tool_call_id)`, and a retried owner turn reuses its live card
 without drafting again. Ids are resolved within the account; a foreign or
 unknown id reads "not found". Content-free observability (PF-04): the
 executor's log line carries `instruction_source`, `mode`,
-`has_answered_target`, `bounds_retry`, `bounds_met` (and `provenance` for
-`propose_message`) — fixed codes and booleans, never text.
+`has_answered_target`, `answered_by`, `bounds_retry`, `bounds_met` (and
+`provenance`, `has_answered_target` for `propose_message`) — fixed codes and
+booleans, never text.
 """
 
 from __future__ import annotations
@@ -149,7 +154,9 @@ class ProposeReplyArgs(_OneChat):
     answered_message_id: OptionalId = Field(
         description=(
             "With mode 'reply': the contact's message to answer, a [msg:<id>] a chat tool "
-            "showed you, when the owner names one; null for the newest. Null for new_message."
+            "showed you, when the owner names one and you know its id. Null otherwise: the "
+            "draft writer then finds the message the owner's words point at, or answers the "
+            "newest. Null for new_message."
         )
     )
     guidance: Annotated[str | None, AfterValidator(_guidance)] = Field(
@@ -189,6 +196,12 @@ class ProposeMessageArgs(_OneChat):
         description=(
             "The exact message, word for word (1-4096 characters): the owner's own words "
             "from their message, or a text you suggested earlier that the owner chose."
+        )
+    )
+    answered_message_id: OptionalId = Field(
+        description=(
+            "The contact's message this text answers, a [msg:<id>] a chat tool showed you, "
+            "when the owner names an earlier message; null otherwise."
         )
     )
 
@@ -435,6 +448,7 @@ async def propose_reply_tool(ctx: ToolContext, args: ProposeReplyArgs) -> ToolOu
         "instruction_source": source,
         "mode": args.mode,
         "has_answered_target": answered is not None,
+        "answered_by": None,
         "bounds_retry": False,
         "bounds_met": None,
     }
@@ -450,7 +464,11 @@ async def propose_reply_tool(ctx: ToolContext, args: ProposeReplyArgs) -> ToolOu
             answered_message_id=answered,
             bounds=bounds,
         )
-        observed |= {"bounds_retry": outcome.bounds_retry, "bounds_met": outcome.bounds_met}
+        observed |= {
+            "bounds_retry": outcome.bounds_retry,
+            "bounds_met": outcome.bounds_met,
+            "answered_by": outcome.answered_by,
+        }
         if outcome.status is not DraftStatus.DRAFTED:
             return _owner_failure(target, outcome, ignored=ignored, observed=observed)
         async with transaction(services.session_factory) as uow:
@@ -493,8 +511,9 @@ def _drafted_facts(
     checked, never the text. A word range is reported with the exact count,
     met or not (PF-10: never a claim the count does not support)."""
     facts: dict[str, Any] = {"mode": args.mode, "owner_message_used": owner_words_used}
-    if args.answered_message_id is not None:
-        facts["answers_message_id"] = args.answered_message_id
+    if outcome.answered_by is not None:
+        # Named by the call, or found by the draft writer in the owner's words.
+        facts["answers_message_id"] = outcome.base_message_id
     bounds = args.bounds
     if bounds is not None:
         facts["word_count"] = outcome.word_count
@@ -591,6 +610,15 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
             return refusal
         if (existing := await _existing(uow.session, ctx, target.conversation_id)) is not None:
             return await _result(uow.session, ctx.account_id, target, existing.id, reused=True)
+        answered = args.answered_message_id
+        if answered is not None and (
+            services.drafter is None
+            or answered
+            not in await services.drafter.answerable_ids(
+                uow.session, ctx.account_id, target.conversation_id
+            )
+        ):
+            return argument_error("answered_message_id", ANSWERED_RULE, "answered_not_answerable")
         written_by = await _provenance(uow.session, ctx, args.text)
         if written_by is None:
             return argument_error("text", NOT_DICTATED_RULE, "text_not_dictated")
@@ -610,6 +638,7 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
                 presenter=services.approval_cards,
                 dictated_text=args.text if dictated else None,
                 suggested_text=None if dictated else args.text,
+                answered_message_id=answered,
             )
         except ProposalRefused as refused:
             return _not_available(refused)
@@ -621,8 +650,11 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
             proposal.action_id,
             reused=proposal.reused,
             replaced_action_id=proposal.superseded_action_id,
-            extra={"written_by": "owner" if dictated else "assistant_suggestion"},
-            log_detail={"provenance": written_by},
+            extra={
+                "written_by": "owner" if dictated else "assistant_suggestion",
+                **({} if answered is None else {"answers_message_id": answered}),
+            },
+            log_detail={"provenance": written_by, "has_answered_target": answered is not None},
         )
 
 
@@ -641,10 +673,12 @@ PROPOSE_REPLY = ToolDefinition(
         "Write a message to one chat for the owner's approval: the draft is written from "
         "that chat and the owner's own message, and the owner gets a card to approve, edit "
         "or reject it. Use when the owner asks you to reply, to answer a particular "
-        "message (answered_message_id), or to write a new message about something "
-        "(mode 'new_message'). It always drafts when the owner asked. Pass any length the "
-        "owner gave in words as min_words/max_words; the result reports the real count. "
-        + _RESULT_RULE
+        "message, or to write a new message about something (mode 'new_message'). When the "
+        "owner names an earlier message, pass its answered_message_id if a chat tool showed "
+        "you its id; otherwise leave it null and the draft writer, which reads the chat, "
+        "picks the message the owner meant. It always drafts when the owner asked. Pass any "
+        "length the owner gave in words as min_words/max_words; the result reports the real "
+        "count. " + _RESULT_RULE
     ),
     args_model=ProposeReplyArgs,
     capability=CapabilityClass.PROPOSE,
@@ -658,9 +692,10 @@ PROPOSE_MESSAGE = ToolDefinition(
     description=(
         "Propose an exact text as a message to one chat, for the owner's approval on a "
         "card. Use when the owner dictates the words ('tell Alex: ...'; pass their words "
-        "exactly, never rephrased) or picks a text you suggested earlier. Any other text "
-        "is refused: to compose a message from what the owner asked, use propose_reply "
-        "with mode 'new_message'. " + _RESULT_RULE
+        "exactly, never rephrased) or picks a text you suggested earlier. When the owner "
+        "says which earlier message the words answer and you know its id, pass it as "
+        "answered_message_id. Any other text is refused: to compose a message from what "
+        "the owner asked, use propose_reply with mode 'new_message'. " + _RESULT_RULE
     ),
     args_model=ProposeMessageArgs,
     capability=CapabilityClass.PROPOSE,

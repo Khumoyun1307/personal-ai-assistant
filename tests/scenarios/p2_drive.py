@@ -97,6 +97,7 @@ def owner_draft_result(**changes: Any) -> dict[str, Any]:
     """An owner-requested draft (`draft_owner`, PF-10): no veto fields."""
     return {
         "language": "en",
+        "answers_message_id": None,
         "text": DRAFT,
         "confidence": "medium",
         "sensitive_topic": False,
@@ -243,6 +244,7 @@ class Scenario:
                 conversation_id=self.conversation_id,
                 contact_id=None,
                 text=REPLACEMENT,
+                answered_message_id=None,
             )
             return await self.action()
         self.fake.parsed.append(owner_draft_result())

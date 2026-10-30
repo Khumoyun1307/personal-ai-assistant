@@ -101,7 +101,11 @@ ACTIVE: dict[str, str] = {
     # `OwnerRevisionResult`): the card's Edit button and `revise_draft` both
     # revise through this key (A18); after Edit a `replacement` keeps the
     # owner's words verbatim. v1 stays (its schema is unchanged).
-    "draft_owner": "v2",
+    # v3 (PF-F, after the 2026-10-30 owner_drafting eval: reply_earlier 0/3):
+    # `answers_message_id` in every mode's schema — in `reply` mode with no
+    # message named, the draft writer says which shown contact message the
+    # owner's request answers (checked by `chosen_answer`). v1, v2 stay.
+    "draft_owner": "v3",
 }
 
 

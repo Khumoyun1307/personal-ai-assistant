@@ -252,13 +252,27 @@ async def test_a_dictated_message_after_the_owners_own_manual_reply_is_a_normal_
         )
 
     dictated = await propose_in(
-        env, request(chat, origin=ActionOrigin.OWNER_DICTATED, trigger_turn_id=turn_id)
+        env,
+        request(
+            chat,
+            origin=ActionOrigin.OWNER_DICTATED,
+            trigger_turn_id=turn_id,
+            base_message_id=None,
+        ),
+    )
+    # PF-F: dictated words that answer a message the owner named keep it as
+    # their base, and are still measured from their own creation (R3).
+    _, next_turn = await run_and_turn(env, chat)
+    answering = await propose_in(
+        env, request(chat, origin=ActionOrigin.OWNER_DICTATED, trigger_turn_id=next_turn)
     )
     # A proactive draft based on the contact message *is* overtaken by it.
     proactive = await propose_in(env, request(chat))
 
     assert dictated.state is ActionState.AWAITING_APPROVAL
     assert (await action(env, dictated.action_id)).base_message_id is None
+    assert answering.state is ActionState.AWAITING_APPROVAL
+    assert (await action(env, answering.action_id)).base_message_id == chat.contact_message_id
     assert proactive.state is ActionState.BLOCKED
     assert (await action(env, proactive.action_id)).state_reason == "takeover"
 
