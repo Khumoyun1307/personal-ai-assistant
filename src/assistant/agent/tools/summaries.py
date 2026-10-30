@@ -85,7 +85,6 @@ from assistant.agent.tools.registry import (
 )
 from assistant.agent.untrusted import Source, wrap
 from assistant.conversations.models import Contact, Conversation
-from assistant.conversations.window import window_open
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.memory import catch_up, summaries
@@ -602,9 +601,9 @@ def _draft_offered(ctx: ToolContext) -> bool:
     )
 
 
-def _triage_view(
-    triage: catch_up.AttentionTriage, *, tz: str, window_open: bool, can_draft: bool
-) -> dict[str, Any]:
+def _triage_view(triage: catch_up.AttentionTriage, *, tz: str, can_draft: bool) -> dict[str, Any]:
+    # `draft_reply` does not depend on our own reply-window estimate: an
+    # owner-approved send lets Telegram decide at the send (P2-O20, PF-05).
     return {
         "triage": {
             "needs_reply": triage.needs_reply,
@@ -623,7 +622,7 @@ def _triage_view(
             for task in triage.open_tasks
         ],
         "next_actions": [
-            *(["draft_reply"] if can_draft and window_open else []),
+            *(["draft_reply"] if can_draft else []),
             "open_panel",
         ],
     }
@@ -749,16 +748,6 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         asked = await catch_up.waiting_questions(session, ctx.account_id, ids)
         # Read again too: a task closed or a verdict replaced meanwhile.
         triaged = await catch_up.covering_triage(session, ctx.account_id, ids)
-        conversations = {
-            row.id: row
-            for row in (
-                await session.execute(
-                    select(Conversation)
-                    .where(Conversation.account_id == ctx.account_id)
-                    .where(Conversation.id.in_(list(triaged)))
-                )
-            ).scalars()
-        }
 
     tz = account.timezone
     can_draft = _draft_offered(ctx)
@@ -820,15 +809,7 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             )
         triage = triaged.get(candidate.conversation_id)
         if triage is not None:
-            conversation = conversations.get(candidate.conversation_id)
-            entry.update(
-                _triage_view(
-                    triage,
-                    tz=tz,
-                    window_open=conversation is not None and window_open(conversation, now),
-                    can_draft=can_draft,
-                )
-            )
+            entry.update(_triage_view(triage, tz=tz, can_draft=can_draft))
             if entry["needs_reply"] is None:
                 entry["needs_reply"] = triage.needs_reply
                 entry["check"] = "triage"
