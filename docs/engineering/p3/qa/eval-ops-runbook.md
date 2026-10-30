@@ -6,6 +6,7 @@
 
 | Stage | Entry / output |
 |---|---|
+| D+1 / D+2 native review | E2/E4 v1 and the SENS term list by D+1; v1.1 additions by D+2 (P3-T166/167). Later merges reviewed by D+3 12:00; DATA-FIX v1.2 still due D+3 18:00 before the D+4 freeze. Confirm only owner-reviewed IDs |
 | D+2 readiness | Owner answers OD-21/22/23; record actual budget and per-run approval rule. Default Luna phase budget USD 3, including retrieval; it is not itself a paid-run go-ahead |
 | D+3 CP-G0 | Real DELEG-DRAFT, M6-POL, M6-SCHED, M6-PLAN, GRND, EV-E4L/AUT/GATE merged; v1.1 data complete; pre-screen #1, pre-review and QE2 check #1 |
 | D+3–4 iterations | E2 adds new prompt versions v2–v5; TL merges. New approved estimate/limit-one/full sequence for each iteration |

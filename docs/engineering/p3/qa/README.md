@@ -11,7 +11,7 @@
 | [trial-log-template.md](trial-log-template.md) | Soak, T0 freeze, 14 daily entries, day-7/14 NFRs, ratings and clock restarts | QA-P3 — delivered |
 | [evidence-template.md](evidence-template.md) | Safe run/checkpoint evidence and eval cost addendum; no message content or production identifiers | QA-P3 — delivered |
 | [eval-ops-runbook.md](eval-ops-runbook.md) | Per-run approvals/costs, pre-screen, frozen run, three QE2 checks, sheets and CP-G | QA-P3 — delivered |
-| [lv16-runbook.md](lv16-runbook.md) | TL's dev-bot rate retest under OD-27 (owner update 2026-10-30); existing-command stop/pacing limitation and enable-4 guard | QA-P3 — delivered; probe not run |
+| [lv16-runbook.md](lv16-runbook.md) | TL's Alviro rate retest at D+6 after shadow, before J7; tool/production allowance/run-approval gates and enable-4 guard (P3-T168) | QA-P3 — delivered; probe not run |
 | `p3-verifier.md` | Fail-closed verifier and P2 supersession | OPS-TV3 — later unit |
 | `evidence/`, `trial-log.md` | Actual deploy/window/restore/soak/trial results | LIVE-P3 — later unit |
 
@@ -35,4 +35,6 @@ Rules every package follows (the specs hold the detail):
 - **Positive controls.** A scenario that asserts an absence also asserts a positive outcome, so it cannot pass vacuously.
 - **Content-free evidence.** Assertions and failure messages use ids, states, codes and counts; evidence lists scenario names and outcomes only.
 
-Rules: no file here ever contains real chat content, names, usernames, production ids or secrets (AGENTS §9; launch boundary). Real evals and production windows need the owner's go-ahead for each run; only TL or SQ starts evals, and TL runs all server operations. LV-16 is the specific TL dev-probe exception granted in this launch, not an eval or production exception.
+Rules: no file here ever contains real chat content, names, usernames, production ids or secrets (AGENTS §9; launch boundary). Real evals and production windows need the owner's go-ahead for each run; only TL or SQ starts evals, and TL runs all server operations. LV-16 runs on Alviro at D+6 into the owner's second-account chat after shadow and before J7, subject to the merged tool change, owner-approved AGENTS §9 production allowance and go-ahead for that run (P3-T168).
+
+Native-language review is E2/E4 v1 by D+1 and v1.1 additions by D+2 (P3-T166); the SENS term list goes with v1 (P3-T167). Later merges are reviewed by D+3 12:00; DATA-FIX v1.2 remains due D+3 18:00 before the D+4 freeze.

@@ -4,7 +4,7 @@
 
 ## 0. Preconditions and evidence
 
-1. Obtain a go-ahead for the named production window on Alviro, with owner present. Deploys/restarts need their own scope in that go-ahead. No operation within ±1 h of the 21:00 owner-local digest. Green automated twins on deployed `main` come first. F1/F2 know an AI will reply with disclosure; the second-account chat is reserved for J7 after shadow ([LIVE-P3 §3.2–3.3](../specs/LIVE-P3.md#32-rules-for-every-live-check)).
+1. Obtain a go-ahead for the named production window on Alviro, with owner present. Deploys/restarts need their own scope in that go-ahead. No operation within ±1 h of the 21:00 owner-local digest. Green automated twins on deployed `main` come first. F1/F2 know an AI will reply with disclosure; after shadow, the second-account chat has the gated LV-16 slot below, then is reserved for J7 ([LIVE-P3 §3.2–3.3](../specs/LIVE-P3.md#32-rules-for-every-live-check); P3-T168).
 2. Record the deployed SHA, CI evidence, schema head, current cumulative flag-name set and safe setting lines. Owner edits flags; TL pushes/restarts. After each step TL runs the commands below. Supply the **entire** flag set, including existing flags, from the prior evidence plus the approved step. Never print or open configuration files ([LIVE-P3 §3.4 V1–V3](../specs/LIVE-P3.md#34-deploy-and-enable-step-verification)).
 3. Before the enable-3 edit, V7 must pass: CI at deployed SHA passes QA-S6 C17 and C8; no `awaiting G1` or `awaiting M6-PAUSE` marker remains. Check all five Pause carriers: delegation-on notice, escalation, takeover notice, catch-up, volume-cap alert. The volume-cap carrier rests on CI; live shadow checks the other four. `release` cannot see markup ([LIVE-P3 §3.4 V7](../specs/LIVE-P3.md#34-deploy-and-enable-step-verification), [P3-interfaces §12.5](../contracts/P3-interfaces.md#125-cards)).
 4. Use [evidence-template](evidence-template.md) and [marker scheme](test-plan.md#5-live-marker-scheme-p3-nn). All `<…>` values below are runtime placeholders, never literal command arguments. TL runs commands; SQ gets only content-free output. Public evidence uses local aliases for runtime IDs, never production identifiers. No raw logs, text, names, file names or content hashes ([LIVE-P3 §3.2/§4 L3](../specs/LIVE-P3.md#32-rules-for-every-live-check); launch boundary).
@@ -47,6 +47,8 @@ just prod <ip> p3-verify trial-check --since <shadow-start-UTC> --until <shadow-
 ```
 
 Any missing Pause button in S1/S4/S6/S8 blocks enable 4 until fixed, deployed and seen. Log uncertainty for owner inspection; never retry a send. All steps need observed evidence, not only the final zero-send count (LIVE-P3 §3.2, §3.5).
+
+After S8/S9 are captured with the shadow end time, follow [LV-16 §1–§4](lv16-runbook.md) in the D+6 09:45–10:00 gap on Alviro, second-account chat only. All tool/production allowance/per-run approval gates must pass; the delegation must be ended and no application business action able to execute. Keep `P3-90` and the probe interval outside shadow evidence. Finish sending before J7-1 at 10:00; if the gap no longer fits, leave LV-16 incomplete and ask TL/owner to retime J7 with its full silence leg. No burst enters J7 silence or F1/F2 chats.
 
 ## 2. Enable 4 and J5 — D+7, 60–90 minutes
 

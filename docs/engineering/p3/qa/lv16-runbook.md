@@ -1,89 +1,89 @@
-# LV-16 rate retest — TL, dev bot
+# LV-16 rate retest — TL, Alviro, D+6
 
-*Executor: `TL`, not owner (owner answer 2026-10-30, OD-27, this launch). SQ supplies the procedure; TL records the result. About 15 minutes before enable 4. This is an unexecuted runbook. Do not change `tools/probe/`.*
+*Executor: `TL`; SQ supplies the procedure and records safe evidence. Owner answer 2026-10-30, OD-27 and P3-T168. Planned production window: D+6 (2026-11-08), after shadow and before J7 day 1; enable 4 remains later. This is an unexecuted runbook.*
 
 ## 1. Entry and baseline
 
 The 2026-10-18 LV-16 observation was five back-to-back sends, five successes in about 1.3 s, no 429. It did not exercise the designed ~1 msg/s per-chat throttle or establish that limits are absent. PQ-03 remains open ([TF §12 LV-16, §13 PQ-03](../../../TELEGRAM_FEASIBILITY.md#12-live-validation-results)).
 
-TL uses the **dev bot only** under the AGENTS §9 probe standing exception. Sends contain only this procedure's synthetic text and go only to two chats already in `PROBE_ALLOWED_CHAT_IDS`, on the same current dev connection. Owner does any needed client connection/window-opening actions. Do not ask for or publish the IDs, read configuration, open anything under `var/`, or use production credentials. Console is content-free, **never `--verbose`**. No polling/listen, no new tool or probe command (AGENTS §9; user work-item boundary).
+TL uses **Alviro's current production business connection**, into **the owner's second-account chat only**, already in Alviro's scope and `PROBE_ALLOWED_CHAT_IDS`. Never F1's or F2's chats: those are real people. The dev bot has no business connection and cannot run this test (P3-T168; M02 item 5, M03 handoff, P2-O7). Owner is present; client steps remain the owner's. Substitute runtime identifiers privately; publish aliases only. Agents never open configuration, `.env`, `var/`, backups or real chat data. Console is content-free, **never `--verbose`**. No polling/listen: the production server remains the sole poller.
 
-## 2. Existing-command limitation and safe execution
+All three gates must be evidenced before any send. **If any is missing, the run does not happen and LV-16 stays incomplete.**
 
-The only sending command is:
+| Gate | Required evidence |
+|---|---|
+| Tool change merged before D+6 | TL's merged change makes `burst` stop at the first `TelegramAPIError`, with zero subsequent sends, and adds `--interval SECONDS` between sends. Confirm the probe checkout contains that commit and its focused CI checks pass; no count-one workaround substitutes for it |
+| Production allowance approved | Owner-approved AGENTS §9 wording permits non-polling `burst` under `--prod-token` for this allow-listed synthetic run; the merged tool also allows `burst` under that flag. Today only `me` and `getfile` are allowed. TL brings the wording/tooling path with group D; this runbook grants no exception |
+| Go-ahead for this run | Owner's dated go-ahead explicitly covers Alviro LV-16 in the D+6 window, target scope and bounded counts. OD-27 assigns the executor; it is not a standing production-run approval |
+
+## 2. Timing and side-effect gates
+
+**Chosen slot: 09:45–10:00 owner-local on D+6**, after shadow S8/S9 and before J7-1. Shadow contact messages keep the 24 h reply window open; bot sends do not refresh it. Before the first burst, TL confirms shadow ended, its delegation is `ended`, catch-up is settled, and S1–S9 evidence (including Pause-button answers) is captured with an explicit shadow end time. Keep LV-16 in its own interval and `P3-90` marker block, outside shadow's `P3-60` evidence. Do not delete or edit messages to tidy evidence.
+
+There must be **no active delegation covering this chat**, and no pending/queued business action able to execute during the burst. Keep `autonomy.send` off. Nobody approves a held shadow draft or sends a new contact/manual test message during LV-16. Check these conditions immediately before sending, then compare safe state/count projections afterwards. The only permitted contact-facing effects are the scripted probe sends; no takeover or application-generated contact-facing action may result.
+
+**Classification expectation:** bot-sent owner messages use `assistant_sent` when `sender_business_bot.id == bot.id`, evaluated before `owner_manual` or `owner_automated` (ARCHITECTURE §6.5). They must not count as owner presence, contact messages, or takeover. However, TF §12 LV-03 observed **no own-bot echo updates**. The running app may therefore ingest none of these out-of-band probe sends: the probe's synchronous send results are authoritative for LV-16 counts, and the probe bypasses application send-time persistence. Do not claim app ingestion or create application action rows to simulate it. Record echo count and classification if an echo is observed; zero echoes means classification not exercised. TL supplies only content-free counts/enums, never payloads or content-bearing rows. An unexpected echo class, takeover delta or application business action stops the run and blocks acceptance pending TL review.
+
+**Hard boundary: all sending ends before J7-1 at 10:00.** Once J7's commitment is sent, the second-account chat stays silent through leg c (D+7 about 11:00; ≥24 h), with no LV-16 send, cleanup, window-opening message or client probe (LIVE-P3 §3.7; OD-26). Record checks may continue without chat traffic. If shadow/evidence collection overruns or a stop/wait cannot fit, there is no valid remaining slot in the unchanged calendar: leave LV-16 incomplete and enable 4 off. Least-bad proposal for TL/owner: retime J7-1 later on D+6, run LV-16 after sealed shadow evidence and before that new start, and move leg c/deadline so the full ≥24 h silence remains. That calendar change needs their explicit agreement; never squeeze the burst into the silence leg or mix it into shadow.
+
+## 3. Exact sequence — bounded by the slot
+
+Run only against the merged interface:
 
 ```text
-just probe burst <connection_id> <chat_id> <synthetic-text> --count N
+just probe-prod burst <connection_id> <chat_id> <text> --count N --interval S
 ```
 
-`justfile` recipe `probe` invokes `tools/probe/probe.py`. `cmd_burst` sends sequentially, logs one result per attempt and **continues its for-loop after every TelegramAPIError, including a 429**. There is no pace option, no stop-on-error option and no aggregate exit verdict. `cmd_summary` can read a dump, but this runbook does not use it: only the burst command is authorized here. Never inspect the dump to recover results (`tools/probe/probe.py::cmd_burst`, `::cmd_summary`, `::parser`; read-only source inspection in QA-P3).
+Placeholders are Alviro's current connection and the allow-listed second-account chat. Prepare the count sheet and tool/approval checks before 09:45, without sending. Times below are budgets, not evidence of achieved pace; apply §4 after every result. Run sequentially, never parallel processes or a shell loop that advances after an error.
 
-Therefore a single `--count 10` cannot guarantee “stop at the first 429.” Ctrl+C may arrive after the next send starts; it is not a hard stop. **Do not run a multi-send invocation under this stop rule.** Use one-send invocations, inspect the safe result after each and launch the next only on success. There is no automatic loop or parallel invocation. Each is a new synthetic test send, never a retry of an earlier attempt.
-
-This gives a bounded, supervised sequence above the old five-send total. Process/container startup may prevent a true high-rate burst or ~1 s spacing. Record measured elapsed time; do not call slow invocations a high-rate result. The exact multi-send target commands in §3 are **NOT RUN / blocked** until TL resolves that incompatibility within the owner's rules. No change or relaxation is authorized by this runbook.
-
-## 3. Exact sequence — about 15 minutes
-
-Runtime placeholders: `<connection_id>` is the dev connection, `<chat_A>`/`<chat_B>` are the two allow-listed chats. Substitute privately; no identifier appears in committed evidence. Keep a stopwatch and a count sheet. Times below are targets, never evidence of achieved pace. The stop rules in §4 apply after **every** result.
-
-| Time | Stage | Supervised sequence using existing command only | What to measure |
+| Owner-local time | Stage | Bounded operation | What to measure |
 |---|---|---|---|
-| 00:00–02:00 | Preparation | Confirm dev configuration/allow-list through the existing approved setup, not by opening secrets. Owner confirms both test chats have a valid reply opportunity. Record A/B aliases and client versions or “not recorded” | Date, UTC start, probe commit; no sends yet |
-| 02:00–05:00 | A: back-to-back, one chat | Run command A below **ten times**, one at a time. Replace `<nn>` with 01…10. Inspect each result before launching the next; no added wait on success | 10 total planned (>5); actual start/end elapsed; attempts/successes/refusals/unknowns; observed spacing if available |
-| 05:00–08:00 | B: paced A | After at least 60 s idle, run command B below **ten times**, `<nn>`=01…10. Target send starts ≥1 s apart; inspect between sends. If startup takes >1 s, use the actual slower pace, never queue a catch-up | Actual elapsed and achieved pace; whether near ~1 msg/s was achieved or remains NOT EVALUABLE |
-| 08:00–12:00 | C: shared connection, two chats | After ≥60 s idle, run C-A then C-B below, five pairs, `<nn>`=01…05. Same connection; sequential, inspect after each. No parallel processes | Per-chat counts (5 each), combined 10, first refusal chat alias, total elapsed |
-| 12:00–15:00 | Record | Reconcile count sheet against safe console lines; no more sends. TL prepares TF record and enable-4 verdict | See §5 |
+| 09:45–09:48 | Preparation | Seal shadow evidence; confirm ended delegation, no executable business action, open reply window and entry gates; capture safe before-counts | UTC start, commits, client versions or “not recorded”; no probe sends yet |
+| 09:48–09:50 | A: rapid, one chat | Command A once: 10 sequential back-to-back attempts, interval 0 | Planned 10 (>5 baseline); actual elapsed/spacing; attempted/succeeded/refused/unknown/not attempted |
+| After A | Idle | At least 60 s after A completes, only if A had no error; no catch-up sends | Actual idle seconds; a stop forbids B |
+| About 09:51–09:54 | B: paced, same chat | Command B once: 10 attempts, interval 1 second between sends | Actual elapsed and achieved pace; whether ~1 msg/s was exercised, rather than slower invocation/network time |
+| 09:54–10:00 | Close and check | No more sends; reconcile counts, compare safe app state/counts and record end before J7 | Echo classes if any, zero new takeover/application business actions, ended delegation; §5 disposition |
 
 ```text
-just probe burst <connection_id> <chat_A> "P3-9001 Synthetic LV16 rapid A attempt <nn>." --count 1
-just probe burst <connection_id> <chat_A> "P3-9002 Synthetic LV16 paced A attempt <nn>." --count 1
-just probe burst <connection_id> <chat_A> "P3-9003 Synthetic LV16 pair A attempt <nn>." --count 1
-just probe burst <connection_id> <chat_B> "P3-9004 Synthetic LV16 pair B attempt <nn>." --count 1
+just probe-prod burst <connection_id> <chat_id> "P3-9001 Synthetic LV16 rapid." --count 10 --interval 0
+just probe-prod burst <connection_id> <chat_id> "P3-9002 Synthetic LV16 paced." --count 10 --interval 1
 ```
 
-These are command templates, not a pasteable batch. Run the first line for stage A, second for B, third/fourth alternating for C. `<nn>` is part of synthetic text only; the tool also appends its own `#1`. Do not infer per-send server timing from a success line if it prints only `message_id`/“ok”; record stopwatch timing and its resolution. Public evidence omits actual Telegram message IDs.
+These are stage templates, not a pasteable batch. Inspect A's result and respect idle/stop rules before B. The tool appends an ordinal to each synthetic text. Public evidence stores marker numbers and counts, never Telegram message IDs. Do not infer per-send server timing from a success line containing only an ID/“ok”; record stopwatch elapsed and resolution. Ten paced calls entail at least nine 1-second intervals plus request latency. The allowance is **20 planned attempts total**, no automatic repeat or increased volume. A later approved run gets fresh markers and separate counts, never retries an uncertain attempt.
 
-The intended **internal** high-rate comparisons, not executable with a guaranteed first-429 stop in the current tool, are:
-
-```text
-just probe burst <connection_id> <chat_A> "P3-9005 Synthetic LV16 internal rapid A." --count 10
-just probe burst <connection_id> <chat_A> "P3-9006 Synthetic LV16 internal pair A." --count 6
-just probe burst <connection_id> <chat_B> "P3-9007 Synthetic LV16 internal pair B." --count 6
-```
-
-Record these as NOT RUN, never imply that the one-send substitute exercised the same load. If ten supervised invocations consume the allotted time, end with measured coverage and pending stages; do not increase volume or extend a live run silently. A new run must retain separate counts; it never repairs a refused send by retry.
+**Two-chat stage omitted from this one-chat run.** Only if a second owner-controlled chat is already in Alviro's scope may TL propose a conditional shared-connection extension (original count: five sends per chat, ten combined). It additionally needs an allow-list/production allowance and run go-ahead covering both targets, an open reply window in both, no active delegation, and a slot outside shadow/J7 evidence. It is not authorized by the current one-chat gate or included in the 20 attempts. Never substitute F1 or F2. Without that extension, shared-limit behaviour is unmeasured.
 
 ## 4. Stop rules
 
 | Observation | Action |
 |---|---|
-| First 429 / `error_class=TelegramRetryAfter`, with `retry_after` | End all sending stages immediately. Wait at least the reported seconds from receipt; no other test sends on either chat/connection during that wait. Record the value. This session sends nothing further, even after the wait |
-| 429 without a usable retry_after | End session, record missing value, leave retest incomplete; no guessed wait followed by a send |
-| Other refusal (`error_class`), missing console line, process failure, unknown/ambiguous outcome | End session; record class/count only; never retry the attempted send or infer it succeeded |
-| Wrong target/configuration, client reports an unexpected effect | Stop immediately, notify TL/owner; no continuation |
-| No refusal | Proceed only within the scripted bounded stage; absence of 429 is an observation at measured load, not proof of no limits |
+| First 429 / `error_class=TelegramRetryAfter`, with `retry_after` | Tool stops internally before any next send; TL ends all sending stages. Honour at least the reported seconds from receipt with no further probe sends on the connection. Record value and actual wait. This session sends nothing further, even after the wait; never delay J7 silently if the wait overlaps its start |
+| 429 without a usable `retry_after` | End session, record missing value, leave retest incomplete; no guessed wait followed by a send |
+| Any other `TelegramAPIError` | Tool stops internally at that error. End session; record class/count only; no next stage or retry |
+| Missing safe result, process failure, unknown/ambiguous outcome | End session; count unknown separately, never retry or infer success |
+| Wrong target/configuration, delegation active, unexpected echo class/takeover/action, client reports unexpected effect, or time boundary reached | Stop immediately and notify TL/owner; no continuation. Apply LIVE-P3 §3.12 for an unintended send |
+| No refusal | Proceed only within the bounded script and available slot. Absence of 429 is an observation at measured load, not proof of no limits |
 
-The one-send boundary guarantees no later send **within this procedure** follows the first observed 429. Do not rely on shell exit 0 as proof of success: `cmd_burst` catches Telegram errors and continues/returns normally. No automatic retry; no broad exception or output-message parsing wrapper is introduced (AGENTS §7; tool source in §2).
+The merged tool must guarantee first-error stopping; Ctrl+C is not that guarantee. Do not rely on shell exit 0 as proof of success: reconcile safe per-attempt outcomes and confirm **zero further attempts after the first error**. No automatic retry or error-message parsing wrapper is introduced. Do not publish exception messages or raw console transcripts (AGENTS §7/§9).
 
 ## 5. TF record and enable 4
 
-TL appends a new LV-16 observation to **TF §12**, preserving the 2026-10-18 baseline; records OD-27's executor exception explicitly rather than describing it as owner-executed. Only counts/enums/timing go into the public record. Suggested record fields:
+TL adds an **agent-run follow-up line within TF §12's existing LV-16 row**, preserving the 2026-10-18 baseline, as P3-T168 requires. Do not create a new LV entry, call it owner-executed, or mark anything *Verified*. This launch edits only QA documents; the later TL records the actual result. Only content-free fields enter the public record:
 
 | Field | Record |
 |---|---|
-| Date / executor / authority | <UTC date>; TL; owner OD-27 2026-10-30 dev-probe exception |
-| Clients / probe commit | <versions or not recorded>; <SHA>; synthetic text only |
-| Stage and scope | <A/B/C>; <one chat / two allow-listed chats, same connection>; no IDs |
-| Counts | Planned; attempted (“sent calls”); succeeded; definitely refused; unknown; not attempted. Attempted = succeeded + refused + unknown |
-| Timing | Start/end UTC; elapsed and resolution; achieved pace; target achieved yes/no |
-| Rate refusal | First refusal ordinal; fixed error_class; retry_after seconds or absent; waited seconds; zero further attempts |
-| PQ-03 conclusion | No 429 at measured load / 429 observed at that load / incomplete. Two-chat data may suggest shared pressure; it cannot isolate bot-, connection- and chat-wide limits |
-| Throttle conclusion | Keep the designed ~1 msg/s per-chat throttle. If it failed at that pace or a slower one, enable 4 waits for TL classification and reviewed throttle change/retest. Never raise the throttle from a successful burst |
-| Coverage gap | Internal count>1 burst and/or near-1 s pacing not measured; distinguish every NOT RUN/NOT EVALUABLE stage |
+| Date / executor / authority | UTC date; TL agent-run; OD-27/P3-T168; approved AGENTS §9 allowance and per-run go-ahead references/times |
+| Clients / commits | Versions or not recorded; merged probe SHA, deployed app SHA; synthetic text only |
+| Slot / stage / scope | Shadow end/evidence cut-off; LV-16 UTC/local start/end; J7 actual start; A/B; one owner-controlled chat, same connection; no IDs |
+| Counts | Planned; attempted (“send calls”); succeeded; definitely refused; unknown; not attempted. Attempted = succeeded + refused + unknown |
+| Timing | Per-stage start/end UTC; elapsed and resolution; idle seconds; configured interval; achieved pace; target achieved yes/no |
+| Rate refusal | First refusal ordinal; fixed error class; `retry_after` seconds or absent; waited seconds; zero further attempts |
+| App side effects | Delegation ended before/after; executable business actions before/after; echo count and class counts or no echo/classification not exercised; takeover and application business-action deltas zero; owner unexpected-effect yes/no |
+| PQ-03 conclusion | No 429 at measured load / 429 observed at that load / incomplete. One chat cannot isolate bot-, connection- and chat-wide limits |
+| Throttle conclusion | Keep the designed ~1 msg/s per-chat throttle. If it failed at that pace or slower, enable 4 waits for TL classification and reviewed throttle change/retest. Never raise the throttle from a successful burst |
+| Coverage gap | Every NOT RUN/NOT EVALUABLE stage, pace not achieved, missing side-effect projection, no echo, two-chat stage omitted, or time/permission/tool gate missing |
 | Enable-4 disposition | Accepted by TL with owner decision reference if required / blocked pending complete evidence |
 
-Sources: TF §12 LV-16, §13 PQ-03; [README §6 enable 4](../README.md#6-release-deploy-and-flags); [LIVE-P3 §3.4](../specs/LIVE-P3.md#34-deploy-and-enable-step-verification). Do not close PQ-03 merely because no 429 occurred. A 429 is not itself a failed observation; ignoring the stop or retry_after would invalidate the run.
+Sources: [decisions §A3/§B11](../decisions.md); [README §6 enable 4](../README.md#6-release-deploy-and-flags); [LIVE-P3 §3.3–3.7](../specs/LIVE-P3.md); TF §12 LV-16/LV-03, §13 PQ-03; ARCHITECTURE §6.5. Do not close PQ-03 merely because no 429 occurred. A 429 is not itself a failed observation; ignoring the stop or `retry_after` invalidates the run.
 
-**Guard:** “LV-16 done” needs accepted dated results at the intended load, safe stop handling and a throttle conclusion. The startup-paced substitute alone does not close an unmeasured internal high-rate/pacing requirement. Until TL resolves that gap and accepts the evidence, leave LV-16 incomplete and `autonomy.send` off; `p3-verify release` does not inspect this documentary gate. CP-G, CP-A, clean shadow and ≥24 h notice remain separate enable-4 guards.
-
-AGENTS §2/§16 and TF §12 currently reserve the Verified label for owner-executed live tests; older P3 role tables also say owner runs LV-16. TL must reconcile those references with the owner's specific OD-27 update. Record a **TL-executed observation**, not a fabricated owner-run or self-awarded Verified label. QA-P3 changes none of those files.
+**Guard:** “LV-16 done” needs accepted dated results at the intended load, safe stop handling, side-effect checks and a throttle conclusion. Missing tool/allowance/go-ahead, unmeasured required load, incomplete checks or an unaccepted result leave LV-16 incomplete and `autonomy.send` off. `p3-verify release` does not inspect this documentary gate. CP-G, CP-A, clean shadow and ≥24 h notice remain separate enable-4 guards.

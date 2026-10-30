@@ -13,8 +13,8 @@ Use only counts, states, codes, timings, synthetic marker numbers, commit SHAs a
 | Date, owner timezone, local start/end | <date, timezone, times> |
 | UTC start/end and verification interval | <ISO with timezone; interval [since, until)> |
 | Roles and chats | <owner, second account, F1, F2, TL, SQ; chat aliases only> |
-| Bot/configuration | <production window / dev LV-16 / synthetic eval; no IDs> |
-| Owner go-ahead | <time and short reference, not a quotation; or LV-16 standing exception OD-27> |
+| Bot/configuration | <Alviro production window / Alviro LV-16 D+6 / synthetic eval; no IDs> |
+| Owner go-ahead | <per-run time and short reference, not a quotation; LV-16 also records merged tool change and approved AGENTS §9 production-token allowance> |
 | Started by | <TL / SQ under TL brief for eval; TL for LV-16; TL server for live> |
 | Deployed / evaluated commit | <SHA and merge PR> |
 | Automated twins | <exact scenario IDs/names; CI URL and SHA; passes/fails/skips/xfails> |
@@ -38,6 +38,7 @@ Use only counts, states, codes, timings, synthetic marker numbers, commit SHAs a
 | Held replies | <fallback, shadow, converted, reproposed; autonomy_not_sent counts by safe kind/status if available> |
 | Marker verification | <prefix, direction, exact expected numbers, found/missing/unexpected; optional/retry allocation; earlier evidence for deleted markers> |
 | Positive control | <at least one succeeded auto action for J5/soak; reminder delivered while paused; other run-specific control> |
+| LV-16, if run | <shadow evidence cut-off; probe interval; counts/pace/first error/retry_after; zero post-error sends; delegation ended; echo class counts or no echo; zero new takeover/application business actions; end before J7; TF §12 existing-row agent-run follow-up link, no Verified label> |
 | Pause | <source/attempt/marker, cancellation delta, lane, trigger_at, apply_ms, computed latency; button stopwatch upper bound; no-claim-after-brake result> |
 | Catch-up / notices | <delivered state and counts; owner accuracy and Pause-button yes/no> |
 | Reminders / follow-ups | <task/automation/nudge aliases, states, due/delivered UTC/local, delay, late/skipped; approve/skip> |
