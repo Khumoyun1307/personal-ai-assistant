@@ -204,7 +204,7 @@ if ctx.llm is not None:
         clock=ctx.clock,
         scheduler=ctx.scheduler,
         actions_config=ctx.actions_config,
-        presenter=None,  # the approval cards once P3WireContext has them (CG-8)
+        presenter=ctx.approval_cards,  # P3WireContext.approval_cards (CG-8 closed by OD-11); None where not built
         nudges_on=nudges_on,
     )
     # fragment: followups=FollowUpJobHandlers(nudge=nudge_job.run)

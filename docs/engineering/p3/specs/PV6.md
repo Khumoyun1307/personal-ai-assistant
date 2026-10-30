@@ -78,6 +78,7 @@ Rules for the text: fixed application text, no user content, no names, no number
 - An owner whose only consent was recorded under v6 (a new install after deploy #1): no notice (nothing changed for them).
 - An owner who revoked consent earlier: still gets the notice (their data is still stored; existing rule).
 - The notice delivery is uncertain: it is settled and never resent (existing rule); the 24-hour clock starts at the time of the attempt whose audit row says `delivered` or `uncertain` (an uncertain notice may be on screen). A failed attempt (bot blocked, network) never starts the clock: the owner has not seen the notice, and enables 4 and 5 wait.
+- An attempt cut off after its claim committed (a `system_alert_claimed` row for key `policy_update:v6` with no `system_alert` row whose `claim_id` matches): it may be on screen, so it counts as uncertain for the 24-hour promise, and the clock starts at the claim's `at`. The marker stays unset and later runs get `in_progress` without resending (CP4, ICR #132; a known M05 open item; the mechanism is unchanged and never edited by PV6).
 
 ### 3.6 Failure modes
 
@@ -85,7 +86,7 @@ Rules for the text: fixed application text, no user content, no names, no number
 |---|---|
 | The owner approves the text late | Publication and deploy #1's notice slip with it; enables 4 and 5 slip day for day (OD-24). The code PR may still merge into `int/p3` with the draft notice |
 | Publication fails or the live page does not show version 6 | No deploy #1: the notice links to the page, so publication comes first (§3.4 step 3) |
-| The notice cannot be delivered (bot blocked, no control chat) | Existing behaviour: retried once per hour, at most 24 times, then given up; the TL sees no delivered/uncertain audit row and holds enables 4 and 5 |
+| The notice cannot be delivered (bot blocked, no control chat) | Existing behaviour: retried once per hour, at most 24 times, then given up; the TL sees no delivered/uncertain audit row and no unresolved claim (§3.5) and holds enables 4 and 5 |
 | The owner changes the wording after the code merged | One follow-up PR changing only the `"v6"` string, before R1 (§3.3 step 5) |
 | A P3 behaviour changes after approval, making a sentence untrue | The TL updates the text and gets a new approval before deploy #1; after publication it is a v7 (§9 note 2) |
 
@@ -138,7 +139,7 @@ IMPLEMENTATION_PLAN names no test for the policy; the global DoD requires the po
 
 ## 9. Risks and notes
 
-1. **The 24-hour promise** is operational, not coded: the TL checks the notice's delivery time (content-free audit rows) before enables 4 and 5. SQ's `p3-verify release` should report how many owners still lack the v6 notice (a request to OPS-TV3, not a contract change).
+1. **The 24-hour promise** is operational, not coded: the TL checks the notice's delivery time (content-free audit rows) before enables 4 and 5. SQ's `p3-verify release` should report how many owners still lack the v6 notice, counting an owner with an unresolved `system_alert_claimed` row for `policy_update:v6` as uncertain (clock at the claim's `at`), not as lacking the notice (a request to OPS-TV3, not a contract change).
 2. **Truthfulness drift.** If a P3 feature changes after the owner approves the text (for example the suggestion retention), the TL updates the text with a new approval before deploy #1; a change after publication is a v7.
 3. **Notice before publication.** The code merges early, but the notice reaches production only at deploy #1, after publication (§3.4 step 3); the TL's deploy checklist holds it.
 4. **Public repository.** The policy text is public; it names only the providers v5 already names and adds no infrastructure detail.

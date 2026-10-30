@@ -14,7 +14,7 @@
 
 ## 1. Goal
 
-For a burst in a chat covered by an active delegation, draft a reply in delegated mode, compute every fact the autonomy rules need, insert the AI disclosure or the fixed identity answer, and let the policy engine decide (invariant 1). `ALLOW_AUTO` becomes a `delegation_auto` action that M6-SCHED schedules; anything else becomes a normal approval card with no disclosure, an escalation, or nothing. The planner itself has no side effects, so the S06.5 eval (EV-AUT) runs the exact production logic.
+For a burst in a chat covered by an active delegation, draft a reply in delegated mode, compute every fact the autonomy rules need, insert the AI disclosure or the fixed identity answer, and let the policy engine decide (invariant 1). `ALLOW_AUTO` becomes a `delegation_auto` action that M6-SCHED schedules; anything else becomes a held reply (the stored text, no disclosure, shown to the owner as an `autonomy_not_sent` alert with a Draft reply button that opens the normal approval card, OD-11), an escalation, or nothing. The planner itself has no side effects, so the S06.5 eval (EV-AUT) runs the exact production logic.
 
 ## 2. Scope
 
@@ -24,7 +24,8 @@ For a burst in a chat covered by an active delegation, draft a reply in delegate
 3. `actions/proposals.py`: the `delegation_auto` path (re-decision under the locks, idempotency through the two unique indexes, `delegation_id` stored, `ProposalRefused.decision`).
 4. `jobs/tasks_delegation.py` (registration body); `jobs/reconcile_delegation.py` (`unqueued_delegated` only).
 5. Lines in `_wire_autonomy`, including the startup refusal and instantiating DELEG-DRAFT's `DelegatedDraftRunner`.
-6. One named touch point in `telegram/control/approvals.py`: the autonomy line of a fallback card (§3.8, R80). **No** edit to `actions/release.py::_decide` (M6-SCHED writes it once against the builders, R79).
+6. Two named touch points in `telegram/control/approvals.py`: the autonomy line of a held reply's card (§3.8, R80) and the held-reply rule in `sync` and `sync_cards` (§3.8, OD-11). **No** edit to `actions/release.py::_decide` (M6-SCHED writes it once against the builders, R79).
+7. The held reply's `autonomy_not_sent` alert row (enqueue only; M6-ESC renders it and handles the Draft reply press) (OD-11).
 
 **Out:** the rules and outcome mapping (M6-POL); the delegated prompt, schema and context builder (DELEG-DRAFT); scheduling, release and conversions (M6-SCHED); Tx A (M6-TXA); takeover counting (M6-TAKE adds one argument to `autonomous_context`); covered-chat triage effects, `decide_delivery` and the escalation renderer (M6-ESC; this unit only produces the rows); delegation creation and lifecycle (M6-DELEG, M6-LIFE); the eval target (EV-AUT).
 
@@ -45,7 +46,7 @@ For a burst in a chat covered by an active delegation, draft a reply in delegate
 | `release.schedule_autonomous`, `defer_release_after_commit` | M6-SCHED |
 | `DELEGATED_TASK`, `delegated_queueing_lock`; `AutonomyConfig`; flags `autonomy.run`, `autonomy.send` | F0-S, §7.1, §10 |
 | `DelegationRequester`, `P3Ports`; `JobHandlers.delegation`; the triage hook | F0-R, §4.5, §7.2 |
-| `NotificationKind.DELEGATION_ESCALATION`, `AUTONOMY_VOLUME_CAP`, `NotificationRefs.delegation_ids`; `inbox.notifications.enqueue` | F0-S / M05, §11 |
+| `NotificationKind.DELEGATION_ESCALATION`, `AUTONOMY_VOLUME_CAP`, `AUTONOMY_NOT_SENT` (OD-11), `NotificationRefs.delegation_ids`; `inbox.notifications.enqueue` | F0-S / M05, §11 |
 | `agent/delegated_draft.py::DelegatedDraftRunner(*, session_factory, llm, clock, config: DraftConfig)` | DELEG-DRAFT, §4.2 |
 
 | Provides | To |
@@ -53,11 +54,11 @@ For a burst in a chat covered by an active delegation, draft a reply in delegate
 | `DelegatedAutonomyPlanner.plan(*, account_id, conversation_id, now) -> AutonomyPlan` | the job; EV-AUT |
 | `policy_loader.autonomous_context(...)` and the §3.5 builders (real bodies) | `propose`, M6-TXA's Tx A, M6-TAKE (one argument); M6-SCHED's release job calls the builders directly |
 | `AutonomyPlan.escalates` (R87) | the `replies.delegated` job; EV-AUT |
-| The autonomy line on fallback cards (`telegram/control/approvals.py`, R80) | the owner; M6-SCHED and M6-TXA conversions reuse it |
+| The autonomy line on a held reply's card (`telegram/control/approvals.py`, R80) and the held-reply sync rule (OD-11) | the owner; M6-SCHED and M6-TXA conversions reuse both; M6-ESC's Draft reply press relies on the sync rule |
 | `propose()` for origin `delegation_auto` | the job, M6-SCHED's re-proposal |
 | `DelegatedPathRequester` | F0-R's triage hook, then M6-ESC |
 | Task `replies.delegated`; reconciler `unqueued_delegated` | the worker |
-| Rows: `delegation_auto` actions, fallback cards, `delegation_escalation` and `autonomy_volume_cap` notifications, audit `autonomy_decision` | M6-SCHED, M6-ESC, STAT-ACT, M6-CATCH, OPS-TV3 |
+| Rows: `delegation_auto` actions, held replies, `delegation_escalation`, `autonomy_volume_cap` and `autonomy_not_sent` notifications, audit `autonomy_decision` | M6-SCHED, M6-ESC, STAT-ACT, M6-CATCH, OPS-TV3 |
 
 ### 3.2 Facts (`actions/policy_loader.py`)
 
@@ -126,13 +127,13 @@ async def autonomous_context(
 4. **Final text** (a second short session):
    - `locale = burst_language(...)`.
    - If `draft.identity_question` and `locale in autonomy_config.languages`: `final_text = disclosure.identity_answer(locale)`, `identity_answer = True`, `disclosure_added = False` (OD-10; the sentence carries `AI_MARKER`, so it counts as disclosed).
-   - Else `required = disclosure_required(prior_autonomous_sends(...), session_start=delegation.starts_at, now=now)`. If `required` and `locale` is not `None`: `final_text = compose(draft.body, locale=locale, wording=delegation.rules.disclosure.get(locale.value))`, `disclosure_added = True`. Otherwise `final_text = draft.body` (when `required` and `locale` is `None`, `disclosure_present` and `language_gate` fail and the reply becomes a card).
+   - Else `required = disclosure_required(prior_autonomous_sends(...), session_start=delegation.starts_at, now=now)`. If `required` and `locale` is not `None`: `final_text = compose(draft.body, locale=locale, wording=delegation.rules.disclosure.get(locale.value))`, `disclosure_added = True`. Otherwise `final_text = draft.body` (when `required` and `locale` is `None`, `disclosure_present` and `language_gate` fail and the reply is kept as a held reply, OD-11).
    - `draft_flags = _draft_flags(draft, identity_answer=…, disclosure_required=…, disclosure_added=…)`: the P3-interfaces §2.4 keys `language`, `confidence`, `uses_only_permitted_information`, `sensitive_topic`, `makes_commitment`, `should_escalate`, `in_scope`, `behaviour`, `identity_question`, `escalation_category`, `knowledge_ids` (the model's `knowledge_ids_used`, as given), `identity_answer`, `disclosure_required`, `disclosure_added`. Ids, enums and bools only.
    - `facts = ActionFacts(action_id=None, kind=SEND_MESSAGE, origin=DELEGATION_AUTO, state=PROPOSED, version=1, text_length=sendable_length(final_text), created_at=now, expires_at=None, shown_through_message_id=draft.shown_through_message_id, owner_retry=False)`.
    - `decision = decide(await autonomous_context(..., phase=Phase.PROPOSAL, process_run_id=None))`.
 5. **Outcome:** `escalation_category == "suspicious"` ⇒ `ESCALATE` (do not comply: no reply and no card for an attempt to instruct the assistant, PRD §11.5; contract gap CG-13). Otherwise `ALLOW_AUTO`, `REQUIRE_APPROVAL` or `DENY` from `decision.outcome`. `reason_codes` = the failed checks' codes in `RULES` order (`()` for `ALLOW_AUTO`).
-6. **Escalation category:** the draft's; when `identity_question` is set and it is `none`, use `fyi` (an identity question always enqueues an escalation, with the draft's category or `fyi`: P3-interfaces §4.1, §5.1, R14). This sets only `AutonomyPlan.escalation_category` (the notification); `draft_flags["escalation_category"]` keeps the model's value, so the application never changes what `draft_safe` reads.
-7. **`escalates` (R87):** `AutonomyPlan.escalates: bool` is computed once, here, by one private function `_escalates(plan_category, outcome, draft_status)`: true exactly when `escalation_category` (after steps 3 and 6) is not `none`. That covers every drafted outcome with a non-`none` category, an identity question (category `fyi` at least) and a `NOT_DRAFTED` plan whose draft status is `invalid`, `refused` or `failed` (category `needs_owner`). The `replies.delegated` job (§3.6 Apply step 3) and EV-AUT both read `plan.escalates` and never recompute the rule, so the production job and the eval cannot drift. The contract's `AutonomyPlan` gains this field (P3-interfaces §4.1; F0-S ships it as a required field with no default, so a hand-built plan must say it).
+6. **Escalation category:** the draft's. When `identity_question` is set, its sentence is not sent (no identity answer, because the language is not enabled, or an identity answer whose outcome is not `ALLOW_AUTO`) and the category is `none`, use `fyi`: the identity question escalates instead of the sentence (P3-interfaces §4.1, §5.1, R14, OD-10). An identity answer on an `ALLOW_AUTO` plan keeps the draft's category and adds no escalation of its own (OD-10a, decisions §A2); if the job then holds it (shadow mode or a downgrade under the locks), the held reply's `autonomy_not_sent` alert tells the owner. This sets only `AutonomyPlan.escalation_category` (the notification); `draft_flags["escalation_category"]` keeps the model's value, so the application never changes what `draft_safe` reads.
+7. **`escalates` (R87):** `AutonomyPlan.escalates: bool` is computed once, here, by one private function `_escalates(plan_category, outcome, draft_status)`: true exactly when `escalation_category` (after steps 3 and 6) is not `none`. That covers every drafted outcome with a non-`none` category, an identity question whose sentence is not sent (category `fyi` at least; OD-10a) and a `NOT_DRAFTED` plan whose draft status is `invalid`, `refused` or `failed` (category `needs_owner`). The `replies.delegated` job (§3.6 Apply step 3) and EV-AUT both read `plan.escalates` and never recompute the rule, so the production job and the eval cannot drift. The contract's `AutonomyPlan` gains this field (P3-interfaces §4.1; F0-S ships it as a required field with no default, so a hand-built plan must say it).
 
 The returned `AutonomyPlan` fills every field (§4.1 of the contract, plus `escalates`): `body` = the model's body only (what a card shows), `draft_facts` = the `AutonomyFacts` `decide` saw.
 
@@ -144,12 +145,12 @@ Changes, in order inside `propose`:
 1. Origin `delegation_auto`: `request.delegation_id is None` ⇒ `ProposalRefused("delegation_required")`; `autonomy is None` ⇒ `ProposalRefused("autonomous_not_available")` (F0-S). The M04 blanket refusal goes. Any `trigger` keeps F0-S's `trigger_not_available`.
 2. Locks: account `FOR SHARE`, conversation `FOR UPDATE` (as today), then `covering = await active_covering(session, …, now=now, for_update=True)` (the §9.4 order account → conversation → delegation). `covering` counts only when its id equals `request.delegation_id`; otherwise it is `None`.
 3. `decision = decide(await autonomous_context(..., delegation=covering, facts=<as today>, text=request.text, draft_flags=request.draft_flags or {}, base_message_id=request.base_message_id, phase=PROPOSAL, process_run_id=None))`.
-4. `decision.outcome is not ALLOW_AUTO` ⇒ `raise ProposalRefused("autonomy_downgraded", decision=decision)`; nothing is inserted. `ProposalRefused.__init__(self, code: str, decision: Decision | None = None)` gains the optional attribute (backward compatible; contract gap CG-14), so the caller's fallback card records the codes of this re-decision.
+4. `decision.outcome is not ALLOW_AUTO` ⇒ `raise ProposalRefused("autonomy_downgraded", decision=decision)`; nothing is inserted. `ProposalRefused.__init__(self, code: str, decision: Decision | None = None)` gains the optional attribute (backward compatible; contract gap CG-14), so the caller's held reply records the codes of this re-decision.
 5. Insert as `proposed` with `origin = delegation_auto`, `delegation_id`, `draft_flags`, the proposal-phase `policy_decision`, `expires_at` (the one expiry rule), `run_id = tool_call_id = trigger_turn_id = None`. Use `ON CONFLICT DO NOTHING` with no conflict target for this origin, so a violation of `ux_actions_autonomous_inflight` or `ux_actions_delegation_base` returns no row.
 6. No row ⇒ look up the conflicting action (the chat's in-flight `delegation_auto`, else the same `(delegation_id, base_message_id)` row outside `disclosure_missing`) and return `_reused(it)`: the idempotent "already proposed" outcome, never an error. Neither found ⇒ `RuntimeError` (as today).
 7. A new row ⇒ return `ProposalResult(action_id, PROPOSED, False, None, decision)`. No card, no `_supersede_live`: the caller schedules it (M6-SCHED's `schedule_autonomous`) in the same transaction.
 
-For every origin, `_insert` now writes `delegation_id=request.delegation_id` (fallback cards carry it; contract gap CG-11 if F0-S did not). For origin `agent_proposal` nothing else changes.
+For every origin, `_insert` now writes `delegation_id=request.delegation_id` (held replies carry it; contract gap CG-11 if F0-S did not). For origin `agent_proposal` nothing else changes.
 
 ### 3.5 The requester (`DelegatedPathRequester`, implements `DelegationRequester`)
 
@@ -190,15 +191,15 @@ A re-defer runs after commit (the job's own row is `doing`, so its queueing lock
 
 | Outcome | Effect |
 |---|---|
-| `ALLOW_AUTO`, `autonomy.send` on | `propose(origin=DELEGATION_AUTO, text=plan.final_text, base_message_id, shown_through_message_id, delegation_id, draft_run_id, draft_flags, autonomy=autonomy_config)`. New action ⇒ `schedule_autonomous(..., now=now)` must return `True` (else raise: a bug; the transaction rolls back and the flag stays), then `defer_release_after_commit(at=scheduled_for)`; code `scheduled`. Reused: when the reused action's `shown_through_message_id` is at least the plan's, it already answers this burst ⇒ `already_proposed`; when it is lower (an older reply still in flight, for example claimed between Check and Apply), the burst is not answered yet ⇒ code `inflight_wait`, flag kept, steps 3–5 skipped (the next run decides again), re-defer at `now + debounce` after commit. `ProposalRefused("autonomy_downgraded")` ⇒ fallback card with `refused.decision`'s codes |
-| `ALLOW_AUTO`, `autonomy.send` off (shadow) | fallback card with `draft_flags["shadow"] = "allow_auto"` |
-| `REQUIRE_APPROVAL`, `DENY` | fallback card (the M04 proposal policy makes it a card, or `blocked` with copy-ready text when a send precondition failed) |
+| `ALLOW_AUTO`, `autonomy.send` on | `propose(origin=DELEGATION_AUTO, text=plan.final_text, base_message_id, shown_through_message_id, delegation_id, draft_run_id, draft_flags, autonomy=autonomy_config)`. New action ⇒ `schedule_autonomous(..., now=now)` must return `True` (else raise: a bug; the transaction rolls back and the flag stays), then `defer_release_after_commit(at=scheduled_for)`; code `scheduled`. Reused: when the reused action's `shown_through_message_id` is at least the plan's, it already answers this burst ⇒ `already_proposed`; when it is lower (an older reply still in flight, for example claimed between Check and Apply), the burst is not answered yet ⇒ code `inflight_wait`, flag kept, steps 3–5 skipped (the next run decides again), re-defer at `now + debounce` after commit. `ProposalRefused("autonomy_downgraded")` ⇒ held reply with `refused.decision`'s codes |
+| `ALLOW_AUTO`, `autonomy.send` off (shadow) | held reply with `draft_flags["shadow"] = "allow_auto"` |
+| `REQUIRE_APPROVAL`, `DENY` | held reply (the M04 proposal policy makes it `awaiting_approval`, or `blocked` with copy-ready text when a send precondition failed) |
 | `ESCALATE` | nothing proposed |
 | `NO_REPLY` | nothing proposed |
 | `NOT_DRAFTED` | nothing proposed; `no_consent` keeps the flag |
 
-   **Fallback card:** `propose(ProposalRequest(origin=AGENT_PROPOSAL, kind=SEND_MESSAGE, text=plan.body, base_message_id, shown_through_message_id, delegation_id, run_id=None, tool_call_id=None, trigger_turn_id=None, draft_run_id, draft_flags={<plan flags without identity_answer, disclosure_required, disclosure_added>, "autonomy_codes": [...], "shadow"?: "allow_auto"}), clock=…, config=actions_config)`. No disclosure line, ever (PRD §11.4; the CHECK). It survives `/pause` (origin `agent_proposal`, P2-T23, OD-11). A new card is presented after commit (`presenter.present_after_commit`; the superseded card synced), as `agent/drafting.py::propose_draft` does; with no presenter wired, M04's periodic card sync shows a live card within about a minute (contract gap CG-8).
-3. **Escalation** when `plan.escalates` is true (R87; the planner's single predicate, §3.3 step 7: a category other than `none`, an identity question, or a `NOT_DRAFTED` plan with draft status `invalid`, `refused` or `failed`, whose category is `needs_owner`; invalid or refused output becomes an escalation, PRD §15). The job never recomputes the rule: `enqueue(kind=DELEGATION_ESCALATION, priority=<urgent_decision → URGENT, needs_owner → HIGH, suspicious → NORMAL, fyi → LOW>, dedupe_key=f"deleg:{delegation_id}:{conversation_id}:{base_message_id or 0}", refs=NotificationRefs(conversation_ids, contact_ids, delegation_ids, message_ids=(base,), action_ids=(new id,) if any, alert_kind=<the escalation category value>), conversation_id, contact_id, bypass_quiet_hours=(category == urgent_decision and rules.escalation.urgent_bypass_quiet_hours), scheduler=scheduler)`. M6-ESC decides delivery and renders it. `refs.alert_kind` (existing `NotificationRefs.alert_kind`) is set here to the escalation category value (`urgent_decision`, `needs_owner`, `suspicious`, `fyi`), so M6-ESC and the renderer never parse the dedupe key (R60; P3-interfaces §11.2). M6-ESC is a second producer of `delegation_escalation` (the outage fallback) and uses the same dedupe-key format. `triage_urgent` and `triage_decision` notifications stay immediate in covered chats (M6-ESC). `over_budget` and `no_consent` enqueue nothing here (M6-ESC's `system.delegation_health` reports LLM or budget outages).
+   **Held reply (OD-11):** `propose(ProposalRequest(origin=AGENT_PROPOSAL, kind=SEND_MESSAGE, text=plan.body, base_message_id, shown_through_message_id, delegation_id, run_id=None, tool_call_id=None, trigger_turn_id=None, draft_run_id, draft_flags={<plan flags without identity_answer, disclosure_required, disclosure_added>, "autonomy_codes": [...], "shadow"?: "allow_auto", "presentation": "on_request"}), clock=…, config=actions_config)`. No disclosure line, ever (PRD §11.4; the CHECK). It survives `/pause` (origin `agent_proposal`, P2-T23, OD-31). The row, its state, expiry and retention are exactly those of the approval card the default answer showed. **The card is not presented.** Instead, for a new action (not a reused one), in the same transaction: `enqueue(kind=AUTONOMY_NOT_SENT, priority=HIGH, alert_class=AlertClass.SYSTEM (OD-11a: always at once), dedupe_key=f"notsent:{action_id}", refs=NotificationRefs(conversation_ids=(c,), contact_ids=(contact,), delegation_ids=(d,), message_ids=(base,), action_ids=(action_id,), alert_kind=<the first autonomy code; "shadow" for a shadow reply; "not_sent" when there is none>), conversation_id=c, contact_id=contact, scheduler=scheduler)` (P3-interfaces §11.2: class `system`, the timing of the card it replaces). A superseded older card is still synced after commit (`presenter.sync_after_commit`, when a presenter is wired: `P3WireContext.approval_cards`, which closes CG-8). The owner's Draft reply press (M6-ESC) shows this card with no model call; until then M04's sync leaves it unshown (§3.8).
+3. **Escalation** when `plan.escalates` is true (R87; the planner's single predicate, §3.3 step 7: a category other than `none`, an identity question whose sentence is not sent (OD-10a), or a `NOT_DRAFTED` plan with draft status `invalid`, `refused` or `failed`, whose category is `needs_owner`; invalid or refused output becomes an escalation, PRD §15). The job never recomputes the rule: `enqueue(kind=DELEGATION_ESCALATION, priority=<urgent_decision → URGENT, needs_owner → HIGH, suspicious → NORMAL, fyi → LOW>, dedupe_key=f"deleg:{delegation_id}:{conversation_id}:{base_message_id or 0}", refs=NotificationRefs(conversation_ids, contact_ids, delegation_ids, message_ids=(base,), action_ids=(new id,) if any, alert_kind=<the escalation category value>), conversation_id, contact_id, bypass_quiet_hours=(category == urgent_decision and rules.escalation.urgent_bypass_quiet_hours), scheduler=scheduler)`. M6-ESC decides delivery and renders it. `refs.alert_kind` (existing `NotificationRefs.alert_kind`) is set here to the escalation category value (`urgent_decision`, `needs_owner`, `suspicious`, `fyi`), so M6-ESC and the renderer never parse the dedupe key (R60; P3-interfaces §11.2). M6-ESC is a second producer of `delegation_escalation` (the outage fallback) and uses the same dedupe-key format. `triage_urgent` and `triage_decision` notifications stay immediate in covered chats (M6-ESC). `over_budget` and `no_consent` enqueue nothing here (M6-ESC's `system.delegation_health` reports LLM or budget outages).
 4. **Cap notice:** when `volume_conversation`, `volume_delegation` or `loop_suspected` is among the failed codes (the plan's or the re-decision's): `enqueue(kind=AUTONOMY_VOLUME_CAP, priority=HIGH, dedupe_key=f"cap:{delegation_id}:{conversation_id}:{hour_epoch}", …)` with `hour_epoch = int(now.timestamp()) // 3600 * 3600`.
 5. **Audit** `autonomy_decision` (subject `conversation`, actor `system`): `delegation_id`, `outcome`, `codes`, `action_id` (or null), `shadow`, `identity_answer`, `escalation_category`. Content-free.
 6. **Flag:** cleared under the conversation lock unless a contact message newer than `plan.shown_through_message_id` arrived (that burst's own job drafts it), and except for `stale`, `inflight_wait` and `no_consent`.
@@ -213,17 +214,22 @@ A re-defer runs after commit (the job's own row is `doing`, so its queueing lock
 
 M6-LIFE adds `overdue_delegations` to the same module later, as a separate function.
 
-### 3.8 Wiring and the fallback-card line
+### 3.8 Wiring, the held reply's card line and the held-reply sync rule
 
 `_wire_autonomy` (function-local imports only):
 - **Startup refusal, first line:** `autonomy.run` on without both `triage.run` and `triage.assist_trigger` ⇒ `raise ConfigError("autonomy.run needs triage.run and triage.assist_trigger")` (flag names only; `assistant.config.ConfigError`).
 - Every role: `P3Ports.delegation_requester = DelegatedPathRequester(scheduler=ctx.scheduler, autonomy_config=ctx.autonomy_config)`.
-- When `ctx.llm` is not `None`: `drafter = DelegatedDraftRunner(session_factory=ctx.session_factory, llm=ctx.llm, clock=ctx.clock, config=DraftConfig(model=settings.draft_delegated_model, effort=settings.llm_draft_reply_effort, monthly_budget_usd=settings.llm_monthly_budget_usd))` (R16, OD-9). The model always comes from the property `Settings.draft_delegated_model` that F0-S provides (R37), never from the raw field: it is the field when set, else the `draft_reply` route's model. `planner = DelegatedAutonomyPlanner(...)`; `JobHandlers.delegation = DelegationJobHandlers(delegated=DelegatedReplyJob(..., model=settings.draft_delegated_model))` (keep F0-R's field name if it differs; contract gap CG-6); reconciler `UnqueuedDelegated(model=…)` when `autonomy_config.run_enabled`.
+- When `ctx.llm` is not `None`: `drafter = DelegatedDraftRunner(session_factory=ctx.session_factory, llm=ctx.llm, clock=ctx.clock, config=DraftConfig(model=settings.draft_delegated_model, effort=settings.llm_draft_reply_effort, monthly_budget_usd=settings.llm_monthly_budget_usd))` (R16, OD-9). The model always comes from the property `Settings.draft_delegated_model` that F0-S provides (R37), never from the raw field: it is the field when set, else the `draft_reply` route's model. `planner = DelegatedAutonomyPlanner(...)`; `JobHandlers.delegation = DelegationJobHandlers(delegated=DelegatedReplyJob(..., model=settings.draft_delegated_model, presenter=ctx.approval_cards))` (the presenter only syncs superseded cards; a held reply is never presented by the job, OD-11) (keep F0-R's field name if it differs; contract gap CG-6); reconciler `UnqueuedDelegated(model=…)` when `autonomy_config.run_enabled`.
 - `jobs/tasks_delegation.py` (owned after CP1): the task `replies.delegated(conversation_id: int)`, queue `llm`, no lock, **no procrastinate retry** (a model call is not repeated blindly; the reconciler recovers from the flag), as `replies.draft`.
 
 **`actions/release.py::_decide` is not edited here (R79).** M6-SCHED wrote it against the three builders; filling their bodies (§3.2) is what gives it real facts. Turn M6-SCHED's strict-xfail rows ("awaiting M6-PLAN") green in the same PR by removing their markers in a commit on this branch (WORKFLOW §5; the QA owner does it for the scenario rows).
 
-**Fallback-card presentation (`telegram/control/approvals.py`, named touch point, R80).** Today a fallback card shows only the M04 warnings, so the owner would not learn why a reply came as a card. Extend `_warnings` (the existing list `_compose` already prints under the text) with up to two lines, built by one small helper next to it, for an `agent_proposal` card whose `draft_flags` carry autonomy keys (nothing is added for any other card; the owner's dictated words still carry none):
+**Held-reply sync rule (`telegram/control/approvals.py`, named touch point, OD-11).** A held reply must reach the owner only through its `autonomy_not_sent` alert until the owner presses Draft reply; M04's sync would otherwise present it as a lost card after `PRESENT_GRACE`. Add one module-level SQL predicate next to `_pending_presentation`, `_held_unrequested()`: `Action.draft_flags["presentation"].as_string() == "on_request"` and no `audit_log` row with `event = 'approval_card_requested'`, `subject_type = 'action'`, `subject_id = Action.id` and `account_id = Action.account_id` exists (tenant scoped on both rows, as `_pending_presentation`). Use it in exactly two places:
+- `sync_cards`: `lost_cards` gains `~_held_unrequested()`. `stale_cards` is unchanged (an unshown card has no `card_message_id`, so it is never "stale").
+- `sync(action_id)`: the "never shown" branch presents a live card only when the action is not held-unrequested (one account-scoped `EXISTS` read in `_prepare`'s transaction, carried on the view as `held: bool = False`, a new last field of `ApprovalCardView` with a default, so every existing constructor call is unchanged).
+`present(action_id)` (the explicit call) is unchanged: M6-ESC's Draft reply press writes the `approval_card_requested` row in its own transaction and then calls `present_after_commit`, so a lost or failed presentation is recovered by the next `sync_cards`. An action without the key (every M04/M05 card, every Assist or owner-requested draft) renders and syncs exactly as today. Tests (`tests/integration/test_held_reply_presentation.py`): `test_a_held_reply_is_never_presented_by_the_sync_before_draft_reply`, `test_after_the_request_row_the_sync_presents_a_lost_held_reply`, `test_an_explicit_present_shows_a_held_reply`, `test_cards_without_the_presentation_key_are_presented_as_before` (the M04 lost-card test unchanged), `test_the_held_rule_is_tenant_scoped` (a request row of another account never releases this account's held reply).
+
+**Held reply's card line (`telegram/control/approvals.py`, named touch point, R80).** Today a card shows only the M04 warnings, so the owner would not learn why the automatic reply was held. Extend `_warnings` (the existing list `_compose` already prints under the text) with up to two lines, built by one small helper next to it, for an `agent_proposal` card whose `draft_flags` carry autonomy keys (nothing is added for any other card; the owner's dictated words still carry none):
 - **Explanation line.** When `draft_flags["autonomy_codes"]` is a non-empty list, one line "ℹ️ " + `AUTONOMY_CODES[code].explanation` for the first code that is a key of `AUTONOMY_CODES` (the list is in `RULES` order; an unknown code is skipped; none known ⇒ no line). Import `policy.codes.AUTONOMY_CODES` only (`telegram` may import `policy`); the text is a fixed sentence, never contact text, and is HTML-escaped like the other fixed lines.
 - **Late note.** When `draft_flags["was_due_at"]` is an integer (written by M6-SCHED's `convert_cancelled` for a late conversion, so M6-TXA's late conversion reuses it), one line "⏱ This reply was due at HH:MM (late)." with the time in the owner's timezone (`_clock_time(datetime.fromtimestamp(value, UTC), view.timezone)`).
 - Neither line changes the keyboard, the buttons or any state; both are skipped when the keys are missing or wrongly typed (a card from before P3 renders as it does today). The lines are part of the card's base text, so the existing `_fits`/`_fitted` logic (shorten the contact's words, then move the text to its own message) applies unchanged; the approve, edit and reject paths do not change.
@@ -231,14 +237,15 @@ M6-LIFE adds `overdue_delegations` to the same module later, as a separate funct
 
 ### 3.9 Edge cases (each has a test in §5)
 
-A burst that grows while the job waits (trailing debounce); a contact message during the model call (stale); a job run twice or a defer lost; an autonomous send still `executing`, or claimed between Check and Apply (the reused older in-flight action); a delegation ended, superseded or out of its window between plan and apply (re-decision ⇒ card); `/pause` between plan and apply (re-decision ⇒ card that survives the pause); consent revoked between plan and apply; the cap reached between plan and apply; a second proposal for the same base message; the identity question in an enabled and in a disabled language; an identity flag on model text stored in `draft_flags`; required disclosure with an unknown chat language; a suspicious burst; `NOT_NEEDED` with an urgent decision; invalid, refused or failed drafts; a bot chat or an Ignore chat; a foreign account's conversation; shadow mode.
+A burst that grows while the job waits (trailing debounce); a contact message during the model call (stale); a job run twice or a defer lost; an autonomous send still `executing`, or claimed between Check and Apply (the reused older in-flight action); a delegation ended, superseded or out of its window between plan and apply (re-decision ⇒ held reply); `/pause` between plan and apply (re-decision ⇒ held reply that survives the pause); a held reply is never presented before Draft reply, and exactly one `autonomy_not_sent` alert exists per held reply (OD-11); consent revoked between plan and apply; the cap reached between plan and apply; a second proposal for the same base message; the identity question in an enabled and in a disabled language; an identity flag on model text stored in `draft_flags`; required disclosure with an unknown chat language; a suspicious burst; `NOT_NEEDED` with an urgent decision; invalid, refused or failed drafts; a bot chat or an Ignore chat; a foreign account's conversation; shadow mode.
 
 ### 3.10 Failure modes (fail closed)
 
 | Situation | Outcome |
 |---|---|
-| A fact cannot be computed (missing base, unknown language, stub grounding) | its rule fails ⇒ card, never `delegation_auto` |
-| Re-decision under the locks is not `ALLOW_AUTO` | nothing inserted; fallback card |
+| A fact cannot be computed (missing base, unknown language, stub grounding) | its rule fails ⇒ held reply, never `delegation_auto` |
+| Re-decision under the locks is not `ALLOW_AUTO` | nothing inserted; held reply |
+| The `autonomy_not_sent` enqueue fails | the whole Apply transaction rolls back (flag kept; the reconciler re-defers): a held reply never exists without its alert (OD-11) |
 | Unique index violation | "already proposed" when the reused action covers the burst; otherwise flag kept and re-deferred (`inflight_wait`), never a lost reply |
 | `schedule_autonomous` returns `False` | exception, rollback, flag kept |
 | Draft not `DRAFTED` | never reaches `propose` |
@@ -249,7 +256,7 @@ A burst that grows while the job waits (trailing debounce); a contact message du
 
 **Owned (P3-interfaces §15.1):** `actions/autonomy_planner.py` (new); `actions/policy_loader.py` (the autonomy-fact functions; Josh lead sequences M6-TXA, M6-TAKE and NUDGE-POL after you); `actions/proposals.py` (the `delegation_auto` path; NUDGE-POL follows); `jobs/tasks_delegation.py`; `jobs/reconcile_delegation.py` (`UnqueuedDelegated` only).
 
-**Named touch points:** `bootstrap.py::_wire_autonomy` (append only); `telegram/control/approvals.py` (the autonomy line of a fallback card, `_warnings` and one helper only; §3.8, R80). The three builder bodies in `policy_loader.py` replace F0-S's stubs (§3.2, R79); `release.py` is not touched.
+**Named touch points:** `bootstrap.py::_wire_autonomy` (append only); `telegram/control/approvals.py` (the autonomy line of a held reply's card, `_warnings` and one helper, R80; the held-reply rule: `_held_unrequested`, its use in `sync_cards` and `sync`, and the defaulted `ApprovalCardView.held` field, OD-11; §3.8 only). The three builder bodies in `policy_loader.py` replace F0-S's stubs (§3.2, R79); `release.py` is not touched.
 
 **Do not edit:** `inbox/triage_store.py`, `inbox/notification_policy.py`, `inbox/notifications.py` (M6-ESC; you supply only the requester); `agent/*` and every prompt (DELEG-DRAFT); `policy/*` (M6-POL; `context.py`, `codes.py` frozen); `actions/{executor,lifecycle,ingestion,states,ports,disclosure,config,grounding,language_keys}.py`; `actions/release.py` (M6-SCHED's; its `_decide` already calls the builders, R79); `automation/delegations_repo.py`, `memory/shareable.py`; the rest of `telegram/control/approvals.py` beyond the named touch point; the never-edit list in P3-interfaces §15.2.
 
@@ -261,16 +268,16 @@ Real PostgreSQL 18, `FakeClock`, `FakeDelegatedDrafter` (scripted drafts) and, w
 
 In `tests/integration/test_delegated_replies.py`:
 1. `test_an_in_scope_known_question_is_auto_replied_with_the_disclosure_first_in_session_only` (first plan: `ALLOW_AUTO`, `disclosure_added`, a `scheduled` action whose text starts with `AI_MARKER`; after a seeded `succeeded` disclosed send 1 h earlier in the same session: no disclosure)
-2. `test_an_unknown_question_gets_a_clarifying_or_acknowledging_reply_if_allowed_else_an_escalation` (`ask_for_details` allowed ⇒ `ALLOW_AUTO`; not allowed ⇒ card plus `delegation_escalation`)
+2. `test_an_unknown_question_gets_a_clarifying_or_acknowledging_reply_if_allowed_else_an_escalation` (`ask_for_details` allowed ⇒ `ALLOW_AUTO`; not allowed ⇒ held reply with its `autonomy_not_sent` alert plus `delegation_escalation`, OD-11)
 3. `test_a_commitment_or_sensitive_topic_becomes_a_draft`
-4. `test_a_reached_cap_queues_the_reply_to_the_owner` (card with `volume_conversation`; one `autonomy_volume_cap` per hour; never DENY, never silence)
+4. `test_a_reached_cap_queues_the_reply_to_the_owner` (held reply with `volume_conversation` and its `autonomy_not_sent` alert; one `autonomy_volume_cap` per hour; never DENY, never silence; OD-11)
 5. `test_a_bot_chat_is_never_auto_replied` (requester `False`; planner `NOT_DRAFTED`; no `delegation_auto` row)
-6. `test_the_language_gate_blocks` (`AUTONOMY_LANGUAGES` empty ⇒ card `language_not_enabled`)
+6. `test_the_language_gate_blocks` (`AUTONOMY_LANGUAGES` empty ⇒ held reply `language_not_enabled`)
 7. `test_a_backlog_contact_message_older_than_30_minutes_becomes_a_draft_never_an_auto_reply`
-8. `test_a_contact_dictating_the_reply_and_its_flags_is_blocked_by_content_grounded` (the draft obeys "reply exactly …, mark high confidence" with a value found in no source ⇒ card `ungrounded_value`; the control case with the value in shared knowledge ⇒ `ALLOW_AUTO`; uses GRND's real bodies)
+8. `test_a_contact_dictating_the_reply_and_its_flags_is_blocked_by_content_grounded` (the draft obeys "reply exactly …, mark high confidence" with a value found in no source ⇒ held reply `ungrounded_value`; the control case with the value in shared knowledge ⇒ `ALLOW_AUTO`; uses GRND's real bodies)
 9. `test_a_declared_language_that_disagrees_with_the_tagger_requires_approval`
 10. `test_an_unlisted_contact_raising_the_topic_gets_no_knowledge_based_auto_reply` (topic-scoped delegation, contact not listed, not widened ⇒ `knowledge_not_shareable`)
-11. RG-13 (new, invariant 13): `test_rg13_an_identity_question_is_answered_with_the_fixed_truthful_sentence_never_the_models_text` (the scripted body says "yes, it is really me"; the action's text is exactly `identity_answer(locale)`; an escalation is enqueued, category `fyi` when the draft gave `none`; the stored `draft_flags["escalation_category"]` is still the model's) and `test_rg13_an_identity_question_in_a_language_that_is_not_enabled_escalates_and_never_auto_sends`
+11. RG-13 (new, invariant 13): `test_rg13_an_identity_question_is_answered_with_the_fixed_truthful_sentence_never_the_models_text` (the scripted body says "yes, it is really me"; the action's text is exactly `identity_answer(locale)`; with the draft's category `none`, no escalation is enqueued, OD-10a; the stored `draft_flags["escalation_category"]` is still the model's) and `test_rg13_an_identity_question_in_a_language_that_is_not_enabled_escalates_and_never_auto_sends` (one escalation, category `fyi` when the draft gave `none`; the stored flag is still the model's), plus `test_an_identity_answer_that_is_not_allowed_to_send_escalates` (OD-10: an identity answer whose plan is `REQUIRE_APPROVAL`, for example a reached cap, escalates with `fyi`)
 
 (S06.2 #12, RG-14, is M6-TXA's; its proposal half is test 1.)
 
@@ -280,9 +287,9 @@ In `tests/integration/test_delegated_replies.py`:
 - `test_each_draft_status_maps_to_its_outcome` (`not_needed` ⇒ `NO_REPLY`; `not_draftable`, `no_consent`, `over_budget`, `refused`, `invalid`, `failed` ⇒ `NOT_DRAFTED`)
 - `test_invalid_refused_or_truncated_output_never_reaches_propose` (the M6-PLAN side of DELEG-DRAFT's named test: no action row for any non-`drafted` status)
 - `test_a_suspicious_burst_escalates_without_a_card`
-- `test_escalates_is_true_exactly_for_a_non_none_category_and_for_invalid_refused_or_failed_drafts` (R87: `fyi` identity question, `needs_owner` for `invalid`/`refused`/`failed`, `none` for `no_consent`/`over_budget`/`not_draftable`/`not_needed` with a `none` draft; the job and a direct reading of `plan.escalates` agree)
+- `test_escalates_is_true_exactly_for_a_non_none_category_and_for_invalid_refused_or_failed_drafts` (R87: `fyi` for an identity question whose sentence is not sent and `none` for an `ALLOW_AUTO` identity answer with a `none` draft (OD-10a), `needs_owner` for `invalid`/`refused`/`failed`, `none` for `no_consent`/`over_budget`/`not_draftable`/`not_needed` with a `none` draft; the job and a direct reading of `plan.escalates` agree)
 - `test_an_identity_flag_in_draft_flags_never_passes_rules_for_model_text`
-- `test_required_disclosure_with_an_unknown_chat_language_becomes_a_card`
+- `test_required_disclosure_with_an_unknown_chat_language_becomes_a_held_reply`
 - `test_the_plan_reports_failed_codes_in_rules_order_and_the_facts_decide_saw`
 - `test_a_foreign_accounts_conversation_is_not_drafted` (RG-21)
 - `test_rg17_the_delegated_path_starts_no_owner_run_and_offers_no_tools` (real runner + `FakeLLM`: every request has no tools; no `owner_request` run; RG-17 extension)
@@ -308,15 +315,17 @@ In `tests/integration/test_delegated_replies.py`:
 - `test_a_second_in_flight_autonomous_action_in_a_chat_is_never_created`
 - `test_a_disclosure_missing_cancel_frees_the_base_message_for_one_reproposal`
 - `test_propose_locks_the_delegation_after_the_conversation` (lock order: a concurrent `end_delegations` holding the delegation waits as expected; explicit barrier)
-- `test_the_fallback_card_carries_the_delegation_and_codes_and_no_disclosure`
-- `test_a_fallback_card_survives_pause`
+- `test_the_held_reply_carries_the_delegation_codes_and_presentation_and_no_disclosure` (OD-11: `draft_flags["presentation"] == "on_request"`)
+- `test_a_held_reply_survives_pause`
 - `test_agent_proposals_without_a_delegation_are_unchanged` (M04 regression)
 
 ### 5.5 Job, requester, reconciler, wiring (`tests/integration/test_delegated_reply_job.py`)
 
 - `test_allow_auto_schedules_the_action_and_defers_the_release_after_commit` (the scripted drafter advances the fake clock 30 s: `scheduled_for` = the Apply time + 45 s, not the job start + 45 s)
 - `test_a_reused_older_in_flight_action_keeps_the_flag_for_the_newer_burst` (an older autonomous action is claimed between Check and Apply: no new action, flag kept, one re-defer; after it settles the next run proposes for the newer burst)
-- `test_shadow_mode_turns_allow_auto_into_a_card_marked_shadow`
+- `test_shadow_mode_turns_allow_auto_into_a_held_reply_marked_shadow`
+- `test_a_held_reply_enqueues_one_not_sent_alert_and_presents_no_card` (OD-11: one `autonomy_not_sent` row, `alert_class = system` (OD-11a), dedupe `notsent:{action_id}`, refs as §3.6, `alert_kind` = the first code; the fake presenter saw no `present_after_commit` for it; FakeChannel shows no approval card until M6-ESC's press; a second job run adds no row)
+- `test_a_held_reply_and_its_alert_commit_together` (a forced failure in `enqueue` rolls back the held reply and keeps the flag)
 - `test_the_job_debounces_a_burst_and_drafts_once`
 - `test_a_contact_message_arriving_during_the_draft_discards_it_and_redrafts`
 - `test_the_job_waits_while_an_autonomous_send_is_executing`
@@ -351,8 +360,8 @@ In `tests/integration/test_delegated_replies.py`:
 | 6 | The final text is the identity sentence, never the body | keep the body | `test_rg13_an_identity_question_is_answered_with_the_fixed_truthful_sentence_never_the_models_text` |
 | 7 | Unique violation ⇒ reused | let it raise | `test_a_second_proposal_for_the_same_base_message_is_already_proposed` |
 | 8 | Non-`drafted` never proposed | propose any status with a body | `test_invalid_refused_or_truncated_output_never_reaches_propose` |
-| 9 | Shadow when `autonomy.send` is off | ignore the flag | `test_shadow_mode_turns_allow_auto_into_a_card_marked_shadow` |
-| 10 | Fallback card is `agent_proposal` with no disclosure | create it as `delegation_auto`; compose the text | `test_a_fallback_card_survives_pause`; `test_the_fallback_card_carries_the_delegation_and_codes_and_no_disclosure` |
+| 9 | Shadow when `autonomy.send` is off | ignore the flag | `test_shadow_mode_turns_allow_auto_into_a_held_reply_marked_shadow` |
+| 10 | Held reply is `agent_proposal` with no disclosure | create it as `delegation_auto`; compose the text | `test_a_held_reply_survives_pause`; `test_the_held_reply_carries_the_delegation_codes_and_presentation_and_no_disclosure` |
 | 11 | `ai_generated=True` for autonomous text | `False` | `test_autonomous_context_sets_sending_enabled_from_both_flags_and_marks_the_text_ai_generated` |
 | 12 | `sending_enabled` needs both flags | `actions.send` only | same test |
 | 13 | Missing flags read as failing values | default to passing values | `test_missing_flags_read_as_their_failing_values` |
@@ -365,23 +374,27 @@ In `tests/integration/test_delegated_replies.py`:
 | 20 | Planner writes nothing | write the audit row in `plan` | `test_the_planner_has_no_side_effects` |
 | 21 | A reused older in-flight action keeps the flag | treat every reuse as `already_proposed` | `test_a_reused_older_in_flight_action_keeps_the_flag_for_the_newer_burst` |
 | 22 | Scheduling uses the Apply-time `now` | pass the job's start time | `test_allow_auto_schedules_the_action_and_defers_the_release_after_commit` |
-| 23 | Identity escalation defaults to `fyi` and never rewrites the stored flag | write `needs_owner` into `draft_flags` | `test_rg13_an_identity_question_is_answered_with_the_fixed_truthful_sentence_never_the_models_text` |
+| 23 | Identity escalation defaults to `fyi` when the sentence is not sent, adds none when it is (OD-10a), and never rewrites the stored flag | write `needs_owner` into `draft_flags` / escalate an `ALLOW_AUTO` identity answer | `test_rg13_an_identity_question_in_a_language_that_is_not_enabled_escalates_and_never_auto_sends`, `test_rg13_an_identity_question_is_answered_with_the_fixed_truthful_sentence_never_the_models_text` |
 | 24 | `escalates` is the one predicate | the job recomputes the rule / drop the failed-draft branch | `test_escalates_is_true_exactly_for_a_non_none_category_and_for_invalid_refused_or_failed_drafts` |
 | 25 | The release decision and `autonomous_context` share the builders | make `autonomous_context` skip `rate_counters` | `test_the_release_decision_and_autonomous_context_see_the_same_facts` |
-| 26 | Fallback card shows the autonomy explanation and the late note | drop either line | `test_a_card_with_autonomy_codes_shows_the_first_known_explanation`; `test_a_late_converted_card_says_when_it_was_due` |
+| 26 | A held reply's card shows the autonomy explanation and the late note | drop either line | `test_a_card_with_autonomy_codes_shows_the_first_known_explanation`; `test_a_late_converted_card_says_when_it_was_due` |
+| 27 | A held reply is announced by its alert, not presented (OD-11) | call `present_after_commit` for it; skip the enqueue | `test_a_held_reply_enqueues_one_not_sent_alert_and_presents_no_card` |
+| 28 | The sync never presents an unrequested held reply (OD-11) | drop `~_held_unrequested()` from `lost_cards` | `test_a_held_reply_is_never_presented_by_the_sync_before_draft_reply` |
+| 29 | The held rule is tenant scoped (OD-11) | drop the `account_id` match on the request row | `test_the_held_rule_is_tenant_scoped` |
 
 ## 6. Acceptance criteria
 
 1. Every test in §5 exists under its name and passes in CI; M6-SCHED's "awaiting M6-PLAN" rows are green with no edit to `actions/release.py`; the three F0-S builder stubs are replaced.
 2. `delegation_auto` is created only by `propose()` called from `replies.delegated` (or M6-SCHED's re-proposal), with a stored `ALLOW_AUTO` proposal decision, `delegation_id` set and no tool call (invariant 2). No tool can create one.
-3. An autonomy-only failure gives an `agent_proposal` card with `delegation_id` and `autonomy_codes` and no disclosure; a reached cap gives a card, never DENY or silence.
+3. An autonomy-only failure gives a held reply (`agent_proposal` with `delegation_id`, `autonomy_codes`, `presentation = "on_request"` and no disclosure) and one `autonomy_not_sent` alert, and its card is shown only after Draft reply (OD-11); a reached cap gives a held reply, never DENY or silence.
 4. The planner has no side effects beyond the drafter's metering; EV-AUT can call it against a synthetic account and reads `plan.escalates` (the job reads the same field).5. Every mutation in §5.7 is killed.
 6. `ruff`, format, `mypy` on `src/assistant/actions` and `src/assistant/jobs`, and `lint-imports` clean (`actions` imports no `agent`, `jobs` or `telegram`).
-7. A fallback card shows the first known autonomy explanation, and a late-converted card says when the reply was due; no other card changes.
+7. A held reply's card shows the first known autonomy explanation, and a late-converted card says when the reply was due; no other card changes, and every card without the `presentation` key is presented and synced as before.
+8. An identity answer that is sent enqueues no escalation of its own; an identity question whose sentence is not sent escalates (OD-10a). Every `autonomy_not_sent` row is enqueued with `AlertClass.SYSTEM` (OD-11a).
 
 ## 7. Docs (same PR)
 
-- ARCHITECTURE §9.4: the autonomous proposal path as built (requester → `replies.delegated` → planner → `propose` re-decision under account → conversation → delegation → `schedule_autonomous`; fallback card; idempotency through the two unique indexes; the identity answer).
+- ARCHITECTURE §9.4: the autonomous proposal path as built (requester → `replies.delegated` → planner → `propose` re-decision under account → conversation → delegation → `schedule_autonomous`; the held reply, its `autonomy_not_sent` alert and the held-reply sync rule (OD-11); idempotency through the two unique indexes; the identity answer).
 - ARCHITECTURE §12.2: the `replies.delegated` row (queue `llm`, qlock `deleg:{conversation_id}`, `schedule_at = now + AUTONOMY_DEBOUNCE_SECONDS`, trailing debounce by re-defer, no lock, no retry, `pending_delegation_at` reconciler).
 - ADR-17 (app-inserted disclosure) and ADR-21 (separate prompt key) are consumed as written by the TL in F0-C part 2; the PR description notes anything that differs as built.
 
@@ -392,13 +405,15 @@ In `tests/integration/test_delegated_replies.py`:
 - **OD-7** (urgent-decision quiet-hours bypass per delegation, off by default): the `bypass_quiet_hours` argument in §3.6.
 - **OD-9** (route and prompt key): the `DraftConfig` model (`Settings.draft_delegated_model`) in §3.8; a separate run type would change DELEG-DRAFT, not this unit's logic.
 - **OD-10** (identity answer): §3.3 step 4 and step 6. "Always escalate instead" would drop the identity branch; RG-13 then asserts escalation only.
-- **OD-11** (fallback card; no AI line; survives `/pause`): §3.6.
-- **OD-14** (language gate; mixed ⇒ card): `burst_language` and the gate keys.
+- **OD-10a** (answered 2026-10-29, changed from the default): no alert when the identity sentence is sent; the identity question escalates only when its sentence is not sent (§3.3 step 6, RG-13 tests).
+- **OD-11a** (answered 2026-10-29): `autonomy_not_sent` is enqueued with `AlertClass.SYSTEM`, always at once (§3.6).
+- **OD-11** (answered 2026-10-29, changed from the default): when autonomy does not send, the owner gets an alert with a Draft reply button, not the card; the stored text is reused with no model call when the owner presses it; no AI line; survives `/pause`: §3.6 (held reply and its alert) and §3.8 (sync rule). The alert's renderer and the press are M6-ESC's.
+- **OD-14** (language gate; mixed ⇒ held reply): `burst_language` and the gate keys.
 - **OD-32** (re-disclosure reading): `disclosure_required` is F0-S's; only its table changes.
 
 ## 9. Risks and notes
 
-- **Contract gaps** (reported to the TL): CG-3 (the builders arrive after M6-SCHED: ruled R79, F0-S ships fail-closed stubs, this unit fills them, M6-SCHED's `_decide` is written once and not edited here), CG-6 (handler field names), CG-7 (the autonomy explanation on cards: ruled R80, this unit's one-line touch point in `telegram/control/approvals.py`, §3.8), CG-8 (no presenter in `P3WireContext`), CG-11 (`delegation_id` stored by `propose`), CG-13 (`ESCALATE` defined here), CG-14 (`ProposalRefused.decision`), CG-17 (budget-threshold alerts for delegated drafts belong in DELEG-DRAFT's runner: `actions` cannot import `agent.budget`).
+- **Contract gaps** (reported to the TL): CG-3 (the builders arrive after M6-SCHED: ruled R79, F0-S ships fail-closed stubs, this unit fills them, M6-SCHED's `_decide` is written once and not edited here), CG-6 (handler field names), CG-7 (the autonomy explanation on cards: ruled R80, this unit's one-line touch point in `telegram/control/approvals.py`, §3.8), CG-8 (no presenter in `P3WireContext`: closed by OD-11, `P3WireContext.approval_cards`), CG-11 (`delegation_id` stored by `propose`), CG-13 (`ESCALATE` defined here), CG-14 (`ProposalRefused.decision`), CG-17 (budget-threshold alerts for delegated drafts belong in DELEG-DRAFT's runner: `actions` cannot import `agent.budget`).
 - **Consent processor:** `policy_loader._account` checks `ai_managed` against `actions_config.draft_route_model`. If `LLM_ROUTE_DRAFT_DELEGATED_MODEL` names a model of another processor, the check uses the wrong processor; today both are OpenAI. Raise it with the TL if the override is ever set (OD-22).
 - **Clock comparison:** `trigger_fresh` compares server time with Telegram's `date`; skew is seconds against a 30-minute limit.
 - **Cost:** a job that crashes after the model call drafts again on the next run (metered, within `LLM_MONTHLY_BUDGET_USD`).

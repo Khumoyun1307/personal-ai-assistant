@@ -180,9 +180,9 @@ Fail closed: any other control-send failure (`ambiguous`, `rate_limited`, `netwo
 |---|---|---|
 | `proposed`, `approved`, `scheduled` with origin `delegation_auto` | `cancelled` / `autonomy_paused` in the pausing transaction | `cancel_autonomous_pending` (M04; `PENDING` includes `scheduled`) |
 | a queued `actions.release_scheduled` for such an action | no-op: the action is no longer `scheduled` | M6-SCHED |
-| a new autonomous proposal or claim | `autonomy_not_paused` fails → card at proposal (OD-11), `cancelled/autonomy_paused` at claim | M6-POL, M6-TXA |
+| a new autonomous proposal or claim | `autonomy_not_paused` fails → held reply (with its `autonomy_not_sent` alert) at proposal (OD-11), `cancelled/autonomy_paused` at claim | M6-POL, M6-TXA |
 | `executing` (claim committed) | untouched: the send already started and cannot be recalled; its outcome is recorded truthfully | Tx B (M04); documented in ARCHITECTURE §6.1 |
-| owner-approved and dictated actions, fallback cards | unchanged (P2-T23, OD-31, OD-11) | M04 |
+| owner-approved and dictated actions, held replies (shown or not yet shown) | unchanged (P2-T23, OD-31, OD-11) | M04 |
 
 ### 3.8 Latency harness (NFR-07)
 
@@ -255,7 +255,7 @@ All synthetic; real PostgreSQL; `FakeClock`, `FakeUpdateSource`, `FakeTelegramSe
 - `test_the_pause_press_is_answered_and_acknowledged_only_after_commit`: dispatch inside a transaction that rolls back → no answer, no message, not paused; committed → one `answer_callback` with "Paused.", one `PAUSED_TEXT` message, both observed after commit.
 - `test_a_press_with_an_unknown_op_is_answered_no_longer_active`.
 - `test_a_press_on_an_inaccessible_card_is_handled`: callback message without a date (chat and message id present) → paused, answered, acknowledged.
-- `test_a_pause_press_leaves_owner_approvals_and_fallback_cards_valid` (P2-T23, OD-11, OD-31): an owner-approved action and an autonomy-fallback card (origin `agent_proposal`, `delegation_id` set) keep their states.
+- `test_a_pause_press_leaves_owner_approvals_and_fallback_cards_valid` (P2-T23, OD-11, OD-31): an owner-approved action and a held reply (origin `agent_proposal`, `delegation_id` set, `presentation = "on_request"`, its card not yet requested) keep their states, and a Draft reply press after the pause still shows the card.
 - `test_the_pause_press_keeps_the_cards_button`: no `edit_message_reply_markup` call.
 - `test_wire_autonomy_registers_the_pz_route` (unit): maps kind `pz` to `handle_pause_press`.
 - `test_the_pause_button_is_recognised_by_the_fast_lane` (unit): `core.autonomy_texts.pause_button()` returns the specified label and data, equal to `PAUSE_CALLBACK_DATA` (R45), accepted by `is_pause_press` and within 64 bytes.
@@ -297,7 +297,7 @@ Run locally: the four new files plus `tests/integration/test_kill_switch.py`, `t
 3. The audit row of each pause names its real source (`command`, `stop_word`, `button`, `bot_blocked`, `tool`, `card`) with `cancelled`, and for fast-lane pauses `lane`, `trigger_at`, `update_id` and `apply_ms`; ids, epochs, integers and codes only.
 4. No path resumes autonomy except `/resume` and a card button; an unblock never resumes.
 5. The press is answered and acknowledged only after commit, through the gateway; no Bot API call from ingress.
-6. Owner-approved actions and fallback cards are untouched by a pause (OD-31, OD-11).
+6. Owner-approved actions and held replies are untouched by a pause (OD-31, OD-11).
 7. The dev-bot run's per-source latency (computed for `/pause`, the stop word and the block; owner-timed upper bound for the button) is in the PR against 5 s. A source not measured stays an open item for the R1 rehearsal and LIVE-P3 (PRD R2 #2) and never counts as a pass. The executing-send exception is documented.
 8. The mutation table is complete and QA killed every mutation.
 9. ARCHITECTURE §6.1 and §18 updated.
@@ -312,7 +312,7 @@ Run locally: the four new files plus `tests/integration/test_kill_switch.py`, `t
 ## 8. Owner decisions
 
 - **OD-31** (PRD §12.2 #1 versus P2-T23): this spec keeps P2-T23, so a pause stops autonomous sending only and owner approvals stay valid. If the owner rules that a pause also voids approvals, §3.7's last row changes: `pause` would also cancel owner `approved` actions, and the tests for P2-T23 invert. That would be a separate change to `actions/lifecycle.py` (M6-SCHED's file) through an ICR.
-- **OD-11:** fallback cards survive a pause. A different answer adds autonomy-fallback cards (`agent_proposal` with `delegation_id`) to the pause cancel.
+- **OD-11** (answered 2026-10-29): held replies survive a pause, and their Draft reply button still works while paused. Approving one while paused sends it once without the AI line (OD-31). This unit's code is unchanged by the answer.
 
 ## 9. Risks and notes
 

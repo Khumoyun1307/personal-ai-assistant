@@ -13,7 +13,7 @@
 
 ## 1. Goal
 
-Make the policy engine decide autonomy: for origin `delegation_auto`, `decide` returns **ALLOW_AUTO only when every send precondition and all ten autonomy rules pass**, **REQUIRE_APPROVAL** when only autonomy rules fail (the reply becomes an approval card), and **DENY** when a send precondition fails. Model flags can only downgrade. Give Tx A (M6-TXA) and the release job (M6-SCHED) one pure function that maps a failed execution decision to `cancelled/<reason>` plus the card or re-proposal conversion. `decide` stays pure and total; nothing changes for owner-dictated and agent-proposal actions.
+Make the policy engine decide autonomy: for origin `delegation_auto`, `decide` returns **ALLOW_AUTO only when every send precondition and all ten autonomy rules pass**, **REQUIRE_APPROVAL** when only autonomy rules fail (the reply becomes a held reply: stored for approval and announced by an `autonomy_not_sent` alert with a Draft reply button, OD-11), and **DENY** when a send precondition fails. Model flags can only downgrade. Give Tx A (M6-TXA) and the release job (M6-SCHED) one pure function that maps a failed execution decision to `cancelled/<reason>` plus the card or re-proposal conversion. `decide` stays pure and total; nothing changes for owner-dictated and agent-proposal actions.
 
 ## 2. Scope
 
@@ -90,7 +90,7 @@ else:  # execution phase, M04 semantics
         outcome = DENY
 ```
 
-`_autonomy_complete(checks)` is true only when `checks` holds a **passing** `CheckResult` for each of the ten `AUTONOMY_RULES`. It is a defensive guard: with §3.2 it always holds, but if a future edit drops a rule from `RULES`, an autonomous action becomes a card at proposal and is refused at execution instead of being sent (P3-interfaces §3.4 "Completeness"; OPS-TV3 fails closed on a stored decision without the ten checks).
+`_autonomy_complete(checks)` is true only when `checks` holds a **passing** `CheckResult` for each of the ten `AUTONOMY_RULES`. It is a defensive guard: with §3.2 it always holds, but if a future edit drops a rule from `RULES`, an autonomous action becomes a held reply at proposal and is refused at execution instead of being sent (P3-interfaces §3.4 "Completeness"; OPS-TV3 fails closed on a stored decision without the ten checks).
 
 ### 3.5 `autonomous_execution_target(decision)`
 
@@ -118,7 +118,7 @@ At `ends_at` exactly ⇒ `delegation_ended`; at `starts_at` exactly ⇒ active; 
 ### 3.8 What does not change
 
 The fourteen send preconditions and their codes and sentences; outcomes for `owner_dictated` and `agent_proposal` in both phases; WAIT semantics; `execution_target`; `explain`. With every P3 flag off nothing in production builds a `delegation_auto` context with facts, so production behaviour is unchanged until M6-PLAN and M6-TXA use these functions:
-- `propose()` still refuses origin `delegation_auto` (`autonomous_not_available`) **before** it calls `decide` (kept by F0-S until M6-PLAN), so the new REQUIRE_APPROVAL outcome for a `delegation_auto` proposal can never insert an autonomous action that waits for approval. M6-PLAN maps it to a fallback `agent_proposal` card.
+- `propose()` still refuses origin `delegation_auto` (`autonomous_not_available`) **before** it calls `decide` (kept by F0-S until M6-PLAN), so the new REQUIRE_APPROVAL outcome for a `delegation_auto` proposal can never insert an autonomous action that waits for approval. M6-PLAN maps it to a held reply (an `agent_proposal` row shown through its alert, OD-11).
 - Tx A keeps applying M04's `execution_target` to every origin until M6-TXA switches `delegation_auto` to `autonomous_execution_target`. A `delegation_auto` action without P3 facts still gets DENY at execution, so `tests/integration/test_kill_switch.py`, `test_action_execution_races.py`, `test_ingestion_barrier.py` and `tests/scenarios/test_m04_j9_kill_switch.py` (`blocked/policy_denied`, or `cancelled/autonomy_paused` when paused, including RG-19) pass unchanged.
 
 ## 4. Files
@@ -240,7 +240,7 @@ These pass unchanged (a reviewer checks none was edited): `test_policy_engine.py
 - **OD-6 (caps and loop guard):** the rules compare counters with the snapshot's limits; different numbers change only F0-S's settings and M6-DELEG's card, not this unit.
 - **OD-7 (scope):** `topic_scoped`, `covers_conversation` and one live delegation per chat come from the snapshot; a different answer changes the loader and M6-DELEG.
 - **OD-10 (identity answer):** the three-rule exception (§3.3). If the owner chooses "always escalate", the planner never sets `identity_answer` and the exception is never used; the code may stay.
-- **OD-11 (fallbacks):** REQUIRE_APPROVAL is the fallback card; the conversions come from `AUTONOMY_CODES`.
+- **OD-11 (fallbacks; answered 2026-10-29, changed from the default):** REQUIRE_APPROVAL is the held reply (presented as an alert with a Draft reply button, M6-PLAN and M6-ESC); the conversions come from `AUTONOMY_CODES`. This unit's code is unchanged by the answer.
 - **OD-14 (language gate):** if the owner drops the language gate, `language_gate` leaves `AUTONOMY_RULES` through a codes ICR and its rule and tests are removed here.
 - **OD-5 and OD-32** (takeover scope, disclosure re-trigger) are facts computed by the loader (M6-TAKE, `actions/disclosure.py`); the rules do not change with them. **OD-31** (approvals under `/pause`) does not touch policy: `autonomy_not_paused` applies to `delegation_auto` only.
 

@@ -51,7 +51,7 @@ Rows: delegations with `created_at >= since`, or `status = 'active'`, or `ended_
 | `delegation=<id>` | `account`, `kind`, `status`, `ended_reason` (or `-`), `share_widened` (`yes`/`no`), `starts`, `ends` (`-` for standing), `confirmed`, `ended` (UTC + local), `chats_live` / `chats_total` (`delegation_conversations` with `ended_at IS NULL` / all) |
 | `delegation=<id> autonomous` | over `actions` with `origin = 'delegation_auto'` and this `delegation_id`: `actions`, `claimed` (≥ 1 `action_claimed` row), `succeeded`, `uncertain`, `failed`, `cancelled`, `scheduled_now` (state `scheduled`), `disclosed` (`disclosure_included`) |
 | `delegation=<id> cancelled_reason=<r> count=<n>` | the autonomous `cancelled` rows by `state_reason` (allow-listed `StateReason` values) |
-| `delegation=<id> cards` | `fallback` (`agent_proposal` with this `delegation_id`), `shadow` (`draft_flags->>'shadow' = 'allow_auto'`), `converted` / `reproposed` (`action_converted` rows on this delegation's actions, by `conversion`) |
+| `delegation=<id> cards` | `fallback` (`agent_proposal` with this `delegation_id`: the held replies, OD-11), `shadow` (`draft_flags->>'shadow' = 'allow_auto'`), `converted` / `reproposed` (`action_converted` rows on this delegation's actions, by `conversion`) |
 | `delegation=<id> notices` | counts of `notifications` with `refs.delegation_ids` containing it, by kind: `delegation_escalation` (and by priority), `takeover_paused`, `autonomy_volume_cap`, `delegation_paused_llm` |
 | `delegation=<id> catch_up` | the `delegation_catch_up` notification (dedupe `catchup:{id}`): `status` (or `none`), `sent` (UTC + local); from `delegation_catch_up_rendered`: `messages`, `sent`, `failed`, `uncertain`, `pending_cards`, `decisions` (counts) |
 | `delegation=<id> conversation=<c>` | `link` (`live`/`ended`), `takeover_counts_now` (`yes`/`no`: `conversations.takeover_at > max(confirmed_at, autonomy_resumed_at)`, strictly, M6-TAKE §3.3; computed in Python from the three timestamps) |
@@ -127,7 +127,7 @@ IMPLEMENTATION_PLAN names no test for this unit; the unit's required test is the
 
 ### 4.1 `tests/integration/test_p3_views.py`
 
-- `test_delegations_view_reports_ends_counts_cards_notices_and_catch_up` (one ended time-bounded delegation with a succeeded, an uncertain, a cancelled-`volume_cap` autonomous action, a fallback card, a shadow card, an escalation and a sent catch-up; one active standing delegation)
+- `test_delegations_view_reports_ends_counts_cards_notices_and_catch_up` (one ended time-bounded delegation with a succeeded, an uncertain, a cancelled-`volume_cap` autonomous action, a held reply, a shadow held reply, an escalation and a sent catch-up; one active standing delegation)
 - `test_delegations_view_shows_takeover_counts_now_with_the_strict_rule` (a takeover equal to the confirmation does not count; one after it does; one before a later resume does not)
 - `test_automations_view_lists_status_occurrences_and_notes_without_the_rule`
 - `test_followups_view_reports_met_missed_and_cancelled_outcomes_and_nudges` (a met, a `met_after_deadline`, a missed with an `awaiting_approval` nudge, a missed with a `blocked` copy-ready nudge, a cancelled)

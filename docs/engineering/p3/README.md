@@ -2,7 +2,7 @@
 
 *Engineering plan for the phase after P2. Written by the Technical Lead (TL). This folder is the **single entry point** for every lead, engineer and QA agent in P3: start here, then read your handoff in [handoffs/](handoffs/).*
 
-**Status (2026-10-28): proposal, pending the owner's approval (OD-1).** M06 and M07 are `not approved` in IMPLEMENTATION_PLAN §1.4, so nothing here authorises code. Until D0, only docs and synthetic eval data may be written, and only with the owner's OK (OD-1). Planning dates assume **D0 = CP5 = Mon 2026-11-02**, the day `int/m05` merges into `main`. Every date shifts one for one with CP5, with one exception: R1 and deploy #1 cannot come before ≈ Sat 11-07, the M04 trial's last daily check and digest day 5. Two P2 inputs are already on `main`: the OPS-RT restore verification (P2 #130) and the gateway double-escape fix with the multi-chunk partial-delivery outcome (P2-T53, P2 #133), so GW-ESC is verification only (P3-T45).
+**Status (2026-10-29): package merged (#139); decision group A answered; M06 and M07 approved by the owner (OD-1, [decisions.md](decisions.md) §A0); the three follow-up questions (OD-10a, OD-11a, OD-11b, §A1) were answered the same day (§A2).** Until D0, only docs and synthetic eval data are written (the before-D0 window is open now). CP5 landed early: `int/m05` was merged into `main` on Thu 2026-10-29 (#137). The owner kept **D0 = Mon 2026-11-02**; `int/p3` is cut from `main` at D0, so the planning dates stand. Exception to any later date shift: R1 and deploy #1 cannot come before ≈ Sat 11-07, the M04 trial's last daily check and digest day 5. Two P2 inputs are already on `main`: the OPS-RT restore verification (P2 #130) and the gateway double-escape fix with the multi-chunk partial-delivery outcome (P2-T53, P2 #133), so GW-ESC is verification only (P3-T45).
 
 ---
 
@@ -73,7 +73,7 @@ How to read the table:
 |---|---|---|---|---|---|---|---|---|
 | GRND ★ | Pure `content_grounded` extractor + language-gate key mapper; over-blocking is the safe failure | Josh / J2 | M | F0-C API (P3-interfaces §3.7: frozen signatures and fail-closed stubs; F0-S creates the stub files, so before CP1 it stacks on `p3/f0-s`) | `p3/grnd` | [specs/GRND.md](specs/GRND.md) | E2 | before (QJ) |
 | M6-POL ★ | Autonomy rules (pure) and outcome mapping: DENY / REQUIRE_APPROVAL / ALLOW_AUTO | Josh / J3 | M | F0-S (starts D0 on the contract) | `p3/m6-pol` | [specs/M6-POL.md](specs/M6-POL.md) | E2 | before (QJ) |
-| M6-PLAN ★ | Side-effect-free `AutonomyPlanner`, `replies.delegated` job, `DelegationRequester`, `delegation_auto` propose path, identity answer | Josh / J3 | M+ | F0-*, M6-POL, M6-SCHED (`schedule_autonomous`; stacks on it until merged, P3-T55), DELEG-DRAFT (fake until merged), GRND (stub until merged) | `p3/m6-plan` | [specs/M6-PLAN.md](specs/M6-PLAN.md) | E2 | before (QJ) |
+| M6-PLAN ★ | Side-effect-free `AutonomyPlanner`, `replies.delegated` job, `DelegationRequester`, `delegation_auto` propose path, identity answer; held replies and their alerts, the held-reply card sync rule (OD-11) | Josh / J3 | M+ | F0-*, M6-POL, M6-SCHED (`schedule_autonomous`; stacks on it until merged, P3-T55), DELEG-DRAFT (fake until merged), GRND (stub until merged) | `p3/m6-plan` | [specs/M6-PLAN.md](specs/M6-PLAN.md) | E2 | before (QJ) |
 | M6-SCHED ★ | `scheduled` state end to end, `actions.release_scheduled`, due reconciler, bulk cancel paths | Josh / J1 | M | F0-S, F0-R, M6-POL (P3-T80; stacks on `p3/m6-pol` if not merged) | `p3/m6-sched` | [specs/M6-SCHED.md](specs/M6-SCHED.md) | E1 | before (QJ) |
 | M6-TXA ★ | Tx A for autonomy: delegation lock, rules re-run at claim, disclosure re-check, late conversion, `disclosure_included` | Josh / J1 | M | M6-SCHED, M6-POL, M6-PLAN, F0-R (executor seam, ICR-P3-1) | `p3/m6-txa` | [specs/M6-TXA.md](specs/M6-TXA.md) | E3 | before (QJ) |
 | M6-TAKE ★ | Takeover redesign (session-scoped `takeover_at`), "Resume here", one-time notice | Josh / J2 | M | F0-S, M6-SCHED (and M6-PLAN, M6-TXA for the one shared `actions/policy_loader.py` argument; see the spec) | `p3/m6-take` | [specs/M6-TAKE.md](specs/M6-TAKE.md) | E1 | before (QJ) |
@@ -89,7 +89,7 @@ How to read the table:
 | WU | Title | Team / slot | Size | Depends on | Branch → base | Spec | Peer | QA lane |
 |---|---|---|---|---|---|---|---|---|
 | DELEG-DRAFT ★ | `draft_delegated.v1` under run type `draft_reply`, `DelegatedDraftResult`, delegated context builder; owns the gate iterations v2–v5 | Edvard / E2 | M (+0.5 iterations) | F0-S (port, `shareable_for`) | `p3/deleg-draft` | [specs/DELEG-DRAFT.md](specs/DELEG-DRAFT.md) | J3 | before (QE2) |
-| M6-ESC | Escalation and covered-chat effects (single owner of `triage_store.py` effects), `system.delegation_health`, notices | Edvard / E1 | M | F0-R, M6-PLAN escalation contract (not its code), GW-ESC closed (merge condition) | `p3/m6-esc` | [specs/M6-ESC.md](specs/M6-ESC.md) | J2 | before (QE2) |
+| M6-ESC | Escalation and covered-chat effects (single owner of `triage_store.py` effects), `system.delegation_health`, notices; the `autonomy_not_sent` alert and the Draft reply press (`drf`, OD-11) | Edvard / E1 | M+ | F0-R, M6-PLAN escalation contract (not its code), GW-ESC closed (merge condition) | `p3/m6-esc` | [specs/M6-ESC.md](specs/M6-ESC.md) | J2 | before (QE2) |
 | EV-E4L | E4 schema, loader and integrity checks | Edvard / E3 | M (≈ 1 d; P3-T110) | F0-E (eval-target registry); reads the E4 data that DATA-E4a/E4b merge (on `int/p3` at D0) | `p3/ev-e4l` | [specs/EV-E4L.md](specs/EV-E4L.md) | a Josh engineer | after (QE2) |
 | EV-AUT | Autonomy eval target (`python -m evals run autonomy`), side-effect-free, decoys and canaries | Edvard / E2 | M+ | EV-E4L; `AutonomyPlanner` (fake → real at M6-PLAN merge); a live run also needs DELEG-DRAFT, M6-POL, M6-SCHED, M6-PLAN and GRND merged with no fail-closed stub in use | `p3/ev-aut` | [specs/EV-AUT.md](specs/EV-AUT.md) | J3 | before (QE2) |
 | EV-GATE | Gate semantics per language, NOT EVALUABLE rule, rating sheet, gate report → `AUTONOMY_LANGUAGES` | Edvard / E3 | M+ (≈ 1.25 d; P3-T110) | EV-E4L (`AutonomyDetail`); not EV-AUT | `p3/ev-gate` | [specs/EV-GATE.md](specs/EV-GATE.md) | J1 + SQ (metrics) | before (QE2) |
@@ -154,12 +154,13 @@ Owner gates and calendar trials set the exit date, not engineering days (P2 buil
 - **Near-critical owner chain:** native review of E2/E4 (before D0, then v1.1 as it lands) → ratings → the friends' availability on D+7.
 
 ```
-before D0 (10-29..11-01; docs and synthetic data only, P2 tail)
+before D0 (10-29..11-01; docs and synthetic data only; window open now)
   F0-C contracts + specs + decisions (TL) · QA-P3 (SQ) · DATA-E4a/E2/E4b (David) · PV6 text (TL)
   GW-ESC verification of P2 #133 (TL + SQ check; a gap → J3's first int/p3 PR)
-  P2 tail: CP4 (data PRs merged before the sync PR is cut), CP5
-  owner: approve P3 (OD-1), decisions group A, native review of E2/E4 v1 then v1.1, LV-16 run
-──── D0 = CP5 (int/m05 → main) · int/p3 cut ───────────────────────────────────────────────
+  P2 tail: CP5 landed Thu 10-29 (#137: int/m05 → main); data PRs go straight to main
+  owner: approve P3 (OD-1) ✓ and group A ✓ (10-29), proofread autonomy-texts.md,
+         native review of E2/E4 v1 then v1.1, LV-16 run
+──── D0 Mon 11-02 (kept by the owner) · int/p3 cut from main ──────────────────────────────
 Wave 0 D0      F0-S (J1+J2) · F0-R (E1) · F0-E (E3)                              ← critical
                on the contract: M6-POL (J3) · DELEG-DRAFT (E2) · RRULE, STAT-ACT, OPS-AV (David)
 ──── CP1 = D+1 morning: F0 merged; contracts frozen; QA-S6/S7/X skeletons by D+1.5 ────────
@@ -200,7 +201,7 @@ D+8   J7 leg a · enable 5 (standing, memory, export) · export inspection · re
 | CP | When | Who | Exit criteria |
 |---|---|---|---|
 | **CP0** Phase kickoff | D−4..D−1 (10-29..11-01) | TL, owner, leads | This package merged to `main`; the owner approved P3 (OD-1) and answered decision group A (or "approve all defaults"); F0-C part 2 merged (lower-document corrections, IMPLEMENTATION_PLAN §1.4 status with the approval date, the AGENTS §15 P3 line, TF §13 rows, the PR template, the proofread AI marker, disclosure lines and identity answers); labels, one issue per unit, the `P3 integration` issue and the owner-gate issues exist (WORKFLOW §8); the three lead sessions started, and each posted the capability check (WORKFLOW §3.2); QA-P3 merged; DATA-E2/E4a/E4b merged to `main` before the CP4 sync PR was cut, or held for `int/p3`; the GW-ESC verification recorded (P2 #133 covers P2-T53, or the gap filed as J3's first `int/p3` PR) |
-| D0 (= P2's CP5) | Mon 11-02 | owner, TL | `int/m05` merged into `main` (a P2 checkpoint); `int/p3` cut from that `main` and pushed; F0-S, F0-R, F0-E and the contract-first units start |
+| D0 | Mon 11-02 (kept by the owner) | TL | `int/m05` already merged into `main` (P2's CP5, Thu 10-29, #137); `int/p3` cut from `main` and pushed; F0-S, F0-R, F0-E and the contract-first units start |
 | **CP1** Foundation merged | D+1 morning | Josh, Edvard, TL | F0-S → F0-R → F0-E merged into `int/p3` in that order, each CI-green with its reviews clean (ORG §3); the `push: int/p3` CI run green; **contracts frozen**, later changes only through an ICR (ORG §5); QA-S6, QA-S7 and QA-X skeletons merged by D+1.5 |
 | **CP-G0** Pre-screen #1 | D+3 (11-05) | SQ, TL, E2, owner | DELEG-DRAFT, M6-PLAN, GRND, EV-E4L, EV-AUT and EV-GATE merged into `int/p3`; each live run had the owner's go-ahead and went `--estimate-only` → `--limit 1` → full (WORKFLOW §11); pre-screen report in `docs/evals/`; iteration list for E2 |
 | **CP-A** Send-path safety sign-off | ≈ D+4.5 | TL, SQ, QJ1, the Tier-1A peers (E1–E3) | All nine Tier-1A units merged into `int/p3`; RG-13, RG-14, RG-18, RG-19 and RG-20 (and every extended RG test) green on the merge result; every mutation table complete with no survivor; QJ1's race and interleaving reproductions pass; SQ's evidence collated; TL sign-off recorded in [decisions.md](decisions.md) §E |
@@ -221,7 +222,7 @@ Every new flag defaults off and every deploy ships flags off. For each step the 
 | **Deploy #1** | D+5 evening or D+6 morning, never within ±1 h of the 21:00 digest | All R1 code, every new flag **off**. `POLICY_VERSION = "v6"`, so the one-time notice with opt-out goes out now. The NFR-08 recorder is live (unflagged ops instrumentation). `owner_request.v10` active (retrieval re-run already passed) | Owner go-ahead; `p3-verify release`; the restore-test check runs in LIVE-P3 |
 | Enable 1: owner-only M07 | D+6 | `reminders.run`, `tool.create_reminder`, `tool.list_tasks`, `tool.update_task`, `tool.create/list/update/delete_automation`, `tool.list_delegations`, `commitments.due_alerts`, `rating.weekly`, `scheduled_summaries.run` (if in deploy #1), `monitors.p3_actions` | Deploy #1 healthy |
 | Enable 2: follow-ups | D+6, before 10:00 | `followups.run`, `tool.create_follow_up`, `followups.nudge` (approval cards only; FR-FUP-06) | Enable 1 healthy |
-| Enable 3: shadow | D+6 | `triage.assist_trigger` (if not already on after the M04 trial); `tool.create_delegation`, `tool.end_delegation`, `autonomy.run` with **`autonomy.send` off**. Every ALLOW_AUTO becomes a card with the decision recorded (the P2-T21 "drafts only" pattern); `trial-check` must show 0 autonomous sends | OPS-TV3 deployed |
+| Enable 3: shadow | D+6 | `triage.assist_trigger` (if not already on after the M04 trial); `tool.create_delegation`, `tool.end_delegation`, `autonomy.run` with **`autonomy.send` off**. Every ALLOW_AUTO becomes a held reply with an `autonomy_not_sent` alert (`alert_kind = shadow`; Draft reply shows the card), with the decision recorded (the P2-T21 "drafts only" pattern); `trial-check` must show 0 autonomous sends | OPS-TV3 deployed |
 | **Deploy #2** | D+7 early, away from the digest | Stragglers merged to `main` after R1 (expected M7-SSUM; possibly M7-EXP, M7-MEX, M7-MACT) and shadow-window fixes. **Skipped if there are none.** Nothing deploys after the soak starts except a stop-the-line fix | Owner go-ahead; `p3-verify release` |
 | Enable 4: autonomy | D+7 | `autonomy.send` on; `AUTONOMY_LANGUAGES` = the languages that passed S06.5 | CP-G (≥ 1 language passed); LV-16 done; v6 notice ≥ 24 h old; CP-A signed; shadow window clean |
 | Enable 5 | D+8 | `delegations.standing` (after J5's time-bounded delegation ran clean); `memory.extract` (≥ 24 h after the notice); `export.enabled` (the owner inspects; no agent ever opens the file) | Enable 4 clean |
@@ -241,12 +242,12 @@ Only what needs the owner's hands, accounts, money or judgement. Everything else
 
 | When | Item | Why it cannot be automated |
 |---|---|---|
-| By D−1 (Sun 11-01) | **Approve P3 (OD-1)** and this package; answer decision group A (OD-1…OD-20, OD-31, OD-32, OD-33; "approve all defaults" is enough); answer the six document conflicts (conflicts 2 and 3 are OD-31 and OD-32). The TL merges the planning PR once the three leads and SQ have reviewed it clean (P3-T67) | Milestone approval (AGENTS §3); product decisions; higher documents change only with the owner (AGENTS §2) |
-| Before D0, on F0-C part 2 | Proofread the AI marker (and say whether it carries an emoji), the four disclosure lines and the four identity answers the TL drafts (OD-4, OD-10, P3-T61) | Contacts read these words in the owner's name |
+| By D−1 (Sun 11-01) | **Done 2026-10-29:** P3 approved (OD-1); decision group A answered (OD-11 changed, the rest defaults; [decisions.md](decisions.md) §A0); conflicts 1–5 answered (conflict 6 stays with OD-24). The owner merged the planning PR on 10-29 (#139) | Milestone approval (AGENTS §3); product decisions; higher documents change only with the owner (AGENTS §2) |
+| Before F0-S starts at D0, on F0-C part 2 | Proofread [autonomy-texts.md](autonomy-texts.md): the AI marker (choose the emoji option or not), the four disclosure lines and the four identity answers (OD-4, OD-10, P3-T61) | Contacts read these words in the owner's name |
 | By D−1 | Start the three lead sessions: Josh (Claude Code), Edvard (Codex CLI), David (Gemini in Antigravity); fix anything a capability check reports missing | Session setup is the owner's |
 | Before D0, then as v1.1 lands | Native-language review of E2 and E4 v1, then the v1.1 additions (≈ 8 h in total) | Native-speaker judgement |
 | Before D0 | **LV-16 rate re-test** on the dev bot (`probe burst`, ≈ 15–20 min; OWN-LV16, OD-27) | Owner-executed live test (AGENTS §2, TF §12) |
-| ≈ 11-01..11-02 | Merge `int/m05` into `main` (P2's CP5 = D0) | An integration branch into `main` is the owner's (AGENTS §15) |
+| Done 10-29 | Merge `int/m05` into `main` (P2's CP5; done 10-29, #137; D0 stays Mon 11-02) | An integration branch into `main` is the owner's (AGENTS §15) |
 | D+2 (Wed 11-04) | Decision group B: gate details (OD-21), the P3 eval budget, USD 3 for Luna runs (OD-22), envelope or per-run go-aheads (OD-23) | Cost (AGENTS §8, §9) |
 | D+3 (Thu 11-05) | Go-ahead for each pre-screen run; **approve the v6 privacy text (OD-24)**; decision group C (OD-24, OD-25) | Eval spend; privacy policy (AGENTS §16) |
 | D+4..D+6 (11-06..11-08) | Rate the frozen candidate: ≈ 100 E2 delegated-mode drafts + ≈ 50 E4 in-scope replies (≈ 3–4 h), then judge-flag verdicts (≈ 1 h) | Gate results count only owner-confirmed items (IMPLEMENTATION_PLAN §10.1) |
@@ -269,6 +270,7 @@ Only what needs the owner's hands, accounts, money or judgement. Everything else
 | [WORKFLOW.md](WORKFLOW.md) | Binding procedure: safety rules, workspace, branches and PRs, tests, review and fix, integration, GitHub coordination, datasets, deploy, flags, live windows, evals, usage limits |
 | [contracts/P3-schema.md](contracts/P3-schema.md) | Exact schema of migration `0015_p3`; content columns; retention; deletion cascade; post-restore |
 | [contracts/P3-interfaces.md](contracts/P3-interfaces.md) | Module map, reason codes, state events, policy, ports, disclosure, read seams, jobs, registries, prompts, settings, flags, notifications, control chat, audit events, eval and ops seams, file ownership and the never-edit-without-an-ICR list |
+| [autonomy-texts.md](autonomy-texts.md) | Draft texts contacts read (AI marker, disclosure lines, identity answers) for the owner to proofread; F0-S copies them into `core/autonomy_texts.py` (P3-T61) |
 | [specs/](specs/) | One spec per unit, named by unit id (`specs/M6-POL.md`); junior-grade for David's units |
 | [handoffs/](handoffs/) | One start-here brief per role: `tech-lead`, `josh`, `edvard`, `david`, `junior-engineers`, `senior-qa`, `team-qa` |
 | [qa/](qa/) | QA-P3 delivers the test plan, regression matrix, live checklists, trial log, evidence template and `p3-verifier.md` here |

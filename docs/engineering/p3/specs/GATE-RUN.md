@@ -31,7 +31,7 @@ Produce the S06.5 result per language on owner-confirmed evidence, at the lowest
 
 ## 3. Design
 
-### 3.1 Calendar (D0 = CP5 = Mon 11-02; shifts one for one with CP5)
+### 3.1 Calendar (D0 = Mon 2026-11-02, owner decision 2026-10-29; D0 does not move with CP5, which landed 10-29, #137)
 
 | Day | Step | Who | Go-aheads |
 |---|---|---|---|

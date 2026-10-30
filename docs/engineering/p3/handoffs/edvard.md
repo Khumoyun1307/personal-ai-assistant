@@ -7,7 +7,7 @@
 Your team builds:
 - the product registries and the eval, test, CI and ops seams in F0 (F0-R, F0-E);
 - the delegated drafting run and its prompt (DELEG-DRAFT) and the S06.5 eval tooling (EV-E4L, EV-AUT, EV-GATE);
-- escalation and covered-chat effects on the inbox side (M6-ESC);
+- escalation and covered-chat effects on the inbox side, and the `autonomy_not_sent` alert with its Draft reply press (`telegram/control/draft_reply.py`, OD-11) (M6-ESC);
 - every M07 product flow: owner tasks, reminders, conditional follow-ups, nudges, automation management, scheduled summaries, monitor actions and inferred memory;
 - the single `owner_request.v10` bump (PR-OR10) and the v6 policy constant and notice (PV6 code).
 
@@ -78,6 +78,7 @@ Branches are `p3/<unit-id>` from `int/p3` (WORKFLOW §4); before CP1 a unit that
 |---|---|
 | `inbox/notification_policy.py`, `inbox/notifications.py` | F0-R (delivery-class consult, `active_delegation` slot) → M6-ESC (the rule and fact loading) |
 | `inbox/triage_store.py` | F0-R (the `delegation_requester` hook) → M6-ESC (covered-chat effects). Nobody else edits it |
+| `telegram/control/draft_reply.py` (new) | M6-ESC (OD-11: the `drf` press; it presents a held reply through the `ApprovalCardPresenter` port and never edits `approvals.py`, whose held-reply sync rule is M6-PLAN's) |
 | `automation/rules.py` | F0-R (registry and rule models) → M7-MACT (the `MonitorRule.action` Literal only) |
 | `automation/monitors.py` | M7-MACT only (dispatch) |
 | `inbox/tasks.py`; filter functions in `inbox/digest.py`, `agent/tools/summaries.py`, `memory/catch_up.py` | M7-TASK; later units call its functions |

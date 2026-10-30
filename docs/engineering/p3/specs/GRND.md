@@ -13,7 +13,7 @@
 
 ## 1. Goal
 
-Replace F0-S's fail-closed stubs with real, pure, deterministic bodies. `ground` finds every concrete value in the model's reply body (numbers, amounts and currencies, weekday, month and relative-day words, spelled numbers 0–100, URLs, emails, phone numbers, username handles) and counts those that appear in no owner-provided source, so `content_grounded` (M6-POL) turns any invented or contact-supplied value into an approval card. The language-key functions map the tagger's output to the four gate languages (`uz-Latn`, `uz-Cyrl`, `ru`, `en`) and return `None` for anything else, so `language_gate` fails closed on unknown or mixed language. GRND is on the gate chain: merge by **D+2**, before the pre-screen (CP-G0, D+3).
+Replace F0-S's fail-closed stubs with real, pure, deterministic bodies. `ground` finds every concrete value in the model's reply body (numbers, amounts and currencies, weekday, month and relative-day words, spelled numbers 0–100, URLs, emails, phone numbers, username handles) and counts those that appear in no owner-provided source, so `content_grounded` (M6-POL) turns any invented or contact-supplied value into a held reply (stored for approval; OD-11). The language-key functions map the tagger's output to the four gate languages (`uz-Latn`, `uz-Cyrl`, `ru`, `en`) and return `None` for anything else, so `language_gate` fails closed on unknown or mixed language. GRND is on the gate chain: merge by **D+2**, before the pre-screen (CP-G0, D+3).
 
 ## 2. Scope
 
