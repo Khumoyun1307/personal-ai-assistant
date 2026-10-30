@@ -1,0 +1,1639 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-30",
+  "set": "owner-drafting-effort-low",
+  "target": "owner_drafting",
+  "dataset": "owner_drafting",
+  "mode": "effort-low",
+  "model": "gpt-6-luna",
+  "live": true,
+  "effort": "low",
+  "complete": true,
+  "trial": false,
+  "stopped": false,
+  "not_evaluated": [],
+  "items": 31,
+  "items_planned": 31,
+  "items_total": 31,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "e2/situations.jsonl": "720a1ab1da281fecdfaa462ab71e107635fec7cc6bbbc54f91d0dd692e2bac2f",
+    "e3/bursts.jsonl": "b8a243680a3e2dbdb7175ae1645f0f8c2cec632eb1d779a6e2abc5aff52711d4",
+    "e3/monitor_cases.jsonl": "5f54aa692f82caf99a5a3c24a5459448455a92878dcb3661d58f3e57fb53bbc0",
+    "e4/cases.jsonl": "68088b0014f098dfe3dff0b30492d973cd23c5dbfe5789d86489110c304659ad",
+    "owner_drafting/cases.jsonl": "709dad6042c3e79f8b9bd0708bb1a91f5df324eda0000f3ceaa6a2e43346de09",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "owner_request.v10",
+    "draft_owner.v2",
+    "owner_drafting.v1"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "case_passed",
+      "label": "Every deterministic check of the case passed",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 26,
+        "denominator": 31,
+        "ratio": 0.8387096774193549
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 31,
+      "failed_items": [
+        "od03",
+        "od10",
+        "od16",
+        "od17",
+        "od18"
+      ],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "routing_correct",
+      "label": "Routing: the right tools, and a card staged or revised only when asked",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 30,
+        "denominator": 31,
+        "ratio": 0.967741935483871
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 31,
+      "failed_items": [
+        "od10"
+      ],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "card_correct",
+      "label": "Card: chat, origin, mode, answered message, text and length checks",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 19,
+        "denominator": 23,
+        "ratio": 0.8260869565217391
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 23,
+      "failed_items": [
+        "od10",
+        "od16",
+        "od17",
+        "od18"
+      ],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "reply_correct",
+      "label": "Reply: identity and the exact word count",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 3,
+        "denominator": 4,
+        "ratio": 0.75
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 4,
+      "failed_items": [
+        "od03"
+      ],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "judge_meets",
+      "label": "Judge pre-screen: tone or substance as asked",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 3,
+        "denominator": 4,
+        "ratio": 0.75
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 4,
+      "failed_items": [
+        "od29"
+      ],
+      "pending": 0,
+      "note": "A pre-screen only; the owner reads the JSON report's drafts."
+    }
+  ],
+  "breakdowns": {
+    "case passed by category": {
+      "advice": {
+        "numerator": 2,
+        "denominator": 2,
+        "ratio": 1.0
+      },
+      "append": {
+        "numerator": 3,
+        "denominator": 3,
+        "ratio": 1.0
+      },
+      "command_words": {
+        "numerator": 2,
+        "denominator": 2,
+        "ratio": 1.0
+      },
+      "compose": {
+        "numerator": 3,
+        "denominator": 3,
+        "ratio": 1.0
+      },
+      "dictate": {
+        "numerator": 2,
+        "denominator": 3,
+        "ratio": 0.6666666666666666
+      },
+      "identity": {
+        "numerator": 2,
+        "denominator": 3,
+        "ratio": 0.6666666666666666
+      },
+      "pick_suggestion": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "reply_earlier": {
+        "numerator": 0,
+        "denominator": 3,
+        "ratio": 0.0
+      },
+      "shorter": {
+        "numerator": 2,
+        "denominator": 2,
+        "ratio": 1.0
+      },
+      "substance": {
+        "numerator": 2,
+        "denominator": 2,
+        "ratio": 1.0
+      },
+      "suggest": {
+        "numerator": 2,
+        "denominator": 2,
+        "ratio": 1.0
+      },
+      "tone": {
+        "numerator": 2,
+        "denominator": 2,
+        "ratio": 1.0
+      },
+      "word_bounds": {
+        "numerator": 2,
+        "denominator": 2,
+        "ratio": 1.0
+      },
+      "word_count": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    },
+    "case passed by variant": {
+      "en": {
+        "numerator": 6,
+        "denominator": 8,
+        "ratio": 0.75
+      },
+      "ru": {
+        "numerator": 4,
+        "denominator": 6,
+        "ratio": 0.6666666666666666
+      },
+      "uz-Latn": {
+        "numerator": 16,
+        "denominator": 17,
+        "ratio": 0.9411764705882353
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.0835732",
+    "calls": 114,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 114,
+        "input_tokens": 802282,
+        "output_tokens": 6690,
+        "cost_usd": "0.0835732",
+        "cost_per_100_items_usd": "0.2695909677419354838709677419"
+      }
+    }
+  },
+  "headline": [],
+  "notes": [
+    "Owner-requested drafting and routing through the real owner_request runtime, the product's drafter and card machinery; owner_request effort low, draft_owner effort low. Informational: no threshold, no gate.",
+    "5 case(s) failed a check: od03, od10, od16, od17, od18"
+  ],
+  "details": [
+    {
+      "id": "od01",
+      "category": "identity",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [],
+      "new_cards": [],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Mening ismim Alviro.",
+      "judge": null
+    },
+    {
+      "id": "od02",
+      "category": "identity",
+      "variant": "en",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [],
+      "new_cards": [],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Alviro is my name—I’m your AI assistant here in your private Telegram chat. I run on an AI model from OpenAI.",
+      "judge": null
+    },
+    {
+      "id": "od03",
+      "category": "identity",
+      "variant": "ru",
+      "passed": false,
+      "not_evaluated": false,
+      "problems": [
+        "reply:missing:Alviro"
+      ],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [],
+      "new_cards": [],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Меня зовут Алвиро.",
+      "judge": null
+    },
+    {
+      "id": "od04",
+      "category": "suggest",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "get_attention_list",
+          "args": {
+            "active_within_days": 7,
+            "limit": 10
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "list_conversations",
+          "args": {
+            "active_within_days": 30,
+            "mode": null,
+            "contact_id": null,
+            "awaiting_owner_reply": null,
+            "limit": 30
+          },
+          "status": "ok"
+        }
+      ],
+      "new_cards": [],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Hozir kuzatayotgan chatlarimda so‘nggi 30 kun ichida faol suhbat yo‘q, javob kutayotgan chat ham topilmadi. Shuning uchun bugun yozish uchun 2–3 kishini ishonchli tavsiya qila olmayman. Ma’lumotlarim 2026-10-18 14:00 dan keyingi kuzatilgan chatlar bilan cheklangan.",
+      "judge": null
+    },
+    {
+      "id": "od05",
+      "category": "suggest",
+      "variant": "en",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "get_attention_list",
+          "args": {
+            "active_within_days": 7,
+            "limit": 10
+          },
+          "status": "ok"
+        }
+      ],
+      "new_cards": [],
+      "live_before": null,
+      "live_after": null,
+      "reply": "I don’t see any observed chats where the other person wrote last in the past 7 days, so I can’t suggest a couple of people to get back to based on who’s waiting. I can only see stored messages from October 18, 2026 at 14:00 onward.",
+      "judge": null
+    },
+    {
+      "id": "od06",
+      "category": "advice",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Dilnoza",
+            "limit": 5
+          },
+          "status": "ok"
+        }
+      ],
+      "new_cards": [],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Mana ikki variant:\n\n1. “Salom, Dilnoza! Qalaysan? Anchadan beri gaplashmadik 😊”\n2. “Salom! Bugun seni eslab qoldim, ishlaring yaxshimi?”",
+      "judge": null
+    },
+    {
+      "id": "od07",
+      "category": "advice",
+      "variant": "ru",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Олег",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "get_conversation",
+          "args": {
+            "conversation_id": 10,
+            "contact_id": null,
+            "cursor": null,
+            "limit": 30
+          },
+          "status": "ok"
+        }
+      ],
+      "new_cards": [],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Олег спрашивает, сможешь ли помочь с переездом в субботу (Олег, 2026-10-20 13:00). Можно ответить, например:\n\n1. «Да, постараюсь помочь! Во сколько и куда подъехать?»\n2. «В субботу не получится, к сожалению. Надеюсь, найдёшь кого-нибудь помочь!»",
+      "judge": null
+    },
+    {
+      "id": "od08",
+      "category": "dictate",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Shuhrat",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "propose_message",
+          "args": {
+            "conversation_id": 11,
+            "contact_id": null,
+            "text": "Ertaga soat 10 da ofisda bo'laman"
+          },
+          "status": "awaiting_approval"
+        }
+      ],
+      "new_cards": [
+        {
+          "action_id": 1,
+          "chat": "a",
+          "origin": "owner_dictated",
+          "state": "awaiting_approval",
+          "version": 1,
+          "answered": null,
+          "words": 6,
+          "text": "Ertaga soat 10 da ofisda bo'laman"
+        }
+      ],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Shuhratga xabaringizni tasdiqlash uchun karta yuborildi.",
+      "judge": null
+    },
+    {
+      "id": "od09",
+      "category": "dictate",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Xurshida",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "propose_message",
+          "args": {
+            "conversation_id": null,
+            "contact_id": 12,
+            "text": "Hujjatlarni kechqurun olib kelaman"
+          },
+          "status": "awaiting_approval"
+        }
+      ],
+      "new_cards": [
+        {
+          "action_id": 2,
+          "chat": "a",
+          "origin": "owner_dictated",
+          "state": "awaiting_approval",
+          "version": 1,
+          "answered": null,
+          "words": 4,
+          "text": "Hujjatlarni kechqurun olib kelaman"
+        }
+      ],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Xurshidaga xabar yuborish uchun tasdiqlash kartasi tayyor. Tasdiqlasangiz yuboriladi.",
+      "judge": null
+    },
+    {
+      "id": "od10",
+      "category": "dictate",
+      "variant": "en",
+      "passed": false,
+      "not_evaluated": false,
+      "problems": [
+        "routing:missing_tool:propose_message",
+        "routing:no_card"
+      ],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Daniel",
+            "limit": 5
+          },
+          "status": "ok"
+        }
+      ],
+      "new_cards": [],
+      "live_before": null,
+      "live_after": null,
+      "reply": "I couldn’t create the approval card because the request was rejected due to invalid arguments. Nothing was drafted or sent.",
+      "judge": null
+    },
+    {
+      "id": "od11",
+      "category": "command_words",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Rustam",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "propose_reply",
+          "args": {
+            "conversation_id": 14,
+            "contact_id": null,
+            "mode": "new_message",
+            "answered_message_id": null,
+            "guidance": "Dushanba kungi yig'ilishni seshanbaga ko'chiramiz.",
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "awaiting_approval"
+        }
+      ],
+      "new_cards": [
+        {
+          "action_id": 3,
+          "chat": "b",
+          "origin": "agent_proposal",
+          "state": "awaiting_approval",
+          "version": 1,
+          "answered": null,
+          "words": 6,
+          "text": "Rustam, dushanba kungi yig'ilishni seshanbaga ko'chiramiz."
+        }
+      ],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Rustamga yangi xabar yozish uchun tasdiqlash kartasi tayyor. Yuborishdan oldin kartada tasdiqlang.",
+      "judge": null
+    },
+    {
+      "id": "od12",
+      "category": "command_words",
+      "variant": "ru",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Марина",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "propose_reply",
+          "args": {
+            "conversation_id": 15,
+            "contact_id": null,
+            "mode": "new_message",
+            "answered_message_id": null,
+            "guidance": "Сообщи, что завтра созвонимся в 15:00.",
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "awaiting_approval"
+        }
+      ],
+      "new_cards": [
+        {
+          "action_id": 4,
+          "chat": "a",
+          "origin": "agent_proposal",
+          "state": "awaiting_approval",
+          "version": 1,
+          "answered": null,
+          "words": 5,
+          "text": "Марина, завтра созвонимся в 15:00."
+        }
+      ],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Для Марины подготовлена карточка нового сообщения. Она ждёт вашего одобрения.",
+      "judge": null
+    },
+    {
+      "id": "od13",
+      "category": "compose",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Jasur",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "propose_reply",
+          "args": {
+            "conversation_id": null,
+            "contact_id": 16,
+            "mode": "new_message",
+            "answered_message_id": null,
+            "guidance": "Keyingi haftadagi seminar payshanba kuni soat 14:00 da bo‘lishini eslatib xabar yoz.",
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "awaiting_approval"
+        }
+      ],
+      "new_cards": [
+        {
+          "action_id": 5,
+          "chat": "c",
+          "origin": "agent_proposal",
+          "state": "awaiting_approval",
+          "version": 1,
+          "answered": null,
+          "words": 11,
+          "text": "Jasur, eslatma: keyingi hafta payshanba kuni soat 14:00 da seminar bo‘ladi."
+        }
+      ],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Jasurga seminar haqida xabar loyihasi tasdiqlashingiz uchun kartaga yuborildi. Hali yuborilmadi.",
+      "judge": null
+    },
+    {
+      "id": "od14",
+      "category": "compose",
+      "variant": "en",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Sophie",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "propose_reply",
+          "args": {
+            "conversation_id": 17,
+            "contact_id": null,
+            "mode": "new_message",
+            "answered_message_id": null,
+            "guidance": "Ask whether she can share the project report by Friday.",
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "awaiting_approval"
+        }
+      ],
+      "new_cards": [
+        {
+          "action_id": 6,
+          "chat": "a",
+          "origin": "agent_proposal",
+          "state": "awaiting_approval",
+          "version": 1,
+          "answered": null,
+          "words": 10,
+          "text": "Hi Sophie, could you share the project report by Friday?"
+        }
+      ],
+      "live_before": null,
+      "live_after": null,
+      "reply": "A new-message draft for Sophie is waiting for your approval. It asks whether she can share the project report by Friday.",
+      "judge": null
+    },
+    {
+      "id": "od15",
+      "category": "compose",
+      "variant": "ru",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Ольга",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "propose_reply",
+          "args": {
+            "conversation_id": 18,
+            "contact_id": null,
+            "mode": "new_message",
+            "answered_message_id": null,
+            "guidance": "Спроси, удобно ли ей перенести встречу на пятницу.",
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "awaiting_approval"
+        }
+      ],
+      "new_cards": [
+        {
+          "action_id": 7,
+          "chat": "a",
+          "origin": "agent_proposal",
+          "state": "awaiting_approval",
+          "version": 1,
+          "answered": null,
+          "words": 8,
+          "text": "Ольга, удобно ли вам перенести встречу на пятницу?"
+        }
+      ],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Новое сообщение для Ольги подготовлено. Карточка ожидает вашего одобрения; сообщение пока не отправлено.",
+      "judge": null
+    },
+    {
+      "id": "od16",
+      "category": "reply_earlier",
+      "variant": "uz-Latn",
+      "passed": false,
+      "not_evaluated": false,
+      "problems": [
+        "card:wrong_answered_message"
+      ],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Nodira",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "propose_reply",
+          "args": {
+            "conversation_id": 19,
+            "contact_id": null,
+            "mode": "reply",
+            "answered_message_id": null,
+            "guidance": "Narxi 250 ming so'm ekanini ayt.",
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "awaiting_approval"
+        }
+      ],
+      "new_cards": [
+        {
+          "action_id": 8,
+          "chat": "a",
+          "origin": "agent_proposal",
+          "state": "awaiting_approval",
+          "version": 1,
+          "answered": "m4",
+          "words": 6,
+          "text": "Yangi kurs narxi 250 ming so‘m."
+        }
+      ],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Nodiraning narx haqidagi savoliga javob uchun tasdiqlash kartasi yuborildi. Uni tasdiqlashingiz, tahrirlashingiz yoki rad etishingiz mumkin.",
+      "judge": null
+    },
+    {
+      "id": "od17",
+      "category": "reply_earlier",
+      "variant": "en",
+      "passed": false,
+      "not_evaluated": false,
+      "problems": [
+        "card:wrong_answered_message"
+      ],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Victor",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "propose_reply",
+          "args": {
+            "conversation_id": 20,
+            "contact_id": null,
+            "mode": "reply",
+            "answered_message_id": null,
+            "guidance": "Answer Victor's question about the meeting room: yes, room 3 is free until noon.",
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "awaiting_approval"
+        }
+      ],
+      "new_cards": [
+        {
+          "action_id": 9,
+          "chat": "a",
+          "origin": "agent_proposal",
+          "state": "awaiting_approval",
+          "version": 1,
+          "answered": "m4",
+          "words": 7,
+          "text": "Yes, room 3 is free until noon."
+        }
+      ],
+      "live_before": null,
+      "live_after": null,
+      "reply": "A reply to Victor is waiting for your approval on the card. It hasn’t been sent.",
+      "judge": null
+    },
+    {
+      "id": "od18",
+      "category": "reply_earlier",
+      "variant": "ru",
+      "passed": false,
+      "not_evaluated": false,
+      "problems": [
+        "card:wrong_answered_message"
+      ],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Олег",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "propose_reply",
+          "args": {
+            "conversation_id": 21,
+            "contact_id": null,
+            "mode": "reply",
+            "answered_message_id": null,
+            "guidance": "Ответь на вопрос про доставку заказа: привезём в среду после обеда.",
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "awaiting_approval"
+        }
+      ],
+      "new_cards": [
+        {
+          "action_id": 10,
+          "chat": "a",
+          "origin": "agent_proposal",
+          "state": "awaiting_approval",
+          "version": 1,
+          "answered": "m4",
+          "words": 6,
+          "text": "Привезём заказ в среду после обеда."
+        }
+      ],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Черновик ответа Олегу подготовлен. Карточка ожидает вашего одобрения; сообщение пока не отправлено.",
+      "judge": null
+    },
+    {
+      "id": "od19",
+      "category": "substance",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Kamola",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "propose_reply",
+          "args": {
+            "conversation_id": 22,
+            "contact_id": null,
+            "mode": "reply",
+            "answered_message_id": null,
+            "guidance": "Ertaga kela olmasligimni ayt, shamollab qolganman, payshanbaga ko‘chirishni taklif qil.",
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "awaiting_approval"
+        }
+      ],
+      "new_cards": [
+        {
+          "action_id": 11,
+          "chat": "a",
+          "origin": "agent_proposal",
+          "state": "awaiting_approval",
+          "version": 1,
+          "answered": "m1",
+          "words": 10,
+          "text": "Kamola, ertaga darsga kela olmayman, shamollab qolganman. Payshanbaga ko‘chirsak bo‘ladimi?"
+        }
+      ],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Kamolaga javob uchun tasdiqlash kartasi tayyor. Yuborish uchun kartada tasdiqlang.",
+      "judge": {
+        "screened": true,
+        "meets": true,
+        "reason": "The draft says the owner cannot attend tomorrow because they have a cold and proposes moving the lesson to Thursday.",
+        "error": null
+      }
+    },
+    {
+      "id": "od20",
+      "category": "substance",
+      "variant": "en",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Emily",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "propose_reply",
+          "args": {
+            "conversation_id": 23,
+            "contact_id": null,
+            "mode": "reply",
+            "answered_message_id": null,
+            "guidance": "I can't make Saturday because of a family event, but I'm free on Sunday evening.",
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "awaiting_approval"
+        }
+      ],
+      "new_cards": [
+        {
+          "action_id": 12,
+          "chat": "a",
+          "origin": "agent_proposal",
+          "state": "awaiting_approval",
+          "version": 1,
+          "answered": "m1",
+          "words": 15,
+          "text": "I can't make Saturday because of a family event, but I'm free on Sunday evening."
+        }
+      ],
+      "live_before": null,
+      "live_after": null,
+      "reply": "A reply draft for Emily is waiting for your approval on the card.",
+      "judge": {
+        "screened": true,
+        "meets": true,
+        "reason": "It declines Saturday due to a family event and offers Sunday evening instead.",
+        "error": null
+      }
+    },
+    {
+      "id": "od21",
+      "category": "append",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "revise_draft",
+          "args": {
+            "conversation_id": null,
+            "action_id": 13,
+            "append_text": "Oldindan rahmat!",
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "revised"
+        }
+      ],
+      "new_cards": [],
+      "live_before": {
+        "action_id": 13,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 1,
+        "answered": null,
+        "words": 9,
+        "text": "Shartnoma loyihasini bugun kechqurun yuboraman, taqdimot uchun ham rahmat."
+      },
+      "live_after": {
+        "action_id": 13,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 2,
+        "answered": null,
+        "words": 11,
+        "text": "Shartnoma loyihasini bugun kechqurun yuboraman, taqdimot uchun ham rahmat. Oldindan rahmat!"
+      },
+      "reply": "Qoralamaga “Oldindan rahmat!” qo‘shildi. Yangilangan qoralama kartochkada tasdiqlashingizni kutmoqda.",
+      "judge": null
+    },
+    {
+      "id": "od22",
+      "category": "append",
+      "variant": "ru",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "revise_draft",
+          "args": {
+            "conversation_id": null,
+            "action_id": 14,
+            "append_text": "Спасибо заранее!",
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "revised"
+        }
+      ],
+      "new_cards": [],
+      "live_before": {
+        "action_id": 14,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 1,
+        "answered": null,
+        "words": 5,
+        "text": "Да, пришлю фотографии сегодня вечером."
+      },
+      "live_after": {
+        "action_id": 14,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 2,
+        "answered": null,
+        "words": 7,
+        "text": "Да, пришлю фотографии сегодня вечером. Спасибо заранее!"
+      },
+      "reply": "Черновик дополнен. Обновлённая версия ждёт вашего подтверждения.",
+      "judge": null
+    },
+    {
+      "id": "od23",
+      "category": "append",
+      "variant": "en",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "revise_draft",
+          "args": {
+            "conversation_id": null,
+            "action_id": 15,
+            "append_text": "See you there!",
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "revised"
+        }
+      ],
+      "new_cards": [],
+      "live_before": {
+        "action_id": 15,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 1,
+        "answered": null,
+        "words": 7,
+        "text": "Yes, I will be there at nine."
+      },
+      "live_after": {
+        "action_id": 15,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 2,
+        "answered": null,
+        "words": 10,
+        "text": "Yes, I will be there at nine. See you there!"
+      },
+      "reply": "Added “See you there!” to the draft. The updated card is waiting for your approval.",
+      "judge": null
+    },
+    {
+      "id": "od24",
+      "category": "shorter",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "revise_draft",
+          "args": {
+            "conversation_id": null,
+            "action_id": 16,
+            "append_text": null,
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "revised"
+        }
+      ],
+      "new_cards": [],
+      "live_before": {
+        "action_id": 16,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 1,
+        "answered": null,
+        "words": 25,
+        "text": "Assalomu alaykum, shartnoma loyihasini bugun kechqurun albatta yuboraman, undan oldin yuridik bo'lim bilan yana bir bor tekshirib chiqmoqchiman, taqdimotni olib kelganingiz uchun ham katta rahmat."
+      },
+      "live_after": {
+        "action_id": 16,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 2,
+        "answered": null,
+        "words": 17,
+        "text": "Assalomu alaykum, shartnoma loyihasini bugun kechqurun yuboraman. Avval yuridik bo‘lim bilan tekshiraman. Taqdimotni olib kelganingiz uchun rahmat."
+      },
+      "reply": "Qoralama qisqartirildi. Yangilangan variantni tasdiqlash, tahrirlash yoki rad etish uchun kartochka kutmoqda.",
+      "judge": null
+    },
+    {
+      "id": "od25",
+      "category": "shorter",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Otabek",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "revise_draft",
+          "args": {
+            "conversation_id": 28,
+            "action_id": null,
+            "append_text": null,
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "revised"
+        }
+      ],
+      "new_cards": [],
+      "live_before": {
+        "action_id": 17,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 1,
+        "answered": null,
+        "words": 18,
+        "text": "Salom Otabek, mashinani ertaga ertalab soat sakkizlarda, ishga ketayotganimda uyingiz oldiga olib borib qaytaraman, kalitni ham o'zingizga beraman."
+      },
+      "live_after": {
+        "action_id": 17,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 2,
+        "answered": null,
+        "words": 13,
+        "text": "Salom Otabek, mashinani ertaga ertalab soat sakkizlarda uyingiz oldiga olib borib, kalitni beraman."
+      },
+      "reply": "Otabekka yozilgan qoralama qisqartirildi. Yangilangan qoralama tasdiqlashingiz uchun kartochkada turibdi.",
+      "judge": null
+    },
+    {
+      "id": "od26",
+      "category": "word_bounds",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "revise_draft",
+          "args": {
+            "conversation_id": null,
+            "action_id": 18,
+            "append_text": null,
+            "min_words": 5,
+            "max_words": 7
+          },
+          "status": "revised"
+        }
+      ],
+      "new_cards": [],
+      "live_before": {
+        "action_id": 18,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 1,
+        "answered": null,
+        "words": 25,
+        "text": "Assalomu alaykum, shartnoma loyihasini bugun kechqurun albatta yuboraman, undan oldin yuridik bo'lim bilan yana bir bor tekshirib chiqmoqchiman, taqdimotni olib kelganingiz uchun ham katta rahmat."
+      },
+      "live_after": {
+        "action_id": 18,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 2,
+        "answered": null,
+        "words": 7,
+        "text": "Shartnoma loyihasini bugun yuboraman, taqdimot uchun rahmat."
+      },
+      "reply": "Qoralama 7 so‘zga qisqartirildi. Kartochkada tasdiqlashingizni kutmoqda.",
+      "judge": null
+    },
+    {
+      "id": "od27",
+      "category": "word_bounds",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "revise_draft",
+          "args": {
+            "conversation_id": null,
+            "action_id": 19,
+            "append_text": null,
+            "min_words": 5,
+            "max_words": 7
+          },
+          "status": "revised"
+        }
+      ],
+      "new_cards": [],
+      "live_before": {
+        "action_id": 19,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 1,
+        "answered": null,
+        "words": 14,
+        "text": "Ha, slaydlar deyarli tayyor, faqat oxirgi ikki sahifadagi grafiklarni yangilashim kerak, kechgacha sizga yuboraman."
+      },
+      "live_after": {
+        "action_id": 19,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 2,
+        "answered": null,
+        "words": 7,
+        "text": "Slaydlar deyarli tayyor, grafiklarni yangilab kechgacha yuboraman."
+      },
+      "reply": "Qoralama 7 so‘z qilib qayta yozildi. Kartochkada tasdiqlashingiz, tahrirlashingiz yoki rad etishingiz mumkin.",
+      "judge": null
+    },
+    {
+      "id": "od28",
+      "category": "tone",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "revise_draft",
+          "args": {
+            "conversation_id": null,
+            "action_id": 20,
+            "append_text": null,
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "revised"
+        }
+      ],
+      "new_cards": [],
+      "live_before": {
+        "action_id": 20,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 1,
+        "answered": null,
+        "words": 5,
+        "text": "Ha, bugun kechqurun futbolga chiqaman."
+      },
+      "live_after": {
+        "action_id": 20,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 2,
+        "answered": null,
+        "words": 10,
+        "text": "Ha, bugun kechqurun futbolga chiqaman — to‘p meni sog‘inib qolmasin."
+      },
+      "reply": "Qoralama hazilomuzroq qilib yangilandi. Kartochkada tasdiqlashingizni kutyapti.",
+      "judge": {
+        "screened": true,
+        "meets": true,
+        "reason": "It confirms the owner will play football tonight and adds a clearly playful joke about the ball missing them.",
+        "error": null
+      }
+    },
+    {
+      "id": "od29",
+      "category": "tone",
+      "variant": "en",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "revise_draft",
+          "args": {
+            "conversation_id": null,
+            "action_id": 21,
+            "append_text": null,
+            "min_words": null,
+            "max_words": null
+          },
+          "status": "revised"
+        }
+      ],
+      "new_cards": [],
+      "live_before": {
+        "action_id": 21,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 1,
+        "answered": null,
+        "words": 6,
+        "text": "Yes, I watered them every day."
+      },
+      "live_after": {
+        "action_id": 21,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 2,
+        "answered": null,
+        "words": 8,
+        "text": "Indeed, I did, and watered them each day."
+      },
+      "reply": "The draft has been rewritten in a very formal, old-fashioned butler’s style. The updated card is waiting for your approval.",
+      "judge": {
+        "screened": true,
+        "meets": false,
+        "reason": "It preserves that the plants were watered every day, but the wording does not clearly convey the voice of a very formal, old-fashioned butler.",
+        "error": null
+      }
+    },
+    {
+      "id": "od30",
+      "category": "word_count",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "get_draft",
+          "args": {
+            "conversation_id": null,
+            "action_id": 22
+          },
+          "status": "ok"
+        }
+      ],
+      "new_cards": [],
+      "live_before": {
+        "action_id": 22,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 1,
+        "answered": null,
+        "words": 25,
+        "text": "Assalomu alaykum, shartnoma loyihasini bugun kechqurun albatta yuboraman, undan oldin yuridik bo'lim bilan yana bir bor tekshirib chiqmoqchiman, taqdimotni olib kelganingiz uchun ham katta rahmat."
+      },
+      "live_after": {
+        "action_id": 22,
+        "chat": "a",
+        "origin": "agent_proposal",
+        "state": "awaiting_approval",
+        "version": 1,
+        "answered": null,
+        "words": 25,
+        "text": "Assalomu alaykum, shartnoma loyihasini bugun kechqurun albatta yuboraman, undan oldin yuridik bo'lim bilan yana bir bor tekshirib chiqmoqchiman, taqdimotni olib kelganingiz uchun ham katta rahmat."
+      },
+      "reply": "Qoralamada 25 ta so‘z bor.",
+      "judge": null
+    },
+    {
+      "id": "od31",
+      "category": "pick_suggestion",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [
+        {
+          "tool": "resolve_contact",
+          "args": {
+            "name": "Malika",
+            "limit": 5
+          },
+          "status": "ok"
+        },
+        {
+          "tool": "propose_message",
+          "args": {
+            "conversation_id": null,
+            "contact_id": 34,
+            "text": "Salom Malika, ertangi taqdimot uchun slaydlarni tayyorladim, ko'rib chiqasizmi?"
+          },
+          "status": "awaiting_approval"
+        }
+      ],
+      "new_cards": [
+        {
+          "action_id": 23,
+          "chat": "a",
+          "origin": "agent_proposal",
+          "state": "awaiting_approval",
+          "version": 1,
+          "answered": null,
+          "words": 9,
+          "text": "Salom Malika, ertangi taqdimot uchun slaydlarni tayyorladim, ko'rib chiqasizmi?"
+        }
+      ],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Malikaga yangi xabar uchun tasdiqlash kartasi yuborildi. Xabar hali yuborilmadi — yuborish uchun kartada tasdiqlang.",
+      "judge": null
+    }
+  ]
+}

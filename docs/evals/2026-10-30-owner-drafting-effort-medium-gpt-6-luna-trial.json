@@ -1,0 +1,217 @@
+{
+  "schema": 1,
+  "run_date": "2026-10-30",
+  "set": "owner-drafting-effort-medium",
+  "target": "owner_drafting",
+  "dataset": "owner_drafting",
+  "mode": "effort-medium",
+  "model": "gpt-6-luna",
+  "live": true,
+  "effort": "medium",
+  "complete": false,
+  "trial": true,
+  "stopped": false,
+  "not_evaluated": [],
+  "items": 1,
+  "items_planned": 1,
+  "items_total": 31,
+  "dataset_files": {
+    "e1/conversations.jsonl": "a3e632af9fdcd323cedbc8a24191f2a57f734d80152424d4e658a34c53180b5a",
+    "e2/situations.jsonl": "720a1ab1da281fecdfaa462ab71e107635fec7cc6bbbc54f91d0dd692e2bac2f",
+    "e3/bursts.jsonl": "b8a243680a3e2dbdb7175ae1645f0f8c2cec632eb1d779a6e2abc5aff52711d4",
+    "e3/monitor_cases.jsonl": "5f54aa692f82caf99a5a3c24a5459448455a92878dcb3661d58f3e57fb53bbc0",
+    "e4/cases.jsonl": "68088b0014f098dfe3dff0b30492d973cd23c5dbfe5789d86489110c304659ad",
+    "owner_drafting/cases.jsonl": "709dad6042c3e79f8b9bd0708bb1a91f5df324eda0000f3ceaa6a2e43346de09",
+    "retrieval/queries.jsonl": "1d22cee552bff47262136360fddb0530b9cce41cd4a79ce18ac43a5e6dfcbb88"
+  },
+  "prompts": [
+    "owner_request.v10",
+    "draft_owner.v2",
+    "owner_drafting.v1"
+  ],
+  "reviews": {
+    "source": null,
+    "confirmed_items": 0
+  },
+  "metrics": [
+    {
+      "key": "case_passed",
+      "label": "Every deterministic check of the case passed",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 31,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "routing_correct",
+      "label": "Routing: the right tools, and a card staged or revised only when asked",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 31,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "card_correct",
+      "label": "Card: chat, origin, mode, answered message, text and length checks",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 0,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "reply_correct",
+      "label": "Reply: identity and the exact word count",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 1,
+      "failed_items": [],
+      "pending": 0,
+      "note": ""
+    },
+    {
+      "key": "judge_meets",
+      "label": "Judge pre-screen: tone or substance as asked",
+      "unit": "ratio",
+      "goal": "at_least",
+      "threshold": null,
+      "all_items": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "confirmed": {
+        "numerator": 0,
+        "denominator": 0,
+        "ratio": null
+      },
+      "prescreen_status": "info",
+      "gate_status": "info",
+      "gated": true,
+      "confirmed_items": 0,
+      "set_size": 0,
+      "failed_items": [],
+      "pending": 0,
+      "note": "A pre-screen only; the owner reads the JSON report's drafts."
+    }
+  ],
+  "breakdowns": {
+    "case passed by category": {
+      "identity": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    },
+    "case passed by variant": {
+      "uz-Latn": {
+        "numerator": 1,
+        "denominator": 1,
+        "ratio": 1.0
+      }
+    }
+  },
+  "cost": {
+    "cap_usd": "1",
+    "spent_usd": "0.0008229",
+    "calls": 1,
+    "estimated_calls": 0,
+    "per_model": {
+      "gpt-6-luna": {
+        "calls": 1,
+        "input_tokens": 8169,
+        "output_tokens": 12,
+        "cost_usd": "0.0008229",
+        "cost_per_100_items_usd": "0.0822900"
+      }
+    }
+  },
+  "headline": [],
+  "notes": [
+    "Owner-requested drafting and routing through the real owner_request runtime, the product's drafter and card machinery; owner_request effort medium, draft_owner effort medium. Informational: no threshold, no gate."
+  ],
+  "details": [
+    {
+      "id": "od01",
+      "category": "identity",
+      "variant": "uz-Latn",
+      "passed": true,
+      "not_evaluated": false,
+      "problems": [],
+      "run_status": "succeeded",
+      "error": null,
+      "attempts": 1,
+      "tools": [],
+      "new_cards": [],
+      "live_before": null,
+      "live_after": null,
+      "reply": "Mening ismim Alviro.",
+      "judge": null
+    }
+  ]
+}
