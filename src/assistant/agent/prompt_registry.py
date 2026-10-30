@@ -42,7 +42,20 @@ ACTIVE: dict[str, str] = {
     # sentence of rule 13 changed to match. v1-v7 stay.
     # v9 (CP4, P2-T50): shipped M04 v8 unchanged, plus M05 rules 23-25
     # for monitors, contact priority and attention v2. v1-v8 stay.
-    "owner_request": "v9",
+    # v10 (PF-14, owner decisions D1-D4 and D7 of 2026-10-30, after the P2
+    # playtest): v9 plus the identity (Alviro, the owner's AI assistant;
+    # never ChatGPT, another product or a person; an OpenAI model when asked),
+    # acting on the owner's intent; rule 3 points a waiting draft at
+    # `revise_draft`; rule 18 routes reply / answer a message / new message /
+    # dictate / pick a suggestion / advice / list contacts / revise / read a
+    # draft (an explicit request is never "no reply needed"; resolve first;
+    # the card's Edit button when the draft tools are off); rule 19 relays
+    # statuses specifically, claims no draft property a tool did not report,
+    # no "ask again in a new message", no lasting "not sent yet"; rules 26-28:
+    # the working context (live cards, turn refs; PF-15), "chat partners" and
+    # weak candidates confirmed, list edits are not messaging. v1-v9 stay.
+    # P3's PR-OR10 bump becomes v11 (P3-T152).
+    "owner_request": "v10",
     # v1 (S03.2): one chat, rolling or period; cite message ids; no tools.
     # v2 (S03.3): the owner's notes about this contact are background, never
     # cited or reported as chat content.

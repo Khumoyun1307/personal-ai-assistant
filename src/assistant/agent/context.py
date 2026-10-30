@@ -12,11 +12,15 @@ flagged `contains_managed` are excluded unless `ai_managed` is active
 (ARCHITECTURE §14.3) — defence in depth behind the consent wrapper.
 Forwarded and quoted third-party text is wrapped as untrusted, and a context
 that carries any of it, or managed content, starts the run tainted (§7.1).
+With `ai_managed`, it also sees its working context (PF-15): the live approval
+cards (ids and states, never text or names) and the ids each earlier turn
+concerned, both written by the application and both content-free.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,7 +28,9 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from assistant.accounts.models import Account, ControlTurn
+from assistant.actions.activity import LiveCardFact
 from assistant.agent.attribution import FALLBACK_NAMES, clean_name, you_word
+from assistant.agent.draft_owner_schemas import OWNER_DRAFT_MODES
 from assistant.agent.locales import supported_locale
 from assistant.agent.prompt_registry import Prompt
 from assistant.agent.untrusted import Source, wrap
@@ -56,6 +62,7 @@ def build_owner_request(
     now: datetime,
     managed_allowed: bool = False,
     memory: Sequence[MemoryView] = (),
+    live_cards: Sequence[LiveCardFact] | None = None,
 ) -> OwnerRequestContext:
     # The tag spelled out with its script, as the summarize context does: a
     # bare `uz-Latn` lost to the script of the chats (S03.6; S03.7 fix round).
@@ -83,12 +90,17 @@ def build_owner_request(
     items += [
         TextItem(
             role="user" if past.role == "owner" else "assistant",
-            text=render_turn(past),
+            text=render_history_turn(past),
             provenance=Provenance.MANAGED if past.contains_managed else Provenance.OWNER_CONTROL,
         )
         for past in history
         if past.text
     ]
+    if live_cards is not None and managed_allowed:
+        # Volatile, so after the history (prompt caching): which cards are
+        # live now. Ids and enums only, so it carries no managed text and is
+        # the owner's own control data; it never changes taint (PF-15).
+        items.append(TextItem("user", render_live_cards(live_cards), Provenance.OWNER_CONTROL))
     if turn.contains_managed and not managed_allowed:
         # The owner forwarded or quoted a message from one of their managed
         # chats, without `ai_managed`: its text must not reach the model
@@ -106,6 +118,85 @@ def build_owner_request(
     return OwnerRequestContext(
         instructions=instructions, items=tuple(items), tainted=tainted, directly_tainted=direct
     )
+
+
+#: At most this many live cards are listed in an owner run's context.
+LIVE_CARDS_SHOWN = 20
+
+LIVE_CARDS_HEADER = (
+    "Live approval cards now (application data, not a message from the owner; ids and "
+    "states only, never the draft's text):"
+)
+LIVE_CARDS_NONE = "Live approval cards now (application data, not a message from the owner): none."
+
+
+def render_live_cards(cards: Sequence[LiveCardFact]) -> str:
+    """The live approval cards as the owner run sees them (PF-15): content-free
+    by construction — ids, the version, enum values from the database's check
+    constraints, and the mode only when it is one of the fixed modes."""
+    if not cards:
+        return LIVE_CARDS_NONE
+    lines = [LIVE_CARDS_HEADER]
+    for card in cards[:LIVE_CARDS_SHOWN]:
+        parts = [
+            f"- action {int(card.action_id)}: chat {int(card.conversation_id)}",
+            f"version {int(card.version)}",
+            _enum_word(card.state),
+            f"origin {_enum_word(card.origin)}",
+        ]
+        if card.mode in OWNER_DRAFT_MODES:
+            parts.append(f"mode {card.mode}")
+        if card.answers_message:
+            parts.append("answers a specific message")
+        lines.append(", ".join(parts))
+    rest = len(cards) - LIVE_CARDS_SHOWN
+    if rest > 0:
+        lines.append(f"- and {rest} more (not listed)")
+    return "\n".join(lines)
+
+
+_ENUM_WORD = re.compile(r"[a-z_]{1,40}")
+
+
+def _enum_word(value: str) -> str:
+    """A state or origin as stored (check-constrained), or `unknown`."""
+    return value if _ENUM_WORD.fullmatch(value) else "unknown"
+
+
+#: `control_turns.refs` keys shown on a history turn, with their label.
+_REF_LISTS = (("conversation_ids", "chats"), ("contact_ids", "contacts"))
+
+
+def _ids(value: Any) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    return [v for v in value if isinstance(v, int) and not isinstance(v, bool)]
+
+
+def render_refs(refs: Mapping[str, Any] | None) -> str | None:
+    """The ids a turn concerned, as a short application note (PF-15), or None.
+    Only integer ids under known keys; anything else in `refs` is ignored."""
+    if not refs:
+        return None
+    parts = [
+        f"{label} {', '.join(str(i) for i in ids)}"
+        for key, label in _REF_LISTS
+        if (ids := _ids(refs.get(key)))
+    ]
+    card = refs.get("revision_action_id")
+    if isinstance(card, int) and not isinstance(card, bool):
+        parts.append(f"card {card}")
+    if not parts:
+        return None
+    return f"(application note, not part of the message: this turn concerned {'; '.join(parts)})"
+
+
+def render_history_turn(turn: ControlTurn) -> str:
+    """An earlier turn: as `render_turn`, plus the ids it concerned, outside
+    any untrusted block (written by the application, never by the model)."""
+    text = render_turn(turn)
+    note = render_refs(turn.refs)
+    return text if note is None else f"{text}\n{note}"
 
 
 def note_text(item: MemoryView) -> str:

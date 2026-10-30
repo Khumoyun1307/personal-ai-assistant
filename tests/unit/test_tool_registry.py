@@ -239,9 +239,9 @@ def test_release_flags_still_hide_blocked_stubs() -> None:
     assert contact_run == {}
 
 
-def test_owner_request_v9_is_active_and_older_versions_remain() -> None:
-    assert prompt_registry.ACTIVE["owner_request"] == "v9"
-    for version in ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"):
+def test_owner_request_v10_is_active_and_older_versions_remain() -> None:
+    assert prompt_registry.ACTIVE["owner_request"] == "v10"
+    for version in ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"):
         assert prompt_registry.load("owner_request", version).text
     v6 = prompt_registry.load("owner_request", "v6").text
     assert "[msg:" in v6
@@ -286,8 +286,9 @@ def test_owner_request_v7_is_v6_plus_the_search_and_language_rules() -> None:
 
 
 def test_owner_request_m05_version_is_active_and_older_versions_remain() -> None:
-    """CP4 (P2-T50): retain shipped M04 v8 and append M05 rules 23-25."""
-    assert prompt_registry.ACTIVE["owner_request"] == "v9"
+    """CP4 (P2-T50): retain shipped M04 v8 and append M05 rules 23-25.
+    v9 stays loadable after PF-14 made v10 active (retained runs use it)."""
+    assert prompt_registry.ACTIVE["owner_request"] in ("v9", "v10")
     for version in ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"):
         assert prompt_registry.load("owner_request", version).text
     v8 = prompt_registry.load("owner_request", "v8").text
