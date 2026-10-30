@@ -117,12 +117,17 @@ class OwnerDraftInputs:
     answered_message_id: int | None = None
     current_text: str | None = None
     bounds: WordBounds | None = None
+    #: A revision the owner typed after tapping Edit on the card: the message
+    #: may be the whole new text (PF-13, A18). False for the owner's chat.
+    after_edit: bool = False
 
     def __post_init__(self) -> None:
         if self.mode not in OWNER_DRAFT_MODES:
             raise ValueError("unknown owner draft mode")
         if (self.mode == "revise") != (self.current_text is not None):
             raise ValueError("a revision, and only a revision, has a current draft")
+        if self.after_edit and self.mode != "revise":
+            raise ValueError("only a revision follows the card's Edit button")
         if self.mode == "new_message" and self.answered_message_id is not None:
             raise ValueError("a new message answers no message")
 
@@ -136,6 +141,11 @@ OWNER_TASKS: dict[OwnerDraftMode, str] = {
     ),
     "revise": "Task: revise. Rewrite the current draft as the owner's request says.",
 }
+#: The `revise` task line when the owner typed the message after Edit (A18).
+AFTER_EDIT_TASK = (
+    "Task: revise. The owner tapped Edit on the draft's card and then wrote the request below: "
+    "it is either the whole new message or an instruction for rewriting the current draft."
+)
 
 
 def build_draft_owner(
@@ -158,7 +168,7 @@ def build_draft_owner(
     items, ordered = _chat_items(
         account, messages, notes, previous, contact_name, writing="the message"
     )
-    task = OWNER_TASKS[inputs.mode]
+    task = AFTER_EDIT_TASK if inputs.after_edit else OWNER_TASKS[inputs.mode]
     if inputs.answered_message_id is not None:
         task = (
             f"Task: {inputs.mode}. Write the owner's reply to the contact's message "

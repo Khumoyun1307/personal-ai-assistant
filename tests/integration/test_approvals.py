@@ -67,6 +67,7 @@ from tests.scenarios.p2_drive import (
     draft_result,
     m04_environment,
     press_action,
+    revision_result,
     run_queued,
 )
 
@@ -342,7 +343,9 @@ async def test_a_contact_message_ingested_after_approval_blocks_the_send(s: Scen
 async def test_the_edit_loop_replacement_keeps_the_owners_words_verbatim(s: Scenario) -> None:
     row = await s.seed()
     s.fake.parsed.append(
-        draft_result(text="Synthetic model rewrite, not the owner's.", revision_kind="replacement")
+        revision_result(
+            text="Synthetic model rewrite, not the owner's.", revision_kind="replacement"
+        )
     )
     await start_edit(s, row, REPLACEMENT)
     assert answers(s) == [ANSWER_EDIT]
@@ -384,7 +387,7 @@ async def test_the_revision_turn_is_recorded_on_the_action(s: Scenario) -> None:
 
 async def test_the_edit_loop_instruction_produces_a_new_version_and_token(s: Scenario) -> None:
     row = await s.seed()
-    s.fake.parsed.append(draft_result(text="Synthetic shorter reply.", revision_kind="instruction"))
+    s.fake.parsed.append(revision_result(text="Synthetic shorter reply."))
     await start_edit(s, row, "Synthetic: shorter please.")
     await run_queued(s, "replies.revise")
     revised = await s.action(row.id)
@@ -407,7 +410,7 @@ async def test_the_edit_loop_instruction_produces_a_new_version_and_token(s: Sce
 async def test_a_too_long_replacement_stays_revising_and_asks_again(s: Scenario) -> None:
     row = await s.seed()
     too_long = "Synthetic-" + "x" * 4090  # 4100 characters
-    s.fake.parsed.append(draft_result(text="Synthetic short.", revision_kind="replacement"))
+    s.fake.parsed.append(revision_result(text="Synthetic short.", revision_kind="replacement"))
     await start_edit(s, row, too_long)
     await run_queued(s, "replies.revise")
     after = await s.action(row.id)
@@ -418,7 +421,7 @@ async def test_a_too_long_replacement_stays_revising_and_asks_again(s: Scenario)
     assert question.ref_id == row.id
     assert "too long (4100 characters; the limit is 4096)" in s.control_text()
     # The owner tries again with a short text: a new version.
-    s.fake.parsed.append(draft_result(text="unused", revision_kind="replacement"))
+    s.fake.parsed.append(revision_result(text="unused", revision_kind="replacement"))
     await owner_writes(s, "Synthetic short enough.")
     await run_queued(s, "replies.revise")
     assert (await s.action(row.id)).text == "Synthetic short enough."
@@ -458,7 +461,7 @@ async def test_an_old_too_long_revision_never_replaces_a_newer_chats_edit_questi
         [question] = await edit_inputs(s)
         assert question.ref_id == second_card.id
         newer_question.append((question.id, question.ref_id))
-        return draft_result(text=model_revision, revision_kind="instruction")
+        return revision_result(text=model_revision)
 
     s.fake.parsed.append(open_the_second_edit_while_the_first_call_is_in_flight)
     await start_edit(s, first_card, "Make the synthetic reply warmer.")
@@ -479,7 +482,7 @@ async def test_an_old_too_long_revision_never_replaces_a_newer_chats_edit_questi
     assert "too long (4100 characters; the limit is 4096)" in s.control_text()
     assert button_token(s, first_after, "ok") == first_after.approval_token
     # The owner's next message answers B, not A.
-    s.fake.parsed.append(draft_result(text="unused", revision_kind="replacement"))
+    s.fake.parsed.append(revision_result(text="unused", revision_kind="replacement"))
     await owner_writes(s, "Synthetic text for the second chat.")
     assert await run_queued(s, "replies.revise") == 1
     assert (await second.action(second_card.id)).text == "Synthetic text for the second chat."
@@ -495,7 +498,7 @@ async def test_a_long_revision_is_approvable_only_after_its_full_text_reached_th
     row = await s.seed()
     suffix = "SYNTHETIC-UNSEEN-REVISION-SUFFIX"
     long_text = "SYNTHETIC " + "x" * 3870 + suffix
-    s.fake.parsed.append(draft_result(text=long_text, revision_kind="instruction"))
+    s.fake.parsed.append(revision_result(text=long_text))
     await start_edit(s, row, "Synthetic: write the expanded version.")
     refusal = telegram_error("Bad Request: synthetic refusal", status_code=400)
     calls = 0
@@ -863,7 +866,7 @@ async def test_presentation_commit_failure_never_replays_delivered_content(
 async def test_a_new_version_never_extends_the_cards_expiry(s: Scenario) -> None:
     expires = s.env.clock.now() + timedelta(minutes=20)
     row = await s.seed(expires_at=expires)
-    s.fake.parsed.append(draft_result(text="Synthetic new version.", revision_kind="instruction"))
+    s.fake.parsed.append(revision_result(text="Synthetic new version."))
     await start_edit(s, row, "Synthetic: change it.")
     await advance(s, 300)
     await run_queued(s, "replies.revise")
@@ -896,7 +899,7 @@ async def test_a_revision_finishing_after_the_action_left_revising_changes_nothi
     assert [job["args"] for job in queued] == [{"action_id": row.id, "turn_id": second_turn}]
     # Outdated meanwhile: that revision runs and changes nothing either.
     await deliver(s.env, business_message(message_id=102, date=s.date + 1))
-    s.fake.parsed.append(draft_result(text="Synthetic late text.", revision_kind="instruction"))
+    s.fake.parsed.append(revision_result(text="Synthetic late text."))
     await run_queued(s, "replies.revise")
     final = await s.action(row.id)
     assert (final.state, final.version, final.text) == ("outdated", 1, DRAFT)
@@ -1142,7 +1145,7 @@ async def test_expiry_clears_only_the_expired_actions_own_edit_question(s: Scena
 # ------------------------------------------------------------ discipline
 async def test_state_changes_go_through_s04_1_transitions_only(s: Scenario) -> None:
     row = await s.seed()
-    s.fake.parsed.append(draft_result(text="Synthetic edited.", revision_kind="instruction"))
+    s.fake.parsed.append(revision_result(text="Synthetic edited."))
     await start_edit(s, row, "Synthetic: change it.")
     await run_queued(s, "replies.revise")
     await press_action(s, row.id, "ed")

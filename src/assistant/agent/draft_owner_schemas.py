@@ -32,6 +32,20 @@ class OwnerDraftResult(BaseModel):
     makes_commitment: bool
 
 
+class OwnerRevisionResult(OwnerDraftResult):
+    """A `revise` run's output (PF-13, `draft_owner.v2`): the draft plus what
+    the owner's message was. `replacement`: the message is itself the whole
+    new text (after the card's Edit button the application then keeps the
+    owner's words verbatim, P2-T08); `instruction`: a change to apply."""
+
+    revision_kind: Literal["replacement", "instruction"]
+
+
+def output_model_for(mode: OwnerDraftMode) -> type[OwnerDraftResult]:
+    """The structured output a `draft_owner` run of this mode returns."""
+    return OwnerRevisionResult if mode == "revise" else OwnerDraftResult
+
+
 @dataclass(frozen=True, slots=True)
 class OwnerDraftCheck:
     valid: bool
@@ -52,6 +66,11 @@ def validate_owner_draft(result: OwnerDraftResult) -> OwnerDraftCheck:
 def word_count(text: str) -> int:
     """Whitespace-separated words: the count the owner can check by eye."""
     return len(text.split())
+
+
+def char_count(text: str) -> int:
+    """Characters as a person counts them (Unicode code points)."""
+    return len(text)
 
 
 @dataclass(frozen=True, slots=True)

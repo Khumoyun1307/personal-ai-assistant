@@ -555,6 +555,71 @@ async def start_edit(
     return live.version if applied else None
 
 
+class RevisionStart(StrEnum):
+    STARTED = "started"
+    EXPIRED = "expired"
+    NOT_ACTIVE = "not_active"
+
+
+async def start_revision(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    action_id: int,
+    expected_version: int,
+    turn_id: int,
+    now: datetime,
+    details: Mapping[str, Any] = _NO_VALUES,
+) -> RevisionStart:
+    """The owner asked in the control chat to change this live card (PF-13,
+    `revise_draft`): Edit and the owner's revision message in one step, by
+    action id and version instead of the card's token. The token is voided as
+    by Edit, so Approve while revising answers "no longer active"; a card
+    past `expires_at` is expired instead. `details` (ids only) go to the
+    audit row, which makes the request idempotent for its caller."""
+    row = (
+        await session.execute(
+            select(
+                Action.id, Action.conversation_id, Action.version, Action.expires_at, Action.origin
+            ).where(
+                Action.account_id == account_id,
+                Action.id == action_id,
+                Action.state == ActionState.AWAITING_APPROVAL.value,
+                Action.version == expected_version,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return RevisionStart.NOT_ACTIVE
+    live = _Live(*row)
+    if _is_past(live.expires_at, now):
+        reason = await _expiry_reason(session, account_id=account_id, live=live, now=now)
+        expired = await transition(
+            session,
+            account_id=account_id,
+            action_id=live.id,
+            from_state=ActionState.AWAITING_APPROVAL,
+            to_state=ActionState.EXPIRED,
+            reason=reason,
+            now=now,
+            expected_version=live.version,
+        )
+        return RevisionStart.EXPIRED if expired else RevisionStart.NOT_ACTIVE
+    applied = await transition(
+        session,
+        account_id=account_id,
+        action_id=live.id,
+        from_state=ActionState.AWAITING_APPROVAL,
+        to_state=ActionState.REVISING,
+        reason=None,
+        now=now,
+        expected_version=live.version,
+        values={"revision_turn_id": turn_id},
+        details=details,
+    )
+    return RevisionStart.STARTED if applied else RevisionStart.NOT_ACTIVE
+
+
 async def set_revision_turn(
     session: AsyncSession,
     *,

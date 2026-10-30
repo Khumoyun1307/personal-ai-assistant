@@ -87,6 +87,13 @@ NOT_RUN_STATUSES = frozenset(
         "not_drafted",
         # PF-10: the provider refused to write an owner-requested draft.
         "declined_by_provider",
+        # PF-13: `revise_draft` and `get_draft` results about the live card.
+        "revised",
+        "revising",
+        "not_revised",
+        "no_live_card",
+        "already_being_revised",
+        "no_draft",
     }
 )
 

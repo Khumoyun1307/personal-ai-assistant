@@ -84,7 +84,10 @@ from assistant.llm.port import (
 if TYPE_CHECKING:
     from assistant.actions.config import ActionsConfig
     from assistant.actions.ports import ApprovalCardPresenter
-    from assistant.agent.drafting import Drafter  # type: ignore[import-untyped, unused-ignore]
+    from assistant.agent.drafting import (  # type: ignore[import-untyped, unused-ignore]
+        CardReviser,
+        Drafter,
+    )
 from assistant.memory import items
 from assistant.observability.logging import get_logger
 
@@ -242,6 +245,7 @@ class OwnerRequestRuntime:
         approval_cards: ApprovalCardPresenter | None = None,
         actions_config: ActionsConfig | None = None,
         notifications_enabled: bool = False,
+        card_reviser: CardReviser | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._llm = llm
@@ -255,6 +259,8 @@ class OwnerRequestRuntime:
         self._approval_cards = approval_cards
         self._actions_config = actions_config
         self._notifications_enabled = notifications_enabled
+        #: `revise_draft`'s path to the card's revision machinery (PF-13).
+        self._card_reviser = card_reviser
 
     async def run(self, turn_id: int) -> RunOutcome:
         prompt = prompt_registry.active(RUN_TYPE)
@@ -312,6 +318,7 @@ class OwnerRequestRuntime:
                     actions_config=self._actions_config,
                     notifications_enabled=self._notifications_enabled,
                     enabled_flags=self._config.enabled_flags,
+                    card_reviser=self._card_reviser,
                 ),
             ),
             offered=offered,

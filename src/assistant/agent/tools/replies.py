@@ -286,7 +286,7 @@ async def _result(
     *,
     reused: bool = False,
     guidance_ignored: bool = False,
-    replaced: bool = False,
+    replaced_action_id: int | None = None,
     extra: Mapping[str, Any] | None = None,
     log_detail: Mapping[str, Any] | None = None,
 ) -> ToolOutcome:
@@ -317,9 +317,12 @@ async def _result(
         data["reused"] = True
     if guidance_ignored:
         data["guidance_ignored"] = GUIDANCE_IGNORED
-    if replaced:
-        # One card per chat: this proposal outdated the chat's earlier card.
+    if replaced_action_id is not None:
+        # One card per chat: this proposal outdated the chat's earlier card —
+        # named, so the agent can tell the owner which draft it replaced (to
+        # change a live draft instead, `revise_draft`, PF-13).
         data["replaced_earlier_card"] = True
+        data["replaced_action_id"] = replaced_action_id
     if extra and not reused:
         data.update(extra)
     return ToolOutcome(
@@ -475,7 +478,7 @@ async def propose_reply_tool(ctx: ToolContext, args: ProposeReplyArgs) -> ToolOu
                     proposal.action_id,
                     reused=proposal.reused,
                     guidance_ignored=ignored,
-                    replaced=proposal.superseded_action_id is not None,
+                    replaced_action_id=proposal.superseded_action_id,
                     extra=_drafted_facts(args, outcome, instruction is not None),
                     log_detail=observed,
                 )
@@ -617,7 +620,7 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
             target,
             proposal.action_id,
             reused=proposal.reused,
-            replaced=proposal.superseded_action_id is not None,
+            replaced_action_id=proposal.superseded_action_id,
             extra={"written_by": "owner" if dictated else "assistant_suggestion"},
             log_detail={"provenance": written_by},
         )
