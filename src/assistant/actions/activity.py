@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry
 from assistant.actions.models import Action
-from assistant.actions.states import ActionState
+from assistant.actions.states import LIVE_CARD, ActionState
 from assistant.conversations.models import Contact, Conversation, Message
 
 _GROUP_STATES: dict[str, set[str]] = {
@@ -225,3 +225,62 @@ async def activity(
         )
 
     return entries
+
+
+@dataclass(frozen=True, slots=True)
+class LiveCardFact:
+    """One live approval card as an owner run may see it (PF-15): ids,
+    version, state, origin, the draft mode and whether it answers a chosen
+    message — never its text, never a name (content-free)."""
+
+    action_id: int
+    conversation_id: int
+    version: int
+    state: str
+    origin: str
+    #: `draft_flags["mode"]` as stored (jsonb): the context shows it only when
+    #: it is one of the fixed modes.
+    mode: str | None
+    answers_message: bool
+
+
+#: At most this many live cards are loaded for one owner run (newest first).
+LIVE_CARDS_LOADED = 50
+
+
+async def live_cards(
+    session: AsyncSession, *, account_id: int, limit: int = LIVE_CARDS_LOADED
+) -> list[LiveCardFact]:
+    """The account's live approval cards (awaiting approval or being
+    revised), newest first: at most one per chat (`ux_actions_live_card`)."""
+    rows = await session.execute(
+        select(
+            Action.id,
+            Action.conversation_id,
+            Action.version,
+            Action.state,
+            Action.origin,
+            Action.draft_flags["mode"].astext,
+            Action.base_message_id,
+        )
+        .join(
+            Conversation,
+            (Conversation.id == Action.conversation_id) & (Conversation.account_id == account_id),
+        )
+        .where(Action.account_id == account_id)
+        .where(Action.state.in_([state.value for state in LIVE_CARD]))
+        .order_by(Action.id.desc())
+        .limit(limit)
+    )
+    return [
+        LiveCardFact(
+            action_id=action_id,
+            conversation_id=conversation_id,
+            version=version,
+            state=state,
+            origin=origin,
+            mode=mode,
+            answers_message=base_message_id is not None,
+        )
+        for action_id, conversation_id, version, state, origin, mode, base_message_id in rows
+    ]

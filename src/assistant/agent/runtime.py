@@ -43,6 +43,7 @@ from assistant.accounts.service import (
     ConsentMissingError,
     active_consent,
 )
+from assistant.actions.activity import live_cards
 from assistant.agent import owner_texts, prompt_registry
 from assistant.agent.citations import apply_citations
 from assistant.agent.context import OWNER_HISTORY_TURNS, build_owner_request
@@ -411,6 +412,11 @@ class OwnerRequestRuntime:
                 # The owner's own saved items (owner scope; S03.3, FR-CTL-01).
                 memory=await items.owner_items(
                     session, account_id, limit=OWNER_MEMORY_ITEMS, include_managed=managed_ok
+                ),
+                # Which approval cards are live, content-free (PF-15); only
+                # with `ai_managed`, like the chat tools that act on them.
+                live_cards=(
+                    await live_cards(session, account_id=account_id) if managed_ok else None
                 ),
             )
             # Tainted from the start when the context already carries
