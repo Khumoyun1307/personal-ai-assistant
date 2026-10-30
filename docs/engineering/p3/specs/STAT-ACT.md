@@ -72,7 +72,7 @@ Nothing else, in either PR, except the shared-list edits of §5.
 ## 5. Shared lists you must update
 
 - **Part A:** none.
-- **Part B:** if F0-R's `tests/integration/test_p3_wiring.py::test_empty_wire_functions_change_nothing` (or another F0-R test) asserts that a process with all P3 flags off registers **no status blocks**, append your four blocks to that test's expected set and change nothing else in it (WORKFLOW §6.5, append only), in a **separate last commit**, and name it in the PR. If any other exact-set test fails, stop and ask (§10).
+- **Part B:** F0-R's `tests/integration/test_p3_wiring.py::test_empty_wire_functions_change_nothing` checks a process with all P3 flags off against the append-only `ALWAYS_WIRED` expected set (F0-R §5.4, P3-T157); append your four status blocks to that set and change nothing else in it (WORKFLOW §6.5, append only), in a **separate last commit**, and name it in the PR. If any other exact-set test fails, stop and ask (§10).
 
 ## 6. Step-by-step
 

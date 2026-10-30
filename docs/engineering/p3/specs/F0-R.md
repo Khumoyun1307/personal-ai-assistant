@@ -255,7 +255,7 @@ QE1 runs these first and confirms in the review that no assertion line changed (
 ### 5.4 `tests/integration/test_p3_wiring.py`
 - `test_bootstrap_builds_one_tool_services_for_the_runtime_and_the_applier` (identity, `is`)
 - `test_the_confirmation_applier_sees_the_process_feature_flags` (regression for P2-T32/T47: a held call whose tool reads `services.enabled_flags` sees the same set as the runtime)
-- `test_empty_wire_functions_change_nothing` (a process built with all P3 flags off registers no P3 callback, command, renderer, fire kind or listener; `JobHandlers` P3 groups other than `surfaces` are `None`)
+- `test_empty_wire_functions_change_nothing` (a process built with all P3 flags off registers exactly the module-level `ALWAYS_WIRED` expected set: per registry (P3 callbacks, commands, pending-input kinds, renderers, fire kinds, listeners, status blocks, `P3Ports` fields and non-`None` `JobHandlers` P3 groups), a `frozenset` of the names a unit registers whatever the flags (P3-interfaces §10.2). F0-R leaves every set empty except `surfaces` in the job groups, so on F0-R's own base nothing else is registered. The set is **append-only** (WORKFLOW §6.5; P3-T157): a unit that registers an always-wired renderer, route, status block, port, fire kind or job group adds exactly its own names, in a separate last commit named in its PR, and removes or rewrites nothing; anything flag-gated that appears with every flag off still fails the test)
 - `test_a_duplicate_callback_kind_across_fragments_raises_at_startup`
 - `test_a_duplicate_command_pending_input_kind_or_undo_event_raises_at_startup`
 - `test_a_p3_route_colliding_with_a_p2_route_raises_at_startup`

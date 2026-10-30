@@ -5,7 +5,7 @@
 | **Unit** | QA-X — the cross-team scenario package `tests/scenarios/p3_cross/`: delegation + nudge in one chat; takeover vs nudge; `/pause` vs reminders; delete a contact (and a chat, managed data, everything) across delegations, tasks and automations (PRD R1 #7 extended) and an export taken afterwards; restore with an active delegation, and with due reminders and follow-ups; `/privacy revoke` across a delegation, a reminder and a follow-up nudge; Ignore mode across a delegation and a follow-up. Also the scenario-driver additions every P3 package needs (SQ owns the driver after CP1, R57) and the marker audit at CP-A and R1 |
 | **Owner slot** | Senior QA (SQ, Codex), launched by the TL (`codex exec`, workspace-write in SQ's own worktree, `COMPOSE_PROJECT_NAME=sq`) |
 | **Reviewer** | Josh lead + Edvard lead (scenario fidelity, each for its team's half), dispatched by the TL; TL light review |
-| **Size** | S+ (≈ 0.75 engineer-day; the skeleton must merge by D+1.5) |
+| **Size** | M (≈ 1 engineer-day, P3-T156; the skeleton must merge by D+1.5) |
 | **Depends on** | F0-E (`tests/scenarios/p3_drive.py`, `tests/scenarios/p3_cross/conftest.py`, `tests/log_hygiene.py`), F0-S (factories, `purge_p3`, post-restore step 2b, every contract name). Most scenarios turn green only as M06 and M07 units merge (§3) |
 | **Branch → base** | `p3/qa-x` → `int/p3` (draft stacked on `p3/f0-e` before CP1) |
 | **QA lane** | none (SQ is QA); peer + TL review only (WORKFLOW §6.3) |
