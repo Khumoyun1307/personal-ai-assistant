@@ -28,13 +28,14 @@ from assistant.agent.tools.executor import ToolExecutor
 from assistant.agent.tools.registry import (
     CHAT_ACCESS_OFF,
     CapabilityTier,
+    OwnerTurn,
     ToolContext,
     ToolServices,
     default_registry,
 )
 from assistant.agent.tools.replies import GUIDANCE_CHARS, ProposeReplyArgs, propose_reply_tool
 from assistant.conversations.models import Contact, Conversation, Message
-from assistant.llm.port import TextItem, ToolCall
+from assistant.llm.port import StopReason, TextItem, ToolCall
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import text_response, tool_response
 from tests.integration.actions_env import seed_run, seed_turn
@@ -54,10 +55,10 @@ from tests.integration.drafting_env import (
     drafting_environment,
     later,
     message_row_id,
-    output,
     owner_says,
     seed_chat,
 )
+from tests.unit.test_draft_owner_units import owner_output
 
 pytestmark = pytest.mark.integration
 
@@ -89,6 +90,20 @@ def services(denv: DraftEnv, **changes: Any) -> ToolServices:
     return ToolServices(**values)
 
 
+#: The owner's own words in the turn these tests answer: it dictates every
+#: synthetic text the tests below propose (`propose_message` checks that a
+#: dictated text is the owner's, PF-12).
+OWNER_SAID = (
+    "Tell them: SYNTH-DICTATED. Also SYNTH-ONE, SYNTH-X, SYNTH-Y, SYNTH-BY-CONTACT and "
+    "SYNTH-AND-ONE-MORE-THING."
+)
+
+
+def owner_turn(turn_id: int | None, said: str, **flags: bool) -> OwnerTurn:
+    values = {"third_party": False, "contains_managed": False, "quoted": False} | flags
+    return OwnerTurn(id=turn_id or 0, text=said, **values)
+
+
 def context(
     denv: DraftEnv,
     account_id: int,
@@ -96,8 +111,12 @@ def context(
     turn_id: int | None,
     *,
     tainted: bool = False,
+    said: str | None = OWNER_SAID,
+    turn: OwnerTurn | None = None,
     **service_changes: Any,
 ) -> ToolContext:
+    """A tool context as the runtime builds it; `said` is the owner's turn
+    (None: no owner turn, as for a call applied after a confirmation tap)."""
     return ToolContext(
         account_id=account_id,
         run_id=run_id,
@@ -105,6 +124,7 @@ def context(
         tainted=tainted,
         services=services(denv, **service_changes),
         turn_id=turn_id,
+        owner_turn=turn or (owner_turn(turn_id, said) if said is not None else None),
         managed_ok=True,
     )
 
@@ -140,9 +160,25 @@ async def call(
 
 
 def reply_args(
-    conversation_id: int | None, *, contact_id: int | None = None, guidance: Any = None
+    conversation_id: int | None,
+    *,
+    contact_id: int | None = None,
+    guidance: Any = None,
+    mode: str = "reply",
+    answered: int | None = None,
+    min_words: int | None = None,
+    max_words: int | None = None,
 ) -> dict[str, Any]:
-    return {"conversation_id": conversation_id, "contact_id": contact_id, "guidance": guidance}
+    """Every field: the strict schema requires them all (null = not given)."""
+    return {
+        "conversation_id": conversation_id,
+        "contact_id": contact_id,
+        "mode": mode,
+        "answered_message_id": answered,
+        "guidance": guidance,
+        "min_words": min_words,
+        "max_words": max_words,
+    }
 
 
 def message_args(
@@ -188,7 +224,7 @@ async def test_rg20_propose_results_never_say_sent(denv: DraftEnv) -> None:
     account_id, conversation = await seed_chat(denv)
     run_id, turn_id = await run_and_turn(denv, account_id)
 
-    denv.script(output(text="Synthetic reply; it was sent? No, a draft."))
+    denv.script(owner_output(text="Synthetic reply; it was sent? No, a draft."))
     awaiting = await call(
         context(denv, account_id, run_id, turn_id), "propose_reply", **reply_args(conversation)
     )
@@ -198,17 +234,32 @@ async def test_rg20_propose_results_never_say_sent(denv: DraftEnv) -> None:
     assert awaiting["sendable_until"] is not None
     never_says_sent(awaiting)
 
-    denv.script(output(needs_reply=False, skip_reason="no_reply_needed", text=""))
-    not_drafted = await call(
+    # An owner's request is never "no reply needed" (D1): only the provider's
+    # refusal or an unusable output ends without a card, said as it is.
+    denv.script(StopReason.REFUSAL)
+    declined = await call(
         context(denv, account_id, run_id, None),
         "propose_reply",
         call_id="c2",
         **reply_args(conversation),
     )
+    assert declined == {
+        "status": "declined_by_provider",
+        "conversation_id": conversation,
+        "reason": "provider_refused",
+    }
+    never_says_sent(declined)
+    denv.script(owner_output(text="   "))
+    not_drafted = await call(
+        context(denv, account_id, run_id, None),
+        "propose_reply",
+        call_id="c2b",
+        **reply_args(conversation),
+    )
     assert not_drafted == {
         "status": "not_drafted",
         "conversation_id": conversation,
-        "reason": "no_reply_needed",
+        "reason": "invalid",
     }
     never_says_sent(not_drafted)
 
@@ -232,15 +283,22 @@ async def test_propose_results_are_logged_as_not_run_never_as_failures(denv: Dra
     account_id, conversation = await seed_chat(denv)
     run_id, turn_id = await run_and_turn(denv, account_id)
     with capture_logs() as logs:
-        denv.script(output(text="Synthetic reply."))
+        denv.script(owner_output(text="Synthetic reply."))
         await call(
             context(denv, account_id, run_id, turn_id), "propose_reply", **reply_args(conversation)
         )
-        denv.script(output(needs_reply=False, skip_reason="no_reply_needed", text=""))
+        denv.script(owner_output(text=""))
         await call(
             context(denv, account_id, run_id, None),
             "propose_reply",
             call_id="c2",
+            **reply_args(conversation),
+        )
+        denv.script(StopReason.REFUSAL)
+        await call(
+            context(denv, account_id, run_id, None),
+            "propose_reply",
+            call_id="c2b",
             **reply_args(conversation),
         )
         await possibly_paused(denv, conversation)
@@ -258,6 +316,7 @@ async def test_propose_results_are_logged_as_not_run_never_as_failures(denv: Dra
     assert lines == [
         ("agent_tool_call_not_run", "info", "awaiting_approval"),
         ("agent_tool_call_not_run", "info", "not_drafted"),
+        ("agent_tool_call_not_run", "info", "declined_by_provider"),
         ("agent_tool_call_not_run", "info", "blocked"),
     ]
 
@@ -282,7 +341,7 @@ async def test_propose_message_keeps_the_owners_exact_text(denv: DraftEnv) -> No
     run_id, turn_id = await run_and_turn(denv, account_id)
     words = "SYNTH  exact,  words!\nLine two — ok 👍"
     result = await call(
-        context(denv, account_id, run_id, turn_id),
+        context(denv, account_id, run_id, turn_id, said=f"Send them exactly this: {words}"),
         "propose_message",
         **message_args(conversation, f"  {words}\n"),
     )
@@ -342,24 +401,49 @@ async def test_a_dictated_message_right_after_the_owners_manual_reply_is_a_norma
 async def test_propose_reply_in_a_tainted_run_ignores_the_guidance_and_says_so(
     denv: DraftEnv,
 ) -> None:
+    # Decisions R2, kept for the MODEL's words: a tainted run's guidance may
+    # restate another chat's text and never reaches the draft. (Owner
+    # decision D2 of 2026-10-30 adds the owner's own turn, supplied by the
+    # application: `test_owner_drafting.py`.) Without an owner turn nothing
+    # of the owner's reached the draft, and the result says so.
     account_id, conversation = await seed_chat(denv)
     run_id, turn_id = await run_and_turn(denv, account_id)
-    denv.script(output())
+    denv.script(owner_output())
     result = await call(
-        context(denv, account_id, run_id, turn_id, tainted=True),
+        context(denv, account_id, run_id, turn_id, tainted=True, said=None),
         "propose_reply",
         **reply_args(conversation, guidance=GUIDANCE_CANARY),
     )
     assert result["status"] == "awaiting_approval"
     assert result["guidance_ignored"] == "tainted_run"
+    assert result["owner_message_used"] is False
     [prompt] = draft_prompts(denv)
     assert "SYNTH-GUIDANCE-CANARY" not in prompt
+
+
+async def test_a_tainted_runs_guidance_is_dropped_even_when_the_owner_turn_is_passed(
+    denv: DraftEnv,
+) -> None:
+    account_id, conversation = await seed_chat(denv)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    denv.script(owner_output())
+    result = await call(
+        context(denv, account_id, run_id, turn_id, tainted=True, said="SYNTH-OWNER-OWN-WORDS"),
+        "propose_reply",
+        **reply_args(conversation, guidance=GUIDANCE_CANARY),
+    )
+    assert result["status"] == "awaiting_approval"
+    assert "guidance_ignored" not in result  # the owner's own words did reach it
+    assert result["owner_message_used"] is True
+    [prompt] = draft_prompts(denv)
+    assert "SYNTH-GUIDANCE-CANARY" not in prompt
+    assert "SYNTH-OWNER-OWN-WORDS" in prompt
 
 
 async def test_untainted_guidance_reaches_the_draft(denv: DraftEnv) -> None:
     account_id, conversation = await seed_chat(denv)
     run_id, turn_id = await run_and_turn(denv, account_id)
-    denv.script(output())
+    denv.script(owner_output())
     result = await call(
         context(denv, account_id, run_id, turn_id),
         "propose_reply",
@@ -367,7 +451,7 @@ async def test_untainted_guidance_reaches_the_draft(denv: DraftEnv) -> None:
     )
     assert "guidance_ignored" not in result
     [prompt] = draft_prompts(denv)
-    assert f"Owner instruction for this draft:\n{GUIDANCE_CANARY}" in prompt
+    assert f"The assistant's note on what the owner wants:\n{GUIDANCE_CANARY}" in prompt
 
 
 async def test_a_tainted_run_can_propose_but_only_a_card_results(denv: DraftEnv) -> None:
@@ -446,7 +530,7 @@ async def test_schema_valid_but_both_or_neither_target_is_an_error(denv: DraftEn
 async def test_a_repeated_call_id_creates_no_second_action(denv: DraftEnv) -> None:
     account_id, conversation = await seed_chat(denv)
     run_id, turn_id = await run_and_turn(denv, account_id)
-    denv.script(output())
+    denv.script(owner_output())
     first = await call(
         context(denv, account_id, run_id, None), "propose_reply", **reply_args(conversation)
     )
@@ -482,7 +566,7 @@ async def test_a_retried_owner_turn_reuses_the_awaiting_card_without_drafting_ag
 ) -> None:
     account_id, conversation = await seed_chat(denv)
     run_id, turn_id = await run_and_turn(denv, account_id)
-    denv.script(output())
+    denv.script(owner_output())
     first = await call(
         context(denv, account_id, run_id, turn_id), "propose_reply", **reply_args(conversation)
     )
@@ -537,7 +621,7 @@ async def test_propose_reply_after_a_location_or_a_deleted_message_drafts_once(
         await contact_shares_location(denv)
     else:
         await contact_deletes(denv)
-    denv.script(output(text="Synthetic reply."))
+    denv.script(owner_output(text="Synthetic reply."))
     result = await call(
         context(denv, account_id, run_id, turn_id), "propose_reply", **reply_args(conversation)
     )
@@ -641,7 +725,7 @@ async def test_a_proposal_with_the_window_closed_is_still_an_approval_card(
     account_id, conversation = await seed_chat(denv)
     run_id, turn_id = await run_and_turn(denv, account_id)
     await close_window(denv, conversation)
-    denv.script(output(text="Synthetic reply."))
+    denv.script(owner_output(text="Synthetic reply."))
     arguments = (
         reply_args(conversation)
         if tool == "propose_reply"
@@ -683,10 +767,10 @@ async def test_a_refused_proposal_is_not_available_and_logs_its_code(denv: Draft
     # The contact's only message is gone: the draft has no base message, and
     # without an owner turn S04.1 refuses it (`base_required`).
     await deliver(denv.env, deleted_messages(message_ids=[1]))
-    denv.script(output(text="Synthetic reply."))
+    denv.script(owner_output(text="Synthetic reply."))
     outcome = await propose_reply_tool(
         context(denv, account_id, run_id, None),
-        ProposeReplyArgs(conversation_id=conversation, contact_id=None, guidance=None),
+        ProposeReplyArgs.model_validate(reply_args(conversation)),
     )
     assert (outcome.status, dict(outcome.data)) == ("error", {"reason": "not available"})
     assert outcome.log_code == "proposal_base_required"
@@ -696,8 +780,8 @@ async def test_a_refused_proposal_is_not_available_and_logs_its_code(denv: Draft
 # ------------------------------------------------------------ through the runtime
 async def test_tool_steps_are_content_free(denv: DraftEnv) -> None:
     account_id, conversation = await seed_chat(denv)
-    turn = await ask(denv.env, "Tell them SYNTH-OWNER-ASK")
     canary = "SYNTH-DICTATED-CANARY 4410"
+    turn = await ask(denv.env, f"Tell them {canary}")  # the owner dictates it (PF-12)
     denv.fake.queue(
         tool_response(("c1", "propose_message", json.dumps(message_args(conversation, canary)))),
         text_response("A card is waiting for your approval."),

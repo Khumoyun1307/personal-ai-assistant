@@ -60,6 +60,7 @@ from assistant.agent.summarize import Summarizer
 from assistant.agent.tools.executor import StepRecorder, TaintRecorder, ToolExecutor
 from assistant.agent.tools.registry import (
     CapabilityTier,
+    OwnerTurn,
     ToolContext,
     ToolRefs,
     ToolRegistry,
@@ -222,6 +223,8 @@ class _Started:
     state: _RunState | None = None
     managed_consent: bool = False
     over_budget: bool = False
+    #: The turn's words and flags for the tools (PF-11).
+    owner_turn: OwnerTurn | None = None
 
 
 class OwnerRequestRuntime:
@@ -295,6 +298,7 @@ class OwnerRequestRuntime:
                 run_id=state.run_id,
                 run_type=RUN_TYPE,
                 turn_id=turn_id,
+                owner_turn=started.owner_turn,
                 tainted=state.tainted,
                 managed_ok=started.managed_consent,
                 services=ToolServices(
@@ -429,6 +433,13 @@ class OwnerRequestRuntime:
                 state=state,
                 managed_consent=managed_ok,
                 over_budget=over_budget,
+                owner_turn=OwnerTurn(
+                    id=turn.id,
+                    text=turn.text,
+                    third_party=bool(turn.third_party),
+                    contains_managed=bool(turn.contains_managed),
+                    quoted=turn.quoted_text is not None,
+                ),
             )
 
     async def _loop(

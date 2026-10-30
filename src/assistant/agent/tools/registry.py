@@ -132,6 +132,48 @@ class ToolRefs:
 
 
 @dataclass(frozen=True, slots=True)
+class OwnerTurn:
+    """The owner's control-chat turn this run answers, as the runtime loaded
+    it (PF-11, owner decision D2 of 2026-10-30). The application, not the
+    model, supplies the owner's own words to a draft: a model-written
+    paraphrase from a tainted run may restate other people's text (R2), the
+    owner's own message cannot. In memory only; never logged or persisted."""
+
+    id: int
+    text: str | None
+    #: The turn carries third-party text: forwarded (then `text` is someone
+    #: else's words) or quoting (`quoted`) — `control_turns.third_party`.
+    third_party: bool
+    #: The turn forwards or quotes managed-chat content.
+    contains_managed: bool
+    #: The owner quoted or replied to someone else's message alongside their
+    #: own words (`control_turns.quoted_text` is set).
+    quoted: bool
+
+    @property
+    def forwarded(self) -> bool:
+        """`text` itself is someone else's (read as `render_turn` does)."""
+        return self.third_party and not self.quoted
+
+    @property
+    def own_words(self) -> str | None:
+        """What the owner typed themselves: never a forwarded text. A quote
+        sits apart (`quoted_text`), so the turn's own text is still theirs."""
+        if self.forwarded or self.text is None:
+            return None
+        return self.text.strip() or None
+
+    @property
+    def instruction(self) -> str | None:
+        """The owner's words as an instruction for a draft, even in a tainted
+        run: only from a turn that carries nothing third-party alongside — not
+        forwarded, not quoting, no managed content (invariant 3b)."""
+        if self.third_party or self.quoted or self.contains_managed:
+            return None
+        return self.own_words
+
+
+@dataclass(frozen=True, slots=True)
 class ToolContext:
     """What a tool handler may use. Ids only; the handler loads what it needs."""
 
@@ -160,6 +202,9 @@ class ToolContext:
     turn_cutoff: int | None = None
     #: The owner turn this run answers (retried-turn proposal idempotency).
     turn_id: int | None = None
+    #: That turn's words and flags (PF-11): None outside an owner run (a held
+    #: call applied after the owner's tap, a unit test).
+    owner_turn: OwnerTurn | None = None
 
 
 @dataclass(frozen=True, slots=True)

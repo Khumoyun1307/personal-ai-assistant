@@ -93,6 +93,18 @@ def draft_result(**changes: Any) -> dict[str, Any]:
     }
 
 
+def owner_draft_result(**changes: Any) -> dict[str, Any]:
+    """An owner-requested draft (`draft_owner`, PF-10): no veto fields."""
+    return {
+        "language": "en",
+        "text": DRAFT,
+        "confidence": "medium",
+        "sensitive_topic": False,
+        "makes_commitment": False,
+        **changes,
+    }
+
+
 @dataclass
 class Scenario:
     env: Env
@@ -190,7 +202,14 @@ class Scenario:
                 self.wiring.approval_cards.present_after_commit(uow.session, row.id)
         return await self.action(row.id)
 
-    async def owner(self, tool: str, *, forwarded: bool = False, **values: Any) -> None:
+    async def owner(
+        self,
+        tool: str,
+        *,
+        forwarded: bool = False,
+        said: str = "P2 synthetic owner request.",
+        **values: Any,
+    ) -> None:
         self.fake.queue(
             tool_response(("qa-call", tool, args(**values))),
             text_response("P2 synthetic owner-run completion."),
@@ -206,17 +225,30 @@ class Scenario:
             if forwarded
             else {}
         )
-        await ask(self.env, "P2 synthetic owner request.", **extra)
+        await ask(self.env, said, **extra)
         assert await run_queued(self, "agent.owner_request") == 1
 
     async def propose(self, *, dictated: bool = False) -> Action:
-        if not dictated:
-            self.fake.parsed.append(draft_result())
+        if dictated:
+            # The owner's own words carry the text (PF-12 provenance check).
+            await self.owner(
+                "propose_message",
+                said=f"P2 synthetic owner request: {REPLACEMENT}",
+                conversation_id=self.conversation_id,
+                contact_id=None,
+                text=REPLACEMENT,
+            )
+            return await self.action()
+        self.fake.parsed.append(owner_draft_result())
         await self.owner(
-            "propose_message" if dictated else "propose_reply",
+            "propose_reply",
             conversation_id=self.conversation_id,
             contact_id=None,
-            **({"text": REPLACEMENT} if dictated else {"guidance": None}),
+            mode="reply",
+            answered_message_id=None,
+            guidance=None,
+            min_words=None,
+            max_words=None,
         )
         return await self.action()
 
