@@ -136,6 +136,30 @@ Routine technical decisions inside the approved scope (AGENTS §3). Each names w
 | P2-T53 | **S05.3b rulings (#117):** deadlines re-checked when queued work executes; digests sent as one-message parts with honest partial delivery; a failed fire job is re-deferred until its deadline (M07 revisits). **Cross-cutting, for CP4:** `OutboundGateway.send_text` reports a refused later chunk as a definite failure though earlier chunks are shown (ICR for Neryn, gateway owner); **control texts are escaped twice** (renderers escape, then the gateway's sanitizer escapes again, so names with `&`/`<` show as `&amp;amp;`/`&lt;`; already in production for such names) — a **priority open item** for a small gateway follow-up. | Jack's questions on #117 | S05.3b §3, §4; gateway |
 | P2-T54 | **S04.3 rulings (#120):** card content is escaped once, by the gateway's sanitizer; `owner_request.v8` replaces the two v7 sentences M04 makes false ('you cannot send', 'Assist mode is not available yet'); `card_state` is recorded only after a successful edit, so a failed edit stays visible to the sync; a repeated propose whose card moved on (`no_longer_pending`) still logs a warning (M04 open item). | Viro's questions on #120 | S04.3 §3.1, §3.6 |
 
+### B5. Owner decisions after the 2026-10-30 playtest (P2 playtest fixes)
+
+On 2026-10-30 the owner playtested M04/M05 on Alviro and handed the TL nine issue reports. The evidence is private and is not in the repository. The TL investigated read-only: code, content-free logs, and a read-only, content-free trace query of production. The owner then approved the plan and these decisions (D1–D4 answered directly; for the rest: "look at questions and see my intent for smooth interaction and agent like behavior"). Implemented in #227–#231 (PF-01…PF-16).
+
+| ID | Decision (owner, 2026-10-30) | Effect |
+|---|---|---|
+| D1 | An explicit owner request to draft is **never refused** as "no reply needed". "It should act as an agent… do the job." | Owner-requested drafts use the new prompt key `draft_owner` (run type `draft_reply`), with no `needs_reply` veto and no decline option. Only a provider refusal is reported as a failure. **Supersedes S04.2's rule** that an owner request returns `not_drafted` when the model says no reply is needed. Assist keeps `draft_reply.v1` and its veto. |
+| D2 | The owner's own words reach the draft writer. | The application passes the **current owner turn's text** as the instruction, even in a tainted run, unless the turn is forwarded, quoted or carries managed content. **Amends R2 and E3:** model-written `guidance` is still dropped in a tainted run; only the owner's own turn, supplied by the application by turn id, is passed. Invariants 3b and 4 hold: contact text is never an instruction, and there is one chat per draft. |
+| D3 | "Just read my intent." Edit and read the live card from chat. | New tools `revise_draft` (same card, version bump, deterministic append of the owner's literal text, word bounds) and `get_draft` (text wrapped as untrusted, taints the run, deterministic word count). Release flags default off. This relaxes S04.2's "results never carry draft text" for this one read tool; RG-20 ("never 'sent'") is unchanged. |
+| D4 | "Read the instructions, see the intent." | `propose_reply` gets `mode` (`reply` / `new_message`) and `answered_message_id`. `propose_message` gets a deterministic provenance check: text from the owner's turn → `owner_dictated`; an assistant suggestion the owner picked → `agent_proposal`; anything else is refused and the model is pointed to compose mode. No new action origin. |
+| D5 | Reply to the message the owner names, sent as a standalone message | Telegram reply-to is a follow-up after a TF docs-check. |
+| D6 | Several chats: one card each, each approved | No bulk approve (invariant 8). |
+| D7 | Identity: "Alviro, your AI assistant", never "ChatGPT". Asked which model, it says an OpenAI model | `owner_request.v10`. Optionally, the owner renames the bot's display name in BotFather. |
+| D8 | Nicknames through Uzbek-Latin folding and weak candidates now; aliases from notes later | PF-03. A weak candidate is never auto-picked. |
+| D9 | Eval spend about USD 0.2–0.35 (retrieval agent-mode re-run, new `owner_drafting` target) | Each run goes estimate → limit 1 → full. |
+| D10 | Compare `low` and `medium` effort in the eval; choose by the results | Recorded with the eval report. |
+| D11 | Fix on `main` first; P3 starts from the fixed `main` (D0 stays the owner's) | `owner_request.v10` is taken here, so P3's PR-OR10 becomes **v11** (P3-T152 path). |
+
+Also fixed without a product decision (P2 fixes):
+- PF-01: text typed after a card's Edit button was re-run 30 s later as a new owner request by the lost-turn reconciler.
+- PF-02: "Answering (their words)" is shown only for a real base message.
+- PF-05: attention `next_actions` follow P2-O20.
+- PF-06: the card line "Sendable until" (the approval expiry) now reads "Approve by".
+
 ## C. Interface-change log
 
 *Append one row per approved interface change request after CP1 (ORG §5). Format: date · requester · contract section · change · affected WUs · TL decision.*
