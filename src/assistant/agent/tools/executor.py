@@ -85,6 +85,8 @@ NOT_RUN_STATUSES = frozenset(
         "awaiting_approval",
         "blocked",
         "not_drafted",
+        # PF-10: the provider refused to write an owner-requested draft.
+        "declined_by_provider",
     }
 )
 

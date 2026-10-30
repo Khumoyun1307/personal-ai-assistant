@@ -1,7 +1,11 @@
 """The `draft_reply` run, proposals from drafts, and the `replies.draft` job (S04.2).
 
 - `Drafter` — tool-less draft generation through the provider-neutral LLM
-  port (§3.3): `draft` (a new reply) and `revise` (a card's revision, P2-T08).
+  port (§3.3): `draft` (a new reply, `draft_reply.v1`: Assist, re-draft,
+  evaluations), `revise` (a card's revision, P2-T08) and `draft_owner`
+  (every draft the owner asks for, prompt key `draft_owner` under the same
+  run type, PF-10: never vetoed, the owner's own words, modes reply /
+  new_message / revise, a checked word range).
   Only validated structured text leaves a run, together with the message ids
   the application actually showed it (never ids from model output).
 - `propose_draft` — turns a draft, or the owner's dictated text, into an
@@ -47,10 +51,24 @@ from assistant.actions.proposals import (
 from assistant.actions.states import LIVE_CARD, ActionKind, ActionOrigin, ActionState
 from assistant.agent import prompt_registry
 from assistant.agent.budget import check_budget_thresholds
-from assistant.agent.draft_context import DraftContext, DraftRevision, build_draft_reply
+from assistant.agent.draft_context import (
+    DraftContext,
+    DraftRevision,
+    OwnerDraftInputs,
+    build_draft_owner,
+    build_draft_reply,
+)
+from assistant.agent.draft_owner_schemas import (
+    OwnerDraftMode,
+    OwnerDraftResult,
+    WordBounds,
+    validate_owner_draft,
+    word_count,
+)
 from assistant.agent.draft_schemas import DraftResult, validate_draft
 from assistant.agent.models import AgentRun
 from assistant.agent.persistence import AgentRunRepository, LlmCallRepository, month_start
+from assistant.agent.untrusted import Source, wrap
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
@@ -59,13 +77,38 @@ from assistant.core.model_routes import processor_for_model
 from assistant.core.reply_window import is_open
 from assistant.db.uow import transaction
 from assistant.inbox.notify import OwnerAlerts
-from assistant.llm.port import LLMClient, LLMError, LLMErrorKind, LLMRequest, StopReason
+from assistant.llm.port import (
+    LLMClient,
+    LLMError,
+    LLMErrorKind,
+    LLMRequest,
+    Provenance,
+    StopReason,
+    TextItem,
+)
 from assistant.memory import items, summaries
 from assistant.memory.summaries import SourceMessage
 from assistant.observability.logging import get_logger
 
 logger = get_logger(__name__)
 RUN_TYPE = "draft_reply"
+#: The prompt key of every owner-requested draft, under run type `draft_reply`
+#: (PF-10; the ADR-21 pattern). Assist keeps `draft_reply` (RUN_TYPE's key).
+OWNER_PROMPT = "draft_owner"
+
+#: `actions.draft_flags` keys added by PF-10/PF-12 (non-content, R8):
+#: `source` says who wrote the text, `target` what it answers.
+FLAG_SOURCE = "source"
+SOURCE_OWNER_DRAFT = "draft_owner"
+SOURCE_ASSISTANT_SUGGESTION = "assistant_suggestion"
+FLAG_TARGET = "target"
+#: The contact message the owner named; none (a standalone message); or the
+#: newest contact message when the draft was made (today's default).
+TARGET_ANSWERED = "answered"
+TARGET_NONE = "none"
+TARGET_NEWEST = "newest"
+#: Targets the owner chose: a revision keeps the base message (PF-12).
+EXPLICIT_TARGETS = frozenset({TARGET_ANSWERED, TARGET_NONE})
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +141,34 @@ class DraftOutcome:
     base_message_id: int | None = None
     shown_through_message_id: int | None = None
     error_class: str | None = None
+    #: An owner-requested draft (`draft_owner`, PF-10): its result in place
+    #: of `result`, how it relates to the chat, and the word-range check.
+    owner_result: OwnerDraftResult | None = None
+    owner_mode: OwnerDraftMode | None = None
+    target: str | None = None
+    word_count: int | None = None
+    bounds_retry: bool = False
+    #: None when the owner asked for no length.
+    bounds_met: bool | None = None
+
+    @property
+    def text(self) -> str | None:
+        """The drafted text, whichever prompt wrote it."""
+        if self.owner_result is not None:
+            return self.owner_result.text
+        return self.result.text if self.result is not None else None
+
+
+@dataclass(frozen=True, slots=True)
+class _OwnerAsk:
+    """An owner-requested draft's inputs before the Drafter loads anything."""
+
+    mode: OwnerDraftMode
+    instruction: str | None
+    guidance: str | None
+    answered_message_id: int | None
+    revise_action_id: int | None
+    bounds: WordBounds | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +181,7 @@ class _Request:
     run_tainted: bool = False
     action_id: int | None = None
     turn_id: int | None = None
+    owner: _OwnerAsk | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +197,7 @@ class _Prepared:
     #: message). The draft is fresh through it — never through less, or such
     #: a newest message would make every draft stale (PR #106 review).
     shown_through_message_id: int
+    owner: OwnerDraftInputs | None = None
 
 
 async def draft_consent_ok(session: AsyncSession, account_id: int, model: str) -> bool:
@@ -205,12 +278,72 @@ class Drafter:
             )
         )
 
+    async def draft_owner(
+        self,
+        *,
+        account_id: int,
+        conversation_id: int,
+        owner_run_id: int,
+        mode: OwnerDraftMode = "reply",
+        instruction: str | None = None,
+        guidance: str | None = None,
+        run_tainted: bool = False,
+        answered_message_id: int | None = None,
+        revise_action_id: int | None = None,
+        bounds: WordBounds | None = None,
+    ) -> DraftOutcome:
+        """A draft the owner asked for (PF-10), with `draft_owner`: never
+        "no reply needed" (owner decision D1). `instruction` is the owner's
+        own current turn, which the caller passes only when that turn carries
+        nothing third-party (PF-11); `guidance` is model-written and a
+        tainted run never passes it (decisions R2). `answered_message_id`
+        must be a contact message among the shown ones, else
+        `NOT_DRAFTABLE`/`answered_not_shown`. `revise` rewrites the live
+        action `revise_action_id` of this chat (its text is loaded here,
+        never taken from the caller). With `bounds`, a draft outside the word
+        range is written once more with its count fed back; the closer one
+        is returned, its count and `bounds_met` on the outcome."""
+        if guidance is not None and run_tainted:
+            raise ValueError("tainted runs cannot supply draft guidance")
+        if (mode == "revise") != (revise_action_id is not None):
+            raise ValueError("a revision, and only a revision, names the action it revises")
+        ask = _OwnerAsk(mode, instruction, guidance, answered_message_id, revise_action_id, bounds)
+        trigger = (
+            f"draft:run:{owner_run_id}:action:{revise_action_id}"
+            if revise_action_id is not None
+            else f"draft:run:{owner_run_id}:conv:{conversation_id}"
+        )
+        return await self._run(
+            _Request(
+                account_id,
+                trigger,
+                "revise" if mode == "revise" else "draft",
+                conversation_id=conversation_id,
+                run_tainted=run_tainted,
+                owner=ask,
+            )
+        )
+
+    async def answerable_ids(
+        self, session: AsyncSession, account_id: int, conversation_id: int
+    ) -> frozenset[int]:
+        """The contact messages an owner's draft may answer by id (PF-12):
+        those the draft's window shows now — retained, in this chat and this
+        account. Account-scoped."""
+        through = await _newest_message_id(session, account_id, conversation_id)
+        if through is None:
+            return frozenset()
+        messages = await self._messages(session, account_id, conversation_id, through=through)
+        return frozenset(m.message_id for m in messages if m.direction == "contact")
+
     async def _run(self, request: _Request) -> DraftOutcome:
         prepared = await self._prepare(request)
         if isinstance(prepared, DraftOutcome):
             return prepared
         try:
-            result, calls = await self._call(prepared)
+            result, calls = await (
+                self._call_owner(prepared) if prepared.owner is not None else self._call(prepared)
+            )
             status = (
                 "succeeded"
                 if result.status in {DraftStatus.DRAFTED, DraftStatus.NOT_NEEDED}
@@ -231,13 +364,14 @@ class Drafter:
             raise
 
     async def _prepare(self, request: _Request) -> _Prepared | DraftOutcome:
-        prompt = prompt_registry.active(RUN_TYPE)
+        owner = request.owner
+        prompt = prompt_registry.active(OWNER_PROMPT if owner is not None else RUN_TYPE)
         account_id = request.account_id
         async with transaction(self._session_factory) as uow:
             session = uow.session
             revision: DraftRevision | None = None
             conversation_id = request.conversation_id
-            if request.run_kind == "revise":
+            if request.run_kind == "revise" and owner is None:
                 loaded = await _revision_inputs(session, request)
                 if loaded is None:
                     return DraftOutcome(DraftStatus.NOT_DRAFTABLE)
@@ -276,7 +410,9 @@ class Drafter:
                 if through is not None
                 else []
             )
-            if through is None or not messages:
+            # An owner's request is drafted even when nothing in the window
+            # can be shown (a new message needs no chat text; D1).
+            if through is None or (not messages and owner is None):
                 return DraftOutcome(DraftStatus.NOT_DRAFTABLE)
             account = await session.get(Account, account_id)
             if account is None:
@@ -285,20 +421,53 @@ class Drafter:
                 session, account_id, conversation_id, include_owner_preferences=True
             )
             previous = await summaries.rolling_summary(session, account_id, conversation_id)
-            context = build_draft_reply(
-                prompt=prompt,
-                account=account,
-                messages=messages,
-                notes=notes,
-                previous=previous.summary if previous is not None else None,
-                contact_name=await summaries.contact_display_name(
-                    session, account_id, conversation_id
-                ),
-                guidance=request.guidance,
-                run_tainted=request.run_tainted,
-                revision=revision,
-                now=self._clock.now(),
+            contact_name = await summaries.contact_display_name(
+                session, account_id, conversation_id
             )
+            inputs: OwnerDraftInputs | None = None
+            if owner is not None:
+                current_text: str | None = None
+                if owner.revise_action_id is not None:
+                    current_text = await _live_text(
+                        session, account_id, conversation_id, owner.revise_action_id
+                    )
+                    if current_text is None:
+                        return DraftOutcome(DraftStatus.NOT_DRAFTABLE, error_class="no_live_draft")
+                inputs = OwnerDraftInputs(
+                    mode=owner.mode,
+                    instruction=owner.instruction,
+                    guidance=owner.guidance,
+                    answered_message_id=owner.answered_message_id,
+                    current_text=current_text,
+                    bounds=owner.bounds,
+                )
+                context = build_draft_owner(
+                    prompt=prompt,
+                    account=account,
+                    messages=messages,
+                    notes=notes,
+                    previous=previous.summary if previous is not None else None,
+                    contact_name=contact_name,
+                    inputs=inputs,
+                    now=self._clock.now(),
+                )
+                answered = owner.answered_message_id
+                if answered is not None and answered not in context.contact_ids:
+                    # Only a message the draft is shown can be answered (PF-12).
+                    return DraftOutcome(DraftStatus.NOT_DRAFTABLE, error_class="answered_not_shown")
+            else:
+                context = build_draft_reply(
+                    prompt=prompt,
+                    account=account,
+                    messages=messages,
+                    notes=notes,
+                    previous=previous.summary if previous is not None else None,
+                    contact_name=contact_name,
+                    guidance=request.guidance,
+                    run_tainted=request.run_tainted,
+                    revision=revision,
+                    now=self._clock.now(),
+                )
             run = AgentRunRepository(session, account_id).add(
                 AgentRun(
                     run_type=RUN_TYPE,
@@ -311,7 +480,9 @@ class Drafter:
                 )
             )
             await session.flush()
-            return _Prepared(account_id, run.id, context, prompt.label, request.run_kind, through)
+            return _Prepared(
+                account_id, run.id, context, prompt.label, request.run_kind, through, inputs
+            )
 
     async def _messages(
         self, session: AsyncSession, account_id: int, conversation_id: int, *, through: int
@@ -349,19 +520,7 @@ class Drafter:
         ]
 
     async def _call(self, prepared: _Prepared) -> tuple[DraftOutcome, int]:
-        request = LLMRequest(
-            account_id=prepared.account_id,
-            purpose=RUN_TYPE,
-            model=self._config.model,
-            instructions=prepared.context.instructions,
-            items=prepared.context.items,
-            tools=(),
-            effort=self._config.effort,
-            run_id=prepared.run_id,
-            max_output_tokens=self._config.max_output_tokens,
-            timeout_seconds=self._config.call_timeout_seconds,
-            prompt_cache_key=f"{RUN_TYPE}:{prepared.prompt_label}",
-        )
+        request = self._request(prepared)
         calls = 0
         try:
             calls += 1
@@ -388,6 +547,123 @@ class Drafter:
                 return DraftOutcome(DraftStatus.INVALID, error_class=checked.error_class), calls
             status = DraftStatus.DRAFTED if checked.result.needs_reply else DraftStatus.NOT_NEEDED
             return DraftOutcome(status, result=checked.result), calls
+        except ConsentMissingError:
+            return DraftOutcome(DraftStatus.NO_CONSENT, error_class="consent_missing"), calls
+        except ValidationError:
+            return DraftOutcome(DraftStatus.INVALID, error_class="invalid_output"), calls
+        except LLMError as error:
+            status = (
+                DraftStatus.INVALID
+                if error.kind is LLMErrorKind.INVALID_OUTPUT
+                else DraftStatus.FAILED
+            )
+            return DraftOutcome(status, error_class=f"llm_{error.kind.value}"), calls
+
+    async def _call_owner(self, prepared: _Prepared) -> tuple[DraftOutcome, int]:
+        """The owner's draft, and at most one more call for its length: a
+        draft outside the owner's word range is written once more with its
+        count fed back, and the closer of the two is kept (ties: the second).
+        A failure of that second call keeps the first draft."""
+        inputs = prepared.owner
+        assert inputs is not None
+        request = self._request(prepared)
+        first, calls = await self._parse_owner(request)
+        if isinstance(first, DraftOutcome):
+            return first, calls
+        bounds = inputs.bounds
+        count = word_count(first.text)
+        if bounds is None or bounds.contains(count):
+            return self._owner_outcome(inputs, first, retried=False), calls
+        again = replace(
+            request,
+            items=(
+                *request.items,
+                TextItem(
+                    "user",
+                    "Your draft:\n" + (wrap(first.text, Source.DRAFT) or ""),
+                    Provenance.MANAGED,
+                ),
+                TextItem(
+                    "user",
+                    f"That draft has {count} words, but the owner asked for "
+                    f"{bounds.describe()}. Write it again within that range, still as the "
+                    "owner's request says.",
+                    Provenance.OWNER_CONTROL,
+                ),
+            ),
+        )
+        second, more = await self._parse_owner(again)
+        candidates = [first] if isinstance(second, DraftOutcome) else [first, second]
+        best = min(reversed(candidates), key=lambda draft: bounds.distance(word_count(draft.text)))
+        return self._owner_outcome(inputs, best, retried=True), calls + more
+
+    @staticmethod
+    def _owner_outcome(
+        inputs: OwnerDraftInputs, result: OwnerDraftResult, *, retried: bool
+    ) -> DraftOutcome:
+        count = word_count(result.text)
+        if inputs.mode == "new_message":
+            target = TARGET_NONE
+        elif inputs.answered_message_id is not None:
+            target = TARGET_ANSWERED
+        else:
+            target = TARGET_NEWEST
+        return DraftOutcome(
+            DraftStatus.DRAFTED,
+            owner_result=result,
+            owner_mode=inputs.mode,
+            target=target,
+            word_count=count,
+            bounds_retry=retried,
+            bounds_met=None if inputs.bounds is None else inputs.bounds.contains(count),
+        )
+
+    def _request(self, prepared: _Prepared) -> LLMRequest:
+        return LLMRequest(
+            account_id=prepared.account_id,
+            purpose=RUN_TYPE,
+            model=self._config.model,
+            instructions=prepared.context.instructions,
+            items=prepared.context.items,
+            tools=(),
+            effort=self._config.effort,
+            run_id=prepared.run_id,
+            max_output_tokens=self._config.max_output_tokens,
+            timeout_seconds=self._config.call_timeout_seconds,
+            prompt_cache_key=f"{RUN_TYPE}:{prepared.prompt_label}",
+        )
+
+    async def _parse_owner(
+        self, request: LLMRequest
+    ) -> tuple[OwnerDraftResult | DraftOutcome, int]:
+        """One structured `draft_owner` call (one larger-output retry after
+        truncation): a validated result, or the outcome that says why not.
+        Refused and invalid output is never retried here (AGENTS §8)."""
+        calls = 0
+        try:
+            calls += 1
+            response = await self._llm.parse(request, OwnerDraftResult)
+            larger = min(request.max_output_tokens * 2, self._config.max_output_tokens_ceiling)
+            if response.stop_reason is StopReason.MAX_TOKENS and larger > request.max_output_tokens:
+                calls += 1
+                response = await self._llm.parse(
+                    replace(request, max_output_tokens=larger), OwnerDraftResult
+                )
+            if response.stop_reason in {StopReason.REFUSAL, StopReason.CONTENT_FILTER}:
+                return DraftOutcome(
+                    DraftStatus.REFUSED, error_class=response.stop_reason.value
+                ), calls
+            if response.stop_reason is not StopReason.COMPLETED:
+                return DraftOutcome(
+                    DraftStatus.FAILED, error_class=response.stop_reason.value
+                ), calls
+            if response.parsed is None:
+                return DraftOutcome(DraftStatus.INVALID, error_class="invalid_output"), calls
+            validated = OwnerDraftResult.model_validate(response.parsed.model_dump())
+            checked = validate_owner_draft(validated)
+            if not checked.valid:
+                return DraftOutcome(DraftStatus.INVALID, error_class=checked.error_class), calls
+            return checked.result, calls
         except ConsentMissingError:
             return DraftOutcome(DraftStatus.NO_CONSENT, error_class="consent_missing"), calls
         except ValidationError:
@@ -451,6 +727,22 @@ async def _revision_inputs(
     return int(action.conversation_id), DraftRevision(action.text, owner_message)
 
 
+async def _live_text(
+    session: AsyncSession, account_id: int, conversation_id: int, action_id: int
+) -> str | None:
+    """A live card's current text in this chat and account (an owner's
+    `revise`), or None: never text the caller hands in."""
+    text: str | None = await session.scalar(
+        select(Action.text).where(
+            Action.account_id == account_id,
+            Action.conversation_id == conversation_id,
+            Action.id == action_id,
+            Action.state.in_([state.value for state in LIVE_CARD]),
+        )
+    )
+    return text
+
+
 # ------------------------------------------------------------ proposals (§3.4)
 #: A language tag as the flags may store it: `draft_flags` is a non-content
 #: column (decisions R8), so a model-written value that is not a short tag is
@@ -472,6 +764,38 @@ def draft_flags(result: DraftResult) -> dict[str, Any]:
         "uses_only_permitted_information": result.uses_only_permitted_information,
         "language": language if _LANGUAGE_TAG.fullmatch(language) else "und",
     }
+
+
+def owner_draft_flags(
+    result: OwnerDraftResult, *, mode: OwnerDraftMode | None, target: str | None
+) -> dict[str, Any]:
+    """`draft_flags` of an owner-requested draft (PF-10): the same keys as an
+    Assist draft's, so every reader keeps working. The owner asked for it,
+    so `needs_reply` is true; `draft_owner` does not assess escalation or
+    permitted information, so those read None (not assessed — never a
+    pass). Plus who wrote it, the mode and what it answers (non-content)."""
+    language = result.language.strip()
+    return {
+        "needs_reply": True,
+        "confidence": result.confidence,
+        "sensitive_topic": result.sensitive_topic,
+        "makes_commitment": result.makes_commitment,
+        "should_escalate": None,
+        "uses_only_permitted_information": None,
+        "language": language if _LANGUAGE_TAG.fullmatch(language) else "und",
+        FLAG_SOURCE: SOURCE_OWNER_DRAFT,
+        "mode": mode,
+        FLAG_TARGET: target,
+    }
+
+
+#: `draft_flags` of a message the assistant suggested earlier in the control
+#: chat and the owner picked (PF-12): AI-written, standalone, never assessed.
+SUGGESTION_FLAGS: Mapping[str, Any] = {
+    FLAG_SOURCE: SOURCE_ASSISTANT_SUGGESTION,
+    "ai_generated": True,
+    FLAG_TARGET: TARGET_NONE,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -496,6 +820,7 @@ async def propose_draft(
     config: ActionsConfig,
     presenter: ApprovalCardPresenter | None,
     dictated_text: str | None = None,
+    suggested_text: str | None = None,
 ) -> ProposalResult | Stale:
     """One proposal, in the caller's transaction (§3.4).
 
@@ -509,20 +834,26 @@ async def propose_draft(
     `owner_dictated`) needs no model run: it has no base message (decisions
     R3) and is shown through the newest message of any direction now.
     Then S04.1's `propose()` (which re-takes the same locks harmlessly) and,
-    for a new action, the card after commit. Raises `ProposalRefused` and
+    for a new action, the card after commit. A text the assistant suggested
+    earlier in the control chat (`suggested_text`, origin `agent_proposal`,
+    PF-12) is proposed like a dictated one — no model run, no base message
+    — with `SUGGESTION_FLAGS`. Raises `ProposalRefused` and
     `NotInAccountError` from `propose()`."""
     await _lock_for_proposal(session, account_id, conversation_id)
     flags: Mapping[str, Any] | None
-    if origin is ActionOrigin.OWNER_DICTATED:
-        if dictated_text is None:
+    if origin is ActionOrigin.OWNER_DICTATED or suggested_text is not None:
+        if origin is ActionOrigin.OWNER_DICTATED and dictated_text is None:
             raise ValueError("a dictated proposal needs the owner's text")
-        text = dictated_text
+        if suggested_text is not None and origin is not ActionOrigin.AGENT_PROPOSAL:
+            raise ValueError("a suggestion is the assistant's proposal")
+        text = dictated_text if dictated_text is not None else suggested_text
+        assert text is not None
         base_message_id = None
-        flags = None
+        flags = None if suggested_text is None else dict(SUGGESTION_FLAGS)
         shown_through = await _newest_message_id(session, account_id, conversation_id)
     else:
-        result = outcome.result
-        if outcome.status is not DraftStatus.DRAFTED or result is None:
+        drafted = outcome.text
+        if outcome.status is not DraftStatus.DRAFTED or drafted is None:
             raise ValueError("only a drafted outcome can be proposed")
         newest_contact = await _newest_message_id(
             session, account_id, conversation_id, direction="contact"
@@ -530,9 +861,15 @@ async def propose_draft(
         seen = outcome.shown_through_message_id
         if newest_contact is not None and (seen is None or newest_contact > seen):
             return Stale(newest_contact)
-        text = result.text
+        text = drafted
         base_message_id = outcome.base_message_id
-        flags = draft_flags(result)
+        if outcome.owner_result is not None:
+            flags = owner_draft_flags(
+                outcome.owner_result, mode=outcome.owner_mode, target=outcome.target
+            )
+        else:
+            assert outcome.result is not None
+            flags = draft_flags(outcome.result)
         shown_through = seen
     proposal = await propose(
         session,

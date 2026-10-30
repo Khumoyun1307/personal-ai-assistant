@@ -401,6 +401,19 @@ def test_warnings_come_from_draft_flags_and_never_for_dictated_words() -> None:
     assert "Assist draft" in shown(render_card(view(proactive=True)).text)
 
 
+def test_a_picked_assistant_suggestion_is_labelled_as_the_assistants_never_as_dictated() -> None:
+    # PF-12: a text the assistant suggested in the control chat, which the
+    # owner chose, is an `agent_proposal` with `source: assistant_suggestion`.
+    flags = {"source": "assistant_suggestion", "ai_generated": True, "target": "none"}
+    text = shown(render_card(view(origin=ActionOrigin.AGENT_PROPOSAL, draft_flags=flags)).text)
+    assert "Message the assistant suggested" in text
+    assert "Message you dictated" not in text
+    assert "Draft reply" not in text
+    owner_draft = {"source": "draft_owner", "mode": "reply", "target": "newest"}
+    requested = shown(render_card(view(draft_flags=owner_draft)).text)
+    assert "Draft reply" in requested
+
+
 # ------------------------------------------------- P2-O20: Telegram decides
 @pytest.mark.parametrize("origin", [ActionOrigin.OWNER_DICTATED, ActionOrigin.AGENT_PROPOSAL])
 def test_an_owner_approved_card_with_a_closed_window_warns_and_stays_approvable(

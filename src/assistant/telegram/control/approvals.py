@@ -65,7 +65,16 @@ from assistant.actions.states import (
     StateReason,
 )
 from assistant.agent.confirmations import render_description
-from assistant.agent.drafting import Drafter, DraftOutcome, DraftStatus, draft_flags
+from assistant.agent.drafting import (
+    EXPLICIT_TARGETS,
+    FLAG_SOURCE,
+    FLAG_TARGET,
+    SOURCE_ASSISTANT_SUGGESTION,
+    Drafter,
+    DraftOutcome,
+    DraftStatus,
+    draft_flags,
+)
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.delivery import MAX_TEXT_LENGTH, ErrorClass, SendResult
@@ -175,6 +184,9 @@ _HEADERS = {
     "assist": "📝 <b>Assist draft</b>",
     "requested": "📝 <b>Draft reply</b>",
     "automatic": "📝 <b>Automatic reply</b>",
+    # PF-12: a text the assistant suggested in the control chat, which the
+    # owner picked — never labelled as dictated.
+    "suggested": "📝 <b>Message the assistant suggested</b> — check the recipient and the text",
 }
 
 #: Short reasons for the state line ("Outdated — a newer message arrived");
@@ -470,6 +482,8 @@ def _header(view: ApprovalCardView) -> str:
         return _HEADERS["dictated"]
     if view.origin is ActionOrigin.DELEGATION_AUTO:
         return _HEADERS["automatic"]
+    if (view.draft_flags or {}).get(FLAG_SOURCE) == SOURCE_ASSISTANT_SUGGESTION:
+        return _HEADERS["suggested"]
     return _HEADERS["assist" if view.proactive else "requested"]
 
 
@@ -1532,6 +1546,15 @@ class _Revising:
     conversation_id: int
     version: int
     origin: ActionOrigin
+    #: The base message, and the target the owner chose for it (PF-12):
+    #: an explicit one (a named message, or none for a standalone message)
+    #: survives the revision instead of moving to the newest message.
+    base_message_id: int | None = None
+    target: str | None = None
+
+    @property
+    def keeps_target(self) -> bool:
+        return self.target in EXPLICIT_TARGETS
 
 
 class RevisionJob:
@@ -1582,7 +1605,12 @@ class RevisionJob:
             row = (
                 await session.execute(
                     select(
-                        Action.account_id, Action.conversation_id, Action.version, Action.origin
+                        Action.account_id,
+                        Action.conversation_id,
+                        Action.version,
+                        Action.origin,
+                        Action.base_message_id,
+                        Action.draft_flags,
                     ).where(
                         Action.id == action_id,
                         Action.state == ActionState.REVISING.value,
@@ -1592,7 +1620,15 @@ class RevisionJob:
             ).one_or_none()
         if row is None:
             return None
-        return _Revising(row[0], row[1], row[2], ActionOrigin(row[3]))
+        target = (row[5] or {}).get(FLAG_TARGET)
+        return _Revising(
+            row[0],
+            row[1],
+            row[2],
+            ActionOrigin(row[3]),
+            base_message_id=row[4],
+            target=target if isinstance(target, str) else None,
+        )
 
     async def _hand_over(self, action_id: int, turn_id: int) -> None:
         """This job's turn is no longer the action's (cancelled and edited
@@ -1659,6 +1695,12 @@ class RevisionJob:
                 logger.info("revision_stale", action_id=action_id)
                 return "stale"
             assert outcome.result is not None
+            flags: dict[str, Any] | None = None if dictated else draft_flags(outcome.result)
+            base_message_id = None if dictated else outcome.base_message_id
+            if flags is not None and before.keeps_target:
+                # The owner chose what this answers (PF-12): a revision keeps it.
+                flags[FLAG_TARGET] = before.target
+                base_message_id = before.base_message_id
             applied = await lifecycle.apply_new_version(
                 session,
                 account_id=before.account_id,
@@ -1667,9 +1709,9 @@ class RevisionJob:
                 text=text,
                 draft_run_id=outcome.run_id,
                 # The owner's own dictated words carry no draft flags (R8).
-                draft_flags=None if dictated else draft_flags(outcome.result),
+                draft_flags=flags,
                 shown_through_message_id=outcome.shown_through_message_id,
-                base_message_id=None if dictated else outcome.base_message_id,
+                base_message_id=base_message_id,
                 now=now,
             )
             status = applied.status

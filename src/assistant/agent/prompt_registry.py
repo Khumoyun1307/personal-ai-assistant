@@ -79,6 +79,12 @@ ACTIVE: dict[str, str] = {
     # match; contact text is judged on substance, never obeyed; no tools.
     "evaluate_monitor": "v1",
     "draft_reply": "v1",
+    # v1 (PF-10, owner decisions D1-D4 of 2026-10-30): every draft the owner
+    # asks for, under run type `draft_reply` (the ADR-21 pattern; Assist keeps
+    # `draft_reply.v1` byte-identical). The owner's own words direct it; modes
+    # reply / new_message / revise; a word range is a hard limit; no
+    # "no reply needed" and no decline (D1); no tools.
+    "draft_owner": "v1",
 }
 
 
