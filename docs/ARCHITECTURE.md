@@ -770,7 +770,7 @@ class Decision:
 | `conversation_owned` | both · all | `not_owned`, `bot_chat` |
 | `conversation_available` | both · all | `chat_ignored`, `chat_possibly_paused` (passes on an owner retry) |
 | `window_open` | both · `delegation_auto` only | `window_closed` (24 h − 5 min from the last *contact* message; `core/reply_window.py`). Not applied to owner-dictated or owner-approved drafts (owner decision 2026-10-30, P2-O20): our estimate sees only ingested messages, so Telegram decides at the one send attempt and `PEER_ID_INVALID` ⇒ `expired`/`window_closed`, definite, never retried |
-| `no_takeover_since` | both · all | `takeover`. Reference: the base message's Telegram date for a proactive draft; **`created_at` for an owner-requested action** (origin `owner_dictated`, or a `trigger_turn_id`; decision R3 — the owner's request is newer than the owner's own earlier message). Owner-dictated actions have no base message |
+| `no_takeover_since` | both · all | `takeover`. Reference: the base message's Telegram date for a proactive draft; **`created_at` for an owner-requested action** (origin `owner_dictated`, or a `trigger_turn_id`; decision R3 — the owner's request is newer than the owner's own earlier message). Owner-dictated actions have no base message unless the owner named the message they answer (PF-F); takeover is then still measured from `created_at` |
 | `not_stale` | execution · all | `source_deleted`, `new_contact_message` |
 | `not_already_executed` | execution · all | `already_claimed` |
 | `not_expired` | execution · all | `max_age` |
