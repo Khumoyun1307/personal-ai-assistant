@@ -26,7 +26,7 @@ from assistant.actions.executor import ActionExecutor, uncertain_after
 from assistant.actions.ingestion import ActionsIngestionListener
 from assistant.actions.ports import ApprovalCardPresenter
 from assistant.agent.confirmations import ConfirmationApplier
-from assistant.agent.drafting import AssistDraftJob, DraftConfig, Drafter
+from assistant.agent.drafting import AssistDraftJob, CardReviser, DraftConfig, Drafter
 from assistant.agent.monitor_eval import MonitorEvalConfig, MonitorEvaluator
 from assistant.agent.persistence import DbCallRecorder, DbConsentReader
 from assistant.agent.ports import ControlChannel
@@ -144,6 +144,7 @@ def build_confirmation_applier(
     approval_cards: ApprovalCardPresenter | None = None,
     actions_config: ActionsConfig | None = None,
     notifications_enabled: bool = False,
+    card_reviser: CardReviser | None = None,
 ) -> ConfirmationApplier:
     """Runs held tool calls the owner confirmed (S03.1), with the same
     registry and flags as the owner runtime."""
@@ -161,6 +162,7 @@ def build_confirmation_applier(
             approval_cards=approval_cards,
             actions_config=actions_config,
             notifications_enabled=notifications_enabled,
+            card_reviser=card_reviser,
         ),
         enabled_flags=settings.feature_flags,
     )
@@ -206,6 +208,7 @@ def build_owner_runtime(
     approval_cards: ApprovalCardPresenter | None = None,
     actions_config: ActionsConfig | None = None,
     notifications_enabled: bool = False,
+    card_reviser: CardReviser | None = None,
 ) -> OwnerRequestRuntime:
     client = llm or build_llm_client(settings, session_factory, clock)
     return OwnerRequestRuntime(
@@ -220,6 +223,7 @@ def build_owner_runtime(
         approval_cards=approval_cards,
         actions_config=actions_config,
         notifications_enabled=notifications_enabled,
+        card_reviser=card_reviser,
     )
 
 
@@ -238,6 +242,7 @@ class _PhaseWiring:
     automation: AutomationJobHandlers | None = None
     reconcilers: list[Reconciler] = field(default_factory=list)
     actions_config: ActionsConfig | None = None
+    card_reviser: CardReviser | None = None
     drafter: Drafter | None = None
     approval_cards: ApprovalCardPresenter | None = None
     notifications_enabled: bool = False
@@ -328,16 +333,16 @@ def _wire_m04(
         wiring.actions = replace(wiring.actions or ActionsJobHandlers(), cards=cards)
         wiring.reconcilers.append(UnfinishedRevisions(cards))
         if wiring.drafter is not None:
-            wiring.actions = replace(
-                wiring.actions,
-                revisions=RevisionJob(
-                    session_factory=session_factory,
-                    cards=cards,
-                    drafter=wiring.drafter,
-                    clock=clock,
-                    scheduler=scheduler,
-                ),
+            revisions = RevisionJob(
+                session_factory=session_factory,
+                cards=cards,
+                drafter=wiring.drafter,
+                clock=clock,
+                scheduler=scheduler,
             )
+            wiring.actions = replace(wiring.actions, revisions=revisions)
+            # PF-13: `revise_draft` revises through the same machinery.
+            wiring.card_reviser = revisions
 
 
 def draft_config(settings: Settings) -> DraftConfig:
@@ -620,6 +625,9 @@ async def running_process(
         if llm is not None:
             alerts = OwnerAlerts(session_factory, channel, clock)
             summarizer = build_summarizer(settings, session_factory, clock, llm)
+            # `revise_draft` (PF-13) uses the card's own revision machinery,
+            # where this process runs it (the worker and system roles).
+            card_reviser = wiring.card_reviser
             register_tasks(
                 jobs_app,
                 JobHandlers(
@@ -637,6 +645,7 @@ async def running_process(
                         approval_cards=wiring.approval_cards,
                         actions_config=wiring.actions_config,
                         notifications_enabled=wiring.notifications_enabled,
+                        card_reviser=card_reviser,
                     ),
                     summary_refresher=summarizer,
                     summaries_enabled=settings.summaries_enabled,
@@ -661,6 +670,7 @@ async def running_process(
                         approval_cards=wiring.approval_cards,
                         actions_config=wiring.actions_config,
                         notifications_enabled=wiring.notifications_enabled,
+                        card_reviser=card_reviser,
                     ),
                     data_deleter=RequestedDeletions(session_factory, clock, channel),
                     actions=wiring.actions,

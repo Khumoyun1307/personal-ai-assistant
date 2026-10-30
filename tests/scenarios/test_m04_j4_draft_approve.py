@@ -13,10 +13,10 @@ from tests.scenarios.p2_drive import (
     REPLACEMENT,
     Scenario,
     approve,
-    draft_result,
     edit,
     entered_or_finished,
     reject,
+    revision_result,
     run_queued,
     tool_outputs,
 )
@@ -34,7 +34,7 @@ async def test_j4_draft_edit_approve_sends_exactly_the_approved_text(p2: Scenari
     assert row.expires_at.strftime("%H:%M") in p2.control_text()
     assert row.card_message_id is not None
     p2.fake.parsed.append(
-        draft_result(
+        revision_result(
             text="P2 model text must not replace the owner's words.", revision_kind="replacement"
         )
     )
@@ -69,9 +69,7 @@ async def test_j4_a_revision_instruction_creates_a_new_version_shown_for_approva
 ) -> None:
     row = await p2.propose()
     old_token = row.approval_token
-    p2.fake.parsed.append(
-        draft_result(text="P2 revised concise reply.", revision_kind="instruction")
-    )
+    p2.fake.parsed.append(revision_result(text="P2 revised concise reply."))
     await edit(p2, row.id, "Make this shorter.")
     assert await run_queued(p2, "replies.revise") == 1
     revised = await p2.action(row.id)
@@ -92,7 +90,7 @@ async def revision_interleaving(p2: Scenario, *, outdate: bool) -> None:
     async def held(_request: LLMRequest) -> dict[str, Any]:
         entered.set()
         await release.wait()
-        return draft_result(text=REPLACEMENT, revision_kind="instruction")
+        return revision_result(text=REPLACEMENT)
 
     p2.fake.parsed.append(held)
     await edit(p2, row.id, "Make this shorter.")

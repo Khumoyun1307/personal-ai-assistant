@@ -105,6 +105,12 @@ def owner_draft_result(**changes: Any) -> dict[str, Any]:
     }
 
 
+def revision_result(**changes: Any) -> dict[str, Any]:
+    """A card revision (`draft_owner` mode `revise`, PF-13): the Edit button
+    and `revise_draft` alike (A18)."""
+    return owner_draft_result(**({"revision_kind": "instruction"} | changes))
+
+
 @dataclass
 class Scenario:
     env: Env
@@ -332,6 +338,8 @@ async def m04_environment(url: str, *, flags: frozenset[str] = FLAGS) -> AsyncIt
             "drafter": wiring.drafter,
             "approval_cards": wiring.approval_cards,
             "actions_config": wiring.actions_config,
+            # PF-13: `revise_draft` revises through the production RevisionJob.
+            "card_reviser": wiring.card_reviser,
         }
         summaries = build_summarizer(settings, env.factory, env.clock, client)
         handlers = JobHandlers(

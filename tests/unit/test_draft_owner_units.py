@@ -72,8 +72,10 @@ def joined(built: DraftContext) -> str:
 
 
 # ------------------------------------------------------------ prompt registry
-def test_draft_owner_v1_is_its_own_key_and_draft_reply_v1_is_byte_identical() -> None:
-    assert prompt_registry.active("draft_owner").label == "draft_owner.v1"
+def test_draft_owner_is_its_own_key_and_draft_reply_v1_is_byte_identical() -> None:
+    # v2 (PF-13) adds `revision_kind` for revisions; v1 stays on disk.
+    assert prompt_registry.active("draft_owner").label == "draft_owner.v2"
+    assert (prompt_registry.PROMPT_DIR / "draft_owner.v1.md").is_file()
     assert prompt_registry.active("draft_reply").label == "draft_reply.v1"
     raw = (prompt_registry.PROMPT_DIR / "draft_reply.v1.md").read_bytes()
     assert hashlib.sha256(raw).hexdigest() == DRAFT_REPLY_V1_SHA256

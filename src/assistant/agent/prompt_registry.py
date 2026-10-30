@@ -84,7 +84,11 @@ ACTIVE: dict[str, str] = {
     # `draft_reply.v1` byte-identical). The owner's own words direct it; modes
     # reply / new_message / revise; a word range is a hard limit; no
     # "no reply needed" and no decline (D1); no tools.
-    "draft_owner": "v1",
+    # v2 (PF-13): v1 plus `revision_kind` for `revise` (schema
+    # `OwnerRevisionResult`): the card's Edit button and `revise_draft` both
+    # revise through this key (A18); after Edit a `replacement` keeps the
+    # owner's words verbatim. v1 stays (its schema is unchanged).
+    "draft_owner": "v2",
 }
 
 

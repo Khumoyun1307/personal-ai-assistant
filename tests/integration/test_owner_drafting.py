@@ -123,7 +123,7 @@ async def test_the_owner_turn_reaches_the_draft_after_resolve_contact_tainted_th
     chat = next(item for item in owner_items if item.text.startswith("Messages in this chat"))
     assert chat.provenance is Provenance.MANAGED  # ai_managed, the contact's text
     [draft_run] = await runs(denv, "draft_reply")
-    assert draft_run.prompt_version == "draft_owner.v1"
+    assert draft_run.prompt_version == "draft_owner.v2"
     assert prompt_registry.active("draft_owner").text in draft.instructions
     [card] = await actions_of(denv.env, conversation)
     assert (card.origin, card.state, card.trigger_turn_id) == (
@@ -439,7 +439,10 @@ async def test_the_revise_mode_rewrites_a_live_cards_own_text(denv: DraftEnv) ->
     created = await call(
         context(denv, account_id, run_id, turn_id), "propose_reply", **reply_args(conversation)
     )
-    denv.script(owner_output(text="SYNTH-CURRENT-CARD-TEXT and see you"))
+    # draft_owner.v2 (PF-13): a revision also says what the owner's words were.
+    denv.script(
+        owner_output(text="SYNTH-CURRENT-CARD-TEXT and see you", revision_kind="instruction")
+    )
     outcome = await denv.drafter().draft_owner(
         account_id=account_id,
         conversation_id=conversation,
@@ -452,6 +455,7 @@ async def test_the_revise_mode_rewrites_a_live_cards_own_text(denv: DraftEnv) ->
     assert outcome.status is DraftStatus.DRAFTED
     assert outcome.text == "SYNTH-CURRENT-CARD-TEXT and see you"
     assert outcome.owner_mode == "revise"
+    assert outcome.revision_kind == "instruction"
     revise = draft_requests(denv)[-1]
     current = next(
         item

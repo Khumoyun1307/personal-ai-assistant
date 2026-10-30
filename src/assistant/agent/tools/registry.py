@@ -34,7 +34,10 @@ from assistant.llm.port import ToolSpec
 if TYPE_CHECKING:
     from assistant.actions.config import ActionsConfig
     from assistant.actions.ports import ApprovalCardPresenter
-    from assistant.agent.drafting import Drafter  # type: ignore[import-untyped, unused-ignore]
+    from assistant.agent.drafting import (  # type: ignore[import-untyped, unused-ignore]
+        CardReviser,
+        Drafter,
+    )
     from assistant.agent.summarize import Summarizer
 
 
@@ -94,6 +97,9 @@ class ToolServices:
     #: tool's release flag (ICR-2: attention v2 offers `draft_reply` only
     #: with `tool.propose_reply` on). Empty by default, so it fails closed.
     enabled_flags: frozenset[str] = frozenset()
+    #: The card revision machinery for `revise_draft` (PF-13): the same path
+    #: as the card's Edit button. None where the model cannot run.
+    card_reviser: CardReviser | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,6 +397,7 @@ def default_registry() -> ToolRegistry:
         DELETE_CONVERSATION_DATA,
         DELETE_EVERYTHING,
     )
+    from assistant.agent.tools.drafts import GET_DRAFT, REVISE_DRAFT
     from assistant.agent.tools.memory import FORGET, LIST_MEMORIES, REMEMBER
     from assistant.agent.tools.modes import SET_CONVERSATION_MODE, UPDATE_PREFERENCES
     from assistant.agent.tools.monitors import CREATE_MONITOR, LIST_MONITORS, STOP_MONITOR
@@ -424,6 +431,8 @@ def default_registry() -> ToolRegistry:
             STOP_MONITOR,
             PROPOSE_REPLY,
             PROPOSE_MESSAGE,
+            REVISE_DRAFT,
+            GET_DRAFT,
             PAUSE_AUTONOMY,
             RESUME_AUTONOMY,
         ]

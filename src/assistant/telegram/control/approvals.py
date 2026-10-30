@@ -65,15 +65,19 @@ from assistant.actions.states import (
     StateReason,
 )
 from assistant.agent.confirmations import render_description
+from assistant.agent.draft_owner_schemas import OwnerDraftMode, WordBounds
 from assistant.agent.drafting import (
     EXPLICIT_TARGETS,
     FLAG_SOURCE,
     FLAG_TARGET,
     SOURCE_ASSISTANT_SUGGESTION,
+    TARGET_ANSWERED,
+    TARGET_NONE,
     Drafter,
     DraftOutcome,
     DraftStatus,
-    draft_flags,
+    RevisionResult,
+    owner_draft_flags,
 )
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
@@ -1543,18 +1547,63 @@ class _Revising:
     #: survives the revision instead of moving to the newest message.
     base_message_id: int | None = None
     target: str | None = None
+    #: The card's kind of message (`reply` / `new_message`), kept by a
+    #: revision (PF-13).
+    mode: str | None = None
 
     @property
     def keeps_target(self) -> bool:
         return self.target in EXPLICIT_TARGETS
 
+    @property
+    def message_mode(self) -> OwnerDraftMode:
+        if self.mode == "new_message" or (self.mode is None and self.target == TARGET_NONE):
+            return "new_message"
+        return "reply"
+
+
+@dataclass(frozen=True, slots=True)
+class _RevisionTurn:
+    """The owner's revision message: its text and whether it is theirs alone."""
+
+    text: str | None
+    third_party: bool
+    quoted: bool
+    contains_managed: bool
+
+    @property
+    def instruction(self) -> str | None:
+        """The text as the owner's request to the draft writer: never a
+        forwarded or quoting turn, nor one carrying managed content (3b)."""
+        if self.third_party or self.quoted or self.contains_managed or not self.text:
+            return None
+        return self.text
+
+
+#: `replies.revise`'s job result for each outcome (unchanged since S04.3).
+_JOB_STATUS = {
+    "revised": lifecycle.VersionStatus.APPLIED.value,
+    "too_long": lifecycle.VersionStatus.TOO_LONG.value,
+    "empty": lifecycle.VersionStatus.EMPTY.value,
+    "stale": "stale",
+    "failed": "failed",
+}
+
 
 class RevisionJob:
     """`replies.revise(action_id, turn_id)` (spec §3.4; queue `llm`, no lock,
-    no retry). The model runs with no lock held; the new version is applied
-    in a short transaction only if the action is still being revised with
-    this turn and version — so a revision finishing late never changes what
-    was or will be sent."""
+    no retry) and `CardReviser` (PF-13). The model runs with no lock held;
+    the new version is applied in a short transaction only if the action is
+    still being revised with this turn and version — so a revision finishing
+    late never changes what was or will be sent.
+
+    Both entry points revise through `draft_owner` mode `revise` (A18: the
+    card's Edit button and the owner's chat behave the same). After Edit the
+    owner's message may be the whole new text: a `replacement` keeps their
+    words verbatim (P2-T08). From the chat (`revise_from_chat`, the owner's
+    run waits for it) the message is addressed to the assistant, so the
+    draft writer's text is used, and the owner hears the outcome from the
+    assistant's reply instead of a separate notice."""
 
     def __init__(
         self,
@@ -1572,25 +1621,70 @@ class RevisionJob:
         self._scheduler = scheduler
 
     async def run(self, action_id: int, turn_id: int) -> str:
+        """The job. Usually an Edit-button revision; the revising reconciler
+        also re-defers a chat revision whose owner run died midway, which
+        keeps its chat semantics (the turn is never the text itself)."""
+        from_chat = await self._requested_from_chat(action_id, turn_id)
+        result = await self._revise(action_id, turn_id, bounds=None, from_chat=from_chat)
+        return _JOB_STATUS[result.status]
+
+    async def revise_from_chat(
+        self, action_id: int, turn_id: int, *, bounds: WordBounds | None
+    ) -> RevisionResult:
+        return await self._revise(action_id, turn_id, bounds=bounds, from_chat=True)
+
+    async def _requested_from_chat(self, action_id: int, turn_id: int) -> bool:
+        """`revise_draft` started this revision with this turn: its
+        `action_revision_requested` audit row names the tool (PF-13)."""
+        async with self._sf() as session:
+            found = await session.scalar(
+                select(AuditLogEntry.id)
+                .where(
+                    AuditLogEntry.event == "action_revision_requested",
+                    AuditLogEntry.subject_type == "action",
+                    AuditLogEntry.subject_id == action_id,
+                    AuditLogEntry.details["tool"].astext == "revise_draft",
+                    AuditLogEntry.details["turn_id"].astext == str(turn_id),
+                )
+                .limit(1)
+            )
+        return found is not None
+
+    async def _revise(
+        self, action_id: int, turn_id: int, *, bounds: WordBounds | None, from_chat: bool
+    ) -> RevisionResult:
         before = await self._revising(action_id, turn_id)
         if before is None:
             logger.info("revision_stale", action_id=action_id)
             await self._hand_over(action_id, turn_id)
-            return "stale"
-        outcome = await self._drafter.revise(
-            account_id=before.account_id, action_id=action_id, turn_id=turn_id
+            return RevisionResult("stale")
+        turn = await self._turn(before.account_id, turn_id)
+        if turn is None or turn.instruction is None:
+            return await self._failed(
+                before, action_id, turn_id, "not_drafted", "owner_message_unusable", from_chat
+            )
+        outcome = await self._drafter.draft_owner(
+            account_id=before.account_id,
+            conversation_id=before.conversation_id,
+            mode="revise",
+            instruction=turn.instruction,
+            answered_message_id=await self._answered(before),
+            revise_action_id=action_id,
+            revise_turn_id=turn_id,
+            after_edit=not from_chat,
+            bounds=bounds,
         )
-        result = outcome.result
-        if outcome.status is not DraftStatus.DRAFTED or result is None:
-            return await self._failed(before, action_id, turn_id, outcome)
-        if result.revision_kind == "replacement":
+        owner = outcome.owner_result
+        if outcome.status is not DraftStatus.DRAFTED or owner is None:
+            return await self._failed(
+                before, action_id, turn_id, outcome.status.value, outcome.error_class, from_chat
+            )
+        if not from_chat and outcome.revision_kind == "replacement" and turn.text is not None:
             # The owner's words, verbatim — never the model's rewrite (P2-T08).
-            text = await self._turn_text(before.account_id, turn_id)
-            if text is None:
-                return await self._failed(before, action_id, turn_id, outcome)
+            text = turn.text
         else:
-            text = result.text
-        return await self._apply(before, action_id, turn_id, text, outcome)
+            text = owner.text
+        return await self._apply(before, action_id, turn_id, text, outcome, from_chat=from_chat)
 
     async def _revising(self, action_id: int, turn_id: int) -> _Revising | None:
         async with self._sf() as session:
@@ -1612,7 +1706,8 @@ class RevisionJob:
             ).one_or_none()
         if row is None:
             return None
-        target = (row[5] or {}).get(FLAG_TARGET)
+        flags = row[5] or {}
+        target, mode = flags.get(FLAG_TARGET), flags.get("mode")
         return _Revising(
             row[0],
             row[1],
@@ -1620,7 +1715,40 @@ class RevisionJob:
             ActionOrigin(row[3]),
             base_message_id=row[4],
             target=target if isinstance(target, str) else None,
+            mode=mode if isinstance(mode, str) else None,
         )
+
+    async def _turn(self, account_id: int, turn_id: int) -> _RevisionTurn | None:
+        async with self._sf() as session:
+            row = (
+                await session.execute(
+                    select(
+                        ControlTurn.text,
+                        ControlTurn.third_party,
+                        ControlTurn.quoted_text,
+                        ControlTurn.contains_managed,
+                    ).where(
+                        ControlTurn.id == turn_id,
+                        ControlTurn.account_id == account_id,
+                        ControlTurn.role == "owner",
+                    )
+                )
+            ).one_or_none()
+        if row is None:
+            return None
+        return _RevisionTurn(row[0], bool(row[1]), row[2] is not None, bool(row[3]))
+
+    async def _answered(self, before: _Revising) -> int | None:
+        """The message the owner chose to answer, while the draft is still
+        shown it; otherwise the revision is written without naming it (the
+        card keeps its base message all the same, PF-12)."""
+        if before.target != TARGET_ANSWERED or before.base_message_id is None:
+            return None
+        async with self._sf() as session:
+            shown = await self._drafter.answerable_ids(
+                session, before.account_id, before.conversation_id
+            )
+        return before.base_message_id if before.base_message_id in shown else None
 
     async def _hand_over(self, action_id: int, turn_id: int) -> None:
         """This job's turn is no longer the action's (cancelled and edited
@@ -1640,17 +1768,6 @@ class RevisionJob:
             args={"action_id": action_id, "turn_id": current},
             queueing_lock=revise_queueing_lock(action_id),
         )
-
-    async def _turn_text(self, account_id: int, turn_id: int) -> str | None:
-        async with self._sf() as session:
-            text: str | None = await session.scalar(
-                select(ControlTurn.text).where(
-                    ControlTurn.id == turn_id,
-                    ControlTurn.account_id == account_id,
-                    ControlTurn.role == "owner",
-                )
-            )
-        return text
 
     async def _still_revising(
         self, session: AsyncSession, before: _Revising, action_id: int, turn_id: int
@@ -1678,21 +1795,27 @@ class RevisionJob:
         turn_id: int,
         text: str,
         outcome: DraftOutcome,
-    ) -> str:
+        *,
+        from_chat: bool,
+    ) -> RevisionResult:
         now = self._clock.now()
         dictated = before.origin is ActionOrigin.OWNER_DICTATED
+        owner = outcome.owner_result
+        assert owner is not None
         async with transaction(self._sf) as uow:
             session = uow.session
             if not await self._still_revising(session, before, action_id, turn_id):
                 logger.info("revision_stale", action_id=action_id)
-                return "stale"
-            assert outcome.result is not None
-            flags: dict[str, Any] | None = None if dictated else draft_flags(outcome.result)
-            base_message_id = None if dictated else outcome.base_message_id
-            if flags is not None and before.keeps_target:
+                return RevisionResult("stale")
+            flags: dict[str, Any] | None = None
+            base_message_id: int | None = None
+            if not dictated:
                 # The owner chose what this answers (PF-12): a revision keeps it.
-                flags[FLAG_TARGET] = before.target
-                base_message_id = before.base_message_id
+                target = before.target if before.keeps_target else outcome.target
+                flags = owner_draft_flags(owner, mode=before.message_mode, target=target)
+                base_message_id = (
+                    before.base_message_id if before.keeps_target else outcome.base_message_id
+                )
             applied = await lifecycle.apply_new_version(
                 session,
                 account_id=before.account_id,
@@ -1708,9 +1831,11 @@ class RevisionJob:
             )
             status = applied.status
             if status in {lifecycle.VersionStatus.TOO_LONG, lifecycle.VersionStatus.EMPTY}:
-                await self._ask_again(session, before, action_id, text, status, now)
-                return status.value
-            if status is lifecycle.VersionStatus.APPLIED:
+                if from_chat:
+                    await self._back_to_card(session, before, action_id, now)
+                else:
+                    await self._ask_again(session, before, action_id, text, status, now)
+            elif status is lifecycle.VersionStatus.APPLIED:
                 # The card shows the previous version now: until the new one
                 # is presented (a long one with its full text above a new
                 # card), it counts as not shown (QA B1). Card bookkeeping only.
@@ -1725,8 +1850,37 @@ class RevisionJob:
                     await self._cards.show_new_version(action_id)
 
                 after_commit(session, show)
-        logger.info("revision_finished", action_id=action_id, status=status.value)
-        return status.value
+        logger.info(
+            "revision_finished", action_id=action_id, status=status.value, from_chat=from_chat
+        )
+        if status is lifecycle.VersionStatus.APPLIED:
+            return RevisionResult(
+                "revised",
+                version=applied.version,
+                word_count=outcome.word_count,
+                bounds_met=outcome.bounds_met,
+                bounds_retry=outcome.bounds_retry,
+            )
+        if status is lifecycle.VersionStatus.TOO_LONG:
+            return RevisionResult("too_long")
+        if status is lifecycle.VersionStatus.EMPTY:
+            return RevisionResult("empty")
+        return RevisionResult("stale")
+
+    async def _back_to_card(
+        self, session: AsyncSession, before: _Revising, action_id: int, now: datetime
+    ) -> None:
+        """A chat revision that cannot become a version: the same version's
+        card is back (no Edit question is opened: the owner did not tap Edit)."""
+        token = await lifecycle.revision_failed(
+            session,
+            account_id=before.account_id,
+            action_id=action_id,
+            expected_version=before.version,
+            now=now,
+        )
+        if token is not None:
+            self._cards.sync_after_commit(session, action_id)
 
     async def _ask_again(
         self,
@@ -1801,14 +1955,21 @@ class RevisionJob:
         after_commit(session, announce)
 
     async def _failed(
-        self, before: _Revising, action_id: int, turn_id: int, outcome: DraftOutcome
-    ) -> str:
+        self,
+        before: _Revising,
+        action_id: int,
+        turn_id: int,
+        status: str,
+        error_class: str | None,
+        from_chat: bool,
+    ) -> RevisionResult:
         """The run did not produce a usable text (refused, invalid, no
-        consent, over budget, …): the previous version's card is back."""
+        consent, over budget, …): the previous version's card is back. The
+        owner is told here after Edit; from the chat, the assistant says it."""
         async with transaction(self._sf) as uow:
             session = uow.session
             if not await self._still_revising(session, before, action_id, turn_id):
-                return "stale"
+                return RevisionResult("stale")
             token = await lifecycle.revision_failed(
                 session,
                 account_id=before.account_id,
@@ -1820,14 +1981,16 @@ class RevisionJob:
                 account_id = before.account_id
 
                 async def announce(_: async_sessionmaker[AsyncSession]) -> None:
-                    await self._cards.notify(account_id, REVISION_FAILED_TEXT)
+                    if not from_chat:
+                        await self._cards.notify(account_id, REVISION_FAILED_TEXT)
                     await self._cards.sync(action_id)
 
                 after_commit(session, announce)
         logger.info(
             "revision_failed",
             action_id=action_id,
-            status=outcome.status.value,
-            error_class=outcome.error_class,
+            status=status,
+            error_class=error_class,
+            from_chat=from_chat,
         )
-        return "failed"
+        return RevisionResult("failed", error_class=error_class or status)

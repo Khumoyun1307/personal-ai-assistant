@@ -25,7 +25,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from pydantic import ValidationError
 from sqlalchemy import func, select
@@ -61,7 +61,9 @@ from assistant.agent.draft_context import (
 from assistant.agent.draft_owner_schemas import (
     OwnerDraftMode,
     OwnerDraftResult,
+    OwnerRevisionResult,
     WordBounds,
+    output_model_for,
     validate_owner_draft,
     word_count,
 )
@@ -158,6 +160,48 @@ class DraftOutcome:
             return self.owner_result.text
         return self.result.text if self.result is not None else None
 
+    @property
+    def revision_kind(self) -> str | None:
+        """A revision's kind (`replacement` / `instruction`), whichever
+        prompt wrote it; None for a new draft."""
+        if isinstance(self.owner_result, OwnerRevisionResult):
+            return self.owner_result.revision_kind
+        if self.result is not None and self.result.revision_kind != "new":
+            return self.result.revision_kind
+        return None
+
+
+RevisionStatus = Literal["revised", "failed", "stale", "too_long", "empty"]
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionResult:
+    """What one card revision did (PF-13): `revised` - the same action has
+    a new version (`version`) awaiting approval; `failed` - no usable text,
+    the card is back at its version; `stale` - the card moved on meanwhile
+    (cancelled, outdated, expired, or another revision); `too_long` /
+    `empty` - the text could not become a version, the card is back at its
+    version. Content-free."""
+
+    status: RevisionStatus
+    version: int | None = None
+    word_count: int | None = None
+    bounds_met: bool | None = None
+    bounds_retry: bool = False
+    error_class: str | None = None
+
+
+class CardReviser(Protocol):
+    """The card revision machinery (`telegram/control/approvals.py::
+    RevisionJob`) for `revise_draft` (PF-13): revises the action that is
+    `revising` with the owner turn `turn_id` on record, through the same
+    path as the card's Edit button (A18), and says what happened. Never
+    sends: a new version still needs the owner's Approve."""
+
+    async def revise_from_chat(
+        self, action_id: int, turn_id: int, *, bounds: WordBounds | None
+    ) -> RevisionResult: ...
+
 
 @dataclass(frozen=True, slots=True)
 class _OwnerAsk:
@@ -169,6 +213,7 @@ class _OwnerAsk:
     answered_message_id: int | None
     revise_action_id: int | None
     bounds: WordBounds | None
+    after_edit: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,7 +312,11 @@ class Drafter:
         """A revision of a card being edited (S04.3 calls it; P2-T08): the
         action must still be `revising` with this owner turn as its revision
         message. The application, not this run, decides which text becomes
-        the new version (a `replacement` keeps the owner's words verbatim)."""
+        the new version (a `replacement` keeps the owner's words verbatim).
+
+        Since PF-13 the card's revisions run `draft_owner` mode `revise`
+        (`RevisionJob`, A18); this `draft_reply.v1` revision is kept, with
+        its tests, for a rollback of that switch."""
         return await self._run(
             _Request(
                 account_id,
@@ -283,13 +332,15 @@ class Drafter:
         *,
         account_id: int,
         conversation_id: int,
-        owner_run_id: int,
+        owner_run_id: int | None = None,
         mode: OwnerDraftMode = "reply",
         instruction: str | None = None,
         guidance: str | None = None,
         run_tainted: bool = False,
         answered_message_id: int | None = None,
         revise_action_id: int | None = None,
+        revise_turn_id: int | None = None,
+        after_edit: bool = False,
         bounds: WordBounds | None = None,
     ) -> DraftOutcome:
         """A draft the owner asked for (PF-10), with `draft_owner`: never
@@ -302,17 +353,35 @@ class Drafter:
         action `revise_action_id` of this chat (its text is loaded here,
         never taken from the caller). With `bounds`, a draft outside the word
         range is written once more with its count fed back; the closer one
-        is returned, its count and `bounds_met` on the outcome."""
+        is returned, its count and `bounds_met` on the outcome.
+
+        A card revision (PF-13, A18: the Edit button and `revise_draft`
+        alike) names the owner turn on record, `revise_turn_id` (trigger
+        `revise:action:{id}:turn:{turn}`); `after_edit` says the owner
+        typed it after Edit, so it may be the whole new text."""
         if guidance is not None and run_tainted:
             raise ValueError("tainted runs cannot supply draft guidance")
         if (mode == "revise") != (revise_action_id is not None):
             raise ValueError("a revision, and only a revision, names the action it revises")
-        ask = _OwnerAsk(mode, instruction, guidance, answered_message_id, revise_action_id, bounds)
-        trigger = (
-            f"draft:run:{owner_run_id}:action:{revise_action_id}"
-            if revise_action_id is not None
-            else f"draft:run:{owner_run_id}:conv:{conversation_id}"
+        if revise_turn_id is not None and revise_action_id is None:
+            raise ValueError("only a revision has a revision turn")
+        if (owner_run_id is None) == (revise_turn_id is None):
+            raise ValueError("an owner draft comes from an owner run or a card's revision turn")
+        ask = _OwnerAsk(
+            mode,
+            instruction,
+            guidance,
+            answered_message_id,
+            revise_action_id,
+            bounds,
+            after_edit=after_edit,
         )
+        if revise_turn_id is not None:
+            trigger = f"revise:action:{revise_action_id}:turn:{revise_turn_id}"
+        elif revise_action_id is not None:
+            trigger = f"draft:run:{owner_run_id}:action:{revise_action_id}"
+        else:
+            trigger = f"draft:run:{owner_run_id}:conv:{conversation_id}"
         return await self._run(
             _Request(
                 account_id,
@@ -440,6 +509,7 @@ class Drafter:
                     answered_message_id=owner.answered_message_id,
                     current_text=current_text,
                     bounds=owner.bounds,
+                    after_edit=owner.after_edit,
                 )
                 context = build_draft_owner(
                     prompt=prompt,
@@ -567,7 +637,8 @@ class Drafter:
         inputs = prepared.owner
         assert inputs is not None
         request = self._request(prepared)
-        first, calls = await self._parse_owner(request)
+        schema = output_model_for(inputs.mode)
+        first, calls = await self._parse_owner(request, schema)
         if isinstance(first, DraftOutcome):
             return first, calls
         bounds = inputs.bounds
@@ -592,7 +663,7 @@ class Drafter:
                 ),
             ),
         )
-        second, more = await self._parse_owner(again)
+        second, more = await self._parse_owner(again, schema)
         candidates = [first] if isinstance(second, DraftOutcome) else [first, second]
         best = min(reversed(candidates), key=lambda draft: bounds.distance(word_count(draft.text)))
         return self._owner_outcome(inputs, best, retried=True), calls + more
@@ -634,7 +705,7 @@ class Drafter:
         )
 
     async def _parse_owner(
-        self, request: LLMRequest
+        self, request: LLMRequest, schema: type[OwnerDraftResult]
     ) -> tuple[OwnerDraftResult | DraftOutcome, int]:
         """One structured `draft_owner` call (one larger-output retry after
         truncation): a validated result, or the outcome that says why not.
@@ -642,13 +713,11 @@ class Drafter:
         calls = 0
         try:
             calls += 1
-            response = await self._llm.parse(request, OwnerDraftResult)
+            response = await self._llm.parse(request, schema)
             larger = min(request.max_output_tokens * 2, self._config.max_output_tokens_ceiling)
             if response.stop_reason is StopReason.MAX_TOKENS and larger > request.max_output_tokens:
                 calls += 1
-                response = await self._llm.parse(
-                    replace(request, max_output_tokens=larger), OwnerDraftResult
-                )
+                response = await self._llm.parse(replace(request, max_output_tokens=larger), schema)
             if response.stop_reason in {StopReason.REFUSAL, StopReason.CONTENT_FILTER}:
                 return DraftOutcome(
                     DraftStatus.REFUSED, error_class=response.stop_reason.value
@@ -659,7 +728,7 @@ class Drafter:
                 ), calls
             if response.parsed is None:
                 return DraftOutcome(DraftStatus.INVALID, error_class="invalid_output"), calls
-            validated = OwnerDraftResult.model_validate(response.parsed.model_dump())
+            validated = schema.model_validate(response.parsed.model_dump())
             checked = validate_owner_draft(validated)
             if not checked.valid:
                 return DraftOutcome(DraftStatus.INVALID, error_class=checked.error_class), calls

@@ -18,7 +18,7 @@ from sqlalchemy import select
 from assistant.conversations.models import Message
 from tests.integration.business_env import business_message, deliver
 from tests.integration.test_approvals import start_edit
-from tests.scenarios.p2_drive import Scenario, draft_result, m04_environment, run_queued
+from tests.scenarios.p2_drive import Scenario, m04_environment, revision_result, run_queued
 
 pytestmark = pytest.mark.integration
 
@@ -77,7 +77,7 @@ async def test_a_revision_keeps_an_explicit_target_and_re_anchors_the_default(
         draft_flags=owner_flags(target, mode),
         trigger_turn_id=None,
     )
-    s.fake.parsed.append(draft_result(text="Synthetic shorter reply.", revision_kind="instruction"))
+    s.fake.parsed.append(revision_result(text="Synthetic shorter reply."))
     await start_edit(s, row, "Synthetic: shorter please.")
     assert await run_queued(s, "replies.revise") == 1
     revised = await s.action(row.id)
@@ -88,7 +88,5 @@ async def test_a_revision_keeps_an_explicit_target_and_re_anchors_the_default(
     )
     assert revised.base_message_id == named[kept]
     assert revised.draft_flags is not None
-    if target == "newest":
-        assert "target" not in revised.draft_flags  # a revision's own flags, as before
-    else:
-        assert revised.draft_flags["target"] == target
+    # PF-13: revisions run `draft_owner`, whose flags always name the target.
+    assert revised.draft_flags["target"] == target
