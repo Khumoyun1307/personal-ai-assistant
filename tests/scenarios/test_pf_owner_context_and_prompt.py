@@ -123,6 +123,32 @@ async def test_the_working_context_does_not_change_taint(s: Scenario) -> None:
     assert second.tainted == any(carries_third_party(t) for t in [*history, current])
 
 
+async def test_an_edit_button_turn_names_its_card_in_the_next_run(s: Scenario) -> None:
+    """The owner's Edit-button words are stored with Batch A's refs shape
+    (`telegram/control/approvals.py`, PF-01: every value a list); the next
+    run's history note names that card, not only the chat."""
+    row = await s.propose()
+    async with s.env.factory() as session:
+        session.add(
+            ControlTurn(
+                account_id=s.account_id,
+                role="owner",
+                text="Synthetic edit instruction.",
+                refs={
+                    "conversation_ids": [s.conversation_id],
+                    "revision_action_id": [row.id],
+                },
+            )
+        )
+        await session.commit()
+    await plain_turn(s)
+
+    texts = [i for i in owner_requests(s)[-1].items if isinstance(i, TextItem)]
+    [earlier] = [t for t in texts if t.text.startswith("Synthetic edit instruction.")]
+    assert f"chats {s.conversation_id}" in earlier.text
+    assert f"card {row.id}" in earlier.text
+
+
 # ------------------------------------------------------------ PF-14
 async def test_the_active_prompt_carries_identity_and_routing(s: Scenario) -> None:
     await plain_turn(s, "Synthetic: what is your name?")

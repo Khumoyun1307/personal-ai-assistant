@@ -90,7 +90,8 @@ def build_owner_request(
     items += [
         TextItem(
             role="user" if past.role == "owner" else "assistant",
-            text=render_history_turn(past),
+            # The ids note only with `ai_managed`, as the live-cards block.
+            text=render_history_turn(past) if managed_allowed else render_turn(past),
             provenance=Provenance.MANAGED if past.contains_managed else Provenance.OWNER_CONTROL,
         )
         for past in history
@@ -183,9 +184,12 @@ def render_refs(refs: Mapping[str, Any] | None) -> str | None:
         for key, label in _REF_LISTS
         if (ids := _ids(refs.get(key)))
     ]
+    # Batch A's Edit-button turn stores a list (PF-01); a bare int is read too.
     card = refs.get("revision_action_id")
-    if isinstance(card, int) and not isinstance(card, bool):
-        parts.append(f"card {card}")
+    cards = [card] if isinstance(card, int) and not isinstance(card, bool) else _ids(card)
+    if cards:
+        label = "card" if len(cards) == 1 else "cards"
+        parts.append(f"{label} {', '.join(str(i) for i in cards)}")
     if not parts:
         return None
     return f"(application note, not part of the message: this turn concerned {'; '.join(parts)})"

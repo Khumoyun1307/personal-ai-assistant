@@ -141,7 +141,8 @@ def test_refs_render_as_ids_only_and_ignore_anything_else() -> None:
         {
             "conversation_ids": [7, 9],
             "contact_ids": [3],
-            "revision_action_id": 41,
+            # Batch A's Edit-button turn writes a list (approvals.py, PF-01).
+            "revision_action_id": [41],
             "something_else": [SECRET_NAME],
             "alert_kind": SECRET_DRAFT,
         }
@@ -152,6 +153,17 @@ def test_refs_render_as_ids_only_and_ignore_anything_else() -> None:
     assert "card 41" in note
     assert SECRET_NAME not in note
     assert SECRET_DRAFT not in note
+
+
+def test_a_revision_turn_names_its_card_in_either_shape() -> None:
+    assert render_refs({"revision_action_id": [41]}) == (
+        "(application note, not part of the message: this turn concerned card 41)"
+    )
+    assert "cards 41, 42" in (render_refs({"revision_action_id": [41, 42]}) or "")
+    # A bare integer is still read; a string or a bool never is.
+    assert "card 41" in (render_refs({"revision_action_id": 41}) or "")
+    assert render_refs({"revision_action_id": "41"}) is None
+    assert render_refs({"revision_action_id": [True]}) is None
 
 
 def test_refs_with_no_ids_render_nothing() -> None:
@@ -212,6 +224,20 @@ def test_no_block_without_ai_managed_even_when_facts_are_given() -> None:
     `ai_managed` not even their ids are shown (defence in depth, inv. 9)."""
     context = build(managed_allowed=False, live_cards=[card()])
     assert not any("action 41" in item.text for item in context.items)
+
+
+def test_no_refs_note_without_ai_managed() -> None:
+    """Edit-button turns (PF-01) are not managed content but carry chat and
+    card ids; without `ai_managed` those ids are not shown either."""
+    edit_turn = turn(
+        text="Synthetic edit instruction",
+        refs={"conversation_ids": [7], "contact_ids": [3], "revision_action_id": [41]},
+    )
+    context = build(managed_allowed=False, history=[edit_turn])
+    [earlier] = [item for item in context.items if "Synthetic edit instruction" in item.text]
+    assert earlier.text == "Synthetic edit instruction"
+    shown = build(history=[edit_turn])
+    assert any("card 41" in item.text for item in shown.items)
 
 
 # ------------------------------------------------------------ taint unchanged

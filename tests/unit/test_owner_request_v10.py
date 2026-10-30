@@ -55,7 +55,7 @@ def test_v10_states_the_identity() -> None:
 
 def test_v10_routes_by_intent_and_never_refuses_an_explicit_request() -> None:
     rule18 = _rule(V10, 18)
-    assert "always carried out with `propose_reply`" in rule18
+    assert "always carried out (with `propose_reply`, or with `propose_message` as below)" in rule18
     assert 'never answer it with "no reply needed"' in rule18
     assert "`answered_message_id`" in rule18
     assert "`get_conversation`" in rule18
