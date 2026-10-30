@@ -486,8 +486,9 @@ def test_owner_drafting_budget_rule(
     """PF-16b: like the agent mode, a full owner_drafting run starts only on the
     expected cost of a trial at the same efforts, under the in-flight cap."""
     run = ["run", "owner_drafting", "--model", LUNA]
-    # Settings do not load here: owner_request sends no effort, draft_owner the default.
-    label = "effort-none-draft-low"
+    # Settings do not load here: owner_request sends no effort, draft_owner the
+    # product default (medium since D10).
+    label = "effort-none-draft-medium"
 
     assert cli.main(run) == cli.EXIT_REFUSED  # never without --live
     assert cli.main([*run, "--estimate-only", "--limit", "1"]) == 0

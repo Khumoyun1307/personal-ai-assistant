@@ -70,10 +70,12 @@ class Settings(BaseSettings):
     llm_default_model: str = "gpt-6-luna"
     llm_monthly_budget_usd: Decimal | None = Field(default=None, gt=0)
     #: Reasoning effort for owner requests (ARCHITECTURE §7.4). Empty sends no
-    #: effort at all, for a model that does not accept the parameter.
+    #: effort at all, for a model that does not accept the parameter. `medium`
+    #: since owner decision D10 (2026-10-30 owner_drafting eval: 27/31 at
+    #: medium vs 26/31 at low, about +3 % cost).
     llm_owner_request_effort: (
         Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
-    ) = "low"
+    ) = "medium"
     #: Reasoning effort for `summarize` runs (S03.2); empty sends none.
     llm_summarize_effort: (
         Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
@@ -107,9 +109,11 @@ class Settings(BaseSettings):
     monitor_debounce_seconds: int = Field(default=20, ge=5, le=300)
     mark_uncertain_after_seconds: int = Field(default=120, ge=120)
     connection_stale_alert_minutes: int = Field(default=30, ge=1)
+    #: The draft writer's effort (`draft_reply.v1` and `draft_owner`): `medium`
+    #: since D10, with `owner_request` (the eval above).
     llm_draft_reply_effort: (
         Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
-    ) = "low"
+    ) = "medium"
     llm_triage_effort: (
         Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
     ) = "low"
