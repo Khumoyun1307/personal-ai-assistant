@@ -6,15 +6,16 @@
 
 The 2026-10-18 LV-16 observation was five back-to-back sends, five successes in about 1.3 s, no 429. It did not exercise the designed ~1 msg/s per-chat throttle or establish that limits are absent. PQ-03 remains open ([TF §12 LV-16, §13 PQ-03](../../../TELEGRAM_FEASIBILITY.md#12-live-validation-results)).
 
-TL uses **Alviro's current production business connection**, into **the owner's second-account chat only**, already in Alviro's scope and `PROBE_ALLOWED_CHAT_IDS`. Never F1's or F2's chats: those are real people. The dev bot has no business connection and cannot run this test (P3-T168; M02 item 5, M03 handoff, P2-O7). Owner is present; client steps remain the owner's. Substitute runtime identifiers privately; publish aliases only. Agents never open configuration, `.env`, `var/`, backups or real chat data. Console is content-free, **never `--verbose`**. No polling/listen: the production server remains the sole poller.
+TL uses **Alviro's current production business connection**, into **the owner's second-account chat only**. Confirm Alviro's scope and the enforced production-token allow-list through the fourth gate below; neither is assumed. Never F1's or F2's chats: those are real people. The dev bot has no business connection and cannot run this test (P3-T168; M02 item 5, M03 handoff, P2-O7). Owner is present; client steps remain the owner's. Obtain runtime identifiers only through that gate's approved content-free source, use them privately and publish aliases only. Agents never open configuration, `.env`, `var/`, backups or real chat data. Console is content-free, **never `--verbose`**. No polling/listen: the production server remains the sole poller.
 
-All three gates must be evidenced before any send. **If any is missing, the run does not happen and LV-16 stays incomplete.**
+All four gates must be evidenced before any send. **If any is missing, the run does not happen and LV-16 stays incomplete.**
 
 | Gate | Required evidence |
 |---|---|
 | Tool change merged before D+6 | TL's merged change makes `burst` stop at the first `TelegramAPIError`, with zero subsequent sends, and adds `--interval SECONDS` between sends. Confirm the probe checkout contains that commit and its focused CI checks pass; no count-one workaround substitutes for it |
 | Production allowance approved | Owner-approved AGENTS §9 wording permits non-polling `burst` under `--prod-token` for this allow-listed synthetic run; the merged tool also allows `burst` under that flag. Today only `me` and `getfile` are allowed. TL brings the wording/tooling path with group D; this runbook grants no exception |
 | Go-ahead for this run | Owner's dated go-ahead explicitly covers Alviro LV-16 in the D+6 window, target scope and bounded counts. OD-27 assigns the executor; it is not a standing production-run approval |
+| Safe identifiers and enforced allow-list | The approved tool change or allowance names a content-free source for both Alviro's current `business_connection_id` and the second-account `chat_id` (for example, an explicitly permitted prod-token `connection` summary or a content-free `p3-verify` line). TL obtains both values only there and confirms the chat is in Alviro's scope. The merged tool must also confirm, before any send, that this target chat belongs to the allow-list it actually enforces in `--prod-token` mode; never assume it reads the dev probe's allow-list. Record source/approval references and membership yes/no, with aliases only. Today prod-token `connection` is refused. Without an approved source for both identifiers or the tool's pre-send membership confirmation, the run does not happen |
 
 ## 2. Timing and side-effect gates
 

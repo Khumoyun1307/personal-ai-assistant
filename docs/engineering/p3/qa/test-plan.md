@@ -51,7 +51,7 @@ Dates are targets from D0 = 2026-11-02, not permission to skip a guard. Record t
 | Enable 4, D+7 | CP-A, CP-G, clean shadow including Pause buttons, notice delivered ≥24 h, LV-16 record accepted | Owner enables send and passed languages only; exact cumulative release guards and trial-check PASS | Owner/TL; README §6; LV-16 runbook §5 |
 | CP-L, D+8 | Green twins on `main`; approved windows, tools deployed | Shadow zero sends; J5 incl. three valid pause sources; J7 c/b/a; reminders/restart; owner export inspection; memory cards; non-vacuous restore; enable 5; evidence accepted | Owner/TL/SQ; LIVE-P3 §3.13 |
 | CP-T / T0, D+11 | CP-L; ≥3-day standing-delegation soak; daily checks; recorder ≥5 days | Three consecutive clean checks, standing delegation active with ≥1 succeeded reply, informed contact yes; release guards PASS; full flag/language/setting set frozen; T0 record | Owner/TL/SQ; LIVE-P3 §3.10 |
-| CP-X, after 14 days | Trial from latest T0, frozen set and cumulative checks | Zero wrong-recipient/duplicate/out-of-policy sends; nonzero succeeded autonomy; two weekly ratings ≥4; both alert-usefulness views ≥70%; availability ≥99%; R1 #7 every class; DOCS-EXIT and owner review | Owner/TL; LIVE-P3 §3.11–3.13; README §5 |
+| CP-X, after 14 days | Trial from latest T0, frozen set and cumulative checks | Zero wrong-recipient/duplicate/out-of-policy sends; succeeded autonomy recorded; zero leaves the autonomy half NOT EVALUABLE and the owner decides; two weekly ratings ≥4; immediate alerts not marked “not useful” ≥70%; record both `alerts` and `alerts_core` denominators from LIVE-P3 §3.11; availability ≥99%; R1 #7 every class; DOCS-EXIT and owner review | Owner/TL; LIVE-P3 §3.11–3.13; README §5 |
 
 R1 never implies enable 4 or milestone `done`. Used prompts stay immutable; a changed candidate needs new eval/rating evidence. A trial FAIL follows the brake, fix and clock-restart procedure in [LIVE-P3 §3.12](../specs/LIVE-P3.md#312-stop-the-line-rule). The overlap variant needs a separate owner decision; this package uses the ≥3-day soak default.
 
@@ -65,7 +65,7 @@ Every skeleton has a full body and an observed failure point. Collection/fixture
 
 ### 4.1 QA-S6 (`m06/`, QJ1)
 
-Source: QA-S6 §2, §3.3–3.8. B19/B20 are included from §3.4/§4 despite the stale B18 inventory ceiling in §5.
+Source: QA-S6 §2, §3.3–3.8. B19/B20 are included from §3.4/§4 despite the stale B18 inventory ceilings in §2 and §5 item 1.
 
 | ID | File / exact test name | Turns green | Other needs |
 |---|---|---|---|
@@ -225,6 +225,8 @@ Source: QA-X §2, §3.3–3.7b. Keep every listed row; the prose count of 11 is 
 
 Use a fresh numeric block per window, with one or two prefix digits plus a two-digit suffix: prefix `P3-60`, message `P3-6001 Synthetic question…`, extracted number `6001`. This fits OPS-TV3 §3.8's `^P[23]-[0-9]{1,2}$` prefix and one/two suffix digits. No leading names, links or production identifiers. Body text is synthetic; published evidence stores only the number ([OPS-TV3 §3.6, §3.8](../specs/OPS-TV3.md#38-script-prefix---expect-numbers---direction----answers)).
 
+The checklist commands are authoritative for the prefix: shadow uses `P3-60` and J5 uses `P3-61`, with four-digit message numbers; LIVE-P3's stale `P3-6` examples are tracked in §7.
+
 | Block | Allocation |
 |---|---|
 | `P3-60` | Shadow: 6001–6007; unused 6008–6099 for a later, explicitly logged retry |
@@ -248,8 +250,10 @@ Only TL applies these after review; QA-P3 edits no file outside this folder. PR 
 
 | File / section | Gap | Exact proposed text or replacement |
 |---|---|---|
-| `tools/probe/probe.py::cmd_burst` and `--prod-token` gate; OWN-LV16 | TL item due before D+6: current burst continues after a 429 and has no pacing; production-token mode permits only `me`/`getfile` | Merge first-`TelegramAPIError` stopping (zero later sends) and `--interval SECONDS` between sends. Allow non-polling `burst` under `--prod-token` only after the owner approves AGENTS §9 wording with group D. Interface: `just probe-prod burst <connection_id> <chat_id> <text> --count N --interval S`. Require the owner's go-ahead for the Alviro run. Any missing gate means no run, LV-16 incomplete and enable 4 blocked; QA-P3 changes no probe code |
-| `specs/QA-S6.md` §2, §5.1 | B19/B20 required in §3.4/§4, omitted by B18 ceiling | Replace `B1–B18` with `B1–B20` in both inventories. Append: “There are 65 scenario IDs, plus the J5 journey, helper self-tests and hygiene.” |
+| `tools/probe/probe.py::cmd_burst` and `--prod-token` gate; OWN-LV16 | TL item due before D+6: current burst continues after a 429 and has no pacing; production-token mode permits only `me`/`getfile`; safe identifier source and enforced prod-token allow-list are unconfirmed | Merge first-`TelegramAPIError` stopping (zero later sends) and `--interval SECONDS` between sends. Allow non-polling `burst` under `--prod-token` only after the owner approves AGENTS §9 wording with group D. Name in the approved tool change or allowance a content-free source for Alviro's current connection ID and the second-account chat ID, such as an explicitly permitted prod-token connection summary or a content-free p3-verify line; agents obtain the values only there. Before any send the merged tool must confirm membership in the allow-list it actually enforces in prod-token mode. Interface: `just probe-prod burst <connection_id> <chat_id> <text> --count N --interval S`. Require the owner's go-ahead for the Alviro run. Any missing gate means no run, LV-16 incomplete and enable 4 blocked; QA-P3 changes no probe code |
+| `specs/QA-S6.md` §2 (`test_m06_s062_autonomy.py` row) and §5 item 1 | B19/B20 required in §3.4/§4, omitted by B18 ceiling | Replace `B1–B18` with `B1–B20` in both inventories. Append: “There are 65 scenario IDs, plus the J5 journey, helper self-tests and hygiene.” |
+| `specs/LIVE-P3.md` §3.4 V7(b) | Stale `awaiting G1` names no unit in README §3 and misses C17's marker | Replace the marker list with `awaiting M6-TAKE` (C17) and `awaiting M6-PAUSE` (C8, C7, C14). Retain V7(a)'s requirement that C17 and C8 pass in CI at the deployed SHA; xfail is not a pass |
+| `specs/LIVE-P3.md` §3.5 and §3.8 | `P3-6nn` and `script P3-6` examples cannot extract QA's four-digit marker numbers under OPS-TV3 §3.8 | Use the `P3-60` prefix in §3.5 and `P3-61` in §3.8, with four-digit numbers (6001… and 6101…). Commands: `script P3-60 --expect <four-digit-number-list>` for shadow and `script P3-61 --expect <four-digit-number-list>` for J5; retain the checklist's direction and `--answers` options. QA checklist commands are authoritative for the prefix |
 | `decisions.md` §B10 P3-T156, append correction | Count says about 63 M06 / 11 cross-team | “Correction to P3-T156: QA-S6 §3 has 65 scenario IDs plus J5; QA-S7 has 46; QA-X has 14. No scenario is dropped.” |
 | `README.md` §3/§5; `WORKFLOW.md` §7; QA-S7 J4; P3-T158 | M7-SSUM may land after R1 while R1 requires all scenarios green | Pending ruling, append: “QA-S7 J4 cannot be counted green while M7-SSUM is unmerged. The post-R1 lane and the all-scenarios-green R1 criterion require an explicit TL reconciliation; QA grants no waiver.” |
 | `IMPLEMENTATION_PLAN.md` §10, after RG table | P3 test names/extensions and C9 not yet traced there | Append: “P3 regression traceability (planned): see docs/engineering/p3/qa/regression-matrix.md for RG-13/14/15/16, extensions to RG-05/06/08/09/10/11/17/18/19/20/21, exact named tests, owning units and scenario IDs. RG-20 also retains tests/unit/test_gateway_and_render.py::test_partial_control_delivery_is_uncertain_and_never_retried and tests/unit/test_agent_channel.py::test_partial_control_reply_is_reported_uncertain_without_replay (GW-ESC C9, P2 #133). Planned or xfailed coverage is never green evidence.” |

@@ -23,9 +23,11 @@ Three packages under `tests/scenarios/`, each written strict-xfail first (`reaso
 
 | Package | Spec | Owner | Scenarios | Covers |
 |---|---|---|---|---|
-| `m06/` | [QA-S6](../specs/QA-S6.md) | QJ1 | A1–A14, B1–B20 (65 IDs), C1–C17, D1–D4, E1–E6, F1–F4, the J5 journey, helper self-tests, hygiene | Every IMPLEMENTATION_PLAN §8 named test (S06.1–S06.4), the RG-13, RG-14 and RG-19 scenario parts, J5, J8, J9, J10, J12 |
-| `m07/` | [QA-S7](../specs/QA-S7.md) | QE1 | G1–G13, H1–H10, J1–J9, K1–K9, N1–N4, L1, helper self-tests, hygiene | Every IMPLEMENTATION_PLAN §9 named test (S07.1–S07.4), the RG-15, RG-16 and RG-20 scenario parts, J7 with both outcomes and the window-closed path |
+| `m06/` | [QA-S6](../specs/QA-S6.md) | QJ1 | A1–A14, B1–B20 (65 IDs), C1–C17, D1–D4, E1–E6, F1–F4, the J5 journey, helper self-tests, hygiene | The IP §8 scenario tests owned by this package (S06.1–S06.4), the RG-13, RG-14 and RG-19 scenario parts, J5, J8, J9, J10, J12 |
+| `m07/` | [QA-S7](../specs/QA-S7.md) | QE1 | G1–G13, H1–H10, J1–J9, K1–K9, N1–N4, L1, helper self-tests, hygiene | The IP §9 scenario tests owned by this package (S07.1–S07.4), the RG-15, RG-16 and RG-20 scenario parts, J7 with both outcomes and the window-closed path |
 | `p3_cross/` | [QA-X](../specs/QA-X.md) | SQ | X1a/b, X2a/b, X3a/b, X4a/b/c, X5a/b/c, X6a, X7a (14 IDs), helper self-tests, hygiene | Delegation + nudge, takeover vs nudge, `/pause` vs reminders, deletion across delegations, tasks and automations (R1 #7), restore with a delegation, consent revoke and Ignore mode across both teams |
+
+IP §8 S06.1's post-restore ending of delegations and named chat/contact deletion ending their delegations belong to QA-X X5 and X4 respectively; IP §9 S07.2's semantic-expectation refusal belongs to M7-FUP's unit test (FUP-1), outside QA-S7's scenario ownership.
 
 Rules every package follows (the specs hold the detail):
 

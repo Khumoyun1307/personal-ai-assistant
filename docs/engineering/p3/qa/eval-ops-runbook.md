@@ -26,18 +26,18 @@ Commands below are templates for the later operator, not commands run by QA-P3. 
 
 ## 3. One approved run sequence
 
-1. Confirm native-reviewed IDs through the gate CLI only. Do not hand-edit the ledger or mark an item reviewed because it exists. Corrected items become confirmed only after DATA-FIX ships the correction. Ledger: `evals/reviews/autonomy.json`, separate from Assist `e2.json` (GATE-RUN §3.3).
+1. Confirm native-reviewed IDs through the gate CLI only. Record the owner's dated review reference in the evidence. Do not hand-edit the ledger or mark an item reviewed because it exists. Corrected items become confirmed only after DATA-FIX ships the correction. Ledger: `evals/reviews/autonomy.json`, separate from Assist `e2.json` (GATE-RUN §3.3).
 2. Verify frozen data and E4 minimums, estimate with the actual candidate and models. There must be no missing decoys or unmet E4 minimum. Estimate calls no model (EV-AUT §3.9; GATE-RUN §3.5).
 
 ```powershell
 $env:COMPOSE_PROJECT_NAME = 'tlevals'
-docker compose -f compose.dev.yml run --rm app uv run python -m evals.gate confirm <owner-reviewed-ids> --reviews evals/reviews/autonomy.json
+docker compose -f compose.dev.yml run --rm app uv run python -m evals.gate confirm --ids <owner-reviewed-id-ranges> --reviews evals/reviews/autonomy.json
 docker compose -f compose.dev.yml run --rm app uv run python -m evals verify
 docker compose -f compose.dev.yml run --rm app uv run python -m evals.e4
 docker compose -f compose.dev.yml run --rm app uv run python -m evals run autonomy --estimate-only --reviews evals/reviews/autonomy.json
 ```
 
-Once a report exists, add `--from <run-json>` to `confirm`, so IDs outside that run are refused. The CLI creates the ledger; if no owner confirmation exists, omit `--reviews` from the run rather than creating an empty file by hand (GATE-RUN §3.2–3.3).
+Once a run exists, add `--from <run-json>` to `confirm`, so IDs outside that run are refused. The CLI creates the ledger; if no owner confirmation exists, omit `--reviews` from the run rather than creating an empty file by hand (GATE-RUN §3.2–3.3).
 
 3. TL requests a go-ahead naming **limit-one**, run name, SHA, prompt version, configured Luna model, measured worst case and hard cap. The cap must cover the estimate and fit within the **remaining** approved phase budget. After approval, operator runs:
 
