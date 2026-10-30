@@ -12,7 +12,8 @@ ICR-2 (decisions §C): `next_actions` offers `draft_reply` only when
 `tool.propose_reply` is among the run's enabled flags **and** the drafter and
 approval cards are wired — `test_draft_reply_is_offered_with_the_flag_on_and_wired`,
 `test_draft_reply_is_not_offered_with_the_flag_off_even_when_wired`,
-`test_draft_reply_is_not_offered_with_the_flag_on_but_unwired`, and
+`test_draft_reply_is_not_offered_with_the_flag_on_but_unwired`,
+`test_draft_reply_is_offered_even_when_our_window_estimate_is_closed` (PF-05), and
 `test_the_owner_runtime_hands_its_flags_to_the_attention_list` (the one
 `runtime.py` line).
 """
@@ -309,14 +310,17 @@ async def test_draft_reply_is_not_offered_with_the_flag_on_but_unwired(env: Env)
     assert entry(outcome, a)["next_actions"] == ["open_panel"]
 
 
-async def test_draft_reply_is_not_offered_once_the_reply_window_closed(env: Env) -> None:
-    """The third ICR-2 condition (Viro on #92): flag on and wired, but the
-    contact's last message is more than 24 h old."""
+async def test_draft_reply_is_offered_even_when_our_window_estimate_is_closed(env: Env) -> None:
+    """PF-05 (P2-O20): an owner-approved send lets Telegram decide the window, so
+    the attention list offers `draft_reply` whatever our 24 h estimate says. The
+    flag and wiring conditions (the two tests above) still decide."""
     account, a, _ = await seed(env)
     await add_verdict(env, account, a, through=await newest(env, a))
     env.clock.advance(hours=25)
     outcome = await attention(env, account, flags=frozenset({PROPOSE_REPLY}), wired=True)
-    assert entry(outcome, a)["next_actions"] == ["open_panel"]
+    assert entry(outcome, a)["next_actions"] == ["draft_reply", "open_panel"]
+    unwired = await attention(env, account, flags=frozenset({PROPOSE_REPLY}), wired=False)
+    assert entry(unwired, a)["next_actions"] == ["open_panel"]
 
 
 async def test_the_owner_runtime_hands_its_flags_to_the_attention_list(env: Env) -> None:

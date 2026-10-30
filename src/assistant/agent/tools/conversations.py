@@ -327,12 +327,24 @@ GET_CONVERSATION = ToolDefinition(
 
 
 # ------------------------------------------------------------ resolve_contact
-#: No contact by that name: it may be someone mentioned inside a chat, so the
-#: model searches for it before saying nothing was found (S03.7 fix round,
-#: owner decision 2 of 2026-10-26; r21, r30 stopped here).
+#: No chat partner by that name: it may be someone mentioned inside a chat, so
+#: the model searches for it before saying nothing was found (S03.7 fix round,
+#: owner decision 2 of 2026-10-26; r21, r30 stopped here). The bot sees only
+#: the people the owner chats with through Telegram, never the phone's address
+#: book, so "saved contacts" would promise more than it can look at (PF-03).
 NO_CONTACT_NOTE = (
-    "No stored contact matches that name. It may be a person mentioned inside a chat: "
-    "search for it with search_messages across all chats before saying nothing was found."
+    "No chat partner matches that name among the chats the assistant observes (it cannot "
+    "see the phone's address book, only the Telegram profile names of people the owner chats "
+    "with). It may be a person mentioned inside a chat: search for it with search_messages "
+    "across all chats before saying nothing was found."
+)
+
+#: The top candidate is a guess (a short form of a name, or only the nearest
+#: names): the model asks, it never picks one on its own (PF-03, FR-DRF-08).
+WEAK_MATCH_NOTE = (
+    "These are guesses, not matches: the name did not match any chat partner for sure. Ask "
+    "the owner which chat they mean, naming the candidates, and use none of them (no "
+    "proposal, no note, no setting) until the owner confirms."
 )
 
 
@@ -360,12 +372,15 @@ async def resolve_contact_tool(ctx: ToolContext, args: ResolveContactArgs) -> To
             "name": name(m.entry.display_name),
             "username": name(m.entry.username),
             "match": m.kind,
+            "confidence": "weak" if m.is_weak else "match",
             "last_activity": local_time(m.entry.last_activity_at, account.timezone),
         }
         for m in matches
     ]
     data: dict[str, object] = {"candidates": candidates, "count": len(candidates)}
-    if len(candidates) > 1 and matches[0].kind == matches[1].kind:
+    if matches and matches[0].is_weak:
+        data["note"] = WEAK_MATCH_NOTE
+    elif len(candidates) > 1 and matches[0].kind == matches[1].kind:
         data["note"] = "Several contacts match equally: ask the owner which one they mean."
     if not candidates:
         data["note"] = NO_CONTACT_NOTE
@@ -385,9 +400,10 @@ async def resolve_contact_tool(ctx: ToolContext, args: ResolveContactArgs) -> To
 RESOLVE_CONTACT = ToolDefinition(
     name="resolve_contact",
     description=(
-        "Find which of the owner's contacts a name refers to (any script, typos "
-        "allowed). Returns ranked candidates with contact_id and conversation_id; when "
-        "several match equally, ask the owner instead of guessing."
+        "Find which of the owner's chat partners a name refers to (any script, typos and "
+        "nickname-style short forms allowed). Returns ranked candidates with contact_id and "
+        "conversation_id; when several match equally, or a candidate has confidence "
+        '"weak" (a guess), ask the owner instead of guessing.'
     ),
     args_model=ResolveContactArgs,
     capability=CapabilityClass.READ,
