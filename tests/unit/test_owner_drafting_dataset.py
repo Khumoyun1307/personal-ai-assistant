@@ -14,6 +14,7 @@ from evals.owner_drafting import (
     DATASET_PATH,
     OwnerDraftingCase,
     load_cases,
+    value_alternatives,
 )
 
 #: Every contact name the cases may use: invented for this set.
@@ -134,7 +135,9 @@ def test_cases_that_expect_no_card_forbid_the_card_tools() -> None:
 def test_the_plans_behaviours_are_each_pinned() -> None:
     by = {c.id: c for c in CASES}
     identity = [c for c in CASES if c.category == "identity"]
-    assert all("Alviro" in c.expect.reply_includes for c in identity)
+    assert all(
+        any("Alviro" in value_alternatives(v) for v in c.expect.reply_includes) for c in identity
+    )
     assert all("ChatGPT" in c.expect.reply_excludes for c in identity)
     cards = [c.expect.card for c in by.values() if c.expect.card is not None]
     assert any(card.answered is not None for card in cards)  # reply to a named message

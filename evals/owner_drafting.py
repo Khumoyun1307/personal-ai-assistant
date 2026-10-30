@@ -61,7 +61,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, Self, get_args
+from typing import Annotated, Any, Literal, Self, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
@@ -238,12 +238,27 @@ class CardExpectation(_Strict):
     fewer_words: bool
 
 
+#: One required value of the reply: a string, or (v1.1) a list of
+#: alternatives of which one must appear — the same value in another script
+#: (the name "Alviro" written in Cyrillic is just as right).
+ReplyValue = str | Annotated[tuple[Annotated[str, Field(min_length=1)], ...], Field(min_length=1)]
+
+
+def value_alternatives(value: ReplyValue) -> tuple[str, ...]:
+    return (value,) if isinstance(value, str) else value
+
+
+def value_label(value: ReplyValue) -> str:
+    """The dataset's own expected value(s), for a problem code."""
+    return "|".join(value_alternatives(value))
+
+
 class Expectation(_Strict):
     tools_called: tuple[str, ...]
     tools_not_called: tuple[str, ...]
     #: None: no card may be staged and the live card (if any) stays unchanged.
     card: CardExpectation | None
-    reply_includes: tuple[str, ...]
+    reply_includes: tuple[ReplyValue, ...]
     reply_excludes: tuple[str, ...]
     #: The reply states the live draft's exact word count.
     reply_states_word_count: bool
@@ -470,7 +485,11 @@ def check_case(case: OwnerDraftingCase, seen: Observed) -> tuple[str, ...]:
         else:
             problems += _card_problems(mine[-1], card_want, before)
     reply = fold(seen.reply)
-    problems += [f"reply:missing:{v}" for v in want.reply_includes if fold(v) not in reply]
+    problems += [
+        f"reply:missing:{value_label(v)}"
+        for v in want.reply_includes
+        if not any(fold(alt) in reply for alt in value_alternatives(v))
+    ]
     problems += [f"reply:contains:{v}" for v in want.reply_excludes if fold(v) in reply]
     if want.reply_states_word_count and before is not None:
         count = word_count(before.text)
