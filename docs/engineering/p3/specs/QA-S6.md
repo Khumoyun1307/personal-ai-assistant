@@ -5,7 +5,7 @@
 | **Unit** | QA-S6 — the M06 scenario package `tests/scenarios/m06/`: every IMPLEMENTATION_PLAN §8 named scenario test, the RG-13, RG-14 and RG-19 scenario parts, J5 automated end to end, J8, J9, J10 and the J12 panel row, plus the cross-cutting autonomy paths the plan does not name (shadow mode, supersede, revoke and disable, the late end, the bulk cancel paths, queued-job consent, the 24 h re-proposal, shareable-text isolation, the Pause button on every card, quiet-hours escalation, `list_delegations`). Scenarios that need both teams' flows are in [QA-X](QA-X.md) |
 | **Owner slot** | Josh / QJ1 (Claude), launched by Josh lead |
 | **Reviewer** | SQ (Codex, dispatched by the TL) + Josh lead; TL light review (scope, markers, named scenarios present) |
-| **Size** | M (≈ 1 engineer-day; the skeleton must merge by D+1.5) |
+| **Size** | M+ (≈ 1.25–1.5 engineer-days, P3-T156; the skeleton must merge by D+1.5) |
 | **Depends on** | F0-E (`tests/scenarios/p3_drive.py`, the package `conftest.py`, `tests/log_hygiene.py`), F0-S (`tests/integration/p3_factories.py`, every contract name) and QA-X's first commit, the driver additions (`settings` keyword, `poll`, document recorder; [QA-X](QA-X.md) §2.2). Start on D0 stacked on `p3/f0-e`; retarget to `int/p3` at CP1 |
 | **Branch → base** | `p3/qa-s6` → `int/p3` |
 | **QA lane** | none (QA unit; SQ reviews) |

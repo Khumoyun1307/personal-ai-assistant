@@ -5,7 +5,7 @@
 | **Unit** | QA-S7 — the M07 scenario package `tests/scenarios/m07/`: every IMPLEMENTATION_PLAN §9 named scenario test, the RG-15, RG-16 and RG-20 scenario parts, J7 automated with both outcomes, the window-closed copy-ready path and the late-arrival corrections, reminders across a restart and DST (including undo, "Tomorrow" and reported skips), automation management, the M07 read tools, review cards and their withdrawal, consent gates on follow-up nudges and extraction, the export structure and limits, and the weekly rating card |
 | **Owner slot** | Edvard / QE1 (Codex), launched by Edvard lead |
 | **Reviewer** | a Josh engineer (Claude, dispatched by the TL) + Edvard lead; TL light review (scope, markers, named scenarios present) |
-| **Size** | M (≈ 1 engineer-day; the skeleton must merge by D+1.5) |
+| **Size** | M+ (≈ 1.25–1.5 engineer-days, P3-T156; the skeleton must merge by D+1.5) |
 | **Depends on** | F0-E (`tests/scenarios/p3_drive.py`, the package `conftest.py`, `tests/log_hygiene.py`), F0-S (`tests/integration/p3_factories.py`, every contract name). Start on D0 stacked on `p3/f0-e`; retarget to `int/p3` at CP1. The export scenarios (N1, N2) also use the driver's document recorder that QA-X adds (QA-X §2.2) |
 | **Branch → base** | `p3/qa-s7` → `int/p3` |
 | **QA lane** | none (QA unit; the Josh engineer reviews) |

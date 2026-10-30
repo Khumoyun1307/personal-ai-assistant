@@ -130,9 +130,9 @@ How to read the table:
 | WU | Title | Team / slot | Size | Depends on | Branch → base | Spec | Peer | QA lane |
 |---|---|---|---|---|---|---|---|---|
 | QA-P3 | P3 test plan, regression matrix, live checklists (M06, M07), 14-day trial log, eval-ops runbook, `P3-nn` markers | SQ | S | — (pre-start, docs) | `p3/qa-p3` → `main` | [qa/README.md](qa/README.md) | TL + Josh and Edvard leads | — |
-| QA-S6 | M06 acceptance scenarios, strict xfail first, merged by D+1.5 | Josh / QJ1 | M | F0-E, F0-S, QA-X's first commit (the driver additions); starts D0 stacked on `p3/f0-e` | `p3/qa-s6` | [specs/QA-S6.md](specs/QA-S6.md) | SQ + Josh lead | — |
-| QA-S7 | M07 acceptance scenarios, strict xfail first | Edvard / QE1 | M | F0-E, F0-S; starts D0 stacked on `p3/f0-e` (the export scenarios also use the driver additions from QA-X) | `p3/qa-s7` | [specs/QA-S7.md](specs/QA-S7.md) | a Josh engineer + Edvard lead | — |
-| QA-X | Cross-team scenarios (`tests/scenarios/p3_cross/`), skeletons by D+1.5 | SQ | S+ | F0-E, F0-S; most scenarios turn green only as M06 and M07 units merge | `p3/qa-x` | [specs/QA-X.md](specs/QA-X.md) | Josh lead + Edvard lead | — |
+| QA-S6 | M06 acceptance scenarios, strict xfail first, merged by D+1.5 | Josh / QJ1 | M+ (P3-T156) | F0-E, F0-S, QA-X's first commit (the driver additions); starts D0 stacked on `p3/f0-e` | `p3/qa-s6` | [specs/QA-S6.md](specs/QA-S6.md) | SQ + Josh lead | — |
+| QA-S7 | M07 acceptance scenarios, strict xfail first | Edvard / QE1 | M+ (P3-T156) | F0-E, F0-S; starts D0 stacked on `p3/f0-e` (the export scenarios also use the driver additions from QA-X) | `p3/qa-s7` | [specs/QA-S7.md](specs/QA-S7.md) | a Josh engineer + Edvard lead | — |
+| QA-X | Cross-team scenarios (`tests/scenarios/p3_cross/`), skeletons by D+1.5 | SQ | M (P3-T156) | F0-E, F0-S; most scenarios turn green only as M06 and M07 units merge | `p3/qa-x` | [specs/QA-X.md](specs/QA-X.md) | Josh lead + Edvard lead | — |
 | OPS-TV3 | `p3_verify trial-check`: every `delegation_auto` check fails closed | SQ | M | F0-S, F0-E skeleton; decision-record shape (contract) | `p3/ops-tv3` | [specs/OPS-TV3.md](specs/OPS-TV3.md) | J1 (+ David lead Gemini read, TL deep) | — |
 | OPS-VIEWS | `p3_verify` view subcommands + content-free trial-report aggregator (moved to SQ, P3-T02) | SQ | S+ | F0-E skeleton, F0-S; `report` stacks on `p3/ops-tv3` until it merges | `p3/ops-views` | [specs/OPS-VIEWS.md](specs/OPS-VIEWS.md) | J1 | — |
 | GATE-RUN | S06.5 eval operations: estimate → limit 1 → full, pre-screen D+3, final rated run D+4, sheets, ledgers, reports | SQ (+ owner, TL) | M (calendar) | EV-AUT, EV-GATE, DATA-FIX (v1.2 before the final run); for CP-G0 also DELEG-DRAFT, M6-PLAN (with M6-POL, M6-SCHED), GRND and EV-E4L merged into `int/p3`, and DATA-E2/E4a/E4b (v1.1) on `int/p3` | report PRs → `int/p3` (→ `main` after R1) | [specs/GATE-RUN.md](specs/GATE-RUN.md) | QE2 integrity check; TL | — |
@@ -151,6 +151,7 @@ Owner gates and calendar trials set the exit date, not engineering days (P2 buil
 **Critical path:** CP5 → F0-S → M6-POL/GRND and M6-SCHED → M6-PLAN → EV-AUT → pre-screen → frozen candidate → owner ratings → CP-G → enable 4 → J5 → enable 5 → 3-day soak → **T0** → 14 days → exit.
 - **Send-path sign-off:** M6-SCHED → M6-TXA, plus M6-TAKE and M6-PAUSE → **CP-A (≈ D+4.5)** → R1.
 - **Slack:** M07 and David's units have about one day of slack against R1; stragglers ride deploy #2.
+- **QA packages (P3-T156):** QA-S6 and QA-S7 are M+ and QA-X is M; all three start at D0 and still merge by D+1.5 with every scenario fully written (QA-S6's strict-xfail scenarios included); no scenario is dropped to make the date.
 - **Near-critical owner chain:** native review of E2/E4 (before D0, then v1.1 as it lands) → ratings → the friends' availability on D+7.
 
 ```
