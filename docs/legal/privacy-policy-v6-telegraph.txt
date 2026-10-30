@@ -1,0 +1,117 @@
+Alviro — Privacy Policy
+
+Last updated: [publication date] (version 6)
+
+Alviro is a personal assistant on Telegram, run by its owner for their own use. In this policy, "you" means the owner. It covers your chat with Alviro and the chats you connect to it through Telegram's Chat Automation, and explains what Alviro keeps, why, who helps process it, how long it is kept, and how you can change or delete it.
+
+What changed in version 6
+
+• Replies: Alviro can prepare replies for you to approve, and, in chats you delegate to it, reply automatically within the limits you set. The other person is always told that an AI is replying, and you can't turn this off.
+• Organising: Alviro notes which chats need you, keeps track of tasks and commitments, sends alerts and a daily digest, and runs the reminders, follow-ups, scheduled summaries and monitors you set.
+• Notes: Alviro can suggest notes from your chats, which it keeps only if you approve them.
+• Your data: /export sends you a copy of the data Alviro stores (except short-lived technical copies of Telegram updates).
+
+This version adds no new service provider. Each item is described below.
+
+Information Alviro keeps
+
+• Account and settings: your Telegram account ID and your settings, such as language, time zone, reply preferences, how long data is kept, and whether new chats are observed. Kept while you use Alviro.
+• Your chat with Alviro: your messages, including text you forward or quote, and Alviro's replies, so it can follow the conversation.
+• Messages in the chats you connect: the text and basic details such as who sent it, when, and whether it was edited, from the moment you connect Alviro. Alviro can't see earlier messages, or chats you didn't include. When a message is deleted for everyone in Telegram, Alviro deletes it too, and rebuilds any summary that included it.
+• Names of the people in those chats: their names and usernames as Telegram shows them.
+• Chat summaries: short summaries of each connected chat, written by Alviro's AI so it keeps the context after the messages themselves expire, and summaries of a period you ask about ("what did I miss?"). They are made only while AI is on for your connected chats.
+• Notes: things you ask Alviro to remember, such as your instructions, preferences and notes about people.
+• Note suggestions: notes Alviro proposes from your connected chats, kept for your review until you approve, edit or discard them.
+• Drafts and replies: replies Alviro prepares for you, including ones it held back for you to review, the replies you approve or send through Alviro, the automatic replies it sends in delegated chats, and what happened to each (sent, rejected, expired, or not confirmed by Telegram).
+• Chat triage, tasks and alerts: short notes on which chats need your attention and why, tasks and commitments found in your chats, the alerts and daily digest Alviro sends you, and the monitors you set (for example "tell me when this person writes").
+• Delegations: the delegations you confirm — which chats, the topic, what Alviro may do, the limits, the wording of the AI notice, and when the delegation starts and ends — and the knowledge you allow Alviro to share in them.
+• Reminders and automations: reminders, to-dos, follow-ups, scheduled summaries and other automations you set.
+• Connection details: the permissions you gave Alviro in Telegram and when they changed.
+• Technical records: an activity log of what Alviro did and why, including what it sent, and records of AI usage and cost, which contain no message text; your weekly rating of how useful Alviro was, kept in that activity log; a minute-by-minute record that Alviro was reachable, which holds no information about you or your chats; short-lived copies of incoming Telegram updates, used only to recover from errors; and a change Alviro asks you to confirm, held until you tap Confirm or Reject.
+
+How Alviro uses it
+
+Only to help you: answering your questions, searching and summarizing your chats, telling you who is waiting for a reply, keeping track of tasks, sending you alerts, reminders and summaries, preparing replies, remembering your notes and settings, and showing you what it stores. Alviro doesn't sell your data or use it for advertising, and doesn't use it to train AI models.
+
+Messages to other people: Alviro sends a message to someone only when you approve it on a card, or, inside a delegation you confirmed, as an automatic reply. In a delegated chat, Alviro tells the other person that an AI is replying: on its first automatic reply in each delegation, and again whenever 24 hours have passed since its last automatic reply in that chat. You can change the wording of this notice for each delegation, but you can't remove it. Alviro replies only to messages people send you; it never starts a conversation and never claims to be you or a person. It stops replying automatically in a chat as soon as you write there yourself, and everywhere as soon as you tap Pause or send /pause. If Alviro has a reply but can't send it automatically (for example because a limit or a rule stops it), it tells you at once, and you can open the reply to approve, edit or reject it. When a message needs your decision, Alviro alerts you instead of replying.
+
+Note suggestions: Alviro uses a suggested note only after you approve it, and never in replies before that. It never suggests or keeps notes about health, religion, politics, sexuality, finances (including debts and salary), ethnicity or race, legal or criminal matters, union membership, biometric or genetic data, immigration status, or a precise home address or location. This limit applies to notes Alviro infers; notes you ask it to remember are kept as you wrote them.
+
+Service providers
+
+Alviro relies on a few providers, each only for the part of the service described here:
+
+• OpenAI processes text to produce Alviro's answers, summaries, notes and note suggestions, triage, alerts, draft replies and automatic replies. Your chat with Alviro is processed after you agree to it when you first start the bot. Content from your connected chats (their messages, and the summaries, notes, drafts and replies based on them) is processed only after you turn this on separately, when you connect Alviro or later with /privacy managed; this includes the messages people send in a delegated chat, which OpenAI processes to write the automatic replies. Under OpenAI's API terms, this data isn't used to train their models; OpenAI may keep requests for up to 30 days to check for abuse, then deletes them. More information: https://developers.openai.com/api/docs/guides/your-data
+• Oracle Cloud hosts the server, in the United States (Ashburn, Virginia), on an encrypted disk.
+• Backblaze B2 stores a second copy of the encrypted backups, in the EU.
+• Telegram delivers all messages, under its own privacy policy, including the replies you approve and the automatic replies people receive in a delegated chat.
+• Healthchecks.io receives a regular signal that Alviro is running. The signal carries no information about you or your chats.
+
+Alviro doesn't use analytics, advertising or tracking services.
+
+How long it is kept
+
+• Messages in your connected chats: 90 days, or a shorter period you choose (14 to 90 days).
+• Your chat with Alviro: 90 days, or a shorter period you choose (14 to 90 days).
+• Chat summaries: until you delete them. Summaries of a period you asked about: 30 days.
+• Notes: until you delete them. A note you ask Alviro to forget is no longer used at once and is erased after 24 hours, so that you can undo it. An approved note suggestion becomes a note.
+• Note suggestions you haven't reviewed: 14 days.
+• Names of people: until no message from them is kept any more.
+• Drafts and replies: the text, as long as messages in your connected chats (90 days, or the shorter period you chose); the record of what happened to each, 1 year.
+• Chat triage notes: as long as messages in your connected chats.
+• Tasks and reminders: open ones until they are done or deleted; tasks Alviro found in your chats are also closed automatically when they go stale (a question or decision 14 days after the last message about it; a commitment 7 days after its due date, or 30 days after it was found if it has none). Closed ones: 1 year.
+• Automations, monitors, repeating reminders and follow-ups: until they end or you cancel them, then 1 year.
+• Alerts: 30 days. The record of each daily digest, without its text: 1 year.
+• Delegations: until they end, then 1 year. Knowledge you enter for one delegation: until that delegation ends. Knowledge you save to share: until you delete it.
+• Connection details, the activity log (including your weekly ratings) and records of AI usage: 1 year.
+• The record that Alviro was reachable: 90 days.
+• Copies of incoming Telegram updates: up to 7 days, or a shorter period you choose (1 to 7 days).
+• A change waiting for your confirmation: until you decide, at most 24 hours.
+
+Old data is deleted automatically, once an hour. You can shorten these periods but not make them longer than stated here.
+
+Where it is kept, and backups
+
+Your data is kept on the server described above. Once a day the database is backed up; each backup is encrypted before it is stored, on the server and as a second copy with Backblaze B2 in the EU. Only the owner holds the key that can open the backups. Backups are kept for up to 5 weeks, so something deleted, by you or automatically, can remain in an older backup until that backup expires (normally no more than 35 days). If the database ever has to be restored from a backup, every delegation ends and Alviro tells you which ones; it never resumes automatic replies by itself.
+
+Your choices
+
+• /privacy shows your current settings and this policy.
+• /privacy managed turns on AI for your connected chats; /privacy revoke turns AI processing off. Revoking takes effect at once; features that don't need AI, such as /status and /settings, keep working.
+• /settings lets you choose how long messages are kept, the language and time zone, reply preferences, and whether new chats are observed.
+• For each chat you can choose Observe or Ignore on its panel. Ignore stops Alviro saving the content of new messages from that chat; what is already stored stays until you delete it.
+• You can ask Alviro what it knows about someone, and ask it to forget a note. Alviro tells you each time it saves or forgets a note, with a button to undo it.
+• Each note suggestion comes on a card: approve, edit or discard it.
+• A reply Alviro prepares for your approval is sent only after you approve it on its card; you can also edit or reject it.
+• A delegation starts only after you confirm it on a card. You can end it at any time with End (in /settings, or by asking Alviro).
+• /pause, or the Pause button, stops all automatic replies at once; replies you already approved on a card are still sent. Turning AI off for your connected chats, or disconnecting Alviro, also ends your delegations.
+• When you write in a delegated chat yourself, Alviro stops replying automatically there and tells you once; tap Resume here on that message if you want it to continue.
+• /export sends you a copy of your data as files in this chat.
+• You can disconnect Alviro or remove chats at any time in Telegram: Settings → Chat Automation.
+
+Deleting your data
+
+• One chat: open the chat's panel and choose Delete stored data (the chat's data, or the chat's data and the notes about it), or choose Ignore together with deleting its data.
+• One person: ask Alviro to delete what it stored about a person; it asks you to confirm first.
+• Deleting a chat's or a person's data also ends the delegations that name them, deletes their tasks, and deletes or cancels their reminders and follow-ups.
+• Everything: /privacy delete, or /settings → Delete everything, removes all stored messages, summaries, notes and names, the text of your chat with Alviro, the text of drafts and replies, your tasks, reminders, automations and delegations, and cancels replies not yet sent. Your account, settings and consents, the connection, your daily digest setting, the record of what happened to each reply (without its text) and the activity log (which holds no message text) stay, so Alviro keeps working; new messages are saved again unless you set chats to Ignore or disconnect Alviro.
+• When you turn AI off for your connected chats, Alviro offers to delete what it stored from them. That deletion also ends your delegations and deletes the notes Alviro inferred.
+• A file sent to you by /export stays in this chat's history until you delete it in Telegram; Alviro can't delete it.
+
+Before deleting at your request, Alviro asks you to confirm, and afterwards it tells you what was deleted. Deleting can't be undone; deleted data may remain in an encrypted backup until it expires, as described above.
+
+Other people in your chats
+
+The chats you connect include messages from other people. Alviro stores and uses them, and any notes or summaries about them, only to help you, as described above.
+
+People in your chats receive automatic replies only in a chat you delegated, and they are told that an AI is replying. If someone sincerely asks whether they are talking to a bot or a person, they are never told it is a person: they get a truthful answer, or no automatic reply, in which case you are alerted.
+
+If someone else writes to Alviro directly, they get a short reply that it's a private assistant; their message isn't answered by AI or stored. If someone tries to connect Alviro to their own Telegram account, the connection is refused; Alviro keeps only a short technical note to recognise it, deleted 30 days after it was last seen.
+
+Changes
+
+If this policy changes in a way that affects what Alviro stores or shares, you'll be told in the bot before the change applies.
+
+Contact
+
+Alviro is run by its owner. For any questions, contact the owner directly.
