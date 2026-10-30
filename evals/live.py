@@ -87,6 +87,22 @@ def resolve_model(route: str, override: str | None) -> ModelChoice:
     return ModelChoice(model, efforts.get(route))
 
 
+def draft_owner_choice(override: str | None) -> ModelChoice:
+    """The model and effort of an owner-requested draft as the product sends it
+    (`bootstrap.draft_config`: the `draft_reply` route's model and
+    `LLM_DRAFT_REPLY_EFFORT`), for the `owner_drafting` target. Unlike E2's
+    fixed baseline effort, this follows the setting, so the low and medium
+    runs the owner compares (D10) are set the way production would be."""
+    try:
+        settings = _settings()
+    except LiveSetupError:
+        if override is None:
+            raise
+        return ModelChoice(override, DraftConfig(model="").effort)
+    model = override or settings.model_routes.model_for("draft_reply")
+    return ModelChoice(model, settings.llm_draft_reply_effort)
+
+
 def load_live_config(route: str, override: str | None) -> LiveConfig:
     """Everything a real call needs, or `LiveSetupError`."""
     settings = _settings()

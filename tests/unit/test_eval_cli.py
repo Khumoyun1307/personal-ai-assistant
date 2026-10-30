@@ -480,6 +480,41 @@ def test_agent_mode_budget_rule(
     assert cli.main([*variants, "--calibrate-from", str(trial)]) == cli.EXIT_REFUSED
 
 
+def test_owner_drafting_budget_rule(
+    forbid_client: None, no_settings: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PF-16b: like the agent mode, a full owner_drafting run starts only on the
+    expected cost of a trial at the same efforts, under the in-flight cap."""
+    run = ["run", "owner_drafting", "--model", LUNA]
+    # Settings do not load here: owner_request sends no effort, draft_owner the default.
+    label = "effort-none-draft-low"
+
+    assert cli.main(run) == cli.EXIT_REFUSED  # never without --live
+    assert cli.main([*run, "--estimate-only", "--limit", "1"]) == 0
+    assert f"owner_drafting ({label})" in capsys.readouterr().out
+    assert cli.main([*run, "--estimate-only", "--only", "od01,od08"]) == 0
+    capsys.readouterr()
+
+    assert cli.main([*run, "--live"]) == cli.EXIT_REFUSED
+    assert "--calibrate-from" in capsys.readouterr().err
+
+    trial = _agent_trial(tmp_path, target="owner_drafting", mode=label)
+    assert cli.main([*run, "--estimate-only", "--calibrate-from", str(trial)]) == 0
+    assert "expected $" in capsys.readouterr().out
+    with pytest.raises(AssertionError, match="a model client was configured or built"):
+        cli.main([*run, "--live", "--calibrate-from", str(trial)])
+
+    # A retrieval trial, or a trial at other efforts, never calibrates it.
+    for name, wrong in {
+        "retrieval.json": {"target": "retrieval", "mode": "agent"},
+        "medium.json": {"target": "owner_drafting", "mode": "effort-medium"},
+    }.items():
+        path = _agent_trial(tmp_path, name, **wrong)
+        assert cli.main([*run, "--live", "--calibrate-from", str(path)]) == cli.EXIT_REFUSED
+        assert "calibrat" in capsys.readouterr().err
+    assert cli.main([*run, "--estimate-only", "--only", "od99"]) == cli.EXIT_REFUSED
+
+
 def test_a_summary_run_with_the_flag_reaches_the_client_before_any_database(
     forbid_client: None, no_settings: None
 ) -> None:

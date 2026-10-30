@@ -279,6 +279,62 @@ N`; (4) the full `python -m evals run drafts --live`; the report is
 check and judge verdict; synthetic data); (5) export the sheet for the owner's
 ratings.
 
+## Owner drafting (`datasets/owner_drafting/cases.jsonl`, PF-16b)
+
+31 hand-written cases (17 `uz-Latn`, 6 `ru`, 8 `en`; `OwnerDraftingCase` in
+`evals/owner_drafting.py`) for **owner-requested** drafting and routing, the
+behaviours the 2026-10-30 owner playtest found wrong (plan PF-10 to PF-15). They are
+synthetic and were written for this set; nothing comes from the playtest chats
+(AGENTS §8). Each case brings its own chats (a contact, messages dated minutes
+before a fixed instant), the control-chat history before the owner's message, an
+optional live card, the owner's message and what the result must show. The
+categories are identity (`Alviro`, never `ChatGPT`), suggest contacts and advice (no
+card), dictate (the exact words, with an instruction prefix addressed to the
+assistant left out), command words never staged literally, compose a new message in
+a chat where no reply is needed, reply to a named earlier message (the card answers
+that message), substance the owner dictated carried into a reply, append to the live
+card (the same card, the old text as its prefix), shorter, 5–7 words, tone, the
+draft's word count (`get_draft`), and the assistant's suggestion #2 as a new message
+(the exact text, `agent_proposal`). The loader refuses records it cannot score (an
+answered message that is not the contact's, a dictated text that is not in the owner's
+message, a picked text no assistant turn holds, a revision with no live card).
+
+`python -m evals run owner_drafting` runs the **real `OwnerRequestRuntime`** per case,
+with the shipped `owner_request` prompt, the production release flags (including
+`tool.revise_draft` and `tool.get_draft`), the product's `Drafter` (`draft_owner`),
+approval cards and `RevisionJob`. Each case gets its own synthetic account in the
+throwaway database: consents naming the run model's processor, an active connection,
+the ingestion barrier, the history as control turns and the live card staged through
+the product's `propose_draft`. Cards go to an eval-side recording sender; a business
+(owner-voice) call raises, and nothing approves a card, so nothing can be sent.
+
+Deterministic checks (`check_case`, pure): the tools called and not called (an
+instrumentation wrapper records each call's name, arguments and status); a card staged
+or revised only when asked, on the right chat, with the expected origin, mode (a new
+message has no base message) and answered message; the exact text; words that must or
+must not be in the card (values compared as in `agent_mode.value_key`); word bounds and
+"fewer words" with the product's `word_count`; an append that keeps the old text as its
+prefix; the **same** card revised (a higher version, never a new card); names in the
+reply and the live draft's exact word count. The judge (`rubrics/owner_drafting.v1`)
+pre-screens only tone and carried substance; a judge failure leaves the case
+unscreened. Metrics: case passed, routing, card, reply and judge, with case passed by
+category and by variant. **Informational**: no threshold and no gate.
+
+**Efforts (owner decision D10).** The owner_request effort is `LLM_OWNER_REQUEST_EFFORT`
+and the draft_owner effort is `LLM_DRAFT_REPLY_EFFORT`, as the product sends them. To
+compare, run once with both at `low` and once with both at `medium` (for example `docker
+compose -f compose.dev.yml run --rm -e LLM_OWNER_REQUEST_EFFORT=medium -e
+LLM_DRAFT_REPLY_EFFORT=medium app uv run python -m evals run owner_drafting …`). The report
+names carry the efforts (`owner-drafting-effort-low-…`, `owner-drafting-effort-medium-…`),
+and a trial calibrates only a run at the same efforts.
+
+**Cost and run procedure.** The agent loop's worst case for the full set is about USD 1.33
+on `gpt-6-luna` (over the USD 1 cap; USD 0.04 for one case), so a full run starts as the
+retrieval agent mode does: (1) `python -m evals run owner_drafting --estimate-only`; (2) with
+the owner's go-ahead, a trial `--live --limit 1`; (3) the full `--live --calibrate-from
+docs/evals/<trial>.json`, which starts when the trial's spend per case × 31 × 1.5 fits the
+cap, under the hard in-flight cap. The TL runs it, never CI.
+
 ## Freezing
 
 `datasets/MANIFEST.sha256` holds the SHA-256 of every `*.jsonl` under
@@ -320,6 +376,9 @@ python -m evals run monitors --estimate-only            # worst-case cost of the
 python -m evals run monitors --live [--model ID]        # REAL model; owner's go-ahead + cost approval
 python -m evals run drafts --estimate-only              # worst-case cost of the E2 drafts run, calls nothing
 python -m evals run drafts --live                       # REAL model; owner's go-ahead + cost approval
+python -m evals run owner_drafting --estimate-only      # worst-case cost of the PF-16b run, calls nothing
+python -m evals run owner_drafting --live --limit 1     # REAL model: a one-case trial; owner's go-ahead
+python -m evals run owner_drafting --live --calibrate-from docs/evals/<trial>.json  # the full run
 python -m evals review drafts --from docs/evals/<run>.json --export sheet.md   # owner's rating sheet
 python -m evals compare docs/evals/<run>.json …         # quality and cost per 100 items per run
 python -m evals compare <luna>.json <sol>.json [--route-model ID]  # triage or monitors: also the model choice
@@ -337,7 +396,7 @@ flags: `--limit N` (N >= 1: a **trial** run, named `…-trial`, never a gate),
 `--price MODEL=IN:OUT` (positive USD per 1M tokens, for a model the product's price
 table lacks; refused for a model it already prices), `--budget-usd` (default 1),
 `--owner-language uz-Latn|uz-Cyrl|ru|en` (summary, drafts and retrieval `--mode agent`,
-default `uz-Latn`), `--only ID,ID` (summary, drafts, triage and monitors: a trial of the named items), `--calibrate-from TRIAL.json` (retrieval `--mode agent` only, E-ab).
+default `uz-Latn`), `--only ID,ID` (summary, drafts, triage, monitors and owner_drafting: a trial of the named items), `--calibrate-from TRIAL.json` (retrieval `--mode agent` and owner_drafting, E-ab).
 Exit codes: 0 done (a deliberate trial included), 2 refused or misconfigured, 4 the
 run **stopped before its planned items** (budget cap; its report is still written). A run that fails midway writes a content-free
 `…-aborted.json` with what it spent. A run drops its throwaway database when it ends, fails

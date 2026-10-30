@@ -275,6 +275,7 @@ def test_manifest_matches_the_dataset_files() -> None:
         "e3/monitor_cases.jsonl",
         "e2/situations.jsonl",
         "e4/cases.jsonl",
+        "owner_drafting/cases.jsonl",
     }
 
 
