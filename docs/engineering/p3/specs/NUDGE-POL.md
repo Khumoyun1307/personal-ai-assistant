@@ -48,7 +48,7 @@ async def propose(
 
 New behaviour when `trigger is not None`, in this order, before any lock:
 1. `request.origin is not ActionOrigin.AGENT_PROPOSAL` → `ProposalRefused("trigger_not_available")`. A nudge is never `delegation_auto` and never owner-dictated (OD-18). The database CHECK `ck_actions_trigger_not_autonomous` is the backstop.
-2. `request.delegation_id is not None` → `ProposalRefused("trigger_not_available")`. A nudge is an owner card, not a delegation fallback card, so it never enters delegation counters or the delegation's activity (**TL decision (spec)**; contract gap G15).
+2. `request.delegation_id is not None` → `ProposalRefused("trigger_not_available")`. A nudge is an owner card, not a delegation held reply (OD-11), so it never enters delegation counters or the delegation's activity (**TL decision (spec)**; contract gap G15).
 3. The `base_required` rule (an `agent_proposal` without `trigger_turn_id` and without `base_message_id` is refused) is satisfied by the trigger: a nudge's takeover reference is its own creation (§3.2), not a base message.
 
 Then, after the existing `_by_call` check and the account (`FOR SHARE`) and conversation (`FOR UPDATE`) locks:

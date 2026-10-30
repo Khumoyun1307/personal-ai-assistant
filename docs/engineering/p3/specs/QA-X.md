@@ -63,7 +63,7 @@ The **first commit** of this PR; QA-S6 and QA-S7 rely on them. Add only what F0-
 |---|---|
 | `delegated_chat(s, *, chats, allowed=ALL_BEHAVIOURS, notes=(…,), ends_in=timedelta(hours=3)) -> Deleg` | Seeds an active delegation (`seed_delegation` + delegation-scope notes), as QA-S6 §3.2 |
 | `draft(**changes)`, `triaged(**changes)`, `nudge_draft(**changes)` | The delegated draft, triage and `DraftResult` dicts with passing values (QA-S6 §3.2, QA-S7 §3.2) |
-| `reply_cycle(s, number, text, result, *, chat=None, commitment=None) -> Action | None` | Contact burst → triage (with an optional commitment) → `replies.delegated` → release → execute |
+| `reply_cycle(s, number, text, result, *, chat=None, commitment=None) -> Action \| None` | Contact burst → triage (with an optional commitment) → `replies.delegated` → release → execute |
 | `scheduled_reply(s, number, text, result, *, chat=None) -> Action` | The same, stopped while the action is `scheduled` |
 | `promise_and_follow_up(s, *, chat, deadline, number=101) -> FollowUp` | Contact promise "Synthetic: I will send the signed documents tonight." with a triage commitment, then `create_follow_up(expected={"kind": "media_received", "terms": [], "media_kinds": ["document"]}, draft_nudge=True, …)` and Confirm. Returns `FollowUp(task_id, automation_id)` |
 | `miss_and_nudge(s, follow_up, draft) -> Action` | Advance to the deadline; `system.reconcile_schedules`; drain `automation.fire`, `notify.deliver`, `followups.nudge` (with `draft`), `notify.deliver`; return the nudge action |
@@ -87,7 +87,7 @@ In the tables, "run `system.…`" means `s.run_periodic(...)` and "drain `<task>
 
 | ID | Test | Setup and steps | Expected | Turns green | Needs |
 |---|---|---|---|---|---|
-| X2a | `test_x2_an_owner_ok_after_the_promise_pauses_autonomy_but_the_nudge_card_still_comes` (D9; OD-5, OD-18; R-09) | Delegation over C1; `promise_and_follow_up(deadline="2026-10-18 20:00")`. 17:10 `owner_manual(… "Synthetic: ok, thanks, I will wait for them.")`; `deliver_alerts`. 17:30 the contact asks a question (passing draft). `miss_and_nudge`; press Approve; execute | One `takeover_paused` notice; the 17:30 burst becomes a fallback card with `autonomy_paused` (no autonomous send); the nudge is `awaiting_approval`, not `blocked` with `takeover` (its `no_takeover_since` reference is its own `created_at`), and it supersedes the 17:30 card; after Approve one business send, without `AI_MARKER` | M7-NUDGE | M6-TAKE, NUDGE-POL, M7-FUP, M6-PLAN |
+| X2a | `test_x2_an_owner_ok_after_the_promise_pauses_autonomy_but_the_nudge_card_still_comes` (D9; OD-5, OD-18; R-09) | Delegation over C1; `promise_and_follow_up(deadline="2026-10-18 20:00")`. 17:10 `owner_manual(… "Synthetic: ok, thanks, I will wait for them.")`; `deliver_alerts`. 17:30 the contact asks a question (passing draft). `miss_and_nudge`; press Approve; execute | One `takeover_paused` notice; the 17:30 burst becomes a held reply with `autonomy_paused` and its `autonomy_not_sent` alert (no autonomous send; OD-11); the nudge is `awaiting_approval`, not `blocked` with `takeover` (its `no_takeover_since` reference is its own `created_at`), and it supersedes the 17:30 card; after Approve one business send, without `AI_MARKER` | M7-NUDGE | M6-TAKE, NUDGE-POL, M7-FUP, M6-PLAN |
 | X2b | `test_x2_an_owner_message_after_the_nudge_card_outdates_it_and_nothing_is_sent` (J8; RG-19 spirit for cards) | Delegation over C1; `promise_and_follow_up(deadline="2026-10-18 20:00")`; `miss_and_nudge` → a live card. 20:05 `owner_manual` in C1; press Approve on the old card | The nudge action becomes `outdated` (reason `takeover`) and its card is edited to say so; the press answers "no longer active"; zero business sends; the follow-up task stays open; one `takeover_paused` notice for the delegation | M7-NUDGE | NUDGE-POL, M7-FUP, M6-TAKE |
 
 ### 3.5 X3 — `/pause` vs reminders (`test_x3_pause_and_reminders.py`)
@@ -95,7 +95,7 @@ In the tables, "run `system.…`" means `s.run_periodic(...)` and "drain `<task>
 | ID | Test | Setup and steps | Expected | Turns green | Needs |
 |---|---|---|---|---|---|
 | X3a | `test_x3_pause_cancels_scheduled_autonomous_sends_but_reminders_still_fire` (J9; OD-17; RG-19) | Delegation over C1. 17:00 `owner_tool("create_reminder", text="Synthetic: call the bank", at="2026-10-18 17:05", recurrence=None, conversation_id=None, contact_id=None)`. 17:00 `scheduled_reply` in C1; `owner_says("/pause")`; advance to 17:05; `fire_due`; `deliver_alerts`; `owner_says("/resume")`; advance 1 min; drain `actions.release_scheduled`, `actions.execute`; `fire_due`; then a new `reply_cycle` in C1 | The scheduled reply is `cancelled/autonomy_paused` and stays cancelled after `/resume` (never revived); one `reminder_due` delivered at 17:05 while paused (decision reason `owner_scheduled`), none again on the second run; the new reply after `/resume` is auto-sent (positive control); exactly one business send | M7-REM | M6-PLAN, M6-TXA |
-| X3b | `test_x3_a_nudge_card_approved_while_paused_is_sent_once_without_the_ai_line` (OD-31; P2-T23; PRD §11.4) | Delegation over C1; `promise_and_follow_up(deadline="2026-10-18 20:00")`; 19:00 `/pause`; `miss_and_nudge`; press Approve; execute; 20:10 a contact burst with a passing draft | `follow_up_missed` delivered while paused; the nudge card exists and, once approved, is sent once without `AI_MARKER` (`disclosure_included = false`); the account is still paused; the 20:10 burst creates no `delegation_auto` action (a fallback card with `autonomy_paused`) | M7-NUDGE | NUDGE-POL, M7-FUP, M6-PLAN |
+| X3b | `test_x3_a_nudge_card_approved_while_paused_is_sent_once_without_the_ai_line` (OD-31; P2-T23; PRD §11.4) | Delegation over C1; `promise_and_follow_up(deadline="2026-10-18 20:00")`; 19:00 `/pause`; `miss_and_nudge`; press Approve; execute; 20:10 a contact burst with a passing draft | `follow_up_missed` delivered while paused; the nudge card exists and, once approved, is sent once without `AI_MARKER` (`disclosure_included = false`); the account is still paused; the 20:10 burst creates no `delegation_auto` action (a held reply with `autonomy_paused`, OD-11) | M7-NUDGE | NUDGE-POL, M7-FUP, M6-PLAN |
 
 ### 3.6 X4 — deletion across delegations, tasks and automations (`test_x4_deletion_across_p3.py`)
 
@@ -114,7 +114,7 @@ In the tables, "run `system.…`" means `s.run_periodic(...)` and "drain `<task>
 | S9 | A monitor automation over CK (terms) |
 | S10 | A `delegation_auto` action of D1 in CK, `succeeded` (text) |
 | S11 | A `delegation_auto` action of D1 in CL, `scheduled` |
-| S12 | A fallback card in CL (`agent_proposal`, `delegation_id` = D1, `awaiting_approval`) |
+| S12 | A held reply in CL (`agent_proposal`, `delegation_id` = D1, `awaiting_approval`, `presentation = "on_request"`, its card not yet requested; OD-11) |
 | S13 | A queued `delegation_catch_up` notification with `refs.delegation_ids = [D1]` |
 | S14 | An owner automation with `provenance = {"managed": true, …}`, `refs` naming CL |
 | S15 | An untainted owner to-do (task `kind = reminder`, `due_at` NULL), not about K |
@@ -142,7 +142,7 @@ Account B (`seed_account`) gets the same classes with its own canaries.
 | S9 monitor | gone | gone | kept | gone |
 | S10 autonomous action in CK | its text gone (`data_deleted` path) | same | not checked (P2 rules) | gone |
 | S11 scheduled action in CL | `cancelled/delegation_ended` | same | `cancelled` (never sent) | `cancelled` or gone (never sent) |
-| S12 fallback card in CL | still `awaiting_approval` (OD-11) | same | not checked (P2 rules) | not checked |
+| S12 held reply in CL | still `awaiting_approval` (OD-11) | same | not checked (P2 rules) | not checked |
 | S13 queued catch-up | gone | gone | gone | gone |
 | S14 managed automation | kept | kept | gone | gone |
 | S15 untainted to-do | kept | kept | kept | gone |

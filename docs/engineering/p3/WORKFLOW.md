@@ -101,7 +101,7 @@ One integration branch, `int/p3`, carries F0, M06 and M07 until R1. `main` stays
 | `p3/qa-p3` | `main` | `main` | TL |
 | `p3/data-e2`, `p3/data-e4a`, `p3/data-e4b` (pre-start) | `main` | `main`, **merged before the CP4 sync PR is cut**; otherwise held and retargeted to `int/p3` at D0 | TL |
 | `p3/gw-esc`: only if the GW-ESC verification finds a gap (the fix itself landed on `main` in P2 #133; P3-T45) | `int/p3` | `int/p3`, the first PR into it | TL |
-| `int/p3` | `main`, right after CP5 (D0) | `main`, once (**R1**) | **Owner**, or the TL if the owner delegates this merge |
+| `int/p3` | `main`, cut at D0 (Mon 2026-11-02; CP5 landed 10-29, #137) | `main`, once (**R1**) | **Owner**, or the TL if the owner delegates this merge |
 | `p3/<unit-id>` (lowercase, e.g. `p3/m6-pol`) | `int/p3`, or the branch it stacks on | `int/p3` | TL |
 | After R1: `p3/<unit-id>` stragglers, `fix/p3-<topic>` live-window fixes | `main` | `main` (`int/p3` is retired) | TL, flagged off, CI green, review clean; no deploy without a go-ahead; nothing during the trial except stop-the-line |
 
@@ -118,7 +118,7 @@ One integration branch, `int/p3`, carries F0, M06 and M07 until R1. `main` stays
 
 ### 4.3 Pull request template
 
-The TL puts this into `.github/pull_request_template.md` in F0-C part 2. Until then, paste it.
+The template is in `.github/pull_request_template.md` (P3 section first, then the P2 tail section; delete the one that does not apply). It is reproduced here for reference.
 
 ```markdown
 ## Unit

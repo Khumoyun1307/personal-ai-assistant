@@ -133,8 +133,8 @@ A spec or contract seems wrong or unsafe; a frozen contract needs a change (ICR)
 
 WORKFLOW §6's Definition of Done, plus:
 - No business send path exists outside `actions.execute`; every autonomy rule re-runs at claim under the delegation lock, and the caps are counted there.
-- `draft_safe` is never the sole basis for ALLOW_AUTO; a reached cap gives an approval card, never DENY or silence.
-- The disclosure is inserted by the application, never by the model, and never on an approved draft (the CHECK holds); an uncertain send counts as not disclosed and is never retried. A `disclosure_missing` cancel re-proposes once with no model call, then becomes a card (P3-T47).
+- `draft_safe` is never the sole basis for ALLOW_AUTO; a reached cap gives a held reply (an `autonomy_not_sent` alert whose Draft reply button shows the card with no model call, OD-11), never DENY or silence.
+- The disclosure is inserted by the application, never by the model, and never on an approved draft (the CHECK holds); an uncertain send counts as not disclosed and is never retried. A `disclosure_missing` cancel re-proposes once with no model call, then becomes a held reply (OD-11; P3-T47).
 - A superseding delegation cancels the older one's pending autonomous actions in the shared chats in the same transaction (P3-T48).
 - Takeover, `/pause`, a rights change, a disabled connection and a consent revoke cancel `scheduled` and autonomous `approved` actions.
 - Race tests use explicit barriers, not timing; RG-13 and RG-14 exist and pass; there is exactly one Alembic head.

@@ -81,7 +81,7 @@ The run is metered by the `MeteredLLMClient` in the stack (`llm_calls` rows, AGE
    - the normalised text starts with `AI_MARKER` ⇒ invalid `disclosure_in_body` (the model wrote a disclosure; ADR-17, OD-4); checked with F0-S's `actions/disclosure.py::includes_disclosure`, so there is one definition of "starts with the marker" (identity answers start with it too);
    - the normalised text starts with any value of `DISCLOSURE_DEFAULTS` ⇒ invalid `disclosure_in_body` (the same line without the marker);
    - `knowledge_ids_used` is kept exactly as given, including ids that were never shown (`knowledge_scope` fails them, §3.4 of P3-interfaces);
-   - nothing else is corrected: a `behaviour` of `none` with `needs_reply = true`, or `in_scope = false`, stays as given (the policy turns it into a card).
+   - nothing else is corrected: a `behaviour` of `none` with `needs_reply = true`, or `in_scope = false`, stays as given (the policy turns it into a held reply, OD-11).
 3. `to_delegated_draft(status, result, *, run_id, base_message_id, shown_through_message_id, error_class) -> DelegatedDraft`:
    - `DRAFTED`: every flag copied from the result; `body` = the normalised text; `knowledge_ids_used = tuple(result.knowledge_ids_used)`.
    - `NOT_NEEDED`: every flag copied (the planner still enqueues an escalation when `escalation_category != "none"`, §4.1); `body = None`.
@@ -98,7 +98,7 @@ The run is metered by the `MeteredLLMClient` in the stack (`llm_calls` rows, AGE
    - owner profile: `preferences.current(account)` (reply language, tone, style), `account.locale_pref`, `account.timezone`;
    - contact display name: `summaries.contact_display_name(...)`.
 3. **`build_delegated_draft(*, prompt, account, delegation: DelegationView, messages, notes, knowledge, triage_reasons, contact_name, now) -> DelegatedDraftContext`** with fields `instructions: str`, `items: tuple[TextItem, ...]`, `shown_ids: frozenset[int]`, `knowledge_ids_shown: frozenset[int]`, `base_message_id: int | None` (newest **contact** message shown), `shown_through_message_id: int | None` (newest message shown, any direction).
-4. **Instructions** (stable prefix, so the prompt cache works; AGENTS §8: no timestamps or ids in it): the prompt text; the owner profile block (as `build_draft_reply`); the delegation rules block rendered by the application from enums only: the allowed behaviours (each `Behaviour` value with a fixed English gloss) and whether a topic filter applies ("yes, see the topic item" / "no: every message in this chat is in scope"). No start or end time, no standing/time-bounded kind, no wording override, no disclosure text, no limits (R58, accepted and logged): the model does not need them, a time in the prefix would break caching, and `ends_at` is not a grounding source (P3-interfaces §3.7: the shareable items and the delegation's spec text), so a reply quoting it would only become a card while revealing the owner's schedule.
+4. **Instructions** (stable prefix, so the prompt cache works; AGENTS §8: no timestamps or ids in it): the prompt text; the owner profile block (as `build_draft_reply`); the delegation rules block rendered by the application from enums only: the allowed behaviours (each `Behaviour` value with a fixed English gloss) and whether a topic filter applies ("yes, see the topic item" / "no: every message in this chat is in scope"). No start or end time, no standing/time-bounded kind, no wording override, no disclosure text, no limits (R58, accepted and logged): the model does not need them, a time in the prefix would break caching, and `ends_at` is not a grounding source (P3-interfaces §3.7: the shareable items and the delegation's spec text), so a reply quoting it would only become a held reply while revealing the owner's schedule.
 5. **Items**, in this order, each with its provenance:
 
    | Item | Content | Wrapping | `Provenance` |
@@ -140,7 +140,7 @@ The runner uses the `DraftConfig` it is given. The wiring (M6-PLAN's line in `_w
 
 - The delegated prompt never writes a disclosure, and `validate_delegated` rejects a body that starts with one.
 - Assist keeps `draft_reply.v1` (byte-identical, pinned by hash in a test) and `DraftResult` unchanged.
-- The application inserts the notice only into `delegation_auto` text (F0-S composer, M6-PLAN); fallback cards carry the body only; F0-S's `ck_actions_disclosure_origin` CHECK keeps `disclosure_included` false on every other origin.
+- The application inserts the notice only into `delegation_auto` text (F0-S composer, M6-PLAN); held replies (OD-11) carry the body only; F0-S's `ck_actions_disclosure_origin` CHECK keeps `disclosure_included` false on every other origin.
 
 ### 3.8 Gate iterations (v2–v5)
 

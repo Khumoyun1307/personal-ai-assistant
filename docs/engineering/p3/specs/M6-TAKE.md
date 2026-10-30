@@ -80,7 +80,7 @@ Strictly greater: a message dated exactly at the confirmation or the resume does
 - `load_context` gains the keyword `takeover_reference: datetime | None = None` and passes it on. Every existing caller keeps the default.
 - `autonomous_context` (M6-PLAN's function) passes `takeover_reference=delegation.confirmed_at` when a delegation is given (a one-argument named touch point; Josh lead sequences after M6-TXA). If this unit merges before M6-PLAN, it adds only the `load_context` keyword, and M6-PLAN's `autonomous_context` passes it from the start (Josh lead tells J3; M6-PLAN spec §3.2).
 
-So `autonomy_not_paused` fails for `delegation_auto` exactly while the takeover counts (P3-interfaces §3.1). At proposal that gives a fallback card ("drafts are still offered", R-09); at release and claim it gives `cancelled/autonomy_paused` with no card. Separately, `no_takeover_since` (a send precondition, unchanged) still blocks any reply whose base message is older than the owner's message.
+So `autonomy_not_paused` fails for `delegation_auto` exactly while the takeover counts (P3-interfaces §3.1). At proposal that gives a held reply with its `autonomy_not_sent` alert ("drafts are still offered", R-09: the Draft reply button shows it, OD-11); at release and claim it gives `cancelled/autonomy_paused` with no card. Separately, `no_takeover_since` (a send precondition, unchanged) still blocks any reply whose base message is older than the owner's message.
 
 ### 3.4 `note_takeover` (audit and the one-time notice)
 
@@ -172,7 +172,7 @@ In `tests/integration/test_takeover.py`. A row that needs M6-PLAN's planner, M6-
 | Source | Test |
 |---|---|
 | RG-19 ext | `test_rg19_after_0015_no_code_writes_the_takeover_pause_reason` (an owner message sets `takeover_at`; `autonomy_paused_reason` stays NULL; a source scan finds no assignment of `"takeover"` to that column under `src/assistant`) |
-| RG-19 ext | `test_rg19_a_counting_takeover_stops_autonomy_at_proposal_release_and_claim` (the owner writes in the chat after the delegation's confirmation, then the contact writes again; every action below answers that newer contact message, so the M04 `no_takeover_since` passes and only the session-scoped pause can block. Then: the planner's decision fails `autonomy_not_paused` ⇒ fallback card; a `scheduled` action seeded after the takeover is released ⇒ `cancelled/autonomy_paused`; an `approved` one seeded after the takeover, at Tx A ⇒ `cancelled/autonomy_paused`; zero sends. The ingestion bulk cancel of actions that existed at the takeover is M6-SCHED's RG-19 test) |
+| RG-19 ext | `test_rg19_a_counting_takeover_stops_autonomy_at_proposal_release_and_claim` (the owner writes in the chat after the delegation's confirmation, then the contact writes again; every action below answers that newer contact message, so the M04 `no_takeover_since` passes and only the session-scoped pause can block. Then: the planner's decision fails `autonomy_not_paused` ⇒ held reply; a `scheduled` action seeded after the takeover is released ⇒ `cancelled/autonomy_paused`; an `approved` one seeded after the takeover, at Tx A ⇒ `cancelled/autonomy_paused`; zero sends. The ingestion bulk cancel of actions that existed at the takeover is M6-SCHED's RG-19 test) |
 | P3 plan (OD-5) | `test_a_pre_delegation_takeover_does_not_block` (an owner message before `confirmed_at`, and one migrated by the 0015 data step: the next reply may be `ALLOW_AUTO`) |
 | P3 plan (OD-5) | `test_a_post_start_takeover_pauses_until_the_end_or_resume_here` |
 | P3 plan (FR-AUT-05, R81) | `test_the_takeover_notice_is_sent_once` (two owner messages ⇒ one `takeover_paused` row, one audit) |
@@ -253,7 +253,7 @@ In `tests/integration/test_takeover.py`. A row that needs M6-PLAN's planner, M6-
 ## 8. Owner decisions
 
 - **OD-5** (paused until the delegation ends or Resume here; only messages after the start or the last resume count; legacy flags migrated): the whole unit. A cooldown instead (for example 2 h) would change only `takeover_counts` (add `now − takeover_at < cooldown`) and the notice text.
-- **OD-11** (drafts still offered while paused): the fallback-card path is M6-PLAN's; this unit only supplies the rule input.
+- **OD-11** (drafts still offered while paused; answered 2026-10-29: as a held reply announced by an alert with a Draft reply button): the held-reply path is M6-PLAN's; this unit only supplies the rule input.
 - **OD-5 follow-up (ruled, R81; was CG-10):** after Resume here, a second takeover pauses the chat again and the owner is told again. The notice dedupe key includes the resume epoch, `takeover:{delegation_id}:{conversation_id}:{resumed_epoch}` (`0` before any resume), so each pause notifies once and offers a fresh Resume here card. P3-interfaces §11.1 states the key.
 
 ## 9. Risks and notes

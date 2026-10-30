@@ -514,7 +514,7 @@ Initiating conversations; messaging outside the reply window; sending without pa
 
 ### 12.2 Conditions verified immediately before any send (all must pass)
 
-1. The owner account is active and has not paused autonomy (for autonomous sends) — /pause blocks autonomous sends only; owner-approved sends still require a fresh approval.
+1. The owner account is active and has not paused autonomy (for autonomous sends) — /pause blocks autonomous sends only: it stops autonomous sending and cancels pending autonomous actions, while approvals the owner already gave stay valid and drafts stay drafts (clarified 2026-10-29, owner decision OD-31).
 2. The business connection is enabled, belongs to the owner, and currently grants *reply*.
 3. The target conversation belongs to that owner's connection and is not in Ignore mode; it is not a bot chat.
 4. The reply window is open (with a safety margin).
@@ -552,7 +552,7 @@ Storing every message forever is not memory [D]; summaries and curated facts car
 ## 14. Monitoring, alerts, and automation behaviour
 
 - **Monitors** evaluate only messages in coverage and in non-Ignore conversations. Each monitor has an owner-confirmed natural-language condition plus deterministic pre-filters (contact, conversation, keywords) where possible.
-- **Alerts** carry: what happened, why it matters (the matching rule), and next actions. Quiet hours suppress non-urgent alerts into the next digest.
+- **Alerts** carry: what happened, why it matters (the matching rule), and next actions. Quiet hours suppress non-urgent alerts into the next digest. Exception: 'Automatic reply not sent' alerts under a delegation (which offer Draft reply) always arrive at once (owner decision 2026-10-29, OD-11a).
 - **Distinguish four operation types** [D]: (1) reminders to the owner — always possible; (2) sending as the owner — only while the conversation's reply window is open, and only with the owner's approval of that specific text or under an active delegation that passes §12.3; (3) monitoring a condition — always possible within coverage; (4) acting when a condition is met — notify/draft always possible, send only under (2).
 - **Time:** all schedules use the owner's timezone; daylight-saving and timezone changes are handled.
 - **Missed schedules** (e.g., after downtime) run late with a note if still relevant, otherwise are skipped with a note.
@@ -564,7 +564,7 @@ Storing every message forever is not memory [D]; summaries and curated facts car
 | Situation | Behaviour |
 |---|---|
 | AI provider down or rate-limited | Control chat: "I can't reach the AI service right now; I'll retry." Background triage/drafts retried with backoff; /pause, /status, /resume still work. |
-| LLM unavailable or budget exhausted for > 10 min | Deterministic paths continue: messages from VIP contacts alert (respecting quiet hours); deterministic monitors ("when X replies") and reminders fire; one notice "AI review paused — N messages unreviewed"; each active delegation is reported once as paused, and its conversations fall back to drafts/escalation only. |
+| LLM unavailable or budget exhausted for > 10 min | Deterministic paths continue: messages from VIP contacts alert (respecting quiet hours); deterministic monitors ("when X replies") and reminders fire; one notice "AI review paused — N messages unreviewed"; each active delegation is reported once as paused, and its conversations fall back to alerts that offer a draft for approval (Draft reply) or escalation only (owner decision 2026-10-29, OD-11b). |
 | Owner request fails terminally | Reply "I couldn't process that (ref #<run id>). Nothing was sent or changed." (or truthfully state any card that was created). |
 | Telegram API failure on send | Classified: definitive failure → "Failed: <reason>" with copy-ready text; transient before delivery → retried safely; ambiguous → "Delivery uncertain". |
 | Reply window closed | Card/expiry message with copy-ready text; never retried. |

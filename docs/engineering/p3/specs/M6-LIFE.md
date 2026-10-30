@@ -148,7 +148,7 @@ A fire 6 hours late; a fire whose automation was deleted or paused (for example 
 **Further tests:**
 - `test_disabling_the_connection_ends_active_delegations` (a `business_connection` update with `is_enabled = false`).
 - `test_a_stale_connection_does_not_end_a_delegation`.
-- `test_ending_cancels_the_delegations_pending_replies_and_deletes_its_knowledge`: `scheduled` and `approved` autonomous actions `cancelled/delegation_ended`, an `executing` one untouched, a fallback card with the same `delegation_id` untouched (OD-11), the delegation-scope items gone, saved shareable items kept.
+- `test_ending_cancels_the_delegations_pending_replies_and_deletes_its_knowledge`: `scheduled` and `approved` autonomous actions `cancelled/delegation_ended`, an `executing` one untouched, a held reply with the same `delegation_id` untouched (OD-11), the delegation-scope items gone, saved shareable items kept.
 - `test_the_end_handler_is_a_no_op_for_an_ended_or_unknown_delegation` (owner-ended, superseded, deleted, scrubbed spec, another account's id): no change, no catch-up, occurrence marked fired.
 - `test_an_early_fire_does_not_end_the_delegation`.
 - `test_a_corrupt_delegation_end_spec_is_logged_and_the_reconciler_ends_it_later`.
