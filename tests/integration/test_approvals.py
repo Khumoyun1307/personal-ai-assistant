@@ -373,7 +373,11 @@ async def test_the_revision_turn_is_recorded_on_the_action(s: Scenario) -> None:
         "Synthetic: make it warmer.",
         False,
     )
-    assert turn.refs == {"conversation_ids": [s.conversation_id], "contact_ids": [contact_id]}
+    assert turn.refs == {
+        "conversation_ids": [s.conversation_id],
+        "contact_ids": [contact_id],
+        "revision_action_id": [row.id],
+    }
     [job] = await jobs(s, "replies.revise")
     assert job["args"] == {"action_id": row.id, "turn_id": turn.id}
     assert job["queueing_lock"] == f"revise:{row.id}"
@@ -972,6 +976,21 @@ async def test_the_revising_reconciler_redefers_with_the_stored_revision_turn(
     assert "took too long" in s.control_text()
 
 
+async def test_pf01_edit_input_is_not_rerun_as_a_lost_owner_turn(s: Scenario) -> None:
+    """ISSUE-005/006: the text typed after Edit belongs to the revision, not to
+    the owner_request queue. The "lost owner turn" reconciler must not defer it
+    again 30 s later as a fresh request (the playtest's duplicate run)."""
+    row = await s.seed()
+    await start_edit(s, row, "Synthetic: make it warmer.")
+    assert await jobs(s, "agent.owner_request") == []
+
+    await advance(s, 2 * 60)  # past the reconciler's grace period
+    await s.handlers.reconcile_pending()
+
+    assert await jobs(s, "agent.owner_request") == []
+    assert (await s.action(row.id)).state == "revising"
+
+
 # ------------------------------------------------------------ reject, re-draft
 async def test_reject_ends_the_card(s: Scenario) -> None:
     row = await s.seed()
@@ -1221,3 +1240,28 @@ async def test_an_away_message_does_not_cut_the_cards_excerpts(s: Scenario) -> N
         )
     assert view is not None
     assert view.excerpts == ("synthetic contact text", second)
+
+
+async def test_pf02_answering_excerpts_need_a_base_message(s: Scenario) -> None:
+    """ISSUE-003: a card names "their words" only when the draft answers a
+    message (`base_message_id`). A dictated or standalone message, which has
+    only `shown_through_message_id`, answers nothing and shows none."""
+    answering = await s.seed()
+    dictated = await s.seed(
+        state="blocked", origin="owner_dictated", base_message_id=None, approval_token=None
+    )
+    assert dictated.shown_through_message_id is not None
+
+    async with s.env.factory() as session:
+        answering_view = await approvals.load_card_view(
+            session, account_id=s.account_id, action_id=answering.id, sending_enabled=True
+        )
+        dictated_view = await approvals.load_card_view(
+            session, account_id=s.account_id, action_id=dictated.id, sending_enabled=True
+        )
+    assert answering_view is not None
+    assert dictated_view is not None
+    assert answering_view.excerpts == ("synthetic contact text",)
+    assert dictated_view.excerpts == ()
+    assert "Answering (their words)" in approvals.render_card(answering_view).text
+    assert "Answering" not in approvals.render_card(dictated_view).text

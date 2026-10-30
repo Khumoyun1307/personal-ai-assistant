@@ -204,3 +204,27 @@ async def test_a_card_the_sync_gave_up_on_never_holds_a_batch_slot(
     s.env.sender.fail_with = None
     await advance(s, 60, periodic=SYNC)
     assert (await s.action(second.id)).card_state == "cancelled"
+
+
+async def test_pf06_a_dictated_card_superseding_an_agent_card_edits_the_old_one_once(
+    s: Scenario,
+) -> None:
+    """ISSUE-006: prod logged one refused edit (400) of the replaced card in the
+    second a newer owner_dictated proposal replaced an older agent_proposal card.
+    Telegram refuses an edit that changes nothing ("message is not modified"), so
+    the replaced card must be edited once, with a text and keyboard of its own."""
+    older = await s.propose()
+    s.env.sender.edits.clear()
+
+    newer = await s.propose(dictated=True)
+
+    assert newer.id != older.id
+    stale = await s.action(older.id)
+    assert stale.state == "outdated"
+    old_edits = [e for e in s.env.sender.edits if e["message_id"] == stale.card_message_id]
+    assert len(old_edits) == 1, "the replaced card is edited exactly once"
+    assert "Outdated" in old_edits[0]["text"]
+    # Nothing is left for the periodic sync to repeat.
+    s.env.sender.edits.clear()
+    await advance(s, 60, periodic=SYNC)
+    assert s.env.sender.edits == []

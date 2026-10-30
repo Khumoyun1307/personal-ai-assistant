@@ -49,6 +49,9 @@ _UNQUEUED_OWNER_TURNS = text(
     WHERE t.role = 'owner'
       AND t.created_at < :older_than
       AND t.created_at >= :newer_than
+      -- The text typed after a card's Edit button is answered by the revision
+      -- job (`replies.revise`), never by an owner request (PF-01).
+      AND t.refs -> 'revision_action_id' IS NULL
       AND NOT EXISTS (
           SELECT 1 FROM procrastinate.procrastinate_jobs AS j
           WHERE j.task_name = :task
