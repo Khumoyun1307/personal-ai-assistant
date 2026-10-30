@@ -301,6 +301,7 @@ def test_checks_list_every_evaluated_rule_in_order() -> None:
         "connection_active",
         "conversation_owned",
         "conversation_available",
+        "window_open",
         "no_takeover_since",
         "target_is_assistant_sent",
         "consent_valid",
