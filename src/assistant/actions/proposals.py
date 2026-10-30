@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -31,7 +31,6 @@ from assistant.actions.states import LIVE_CARD, ActionKind, ActionOrigin, Action
 from assistant.conversations.models import Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
-from assistant.core.reply_window import SAFETY_MARGIN, closes_at
 from assistant.policy.context import ActionFacts, Decision, Outcome, Phase
 from assistant.policy.engine import decide, execution_target
 
@@ -88,7 +87,7 @@ async def propose(
     if (existing := await _by_call(session, request)) is not None:
         return _reused(existing)
     await _lock_account_share(session, request.account_id)
-    anchor = await _lock_conversation_update(session, request.account_id, request.conversation_id)
+    await _lock_conversation_update(session, request.account_id, request.conversation_id)
     # A retried owner turn reuses its live card instead of superseding it.
     if (live := await _live_for_turn(session, request)) is not None:
         return _reused(live)
@@ -98,7 +97,7 @@ async def propose(
     # through what it saw; without that id `not_stale` fails closed.
     if shown_through is None and request.origin is ActionOrigin.OWNER_DICTATED:
         shown_through = await _newest_contact_id(session, request)
-    expires_at = _expiry(now, anchor, config.approval_max_age)
+    expires_at = now + config.approval_max_age  # owner-approved: max age only (P2-O20)
     facts = ActionFacts(
         action_id=None,
         kind=request.kind,
@@ -173,15 +172,6 @@ async def propose(
     return ProposalResult(action_id, ActionState.BLOCKED, False, None, decision)
 
 
-def _expiry(now: datetime, anchor: datetime | None, max_age: timedelta) -> datetime:
-    """The one expiry rule (decisions R7): the earlier of the approval period
-    and the reply window's close (less the margin); `now` when it is closed."""
-    window_end = closes_at(anchor)
-    if window_end is None:
-        return now
-    return max(now, min(now + max_age, window_end - SAFETY_MARGIN))
-
-
 def _blocked_reason(decision: Decision) -> StateReason:
     target = execution_target(decision)
     return StateReason.POLICY_DENIED if target is None else target[1]
@@ -220,19 +210,15 @@ async def _lock_account_share(session: AsyncSession, account_id: int) -> None:
 
 async def _lock_conversation_update(
     session: AsyncSession, account_id: int, conversation_id: int
-) -> datetime | None:
-    """Lock the chat and return its reply-window anchor."""
-    row = (
-        await session.execute(
-            select(Conversation.id, Conversation.last_contact_msg_at)
-            .where(Conversation.id == conversation_id, Conversation.account_id == account_id)
-            .with_for_update()
-        )
-    ).one_or_none()
-    if row is None:
+) -> None:
+    """Lock the chat (one live card per chat)."""
+    found = await session.scalar(
+        select(Conversation.id)
+        .where(Conversation.id == conversation_id, Conversation.account_id == account_id)
+        .with_for_update()
+    )
+    if found is None:
         raise NotInAccountError("conversation not found")
-    anchor: datetime | None = row.last_contact_msg_at
-    return anchor
 
 
 async def _live_for_turn(session: AsyncSession, request: ProposalRequest) -> Action | None:

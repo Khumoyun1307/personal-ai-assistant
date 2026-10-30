@@ -109,17 +109,54 @@ async def test_removing_the_reply_right_blocks_an_approved_draft(p2: Scenario) -
     p2.assert_copy_ready(result)
 
 
-async def test_the_window_closing_expires_the_draft_with_copy_ready_text(p2: Scenario) -> None:
+async def test_the_window_closing_expires_an_autonomous_draft_with_copy_ready_text(
+    p2: Scenario,
+) -> None:
+    """Autonomous actions keep the conservative pre-check (invariant 8)."""
     from datetime import timedelta
 
     await advance(p2, 23 * 3600 + 40 * 60)
-    row = await p2.seed(expires_at=p2.env.clock.now() + timedelta(minutes=15))
+    row = await p2.seed(
+        origin="delegation_auto", expires_at=p2.env.clock.now() + timedelta(minutes=15)
+    )
     await advance(p2, 16 * 60, periodic=("system.expire_actions",))
     result = await p2.action(row.id)
     assert (result.state, result.state_reason) == ("expired", "window_closed")
     p2.assert_copy_ready(result)
     assert "expired" in p2.final_card(result)["text"].lower()
     assert p2.business_sends() == []
+
+
+async def test_an_owner_draft_outlives_the_window_estimate_and_telegram_decides(
+    p2: Scenario,
+) -> None:
+    """Invariant 8 as amended (owner decision 2026-10-30, P2-O20): our 24 h
+    estimate does not expire an owner-approved draft. Approve makes exactly
+    one attempt; Telegram's PEER_ID_INVALID is a definite not-sent
+    (`expired`/`window_closed`), never uncertain or retried, and the final
+    card says so with copy-ready text."""
+    from datetime import timedelta
+
+    from tests.fakes.sender import telegram_error
+
+    await advance(p2, 23 * 3600 + 40 * 60)
+    row = await p2.seed(expires_at=p2.env.clock.now() + timedelta(hours=2))
+    await advance(p2, 16 * 60, periodic=("system.expire_actions",))
+    assert (await p2.action(row.id)).state == "awaiting_approval"
+
+    p2.env.sender.plain_script = [telegram_error("Bad Request: PEER_ID_INVALID", status_code=400)]
+    await press_action(p2, row.id, "ok", token=row.approval_token)
+    await run_queued(p2, "actions.execute")
+    await run_queued(p2, "actions.execute")
+
+    result = await p2.action(row.id)
+    assert (result.state, result.state_reason) == ("expired", "window_closed")
+    assert result.error_class == "window_closed"
+    assert len(p2.env.sender.plain_sends) == 1
+    card = p2.final_card(result)["text"]
+    assert "Telegram didn't allow this send" in card
+    assert "uncertain" not in card.lower()
+    p2.assert_copy_ready(result)
 
 
 async def test_a_contact_message_ingested_after_approval_blocks_the_send(p2: Scenario) -> None:

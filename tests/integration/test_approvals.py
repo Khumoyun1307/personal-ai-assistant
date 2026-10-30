@@ -1047,25 +1047,49 @@ async def test_a_second_redraft_tap_while_one_is_queued_keeps_the_press_transact
 
 
 # ------------------------------------------------------------ expiry
-@pytest.mark.parametrize("closed", [True, False])
-async def test_expiry_at_window_close_and_at_max_age(s: Scenario, closed: bool) -> None:
+@pytest.mark.parametrize(
+    ("closed", "origin", "reason"),
+    [
+        (True, "delegation_auto", "window_closed"),
+        # P2-O20: an owner-approved card expires by max age only.
+        (True, "agent_proposal", "max_age"),
+        (False, "agent_proposal", "max_age"),
+    ],
+)
+async def test_expiry_at_window_close_and_at_max_age(
+    s: Scenario, closed: bool, origin: str, reason: str
+) -> None:
     if closed:
         await advance(s, 23 * 3600 + 50 * 60)
     # Expires 23 h 55 min after the contact wrote: the window (less its
     # 5-minute margin) is closed then.
-    row = await s.seed(expires_at=s.env.clock.now() + timedelta(minutes=5))
+    row = await s.seed(origin=origin, expires_at=s.env.clock.now() + timedelta(minutes=5))
     await press_action(s, row.id, "ed")  # a revising card expires too
     assert len(await edit_inputs(s)) == 1
     await advance(s, 60, periodic=("system.expire_actions",))
     assert (await s.action(row.id)).state == "revising"
     await advance(s, 300, periodic=("system.expire_actions",))
     final = await s.action(row.id)
-    reason = "window_closed" if closed else "max_age"
     assert (final.state, final.state_reason) == ("expired", reason)
     assert await edit_inputs(s) == []
     assert "Expired" in s.final_card(final)["text"]
     s.assert_copy_ready(final)
     assert s.business_sends() == []
+
+
+async def test_a_card_presented_after_the_window_estimate_closed_warns_and_stays(
+    s: Scenario,
+) -> None:
+    """Invariant 8 as amended (owner decision 2026-10-30, P2-O20): the card
+    is presented normally with one factual line; Telegram decides at the send."""
+    await advance(s, 24 * 3600)
+    row = await s.seed(expires_at=s.env.clock.now() + timedelta(hours=6))
+    assert (await s.action(row.id)).state == "awaiting_approval"
+    assert "hasn't written in the last 24 hours, so Telegram may not allow this send" in (
+        s.control_text()
+    )
+    await advance(s, 60, periodic=("system.expire_actions",))
+    assert (await s.action(row.id)).state == "awaiting_approval"
 
 
 async def test_expiry_clears_only_the_expired_actions_own_edit_question(s: Scenario) -> None:

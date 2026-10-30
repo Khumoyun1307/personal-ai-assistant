@@ -112,7 +112,14 @@ def conversation_available(ctx: PolicyContext) -> CheckResult:
     )
 
 
-def window_open(ctx: PolicyContext) -> CheckResult:
+def window_open(ctx: PolicyContext) -> CheckResult | None:
+    # Autonomous sends only (owner decision 2026-10-30, P2-O20; AGENTS §6
+    # invariant 8): an owner-approved send is attempted once and Telegram
+    # enforces the window itself; its refusal (`PEER_ID_INVALID`) is a
+    # definite not-sent, never retried. Our estimate sees only the messages
+    # we ingested, so it must not block what the owner approved.
+    if ctx.action.origin is not ActionOrigin.DELEGATION_AUTO:
+        return None
     # Anchored on the contact's last message only; the owner's messages never
     # extend it (TF C-03, conservative until LV-08's reopen half is observed).
     open_now = is_open(ctx.conversation.last_contact_msg_at, ctx.now)

@@ -50,7 +50,6 @@ FAILURES: dict[str, dict[str, Any]] = {
     "bot_chat": {"conversation": {"is_bot": True}},
     "chat_ignored": {"conversation": {"mode": "ignore"}},
     "chat_possibly_paused": {"conversation": {"availability": "possibly_paused"}},
-    "window_closed": {"conversation": {"last_contact_msg_at": NOW - REPLY_WINDOW}},
     "takeover": {"freshness": {"newest_owner_manual_sent_at": NOW - timedelta(minutes=1)}},
     "consent_missing": {"account": {"managed_consent_ok": False}},
     "empty_text": {"action": {"text_length": 0}},
@@ -60,6 +59,11 @@ FAILURES: dict[str, dict[str, Any]] = {
         "freshness": {"target_is_assistant_sent": False},
     },
 }
+
+#: Our window estimate closed (P2-O20: it bounds autonomous sends only).
+WINDOW_CLOSED: dict[str, Any] = {"conversation": {"last_contact_msg_at": NOW - REPLY_WINDOW}}
+AUTONOMOUS: dict[str, Any] = {"action": {"origin": ActionOrigin.DELEGATION_AUTO}}
+OWNER_ORIGINS = (ActionOrigin.OWNER_DICTATED, ActionOrigin.AGENT_PROPOSAL)
 
 EXECUTION_FAILURES: dict[str, dict[str, Any]] = {
     **FAILURES,
@@ -117,7 +121,6 @@ def test_execution_allows_sending_only_when_every_rule_passes() -> None:
 OUTDATED = ActionState.OUTDATED
 EXPIRED = ActionState.EXPIRED
 BLOCKED = ActionState.BLOCKED
-AUTONOMOUS: dict[str, Any] = {"action": {"origin": ActionOrigin.DELEGATION_AUTO}}
 
 
 def merged(*overrides: dict[str, Any]) -> dict[str, Any]:
@@ -139,7 +142,7 @@ def merged(*overrides: dict[str, Any]) -> dict[str, Any]:
         (EXECUTION_FAILURES["takeover"], (OUTDATED, StateReason.TAKEOVER)),
         (EXECUTION_FAILURES["new_contact_message"], (OUTDATED, StateReason.NEW_CONTACT_MESSAGE)),
         (EXECUTION_FAILURES["source_deleted"], (OUTDATED, StateReason.SOURCE_DELETED)),
-        (EXECUTION_FAILURES["window_closed"], (EXPIRED, StateReason.WINDOW_CLOSED)),
+        (merged(AUTONOMOUS, WINDOW_CLOSED), (EXPIRED, StateReason.WINDOW_CLOSED)),
         (EXECUTION_FAILURES["max_age"], (EXPIRED, StateReason.MAX_AGE)),
         (EXECUTION_FAILURES["consent_missing"], (BLOCKED, StateReason.CONSENT_REVOKED)),
         (EXECUTION_FAILURES["sending_disabled"], (BLOCKED, StateReason.SENDING_DISABLED)),
@@ -167,7 +170,7 @@ def merged(*overrides: dict[str, Any]) -> dict[str, Any]:
             None,
         ),
         (
-            merged(EXECUTION_FAILURES["window_closed"], EXECUTION_FAILURES["takeover"]),
+            merged(AUTONOMOUS, WINDOW_CLOSED, EXECUTION_FAILURES["takeover"]),
             (OUTDATED, StateReason.TAKEOVER),
         ),
         (
@@ -175,7 +178,7 @@ def merged(*overrides: dict[str, Any]) -> dict[str, Any]:
             (OUTDATED, StateReason.TAKEOVER),
         ),
         (
-            merged(EXECUTION_FAILURES["max_age"], EXECUTION_FAILURES["window_closed"]),
+            merged(AUTONOMOUS, EXECUTION_FAILURES["max_age"], WINDOW_CLOSED),
             (EXPIRED, StateReason.WINDOW_CLOSED),
         ),
         (
@@ -205,6 +208,42 @@ def test_execution_failure_maps_to_its_state(
     decision = decide(ctx(**overrides))
     assert decision.outcome is not Outcome.ALLOW_AUTO
     assert execution_target(decision) == expected
+
+
+@pytest.mark.parametrize("phase", list(Phase))
+def test_window_estimate_never_blocks_an_owner_approved_action(phase: Phase) -> None:
+    """Invariant 8 as amended (owner decision 2026-10-30, P2-O20): for an
+    owner-dictated or owner-approved draft our 24 h estimate is not a check —
+    Telegram decides at the one send attempt. Closed or unknown alike."""
+    state = ActionState.PROPOSED if phase is Phase.PROPOSAL else ActionState.APPROVED
+    expected = Outcome.REQUIRE_APPROVAL if phase is Phase.PROPOSAL else Outcome.ALLOW_AUTO
+    for origin in OWNER_ORIGINS:
+        for anchor in (NOW - REPLY_WINDOW, None):
+            decision = decide(
+                ctx(
+                    phase=phase,
+                    action={"origin": origin, "state": state},
+                    conversation={"last_contact_msg_at": anchor},
+                )
+            )
+            assert decision.outcome is expected, (origin, anchor)
+            assert "window_open" not in [c.name for c in decision.checks]
+
+
+@pytest.mark.parametrize("phase", list(Phase))
+def test_window_estimate_still_blocks_an_autonomous_send(phase: Phase) -> None:
+    """The conservative pre-check stays for `delegation_auto` (invariant 8):
+    a closed or unknown window denies before any Telegram call."""
+    for anchor in (NOW - REPLY_WINDOW, None):
+        decision = decide(
+            ctx(
+                **merged(AUTONOMOUS, {"conversation": {"last_contact_msg_at": anchor}}), phase=phase
+            )
+        )
+        assert decision.outcome is Outcome.DENY
+        assert "window_closed" in failed_reasons(decision)
+        if phase is Phase.EXECUTION:
+            assert execution_target(decision) == (EXPIRED, StateReason.WINDOW_CLOSED)
 
 
 def test_execution_targets_are_legal_transitions_from_approved() -> None:
@@ -247,7 +286,6 @@ def test_checks_list_every_evaluated_rule_in_order() -> None:
         "connection_active",
         "conversation_owned",
         "conversation_available",
-        "window_open",
         "no_takeover_since",
         "not_stale",
         "not_already_executed",
@@ -263,7 +301,6 @@ def test_checks_list_every_evaluated_rule_in_order() -> None:
         "connection_active",
         "conversation_owned",
         "conversation_available",
-        "window_open",
         "no_takeover_since",
         "target_is_assistant_sent",
         "consent_valid",
@@ -307,12 +344,14 @@ def test_explanations_render_for_each_failed_check() -> None:
             connection={"can_reply": False},
             conversation={"last_contact_msg_at": None},
             freshness={"newest_owner_manual_sent_at": NOW},
+            action={"origin": ActionOrigin.DELEGATION_AUTO},
         )
     )
     assert explain(many) == (
         EXPLANATIONS["no_reply_right"],
         EXPLANATIONS["window_closed"],
         EXPLANATIONS["takeover"],
+        EXPLANATIONS["no_delegation"],
     )
 
 

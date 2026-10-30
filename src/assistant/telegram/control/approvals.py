@@ -77,7 +77,7 @@ from assistant.core.jobs import (
     JobScheduler,
     revise_queueing_lock,
 )
-from assistant.core.reply_window import SAFETY_MARGIN, closes_at
+from assistant.core.reply_window import SAFETY_MARGIN, closes_at, is_open
 from assistant.db.uow import after_commit, transaction
 from assistant.memory.summaries import preferred_name
 from assistant.observability.logging import get_logger
@@ -252,19 +252,33 @@ class ApprovalCardView:
     card_token: str | None = None
     #: Re-draft was pressed: the card keeps its state and offers copy only.
     redraft_requested: bool = False
+    #: Our estimate of the reply window when the view was loaded (contact's
+    #: last message + 24 h, less the margin). For an owner-approved card it
+    #: only adds a warning line; Telegram decides at the send (P2-O20).
+    window_open: bool = True
 
     @property
     def sendable_until(self) -> datetime | None:
-        """`min(expires_at, window close - margin)` (spec §3.1 item 5)."""
-        values = [v for v in (self.expires_at, self.window_end) if v is not None]
+        """`expires_at`; for an autonomous action also bounded by the window
+        close less the margin (spec §3.1 item 5, P2-O20)."""
+        bounds = [self.expires_at]
+        if lifecycle.window_bounds(self.origin):
+            bounds.append(self.window_end)
+        values = [v for v in bounds if v is not None]
         return min(values) if values else None
 
 
 async def load_card_view(
-    session: AsyncSession, *, account_id: int, action_id: int, sending_enabled: bool
+    session: AsyncSession,
+    *,
+    account_id: int,
+    action_id: int,
+    sending_enabled: bool,
+    now: datetime | None = None,
 ) -> ApprovalCardView | None:
     """The card's view of one action of this account, or None.
-    `sending_enabled` is the presenter's `ActionsConfig.sending_enabled`."""
+    `sending_enabled` is the presenter's `ActionsConfig.sending_enabled`;
+    `now` (the presenter's clock) evaluates the window warning, none without it."""
     row = (
         await session.execute(
             select(Action, Conversation.last_contact_msg_at, Contact, Account)
@@ -319,6 +333,7 @@ async def load_card_view(
         control_chat_id=account.control_chat_id,
         sending_enabled=sending_enabled,
         card_token=token,
+        window_open=True if now is None else is_open(anchor, now),
     )
 
 
@@ -460,9 +475,42 @@ def _short(reason: StateReason | None) -> str:
     return "" if reason is None else f" — {REASON_SHORT.get(reason, reason.value)}"
 
 
+#: The final card when Telegram itself refused the send for the window (P2-O20).
+TELEGRAM_REFUSED_LINE = (
+    "<b>Not sent</b> — Telegram didn't allow this send "
+    "(the contact hasn't written in the last 24 hours)"
+)
+TELEGRAM_REFUSED_EXPLANATION = (
+    "Nothing was sent and it will not be retried. Copy the text to send it yourself."
+)
+#: A live owner-approved card while our estimate says the window is closed.
+WINDOW_WARNING = (
+    "⚠️ {name} hasn't written in the last 24 hours, so Telegram may not allow this send."
+)
+
+
+def telegram_refused(view: ApprovalCardView) -> bool:
+    """Telegram refused the attempt for the reply window (`PEER_ID_INVALID`):
+    a definite not-sent, never retried (TF §12 LV-08)."""
+    return (
+        view.state is ActionState.EXPIRED
+        and view.reason is StateReason.WINDOW_CLOSED
+        and view.error_class == ErrorClass.WINDOW_CLOSED.value
+    )
+
+
+def _window_warning(view: ApprovalCardView) -> str | None:
+    if view.state not in LIVE_CARD or view.window_open or lifecycle.window_bounds(view.origin):
+        return None
+    name = shown(view.contact_name, one_line=True) if view.contact_name else "This contact"
+    return WINDOW_WARNING.format(name=name)
+
+
 def state_line(view: ApprovalCardView) -> str:
     """The FR-ACT-02 label of the action's state; never "sent" unless it was."""
     state = view.state
+    if telegram_refused(view):
+        return TELEGRAM_REFUSED_LINE
     if state is ActionState.REVISING:
         if view.revision_turn_id is None:
             return f"✏️ Editing — {ANSWER_EDIT}"
@@ -501,6 +549,8 @@ def _explanation(view: ApprovalCardView) -> str | None:
         return None
     if view.state in {ActionState.APPROVED, ActionState.EXECUTING}:
         return None
+    if telegram_refused(view):
+        return TELEGRAM_REFUSED_EXPLANATION
     return STATE_REASON_EXPLANATIONS.get(view.reason)
 
 
@@ -560,6 +610,8 @@ def _compose(
             parts += _their_words(excerpt)
     parts += ["", body]
     warnings = _warnings(view)
+    if (window_warning := _window_warning(view)) is not None:
+        warnings.append(window_warning)
     if warnings:
         parts += ["", *warnings]
     parts.append("")
@@ -810,6 +862,7 @@ class ApprovalCards:
                 account_id=account_id,
                 action_id=action_id,
                 sending_enabled=self._config.sending_enabled,
+                now=self._clock.now(),
             )
             if view is None or not _needs_card_token(view):
                 return view
