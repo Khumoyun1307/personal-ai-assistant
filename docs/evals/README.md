@@ -89,6 +89,7 @@ contact filter and the final answer (synthetic data, for review; E-s, E-t, E-u).
 | Date | Set | Version | Change | Manifest |
 |---|---|---|---|---|
 | 2026-10-23 | E1 + retrieval | v1 | Initial synthetic set: 40 conversations (8 per variant; c01–c08 = S00.3 smoke set), 262 labelled items, 38 retrieval queries. Hand-written by an AI coding agent; pending the owner's Uzbek and label review. | `evals/datasets/MANIFEST.sha256` at this commit |
+| 2026-10-30 | owner_drafting | v1 | PF-16b: 31 hand-written synthetic cases (17 uz-Latn, 6 ru, 8 en) for owner-requested drafting and routing: identity, suggest contacts, advice, dictate (an instruction prefix left out), command words never staged, compose where no reply is needed, reply to a named earlier message, carried substance, append, shorter, 5-7 words, tone, word count, pick suggestion #2. Never derived from the 2026-10-30 playtest chats (AGENTS §8). Run by the TL only (`python -m evals run owner_drafting`, estimate, `--limit 1`, `--calibrate-from`), at low and at medium effort (D10); pending the owner's Uzbek review. | `evals/datasets/MANIFEST.sha256` at this commit |
 
 ## Real-model runs so far (pre-screen only)
 

@@ -25,7 +25,7 @@ from typing import Any, Literal, Protocol
 from assistant.llm.port import LLMClient
 from evals.review import ReviewLedger
 
-DatasetName = Literal["e1", "e2", "e3", "retrieval"]
+DatasetName = Literal["e1", "e2", "e3", "retrieval", "owner_drafting"]
 
 
 class Status(StrEnum):

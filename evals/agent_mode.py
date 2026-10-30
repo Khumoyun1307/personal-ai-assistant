@@ -58,7 +58,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
@@ -207,9 +207,17 @@ class Calibration:
     source: str
 
 
-def load_calibration(path: Path, *, model: str) -> Calibration:
+def load_calibration(
+    path: Path,
+    *,
+    model: str,
+    target: str = "retrieval",
+    mode: str = RetrievalMode.AGENT.value,
+) -> Calibration:
     """The spend per query of a finished agent-mode trial of `model` with the
-    shipped `owner_request` prompt; refused for anything else."""
+    shipped `owner_request` prompt; refused for anything else. `target` and
+    `mode` name the trial's report (the `owner_drafting` target's mode is its
+    efforts, so a trial at one effort never calibrates a run at another)."""
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
@@ -218,8 +226,8 @@ def load_calibration(path: Path, *, model: str) -> Calibration:
         raise RefusedError(f"cannot calibrate from {path.name}: not a report")
     prompt = prompt_registry.active(ROUTE).label
     problems: list[str] = []
-    if (report.get("target"), report.get("mode")) != ("retrieval", RetrievalMode.AGENT.value):
-        problems.append("not a retrieval report of mode `agent`")
+    if (report.get("target"), report.get("mode")) != (target, mode):
+        problems.append(f"not a {target} report of mode `{mode}`")
     if report.get("model") != model:
         problems.append(f"its model is {report.get('model')!r}, this run's is {model!r}")
     if prompt not in (report.get("prompts") or []):
@@ -243,8 +251,17 @@ def load_calibration(path: Path, *, model: str) -> Calibration:
     return Calibration(spent / items, path.name)
 
 
+class Calibratable(Protocol):
+    """A target that runs the agent loop per item (retrieval's agent mode, the
+    `owner_drafting` target): its worst case is far above a typical run."""
+
+    def plan(self, context: RunContext) -> Sequence[PlannedCall]: ...
+
+    def selected(self, context: RunContext) -> Sequence[object]: ...
+
+
 def check_agent_estimate(
-    target: AgentModeTarget,
+    target: Calibratable,
     context: RunContext,
     *,
     model: str,

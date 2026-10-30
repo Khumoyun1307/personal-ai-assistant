@@ -10,6 +10,7 @@
     python -m evals run triage [--live] [--model ID] ...      # the product's triage over E3
     python -m evals run monitors [--live] [--model ID] ...    # evaluate_monitor over E3's cases
     python -m evals run drafts [--owner-language uz-Latn|uz-Cyrl|ru|en] [--live] ...
+    python -m evals run owner_drafting [--live] [--limit N | --only od01,od08] [--calibrate-from T]
     python -m evals review drafts --from docs/evals/<drafts run>.json [--export SHEET.md]
     python -m evals compare docs/evals/<run>.json [...]
     python -m evals compare <route model>.json <next tier>.json [--route-model ID]  # model choice
@@ -59,12 +60,20 @@ from evals.live import (
     LiveSetupError,
     ModelChoice,
     build_client,
+    draft_owner_choice,
     load_live_config,
     resolve_model,
 )
 from evals.metrics import OwnerLanguage
 from evals.monitors import MONITOR_COMPARISON, MonitorTarget, isolated_monitors
 from evals.monitors import SET_NAME as MONITORS_SET_NAME
+from evals.owner_drafting import SET_NAME as OWNER_DRAFTING_SET_NAME
+from evals.owner_drafting import (
+    OwnerDraftingCase,
+    OwnerDraftingTarget,
+    isolated_owner_drafting,
+    load_cases,
+)
 from evals.report import RunMeta, fmt_measure, render_comparison
 from evals.retrieval import QueryVariants, RetrievalMode, RetrievalTarget, load_recorded
 from evals.review import ReviewLedger
@@ -147,7 +156,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("verify", help="check the datasets against the frozen manifest")
 
     run = sub.add_parser("run", help="run a target and record the result")
-    run.add_argument("target", choices=["retrieval", "summary", "drafts", "triage", "monitors"])
+    run.add_argument(
+        "target", choices=["retrieval", "summary", "drafts", "triage", "monitors", "owner_drafting"]
+    )
     run.add_argument(
         "--mode",
         choices=[m.value for m in RetrievalMode] + ["both"],
@@ -163,8 +174,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="TRIAL.json",
         help=(
-            "retrieval --mode agent: the JSON report of a --limit 1 agent trial; the run then "
-            "starts on its expected cost under the in-flight cap (E-ab)"
+            "retrieval --mode agent and owner_drafting: the JSON report of a --limit 1 trial; "
+            "the run then starts on its expected cost under the in-flight cap (E-ab)"
         ),
     )
     run.add_argument(
@@ -210,8 +221,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=_ids,
         metavar="ID,ID,...",
         help=(
-            "summary, drafts, triage and monitors: evaluate only these conversations, "
-            "situations, bursts or cases (e.g. c36, s001, b001 or m001), in set order: "
+            "summary, drafts, triage, monitors and owner_drafting: evaluate only these items, "
+            "(e.g. c36, s001, b001, m001 or od01), in set order: "
             "a trial run, never a gate"
         ),
     )
@@ -306,6 +317,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return asyncio.run(_monitors(args))
         if args.target == "drafts":
             return asyncio.run(_drafts(args))
+        if args.target == "owner_drafting":
+            return asyncio.run(_owner_drafting(args))
         return asyncio.run(_retrieval(args))
     except EvalsError as error:  # the tool's own, explainable failures; a bug keeps its traceback
         return _refuse(str(error))
@@ -812,8 +825,8 @@ def _guard(
         choice = resolve_model(target.route, args.model)
         context = RunContext(model=choice.model, reviews=reviews, limit=args.limit, only=args.only)
         expected_text = ""
-        if isinstance(target, AgentModeTarget):
-            calibration = _calibration(args, choice.model)
+        if isinstance(target, (AgentModeTarget, OwnerDraftingTarget)):
+            calibration = _calibration(args, choice, target)
             result, expected = check_agent_estimate(
                 target,
                 context,
@@ -834,8 +847,95 @@ def _guard(
     return choices
 
 
-def _calibration(args: argparse.Namespace, model: str) -> Calibration | None:
-    """The agent trial a full agent run is calibrated from (E-ab), if given."""
+def _calibration(
+    args: argparse.Namespace, choice: ModelChoice, target: EvalTarget
+) -> Calibration | None:
+    """The agent trial a full agent run is calibrated from (E-ab), if given: a
+    retrieval agent trial, or an `owner_drafting` trial at the same efforts."""
     if args.calibrate_from is None:
         return None
-    return load_calibration(args.calibrate_from, model=model)
+    if isinstance(target, OwnerDraftingTarget):
+        return load_calibration(
+            args.calibrate_from,
+            model=choice.model,
+            target=target.name,
+            mode=target.label(choice.effort),
+        )
+    return load_calibration(args.calibrate_from, model=choice.model)
+
+
+def _owner_cases() -> list[OwnerDraftingCase]:
+    """The owner_drafting cases, or a clean refusal while they do not load."""
+    try:
+        return load_cases()
+    except FileNotFoundError:
+        raise RefusedError("the owner_drafting cases are not authored yet") from None
+    except ValueError:
+        # Not the message's detail: a validation error can echo dataset text.
+        raise RefusedError(
+            "the owner_drafting cases do not pass their checks; run "
+            "`just test tests/unit/test_owner_drafting_dataset.py`"
+        ) from None
+
+
+async def _owner_drafting(args: argparse.Namespace) -> int:
+    """The owner_drafting target (PF-16b): owner-requested drafting and routing
+    through the real owner runtime, one synthetic account per case in a
+    throwaway database. It always calls a model, so every guard applies. The
+    efforts are the product's settings (`LLM_OWNER_REQUEST_EFFORT`,
+    `LLM_DRAFT_REPLY_EFFORT`): set both to compare low and medium (D10)."""
+    _require_recorded(args)
+    digests = ensure_frozen()
+    cap, prices = _cap(args.budget_usd), _prices(args.price)
+    reviews = _reviews(args.reviews, "owner_drafting")
+    draft = draft_owner_choice(args.model)
+    owner = resolve_model(OwnerDraftingTarget.route, args.model)
+    if draft.model != owner.model:
+        raise RefusedError(
+            "the draft_reply and owner_request routes use different models; the estimate "
+            "prices one model, so name it with --model"
+        )
+    target = OwnerDraftingTarget(_owner_cases(), draft_model=draft.model, draft_effort=draft.effort)
+    if args.only is not None:
+        try:
+            target.named(args.only, limit=args.limit)
+        except ValueError as error:
+            raise RefusedError(f"--only: {error}") from None
+    label = target.label(owner.effort)
+    (choice,) = _guard([target], [label], args, cap, prices, reviews)
+    if args.estimate_only:
+        return 0
+    assert choice is not None  # the target always uses a model
+    live_client = build_client(load_live_config(target.route, args.model))
+    run_date = args.date or SystemClock().now().date()
+    out_dir = None if args.no_write else args.out_dir
+    ledger = CallLedger()
+    llm = BudgetedLLMClient(live_client, cap_usd=cap, overrides=prices, ledger=ledger)
+    context = RunContext(
+        llm=llm,
+        model=choice.model,
+        effort=choice.effort,
+        reviews=reviews,
+        limit=args.limit,
+        only=args.only,
+    )
+    meta = RunMeta(
+        run_date=run_date,
+        set_name=f"{OWNER_DRAFTING_SET_NAME}-{label}",
+        mode=label,
+        model=choice.model,
+        live=True,
+        effort=choice.effort,
+        dataset_files=digests,
+        cap_usd=cap,
+        reviews=reviews,
+    )
+    async with isolated_owner_drafting(eval_database_url(), target) as bound:
+        try:
+            outcome = await run_target(bound, context, meta=meta, ledger=ledger, out_dir=out_dir)
+        except BaseException:
+            if ledger.entries:
+                _refuse(f"the run failed after spending ${ledger.spent:.4f} of ${cap}")
+            raise
+    _print_outcome(f"owner_drafting ({label})", outcome, ledger=ledger, cap=cap, spent=True)
+    return exit_code(outcome.result)
