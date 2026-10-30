@@ -36,7 +36,7 @@ R = does the work · A = accountable (merges or signs off) · C = consulted (rev
 | QA-S6, QA-S7 | R (QJ1, QA-S6); C (Josh lead; a Josh engineer on QA-S7) | R (QE1, QA-S7); C (Edvard lead) | I | C (QA-S6) | A (light) | I |
 | GATE-RUN | I | C (E2 iterations; QE2's three gate checks) | I | R | A | go-ahead per run; ratings; verdicts (card-only finding kinds need none, P3-T111) |
 | R1, deploys, flags, LIVE-P3 | C | C | I | R (verification, records) | R (deploys, server side) | A (merge, go-aheads, client steps) |
-| OWN-LV16 | I | I | I | C (probe script) | R (TF §12 record) | R (runs it) |
+| OWN-LV16 | I | I | I | C (probe script) | R (runs it on Alviro in the D+6 window; TF §12 follow-up line; P3-T168) | C (go-ahead for the run) |
 
 ## 3. Review matrix
 

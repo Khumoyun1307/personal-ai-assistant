@@ -15,7 +15,7 @@ You own everything in QA that crosses teams, touches production or uses the owne
 | **GATE-RUN** | S06.5 eval operations (§5) |
 | **LIVE-P3** | Live operations, the soak and the 14-day trial (§5) |
 
-You also collate the **CP-A evidence** (RG results on the merge result, mutation tables, race reproductions), give the **QA sign-off at CP-A and R1**, verify each deploy, run the **OPS-RT3** restore check with the owner and the TL, and write the **LV-16 probe script** the owner runs on the dev bot.
+You also collate the **CP-A evidence** (RG results on the merge result, mutation tables, race reproductions), give the **QA sign-off at CP-A and R1**, verify each deploy, run the **OPS-RT3** restore check with the owner and the TL, and write the **LV-16 probe script** (`qa/lv16-runbook.md`) the TL runs on Alviro in the D+6 production window (OD-27 as answered 2026-10-30, P3-T168; the dev bot has no business connection).
 
 ## 2. Read first, in order
 

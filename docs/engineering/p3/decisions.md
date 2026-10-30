@@ -26,7 +26,7 @@ Given interactively in the TL conversation. "Default" means the recommended defa
 | OD-1 | Approved: M06 and M07 approved 2026-10-29. The pre-start units (DATA-E2, DATA-E4a, DATA-E4b, QA-P3, the PV6 text, F0-C) may run before D0 |
 | OD-2 | Default: one `int/p3`; the owner merges it into `main` once at R1; after R1 late fixes go to `main` as flag-guarded PRs the TL merges; AGENTS §15 gets a P3 line (conflict 5 approved) |
 | OD-3 | Default |
-| OD-4 | Default. The owner decides the marker emoji when proofreading `autonomy-texts.md` |
+| OD-4 | Default. The owner decides the marker emoji when proofreading `autonomy-texts.md` (done 2026-10-30: texts approved, marker 🤖; §A3) |
 | OD-5 | Default |
 | OD-6 | Default |
 | OD-7 | Default |
@@ -93,6 +93,16 @@ Given interactively in the TL conversation. With them the TL ruled P3-T153…P3-
 | OD-11a | **Changed from the default: always at once.** `autonomy_not_sent` is delivery class `system` (never held for quiet hours, never capped, never batched, not gated by `notifications.deliver`; no feedback buttons), enqueued with `AlertClass.SYSTEM`, like approval cards before. PRD §14 clarified (owner-approved wording): "Exception: 'Automatic reply not sent' alerts under a delegation (which offer Draft reply) always arrive at once." Changes P3-T140, P3-T144, F0-S, M6-PLAN, M6-SCHED, M6-ESC, QA-S6, ARCHITECTURE §9.4, IMPLEMENTATION_PLAN S06.2 and S06.3 |
 | OD-11b | Default: PRD §15's row "LLM unavailable or budget exhausted for > 10 min" now reads "…and its conversations fall back to alerts that offer a draft for approval (Draft reply) or escalation only (owner decision 2026-10-29, OD-11b)". No other PRD change |
 
+#### A3. Owner answers, 2026-10-30
+
+Given in the TL conversation after the pre-start PRs (#222, #223, #140) were merged: the owner approved the texts and the policy ("I like it") and asked the TL to take the remaining before-D0 items off the owner's list. With them the TL ruled P3-T166…P3-T168 (§B11).
+
+| ID | Answer |
+|---|---|
+| Autonomy texts (OD-4, OD-10, P3-T61) | **Approved as drafted** in `autonomy-texts.md`: the four disclosure lines and the four identity answers, unchanged. **Marker: option A, 🤖**, the TL's suggestion; the owner named no marker and did not change it. F0-S copies the texts verbatim at D0; a later wording change is a text-only ICR with the owner's OK. Owner gate #206 closed |
+| OD-24 | **v6 text approved early** (due D+3): `docs/legal/privacy-policy.md` v6 and the in-bot notice (PV6 §3.2, TL draft 2), as merged in #223. The rest of the default stands: v6 is published on the same page before deploy #1 with the owner's go-ahead; autonomous sends and memory suggestions start ≥ 24 h after the notice |
+| OD-27 | **Answered early: take it off the owner's list; the TL runs the LV-16 re-test.** The TL found that the dev bot has no business connection (M02 item 5, M03 handoff, P2-O7), so the run cannot use the dev bot. It runs on Alviro in the D+6 production window instead (P3-T168). The owner's only part is the go-ahead for that run, given with the D+6 window (AGENTS §9: production bot). Owner gate #209 retimed to D+6; OWN-LV16 (#152) moves to the TL |
+
 ### Group B: before the first gate run (by D+2/D+3, 11-04/11-05)
 
 | ID | Question | Recommended default | Units affected | If answered differently |
@@ -105,7 +115,7 @@ Given interactively in the TL conversation. With them the TL ruled P3-T153…P3-
 
 | ID | Question | Recommended default | Units affected | If answered differently |
 |---|---|---|---|---|
-| OD-24 | Privacy policy v6: scope and timing | One v6 covering M04–M07: drafts and sends, triage, tasks, alerts, monitors, autonomous replies with the AI line, shareable knowledge, delegation records, reminders, follow-ups, summaries, inferred notes, export. You approve the text by D+3 (11-05); it is published at deploy #1. Autonomous sends and memory suggestions start ≥ 24 h after the in-bot notice. This also settles conflict 6 | PV6, deploy #1, enables 4 and 5 | Late: deploy #1 cannot publish v6, so `autonomy.send` and `memory.extract` slip day for day |
+| OD-24 | Privacy policy v6: scope and timing | One v6 covering M04–M07: drafts and sends, triage, tasks, alerts, monitors, autonomous replies with the AI line, shareable knowledge, delegation records, reminders, follow-ups, summaries, inferred notes, export. You approve the text by D+3 (11-05); it is published at deploy #1. Autonomous sends and memory suggestions start ≥ 24 h after the in-bot notice. This also settles conflict 6. **Owner answer (2026-10-30): text and notice approved** (§A3) | PV6, deploy #1, enables 4 and 5 | Late: deploy #1 cannot publish v6, so `autonomy.send` and `memory.extract` slip day for day |
 | OD-25 | Production rules for P3 | No P3 deploy before the M04 trial's last check and digest day 5. Never within ±1 h of the digest. A go-ahead per deploy. Flags in the written order, shadow window first. During the 14-day trial: no flag changes and no feature deploys; a wrong, duplicate or out-of-policy send stops the line and restarts the clock | README §6, WORKFLOW §10 | — |
 
 ### Group D: before the live windows (by D+6, 11-08)
@@ -113,7 +123,7 @@ Given interactively in the TL conversation. With them the TL ruled P3-T153…P3-
 | ID | Question | Recommended default | Units affected | If answered differently |
 |---|---|---|---|---|
 | OD-26 | Where and with whom does J5 run? | In an Alviro production window. F1 and F2 in their own chats, re-briefed that an AI will **reply** to them (with the AI line). The second-account chat is kept for J7's silence leg. The M05 §7 burst test is folded into the same window | LIVE-P3, QA-P3 | — |
-| OD-27 | The LV-16 rate re-test (you run it) | A 15-minute probe `burst` on the dev bot before `autonomy.send` is switched on | OWN-LV16, enable 4 | — |
+| OD-27 | The LV-16 rate re-test (you run it) | A 15-minute probe `burst` on the dev bot before `autonomy.send` is switched on. **Owner answer (2026-10-30): the TL runs it**, on Alviro in the D+6 window, because the dev bot has no business connection (§A3, P3-T168) | OWN-LV16, enable 4 | — |
 
 ### Group E: before T0 (by D+8, 11-10)
 
@@ -228,7 +238,7 @@ Answers to the questions the contract and spec writers left open. Specs and the 
 | P3-T58 | **Recurring reminders have no task**, so their `reminder_due` card hides Done / Snooze 1 h / Tomorrow and shows "Pause reminder" (`AutomationControls`) instead | The task buttons would act on nothing | M7-REM, M7-AUTO |
 | P3-T59 | **`follow_up_met` dedupe key = `fupmet:{automation_id}:{matched_message_id}`**, so a closure after Reopen notifies again | A second, real closure must not be swallowed by the first one's key | M7-FUP |
 | P3-T60 | **Weekly rating card on Sunday at 19:00 owner-local**, at most one per ISO week | A fixed, predictable slot | OPS-RATE, LIVE-P3 |
-| P3-T61 | **Texts the contacts read:** the TL drafts the AI marker (neutral; the owner decides on an emoji), the four disclosure lines and the four identity answers in F0-C part 2; the owner proofreads them (OD-4, OD-10) | Wording is the owner's voice; F0-S codes the approved text into `core/autonomy_texts.py` | F0-C, F0-S |
+| P3-T61 | **Texts the contacts read:** the TL drafts the AI marker (neutral; the owner decides on an emoji), the four disclosure lines and the four identity answers in F0-C part 2; the owner proofreads them (OD-4, OD-10). Done 2026-10-30: approved as drafted, marker 🤖 (the TL's suggestion, unchanged; §A3) | Wording is the owner's voice; F0-S codes the approved text into `core/autonomy_texts.py` | F0-C, F0-S |
 | P3-T62 | **OD references:** lateness, delivery classes and to-dos cite **OD-17**, never OD-16 (inferred memory). The fix round corrects any slip | Wrong references send readers to the wrong decision | all specs |
 | P3-T63 | **ADR renumbering:** P3's ADRs are **ADR-17…ADR-21** everywhere (was ADR-21…25), changed in one edit during the specs' fix round, contracts and specs included. Mapping in P3-T23 | ARCHITECTURE §20 ends at ADR-16 | F0-C, contracts, all specs |
 | P3-T64 | **Conflicts 2 and 3 get owner-decision numbers:** OD-31 (PRD §12.2 #1 vs P2-T23, `/pause` and approvals) and OD-32 (the disclosure re-trigger reading), both in group A | The owner answers numbered questions | M6-PAUSE, M6-SCHED, M6-PLAN, M6-TXA, OPS-TV3 |
@@ -366,6 +376,16 @@ P3-T156…P3-T165 close the §F items the TL owned that were due before D0, befo
 | P3-T164 | **DATA-E4a checker run on `main` (2026-10-29), partly matching.** `e4a`: matches (no integrity line, 10 MISSING lines per language, `targets missed: 40`, exit 1). Scan of s092, s093, s095, s097, s099, s122, s125, s127 (in `e2/situations.jsonl`; the ids are E2 situations, not E4 cases, and the appendix command scans `e4/cases.jsonl`): exit 1 with 5 hits, not "only in s125": s125 (`toshkent` and `samarqand` in `messages.0.text`, `samarqand` in `canary`) and s095 (`python` and `node.js` in `messages.0.text`). DATA-E2 replaces the real names in both situations (a canary with a real place name is replaced too) and keeps the other six clean | The banned list is a minimum; the E2 data came before the scan was extended | DATA-E2, DATA-E4a |
 | P3-T165 | **GW-ESC verification (2026-10-29, `main` `bce0ea9`): not closed, one gap.** C1–C3 and C5–C8 pass; C9 waits for QA-P3's regression matrix (SQ maps the two partial-delivery tests under RG-20). C4 gap: `agent/tools/priority.py::describe_priority` builds the `set_contact_priority` card description from `_name`, which is already `html.escape()`d, and `agent/confirmations.py::card_text` escapes it again (a double escape, not an active-markup hole). Ruling (GW-ESC §3.5): the gap fix may edit `agent/tools/priority.py` only (a raw-name helper for `describe_priority`; `_name` stays escaped for the echo), with the red-first test `test_set_contact_priority_card_escapes_untrusted_text_once`. It is J3's `p3/gw-esc`, the first PR into `int/p3` at D0; GW-ESC closes when it merges and C9 is mapped, and no P3 renderer PR merges into `int/p3` before then. Missing escape-once tests for the priority, memory, deletion, mode and activity renderers and the executor uncertain alert go to M06.md as open items. Result posted on the `P3 integration` issue | Escape once, at the renderer (P3-T45); a P2 file is touched only under a named ruling | GW-ESC, J3, SQ |
 
+### B11. Rulings after the owner's 2026-10-30 answers
+
+With §A3 the owner's list before D0 holds one item: starting the three lead sessions (#207).
+
+| ID | Decision | Why | Units affected |
+|---|---|---|---|
+| P3-T166 | **Native-language review after D0, in two parts (owner gate #208 retimed from "before D0, then as v1.1 lands").** E2 and E4 v1, which are on `main` now, by D+1 (Tue 11-03); they form DATA-FIX's batch 1. The v1.1 additions by D+2 (Wed 11-04), as DATA-E2, DATA-E4a and DATA-E4b merge. A part that merges later is reviewed on D+3 by 12:00, DATA-FIX's cut-off for the owner's answers (DATA-FIX §6.2). DATA-FIX's deadline is unchanged: v1.2 merged by D+3 18:00, before the TL freezes the candidate on D+4 (DATA-FIX header, GATE-RUN §3.7). GATE-RUN adds to `confirmed_items` only the ids the owner reviewed | It clears the owner's list before D0 and keeps DATA-FIX's D+1..D+3 batch spread. Gate results count only owner-confirmed items (IMPLEMENTATION_PLAN §10.1) | DATA-E2, DATA-E4a, DATA-E4b, DATA-FIX, GATE-RUN, README §4, §7 |
+| P3-T167 | **The SENS term list is reviewed with v1 by D+1.** SENS codes the TL's proposed list as written (SENS §6.2); the owner's corrections land as one lexicon-only follow-up PR before R1 | SENS already treats the list as a TL proposal pending the owner's review (its M07.md open item); memory suggestions stay off until enable 5, so nothing depends on the list before R1 | SENS, §F3 |
+| P3-T168 | **LV-16 is the TL's, and it runs on Alviro (OD-27 as answered).** The dev bot has no business connection (M02 item 5: it cannot connect to the second account without a second Premium; M03 handoff; P2-O7), so `burst` cannot run through it. The re-test runs on Alviro's connection in the D+6 production window, into the owner's second-account chat right after the shadow window (whose contact messages keep the 24 h reply window open), before enable 4. The TL runs it with the owner's go-ahead for that run (AGENTS §9: production bot), given with the D+6 window. SQ's `qa/lv16-runbook.md` (QA-P3) holds the sequence and stop rules. `probe-prod` refuses `burst` by design (AGENTS §9), so the TL brings the smallest tooling path to the owner with group D: allowing the non-polling `burst` under `--prod-token` for one allow-listed chat with synthetic text is an AGENTS §9 wording change. The result is an agent-run follow-up line in TF §12's existing LV-16 row, as for the LV-11 re-checks; it marks nothing *Verified* (AGENTS §2). The enable-4 guard "LV-16 done" (README §6) is unchanged | Only Alviro has a business connection. The second account already writes in the shadow window, so the owner adds a go-ahead, not a client step | OWN-LV16, QA-P3, LIVE-P3, ORG, README §3, §7 |
+
 ## C. Document conflicts
 
 Conflicts found while planning P3, numbered as the specs cite them ("conflict n"). The higher document wins (AGENTS §2); the TL never edits the PRD, an AGENTS §6 invariant, a TF fact, a legal document or an owner decision without the owner.
@@ -381,7 +401,7 @@ Conflicts 1–5 answered 2026-10-29 (§A0); conflict 6 stays open (OD-24, group 
 | 3 | The AI-line re-trigger is worded three ways: "after 24 h of inactivity" (PRD FR-AUT-04, R-08), "after 24 h idle" (AGENTS §6.13) and ARCHITECTURE §9.3's session definition | 24 h measured from the last **succeeded** autonomous reply in the chat; an uncertain send counts as not disclosed. Once confirmed, the TL writes it into ARCHITECTURE §9.3 (F0-C part 2) | **Answered 2026-10-29 (OD-32):** reading confirmed; written into ARCHITECTURE §9.3 in F0-C part 2 |
 | 4 | P2-O11 made language checks informational; IMPLEMENTATION_PLAN S06.5 makes language/script ≥ 98 % a gate | A per-language gate for M06 (OD-14) | **Answered 2026-10-29:** reversal of P2-O11 for M06 confirmed via OD-14 |
 | 5 | AGENTS §15's integration-branch rule is scoped to phase P2 | Add a P3 line for `int/p3`, the owner's R1 merge and the TL's post-R1 flagged PRs to `main`, through the rule-change process (OD-2) | **Answered 2026-10-29 (OD-2):** approved; AGENTS §15 P3 line added in F0-C part 2 |
-| 6 | Privacy policy v5 (line 38) says "Alviro doesn't send messages to other people on its own"; M06 makes that false | A v6 and a SEC-12 in-bot notice with opt-out, approved before activation; autonomous sends start ≥ 24 h after the notice (AGENTS §16; PV6, OD-24) | Approve v6 by D+3 (open: OD-24, group C) |
+| 6 | Privacy policy v5 (line 38) says "Alviro doesn't send messages to other people on its own"; M06 makes that false | A v6 and a SEC-12 in-bot notice with opt-out, approved before activation; autonomous sends start ≥ 24 h after the notice (AGENTS §16; PV6, OD-24) | Done 2026-10-30: v6 text and notice approved (OD-24, §A3). Publication before deploy #1 still needs the owner's go-ahead (PV6 §3.4) |
 
 ### C2. Corrected by the TL (7–32)
 
@@ -457,12 +477,12 @@ Items 7–16, 21–27, 30 and 31 are **done in F0-C part 2** (the docs PR after 
 - DATA-E2's test block has Cyrillic literals (`V1_WRONG_MUST_NOT`). If ruff reports RUF001, a per-file ignore in `pyproject.toml` is needed; that file belongs to GW-DOC and the spec tells D2 not to add a `noqa` or touch it. Judged unlikely, unverified. TL; if CI reports it.
 - Dataset-log dates and numbers for the E3 and E4 v1 rows are unverified (E3 2026-10-27 #94; E4 2026-10-28, two parts). The spec lets the TL override. TL; before DATA-E2 merges.
 - Calendar risk: DATA-E4a (about 1.5 d) then DATA-E4b (about 1.25 d), each with a mentor sample review, all before the CP4 sync PR is cut; if the sync PR comes first they retarget to `int/p3`. TL with David lead; confirm the CP4 date at kickoff.
-- Owner items carried by the specs: native-language review of v1.1; s125's real city names and the city-based canary. The R-run cases (E4b slot 4) follow the confirmed OD-32 reading. The AI marker and disclosure texts are drafted in `autonomy-texts.md` and the owner proofreads them (OD-4); the data holds only plain AI sentences. Owner; before D0 (texts before F0-S starts at D0).
+- Owner items carried by the specs: native-language review of v1 by D+1 and of v1.1 by D+2 (P3-T166). s125's real city names and the city-based canary are DATA-E2's to replace (P3-T164). The R-run cases (E4b slot 4) follow the confirmed OD-32 reading. The AI marker and disclosure texts were approved on 2026-10-30 (§A3); the data holds only plain AI sentences. Owner; D+1..D+2 (11-03..11-04).
 - DATA-E3F's follow-up-case guidance assumes the `evaluate_monitor` behaviour on `main` and `int/m05` (media shown as "(photo)" or "(document)"); not re-verified on a live model. TL; at the first E3F eval run.
 
 ### F3. Surfaces, wiring and read tools (David's units)
 
-- SENS: the categories are settled by OD-15 (§A0); the term list is a TL proposal that still needs the owner's native-language review (the `Cf` stripping is the spec's addition, in line with P3-T70). Owner; before CP1.
+- SENS: the categories are settled by OD-15 (§A0); the term list is a TL proposal that still needs the owner's native-language review (the `Cf` stripping is the spec's addition, in line with P3-T70). Owner; with the v1 review by D+1 (P3-T167).
 - ruff and mypy claims in the specs (RUF001 on the en dash, DTZ001 on naive datetimes) were derived from `pyproject.toml` and existing `noqa` use, not executed. Authors; at the first PR.
 
 ### F4. Operations and recording (David's and SQ's units)
