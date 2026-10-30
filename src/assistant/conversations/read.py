@@ -479,22 +479,76 @@ async def managed_origin(
 @dataclass(frozen=True, slots=True)
 class ContactMatch:
     entry: DirectoryEntry
-    #: `exact` > `prefix` > `token_prefix` > `fuzzy`.
+    #: `exact` > `prefix` > `token_prefix` > `fuzzy`, then the weak kinds
+    #: `short_form` and `not_sure` (see `WEAK_KINDS`).
     kind: str
     score: float
 
+    @property
+    def is_weak(self) -> bool:
+        return self.kind in WEAK_KINDS
 
-_KIND_RANK = {"exact": 0, "prefix": 1, "token_prefix": 2, "fuzzy": 3}
+
+_KIND_RANK = {
+    "exact": 0,
+    "prefix": 1,
+    "token_prefix": 2,
+    "fuzzy": 3,
+    "short_form": 4,
+    "not_sure": 5,
+}
+#: Guesses, never a confirmed person: a nickname-style short form of a name
+#: ("Shuxa" for "Shuhrat") and the nearest names when nothing matched. No
+#: caller may pick one by itself; the owner confirms it (PF-03, FR-DRF-08).
+WEAK_KINDS = frozenset({"short_form", "not_sure"})
 FUZZY_THRESHOLD = 0.75
+#: The shortest folded query a short form is tried for, and how many letters
+#: of it must open a name word.
+SHORT_FORM_MIN_LETTERS = 3
+SHORT_FORM_MIN_GAP = 2
+#: Nearest-name suggestions when nothing matched: at most this many, each at
+#: least this similar, so a name that only occurs inside a chat finds none.
+NOT_SURE_LIMIT = 3
+NOT_SURE_FLOOR = 0.5
+
+
+def _fold(text: str) -> str:
+    """The matching form of a name: the search normal form (case, every
+    apostrophe variant, o'/g', Cyrillic) plus x and h as one letter,
+    since people write "Shuxrat" and "Shuhrat". Local to matching on purpose:
+    `memory.search.normalize` is persisted and versioned, so it never changes
+    for this."""
+    return normalize(text).replace("x", "h")
 
 
 def _keys(entry: DirectoryEntry) -> list[str]:
     keys = []
     if entry.display_name:
-        keys.append(normalize(entry.display_name))
+        keys.append(_fold(entry.display_name))
     if entry.username:
-        keys.append(normalize(entry.username.lstrip("@")))
+        keys.append(_fold(entry.username.lstrip("@")))
     return [key for key in keys if key]
+
+
+def _similarity(wanted: str, key: str) -> float:
+    return max(
+        [difflib.SequenceMatcher(None, wanted, key).ratio()]
+        + [difflib.SequenceMatcher(None, wanted, token).ratio() for token in key.split()]
+    )
+
+
+def _is_short_form(wanted: str, tokens: list[str]) -> bool:
+    """A nickname-style short form: one word of at least three letters whose
+    first three letters open a longer word of the name, by at least two
+    letters ("shuha" for "shuhrat"). A shorter gap is a typo ("jassur"), which
+    `fuzzy` already takes."""
+    if " " in wanted or len(wanted) < SHORT_FORM_MIN_LETTERS:
+        return False
+    head = wanted[:SHORT_FORM_MIN_LETTERS]
+    return any(
+        token.startswith(head) and len(token) >= len(wanted) + SHORT_FORM_MIN_GAP
+        for token in tokens
+    )
 
 
 def match_contacts(
@@ -502,12 +556,15 @@ def match_contacts(
 ) -> list[ContactMatch]:
     """Rank contacts for a name the owner typed, in any script.
 
-    Names are compared in the search normal form, so "Камола", "Kamola" and
-    "kamola" are one name. Exact beats prefix ("kam") beats a prefix of any
-    word of the name ("Aliyeva" in "Kamola Aliyeva") beats difflib similarity
-    of at least 0.75 (typos).
+    Names are compared in the matching form, so "Камола", "Kamola" and
+    "kamola" are one name, and so are "Shuxrat" and "Shuhrat". Exact beats
+    prefix ("kam") beats a prefix of any word of the name ("Aliyeva" in "Kamola
+    Aliyeva") beats difflib similarity of at least 0.75 (typos). Below those
+    come the weak kinds: `short_form` (a three-letter start shared with a word
+    of the name) and, when nothing matched at all, the nearest few names as
+    `not_sure`. A weak match is a question for the owner, never a pick.
     """
-    wanted = normalize(query.lstrip("@"))
+    wanted = _fold(query.lstrip("@"))
     if not wanted:
         return []
     found: list[ContactMatch] = []
@@ -523,14 +580,12 @@ def match_contacts(
                 " " in wanted and all(any(t.startswith(w) for t in tokens) for w in wanted.split())
             ):
                 candidate = ContactMatch(entry, "token_prefix", len(wanted) / len(key))
-            else:
-                ratio = max(
-                    [difflib.SequenceMatcher(None, wanted, key).ratio()]
-                    + [difflib.SequenceMatcher(None, wanted, token).ratio() for token in tokens]
-                )
-                if ratio < FUZZY_THRESHOLD:
-                    continue
+            elif _is_short_form(wanted, tokens):
+                candidate = ContactMatch(entry, "short_form", _similarity(wanted, key))
+            elif (ratio := _similarity(wanted, key)) >= FUZZY_THRESHOLD:
                 candidate = ContactMatch(entry, "fuzzy", ratio)
+            else:
+                continue
             if best is None or (_KIND_RANK[candidate.kind], -candidate.score) < (
                 _KIND_RANK[best.kind],
                 -best.score,
@@ -538,12 +593,28 @@ def match_contacts(
                 best = candidate
         if best is not None:
             found.append(best)
-    found.sort(
-        key=lambda m: (
-            _KIND_RANK[m.kind],
-            -m.score,
-            -(m.entry.last_activity_at.timestamp() if m.entry.last_activity_at else 0.0),
-            m.entry.contact_id,
-        )
-    )
+    if not found:
+        return _nearest(directory, wanted)[: max(1, min(limit, NOT_SURE_LIMIT))]
+    found.sort(key=_ranking)
     return found[: max(1, limit)]
+
+
+def _ranking(match: ContactMatch) -> tuple[int, float, float, int]:
+    last = match.entry.last_activity_at
+    return (
+        _KIND_RANK[match.kind],
+        -match.score,
+        -(last.timestamp() if last else 0.0),
+        match.entry.contact_id,
+    )
+
+
+def _nearest(directory: Sequence[DirectoryEntry], wanted: str) -> list[ContactMatch]:
+    """The most similar names when nothing matched, as `not_sure` guesses."""
+    nearest = []
+    for entry in directory:
+        ratio = max((_similarity(wanted, key) for key in _keys(entry)), default=0.0)
+        if ratio >= NOT_SURE_FLOOR:
+            nearest.append(ContactMatch(entry, "not_sure", ratio))
+    nearest.sort(key=_ranking)
+    return nearest[:NOT_SURE_LIMIT]

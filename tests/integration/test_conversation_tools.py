@@ -816,6 +816,71 @@ async def test_resolve_contact_without_a_match_points_to_a_search_across_all_cha
     assert "across all chats" in NO_CONTACT_NOTE
 
 
+async def _resolve(env: Env, name: str) -> dict[str, Any]:
+    turn = await ask(env, "who is that")
+    fake = FakeLLM(
+        tool_response(("c1", "resolve_contact", args(name=name, limit=None))),
+        text_response("Asking."),
+    )
+    await runtime(env, fake, FakeChannel()).run(turn)
+    [found] = results(fake.requests[1])
+    return found
+
+
+def test_pf03_the_no_match_note_speaks_of_chat_partners_not_saved_contacts() -> None:
+    assert "saved contacts" not in NO_CONTACT_NOTE.lower()
+    assert "address book" in NO_CONTACT_NOTE
+    assert "chat partner" in NO_CONTACT_NOTE
+
+
+async def test_pf03_a_short_form_comes_back_as_a_weak_candidate_to_confirm(env: Env) -> None:
+    """ISSUE-004: a nickname-style name finds the chat, flagged as a guess the
+    model must put to the owner (never used on its own)."""
+    await seed(env)
+    await deliver(
+        env,
+        business_message(
+            from_id=OTHER_CONTACT,
+            chat_id=OTHER_CONTACT,
+            message_id=12,
+            message_text="Salom",
+            first_name="Dilnoza",
+            date=T_BASE,
+        ),
+    )
+
+    found = await _resolve(env, "Dilya")
+
+    assert found["count"] == 1
+    [candidate] = found["candidates"]
+    assert candidate["match"] == "short_form"
+    assert candidate["confidence"] == "weak"
+    assert "Ask the owner" in found["note"]
+
+
+async def test_pf03_the_nearest_names_come_back_as_not_sure_when_nothing_matches(
+    env: Env,
+) -> None:
+    await seed(env)
+
+    found = await _resolve(env, "Kamxa")
+
+    assert found["count"] == 1
+    [candidate] = found["candidates"]
+    assert (candidate["match"], candidate["confidence"]) == ("not_sure", "weak")
+    assert "Ask the owner" in found["note"]
+
+
+async def test_pf03_a_real_match_is_not_marked_weak(env: Env) -> None:
+    await seed(env)
+
+    found = await _resolve(env, "Kamola")
+
+    [candidate] = found["candidates"]
+    assert (candidate["match"], candidate["confidence"]) == ("exact", "match")
+    assert "note" not in found
+
+
 # ------------------------------------------------------------ B1 widening, B3 citations
 async def test_search_messages_reports_widened_results_with_their_contacts(env: Env) -> None:
     await seed(env, message_text="Kalitni qoshnida qoldirdim")

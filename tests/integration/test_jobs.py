@@ -195,9 +195,17 @@ async def onboarded_account(env: Env) -> int:
         return account.id
 
 
-async def add_turn(env: Env, account_id: int, *, created_at: datetime | None = None) -> int:
+async def add_turn(
+    env: Env,
+    account_id: int,
+    *,
+    created_at: datetime | None = None,
+    refs: dict[str, list[int]] | None = None,
+) -> int:
     async with transaction(env.factory) as uow:
-        turn = ControlTurn(account_id=account_id, role="owner", text="Synthetic question")
+        turn = ControlTurn(
+            account_id=account_id, role="owner", text="Synthetic question", refs=refs or {}
+        )
         if created_at is not None:
             turn.created_at = created_at
         uow.session.add(turn)
@@ -482,6 +490,23 @@ async def test_the_reconciler_redefers_only_a_lost_recent_turn(env: Env) -> None
     assert {"args": {"turn_id": lost}, "lock": owner_control_lock(account_id)} in jobs
     assert len(jobs) == 2
     assert await env.handlers.reconcile_pending() == 0  # idempotent
+
+
+async def test_pf01_a_revision_input_turn_is_never_redeferred_as_a_lost_turn(env: Env) -> None:
+    """A turn recorded for a card's Edit (`revision_action_id`) is answered by the
+    revision job; an ordinary lost turn beside it is still re-deferred."""
+    account_id = await onboarded_account(env)
+    old = env.clock.now() - timedelta(minutes=2)
+    revision = await add_turn(
+        env, account_id, created_at=old, refs={"revision_action_id": [7], "conversation_ids": [3]}
+    )
+    lost = await add_turn(env, account_id, created_at=old)
+
+    assert await env.handlers.reconcile_pending() == 1
+
+    turn_ids = [job["args"]["turn_id"] for job in await owner_jobs(env)]
+    assert turn_ids == [lost]
+    assert revision not in turn_ids
 
 
 async def test_a_lock_is_never_put_on_a_future_job(env: Env) -> None:

@@ -405,13 +405,17 @@ class RetrievalTarget:
         """The chat partner the model named, resolved the way the product's
         `resolve_contact` tool does (`conversations.read.match_contacts`). As the
         agent is told to, an ambiguous name (two best candidates of the same kind)
-        is not used: the agent would ask the owner instead (E-t)."""
+        is not used: the agent would ask the owner instead (E-t). A weak match
+        (a short form, a nearest-name guess) is not used either: the owner
+        confirms it (PF-03)."""
         if not name or not name.strip():
             return None
         async with self._corpus.session_factory() as session:
             directory = await read.contact_directory(session, self._corpus.account_id)
         matches = read.match_contacts(directory, name, limit=2)
-        if not matches or (len(matches) > 1 and matches[0].kind == matches[1].kind):
+        if not matches or matches[0].is_weak:
+            return None
+        if len(matches) > 1 and matches[0].kind == matches[1].kind:
             return None
         best = matches[0].entry
         return _ContactFilter(best.contact_id, best.display_name or "")
