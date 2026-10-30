@@ -229,12 +229,43 @@ def test_conversation_available_rule(
 def test_window_open_rule_uses_the_contact_anchor_and_the_margin(
     contact_at: datetime | None, owner_at: datetime | None, expected: tuple[bool, str]
 ) -> None:
+    """Autonomous sends keep the conservative pre-check (invariant 8)."""
     for phase in Phase:
         context = ctx(
             phase=phase,
             conversation={"last_contact_msg_at": contact_at, "last_owner_msg_at": owner_at},
+            action={"origin": ActionOrigin.DELEGATION_AUTO},
         )
         assert outcome(rules.window_open(context)) == expected
+
+
+@pytest.mark.parametrize("origin", [ActionOrigin.OWNER_DICTATED, ActionOrigin.AGENT_PROPOSAL])
+@pytest.mark.parametrize("contact_at", [NOW - timedelta(hours=1), NOW - REPLY_WINDOW, None])
+def test_window_open_rule_does_not_apply_to_owner_approved_actions(
+    origin: ActionOrigin, contact_at: datetime | None
+) -> None:
+    """Owner decision 2026-10-30 (P2-O20): an owner-approved send is attempted
+    once and Telegram enforces the window; our estimate is no check for it."""
+    for phase in Phase:
+        context = ctx(
+            phase=phase, conversation={"last_contact_msg_at": contact_at}, action={"origin": origin}
+        )
+        assert rules.window_open(context) is None
+
+
+@pytest.mark.parametrize("kind", [ActionKind.EDIT_MESSAGE, ActionKind.DELETE_OWN])
+@pytest.mark.parametrize("origin", [ActionOrigin.OWNER_DICTATED, ActionOrigin.AGENT_PROPOSAL])
+def test_window_open_rule_still_applies_to_owner_origin_edits_and_deletes(
+    kind: ActionKind, origin: ActionOrigin
+) -> None:
+    """P2-O20 exempts owner-approved sends only; edits keep the pre-check."""
+    for phase in Phase:
+        context = ctx(
+            phase=phase,
+            conversation={"last_contact_msg_at": NOW - REPLY_WINDOW},
+            action={"origin": origin, "kind": kind},
+        )
+        assert outcome(rules.window_open(context)) == (False, "window_closed")
 
 
 BASE_AT = NOW - timedelta(hours=2)
@@ -540,6 +571,9 @@ def test_rules_not_applicable_to_a_phase_or_kind_are_left_out(
         expected.discard("length_ok")
     if origin is not ActionOrigin.DELEGATION_AUTO:
         expected -= {"autonomy_not_paused", "delegation_active"}
+        if kind is ActionKind.SEND_MESSAGE:
+            # P2-O20: our window estimate no longer bounds owner-approved sends.
+            expected.discard("window_open")
     assert applicable == expected
 
 

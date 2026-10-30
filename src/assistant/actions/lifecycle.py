@@ -409,12 +409,15 @@ class _Live:
     conversation_id: int
     version: int
     expires_at: datetime | None
+    origin: str
 
 
 async def _live_by_token(session: AsyncSession, *, account_id: int, token: str) -> _Live | None:
     row = (
         await session.execute(
-            select(Action.id, Action.conversation_id, Action.version, Action.expires_at).where(
+            select(
+                Action.id, Action.conversation_id, Action.version, Action.expires_at, Action.origin
+            ).where(
                 Action.account_id == account_id,
                 Action.approval_token == token,
                 Action.state == ActionState.AWAITING_APPROVAL.value,
@@ -424,15 +427,33 @@ async def _live_by_token(session: AsyncSession, *, account_id: int, token: str) 
     return None if row is None else _Live(*row)
 
 
-async def _expiry_reason(
-    session: AsyncSession, *, account_id: int, conversation_id: int, now: datetime
+def window_bounds(origin: ActionOrigin | str) -> bool:
+    """Whether our reply-window estimate bounds this action (owner decision
+    2026-10-30, P2-O20; AGENTS §6 invariant 8): only an autonomous send. An
+    owner-approved send is attempted once and Telegram enforces the window;
+    its refusal is a definite not-sent (`expired`/`window_closed`)."""
+    return ActionOrigin(origin) is ActionOrigin.DELEGATION_AUTO
+
+
+def _reason_at_expiry(
+    origin: ActionOrigin | str, anchor: datetime | None, now: datetime
 ) -> StateReason:
+    if window_bounds(origin) and not is_open(anchor, now):
+        return StateReason.WINDOW_CLOSED
+    return StateReason.MAX_AGE
+
+
+async def _expiry_reason(
+    session: AsyncSession, *, account_id: int, live: _Live, now: datetime
+) -> StateReason:
+    if not window_bounds(live.origin):
+        return StateReason.MAX_AGE
     anchor = await session.scalar(
         select(Conversation.last_contact_msg_at).where(
-            Conversation.id == conversation_id, Conversation.account_id == account_id
+            Conversation.id == live.conversation_id, Conversation.account_id == account_id
         )
     )
-    return StateReason.MAX_AGE if is_open(anchor, now) else StateReason.WINDOW_CLOSED
+    return _reason_at_expiry(live.origin, anchor, now)
 
 
 def _is_past(expires_at: datetime | None, now: datetime) -> bool:
@@ -442,9 +463,7 @@ def _is_past(expires_at: datetime | None, now: datetime) -> bool:
 async def _expire_live(
     session: AsyncSession, *, account_id: int, live: _Live, token: str, now: datetime
 ) -> bool:
-    reason = await _expiry_reason(
-        session, account_id=account_id, conversation_id=live.conversation_id, now=now
-    )
+    reason = await _expiry_reason(session, account_id=account_id, live=live, now=now)
     return await transition(
         session,
         account_id=account_id,
@@ -621,34 +640,39 @@ async def apply_new_version(
 ) -> NewVersion:
     """A revised text becomes version + 1 with a new token.
 
-    `expires_at` is never extended: it only shortens when the reply window
-    now closes earlier (decisions R7). A stale version, or a too-long or
-    empty text, writes nothing and leaves the row `revising`.
+    `expires_at` is never extended. For an autonomous action it only
+    shortens when the reply window now closes earlier (decisions R7); an
+    owner-approved one keeps its max age (P2-O20). A stale version, or a
+    too-long or empty text, writes nothing and leaves the row `revising`.
     """
-    conversation_id = await session.scalar(
-        select(Action.conversation_id).where(
-            Action.id == action_id,
-            Action.account_id == account_id,
-            Action.state == ActionState.REVISING.value,
-            Action.version == expected_version,
+    found = (
+        await session.execute(
+            select(Action.conversation_id, Action.origin).where(
+                Action.id == action_id,
+                Action.account_id == account_id,
+                Action.state == ActionState.REVISING.value,
+                Action.version == expected_version,
+            )
         )
-    )
-    if conversation_id is None:
+    ).one_or_none()
+    if found is None:
         return NewVersion(VersionStatus.STALE)
+    conversation_id, origin = found
     length = sendable_length(text)
     if length == 0:
         return NewVersion(VersionStatus.EMPTY)
     if length > MAX_TEXT_LENGTH:
         return NewVersion(VersionStatus.TOO_LONG)
-    anchor = await session.scalar(
-        select(Conversation.last_contact_msg_at).where(
-            Conversation.id == conversation_id, Conversation.account_id == account_id
-        )
-    )
-    window_end = closes_at(anchor)
     expires_at: Any = Action.expires_at
-    if window_end is not None:
-        expires_at = func.least(Action.expires_at, window_end - SAFETY_MARGIN)
+    if window_bounds(origin):
+        anchor = await session.scalar(
+            select(Conversation.last_contact_msg_at).where(
+                Conversation.id == conversation_id, Conversation.account_id == account_id
+            )
+        )
+        window_end = closes_at(anchor)
+        if window_end is not None:
+            expires_at = func.least(Action.expires_at, window_end - SAFETY_MARGIN)
     token = new_token()
     applied = await transition(
         session,
@@ -682,8 +706,9 @@ _EXPIRABLE = (ActionState.AWAITING_APPROVAL, ActionState.REVISING, ActionState.A
 async def expire_due(session: AsyncSession, *, now: datetime) -> list[int]:
     """Expire every live card and unclaimed approval past `expires_at`.
 
-    Reason `window_closed` when the reply window is closed now, else
-    `max_age`. Never touches `executing`: a claimed send has its own outcome.
+    Reason `window_closed` when an autonomous action's reply window is
+    closed now, else `max_age` (owner-approved actions: always `max_age`,
+    P2-O20). Never touches `executing`: a claimed send has its own outcome.
     """
     rows = (
         await session.execute(
@@ -692,6 +717,7 @@ async def expire_due(session: AsyncSession, *, now: datetime) -> list[int]:
                 Action.account_id,
                 Action.state,
                 Action.version,
+                Action.origin,
                 Conversation.last_contact_msg_at,
             )
             .join(Conversation, Conversation.id == Action.conversation_id)
@@ -703,8 +729,8 @@ async def expire_due(session: AsyncSession, *, now: datetime) -> list[int]:
         )
     ).all()
     expired: list[int] = []
-    for action_id, account_id, state, version, anchor in rows:
-        reason = StateReason.MAX_AGE if is_open(anchor, now) else StateReason.WINDOW_CLOSED
+    for action_id, account_id, state, version, origin, anchor in rows:
+        reason = _reason_at_expiry(origin, anchor, now)
         if await transition(
             session,
             account_id=account_id,

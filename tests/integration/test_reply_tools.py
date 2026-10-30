@@ -160,6 +160,17 @@ async def close_window(denv: DraftEnv, conversation_id: int) -> None:
         )
 
 
+async def possibly_paused(denv: DraftEnv, conversation_id: int) -> None:
+    """A proposal-phase block that is not the window (P2-O20 lifted that one
+    for owner-approved actions): the chat looks paused."""
+    async with denv.env.factory() as session, session.begin():
+        await session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(availability="possibly_paused")
+        )
+
+
 def never_says_sent(result: dict[str, Any]) -> None:
     assert not SENT.search(json.dumps(result)), result
 
@@ -201,7 +212,7 @@ async def test_rg20_propose_results_never_say_sent(denv: DraftEnv) -> None:
     }
     never_says_sent(not_drafted)
 
-    await close_window(denv, conversation)
+    await possibly_paused(denv, conversation)
     blocked = await call(
         context(denv, account_id, run_id, None),
         "propose_message",
@@ -209,7 +220,7 @@ async def test_rg20_propose_results_never_say_sent(denv: DraftEnv) -> None:
         **message_args(conversation, "SYNTH-DICTATED"),
     )
     assert blocked["status"] == "blocked"
-    assert blocked["reason"] == "window_closed"
+    assert blocked["reason"] == "policy_denied"
     assert blocked["sendable_until"] is None
     never_says_sent(blocked)
 
@@ -232,7 +243,7 @@ async def test_propose_results_are_logged_as_not_run_never_as_failures(denv: Dra
             call_id="c2",
             **reply_args(conversation),
         )
-        await close_window(denv, conversation)
+        await possibly_paused(denv, conversation)
         await call(
             context(denv, account_id, run_id, None),
             "propose_message",
@@ -620,22 +631,30 @@ async def test_propose_reply_into_an_ignore_mode_or_bot_chat_is_refused(denv: Dr
     assert await actions_of(denv.env, conversation) == []
 
 
-async def test_a_proposal_with_the_window_closed_is_blocked_with_copy_ready_text(
-    denv: DraftEnv,
+@pytest.mark.parametrize("tool", ["propose_reply", "propose_message"])
+async def test_a_proposal_with_the_window_closed_is_still_an_approval_card(
+    denv: DraftEnv, tool: str
 ) -> None:
+    """Invariant 8 as amended (owner decision 2026-10-30, P2-O20): our 24 h
+    estimate does not block an owner-requested draft or dictated message;
+    the card (with its warning line) goes to the owner, Telegram decides."""
     account_id, conversation = await seed_chat(denv)
     run_id, turn_id = await run_and_turn(denv, account_id)
     await close_window(denv, conversation)
-    denv.script(output(text="Synthetic copy-ready reply."))
-    result = await call(
-        context(denv, account_id, run_id, turn_id), "propose_reply", **reply_args(conversation)
+    denv.script(output(text="Synthetic reply."))
+    arguments = (
+        reply_args(conversation)
+        if tool == "propose_reply"
+        else message_args(conversation, "SYNTH-DICTATED")
     )
-    assert (result["status"], result["reason"]) == ("blocked", "window_closed")
+    result = await call(context(denv, account_id, run_id, turn_id), tool, **arguments)
+    assert result["status"] == "awaiting_approval"
+    assert result["sendable_until"] is not None
     [card] = await actions_of(denv.env, conversation)
-    assert (card.state, card.state_reason) == ("blocked", "window_closed")
-    assert card.text == "Synthetic copy-ready reply."  # kept for the copy-ready card
-    assert card.approval_token is None
+    assert card.state == "awaiting_approval"
+    assert card.approval_token is not None
     assert denv.presenter.presented == [card.id]
+    never_says_sent(result)
 
 
 async def test_a_tool_without_its_services_is_not_available(denv: DraftEnv) -> None:

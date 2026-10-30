@@ -283,7 +283,9 @@ def test_an_approved_card_with_sending_off_says_so_and_never_sending() -> None:
 
 
 def test_sendable_until_is_the_earlier_of_max_age_and_window_close_in_local_time() -> None:
+    # Only an autonomous action is bounded by our window estimate (P2-O20).
     earlier_window = view(
+        origin=ActionOrigin.DELEGATION_AUTO,
         expires_at=NOW + timedelta(hours=3),
         window_end=NOW + timedelta(hours=2),
         timezone="Asia/Tashkent",
@@ -291,6 +293,10 @@ def test_sendable_until_is_the_earlier_of_max_age_and_window_close_in_local_time
     assert earlier_window.sendable_until == NOW + timedelta(hours=2)
     text = shown(render_card(earlier_window).text)
     assert "Sendable until 2026-10-28 19:00 +05" in text  # 14:00 UTC, Tashkent
+    # An owner-approved card: the approval period alone, Telegram decides the window.
+    for origin in (ActionOrigin.OWNER_DICTATED, ActionOrigin.AGENT_PROPOSAL):
+        owner = replace(earlier_window, origin=origin)
+        assert owner.sendable_until == NOW + timedelta(hours=3)
     earlier_expiry = view(expires_at=NOW + timedelta(minutes=30))
     assert "Sendable until 2026-10-28 12:30 UTC" in shown(render_card(earlier_expiry).text)
     # Explicit timezone override (previews, tests).
@@ -393,3 +399,55 @@ def test_warnings_come_from_draft_flags_and_never_for_dictated_words() -> None:
     assert "Sensitive" not in dictated
     assert "Message you dictated" in dictated
     assert "Assist draft" in shown(render_card(view(proactive=True)).text)
+
+
+# ------------------------------------------------- P2-O20: Telegram decides
+@pytest.mark.parametrize("origin", [ActionOrigin.OWNER_DICTATED, ActionOrigin.AGENT_PROPOSAL])
+def test_an_owner_approved_card_with_a_closed_window_warns_and_stays_approvable(
+    origin: ActionOrigin,
+) -> None:
+    """Invariant 8 as amended (owner decision 2026-10-30): the card is
+    presented normally with one factual line; Approve stays."""
+    closed = view(origin=origin, window_open=False, window_end=NOW - timedelta(hours=1))
+    rendered = render_card(closed)
+    text = shown(rendered.text)
+    assert (
+        "⚠️ Synthetic Contact hasn't written in the last 24 hours, so Telegram may not allow "
+        "this send." in text
+    )
+    assert ops(rendered.keyboard) == ["ok", "ed", "rj"]
+    assert "Sendable until 2026-10-28 13:00 UTC" in text  # max age only
+    # Open window: no warning.
+    assert "hasn't written" not in shown(render_card(view(origin=origin)).text)
+    # A finished card never warns.
+    assert "hasn't written" not in shown(
+        render_card(in_state(ActionState.REJECTED, origin=origin, window_open=False)).text
+    )
+
+
+def test_an_autonomous_card_never_shows_the_owner_window_warning() -> None:
+    auto = view(origin=ActionOrigin.DELEGATION_AUTO, window_open=False)
+    assert "hasn't written" not in shown(render_card(auto).text)
+
+
+def test_telegram_refusing_the_window_gives_a_not_sent_card_with_copy_ready_text() -> None:
+    """PEER_ID_INVALID (TF §12 LV-08) ends `expired`/`window_closed` with the
+    Telegram error recorded: the card says plainly it was not sent and why,
+    offers the text to copy, and never says sent or uncertain."""
+    refused = in_state(
+        ActionState.EXPIRED, reason=StateReason.WINDOW_CLOSED, error_class="window_closed"
+    )
+    rendered = render_card(refused)
+    text = shown(rendered.text)
+    assert (
+        "<b>Not sent</b> — Telegram didn't allow this send "
+        "(the contact hasn't written in the last 24 hours)" in text
+    )
+    assert "Nothing was sent and it will not be retried. Copy the text to send it yourself." in text
+    assert TEXT in text
+    assert copies(rendered.keyboard) == [TEXT]
+    assert "Sent ✓" not in text
+    assert "uncertain" not in text.lower()
+    # Our own (autonomous) pre-check expiry keeps the old wording.
+    estimate = in_state(ActionState.EXPIRED, reason=StateReason.WINDOW_CLOSED)
+    assert "Telegram didn't allow" not in shown(render_card(estimate).text)

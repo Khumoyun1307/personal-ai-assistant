@@ -87,14 +87,16 @@ async def test_propose_creates_an_awaiting_action_with_token_and_expiry(env: Env
     assert [entry.event for entry in await audit(env, result.action_id)] == ["action_proposed"]
 
 
-async def test_expiry_is_the_earlier_of_max_age_and_window_close(env: Env) -> None:
+async def test_an_owner_approved_expiry_is_the_max_age_not_the_window(env: Env) -> None:
+    """P2-O20: our window estimate never shortens an owner-approved card;
+    Telegram decides at the send."""
     late = await new_chat(env, contact_wrote=timedelta(hours=20))
     result = await propose_in(env, request(late))
 
     anchor = env.clock.now() - timedelta(hours=20)
     row = await action(env, result.action_id)
-    assert row.expires_at == anchor + REPLY_WINDOW - SAFETY_MARGIN
-    assert row.expires_at < env.clock.now() + CONFIG.approval_max_age
+    assert row.expires_at == env.clock.now() + CONFIG.approval_max_age
+    assert row.expires_at > anchor + REPLY_WINDOW - SAFETY_MARGIN
 
 
 async def test_propose_is_idempotent_on_run_and_tool_call(env: Env) -> None:
@@ -172,19 +174,26 @@ async def test_a_blocked_proposal_does_not_supersede_the_live_card(env: Env) -> 
     assert (await action(env, blocked.action_id)).state_reason == "too_long"
 
 
-async def test_propose_blocks_with_a_reason_when_the_window_is_closed(env: Env) -> None:
-    chat = await new_chat(env, contact_wrote=timedelta(hours=25))
-    result = await propose_in(env, request(chat))
+@pytest.mark.parametrize("origin", [ActionOrigin.OWNER_DICTATED, ActionOrigin.AGENT_PROPOSAL])
+@pytest.mark.parametrize("contact_wrote", [timedelta(hours=25), None], ids=["closed", "unknown"])
+async def test_a_closed_or_unknown_window_still_makes_an_approval_card(
+    env: Env, origin: ActionOrigin, contact_wrote: timedelta | None
+) -> None:
+    """Invariant 8 as amended (owner decision 2026-10-30, P2-O20): an
+    owner-dictated or owner-approved draft is not blocked or expired by our
+    24 h estimate; the card is presented (with a warning line) and Telegram
+    decides at the one send attempt."""
+    chat = await new_chat(env, contact_wrote=contact_wrote)
+    # The owner asked for it (a proactive draft needs a contact message).
+    _, turn_id = await run_and_turn(env, chat)
+    result = await propose_in(env, request(chat, origin=origin, trigger_turn_id=turn_id))
 
-    assert result.state is ActionState.BLOCKED
-    assert result.decision.outcome is Outcome.DENY
+    assert result.state is ActionState.AWAITING_APPROVAL
+    assert result.decision.outcome is Outcome.REQUIRE_APPROVAL
     row = await action(env, result.action_id)
-    assert row.state_reason == "window_closed"
-    assert row.approval_token is None
-    assert row.text  # kept as copy-ready text for the card (FR-DRF-06)
-    blocked = await audit(env, result.action_id)
-    assert [entry.event for entry in blocked] == ["action_blocked"]
-    assert blocked[0].details["failed_rules"] == ["window_open"]
+    assert row.approval_token
+    assert row.expires_at == env.clock.now() + CONFIG.approval_max_age
+    assert [entry.event for entry in await audit(env, result.action_id)] == ["action_proposed"]
 
 
 async def test_propose_blocks_without_the_reply_right(env: Env) -> None:

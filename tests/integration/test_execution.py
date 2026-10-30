@@ -170,7 +170,6 @@ async def test_rg06_a_stale_draft_never_sends(env: Env) -> None:
 
 
 PRECONDITIONS = (
-    "window_closed",
     "rights_missing",
     "not_enabled",
     "unknown_conversation",
@@ -189,13 +188,6 @@ async def test_rg18_no_telegram_call_when_a_precondition_fails(env: Env, precond
     action_id = await approved(env, chat, text=TEXT)
     h = harness(env, sending_enabled=precondition != "sending_disabled")
     match precondition:
-        case "window_closed":
-            await update_rows(
-                env,
-                Conversation,
-                Conversation.id == chat.conversation_id,
-                last_contact_msg_at=env.clock.now() - timedelta(hours=25),
-            )
         case "rights_missing":
             await update_rows(
                 env,
@@ -235,6 +227,87 @@ async def test_rg18_no_telegram_call_when_a_precondition_fails(env: Env, precond
     assert row.state == outcome.state.value
     assert row.policy_decision is not None
     assert row.policy_decision["phase"] == "execution"
+
+
+async def close_window_estimate(env: Env, chat: Any) -> None:
+    """Our own estimate says closed: the contact's last message is 25 h old."""
+    await update_rows(
+        env,
+        Conversation,
+        Conversation.id == chat.conversation_id,
+        last_contact_msg_at=env.clock.now() - timedelta(hours=25),
+    )
+
+
+async def test_rg18_an_autonomous_send_with_the_window_closed_never_reaches_telegram(
+    env: Env,
+) -> None:
+    """RG-18 (invariant 8, as amended 2026-10-30, P2-O20): autonomous sends
+    keep the conservative pre-check: a closed window means no Telegram call."""
+    chat = await seed(env)
+    await caught_up(env)
+    action_id = await inserted(env, chat, origin=ActionOrigin.DELEGATION_AUTO)
+    await close_window_estimate(env, chat)
+    h = harness(env)
+
+    outcome = await h.execute(action_id)
+
+    assert outcome.status is ExecuteStatus.DENIED
+    assert (outcome.state, outcome.reason) == (ActionState.EXPIRED, StateReason.WINDOW_CLOSED)
+    assert h.sender.business_calls == 0
+    row = await action(env, action_id)
+    assert row.policy_decision is not None
+    failed = [c["reason"] for c in row.policy_decision["checks"] if not c["passed"]]
+    assert "window_closed" in failed
+
+
+@pytest.mark.parametrize("origin", [ActionOrigin.OWNER_DICTATED, ActionOrigin.AGENT_PROPOSAL])
+async def test_rg18_an_owner_approved_send_with_the_window_closed_is_attempted_once(
+    env: Env, origin: ActionOrigin
+) -> None:
+    """RG-18 (invariant 8, as amended 2026-10-30, P2-O20): our estimate does
+    not block an owner-approved send; Telegram decides. Accepted: sent."""
+    chat = await seed(env)
+    await caught_up(env)
+    action_id = await approved(env, chat, text=TEXT, origin=origin)
+    await close_window_estimate(env, chat)
+    h = harness(env)
+
+    outcome = await h.execute(action_id)
+
+    assert outcome.status is ExecuteStatus.SENT
+    assert (outcome.state, outcome.reason) == (ActionState.SUCCEEDED, StateReason.SENT)
+    assert len(h.sender.plain_sends) == 1
+    row = await action(env, action_id)
+    assert row.policy_decision is not None
+    assert "window_open" not in [c["name"] for c in row.policy_decision["checks"]]
+
+
+async def test_rg18_telegram_refusing_the_window_is_a_definite_not_sent(env: Env) -> None:
+    """RG-18 (P2-O20): with our estimate closed, Telegram's `PEER_ID_INVALID`
+    ends the action `expired`/`window_closed` after exactly one attempt,
+    never `delivery_uncertain`, never retried, and the card is re-rendered
+    (copy-ready text: `test_approval_cards`)."""
+    chat = await seed(env)
+    await caught_up(env)
+    action_id = await approved(env, chat, text=TEXT, origin=ActionOrigin.OWNER_DICTATED)
+    await close_window_estimate(env, chat)
+    h = harness(env)
+    h.sender.plain_script = [telegram_error("Bad Request: PEER_ID_INVALID", status_code=400)]
+
+    outcome = await h.execute(action_id)
+    again = await h.execute(action_id)
+
+    assert outcome.status is ExecuteStatus.NOT_SENT
+    assert (outcome.state, outcome.reason) == (ActionState.EXPIRED, StateReason.WINDOW_CLOSED)
+    assert again.status is ExecuteStatus.SETTLED
+    row = await action(env, action_id)
+    assert (row.state, row.state_reason) == ("expired", "window_closed")
+    assert (row.error_class, row.error_code) == ("window_closed", "peer_id_invalid")
+    assert row.text == TEXT  # kept for the copy-ready card
+    assert len(h.sender.plain_sends) == 1
+    assert defers(h) == []
+    assert action_id in h.presenter.synced
 
 
 async def test_with_sending_off_an_approved_action_is_blocked_with_copy_ready_text(

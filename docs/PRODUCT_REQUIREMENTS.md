@@ -106,7 +106,7 @@ Both surfaces feed **one agent** with one memory, one policy model, and one acti
 |---|---|---|
 | C-01 | Premium no longer required to connect a bot (Bot API 10.0, May 2026). | Larger future market; no Premium checks. |
 | C-02 | Feature names: "Secretary Mode" (BotFather), "Chat Automation" (user settings). | Onboarding copy mentions both old and new paths. |
-| C-03 | Reply window is per chat, counts only the contact's incoming messages (per the `can_reply` wording; owner messages → LV-08), and covers sends, edits, and typing. | Late follow-ups to contacts are impossible; follow-ups become reminders/drafts for the owner. Approval cards expire when the window closes. |
+| C-03 | Reply window is per chat, counts only the contact's incoming messages (per the `can_reply` wording; owner messages → LV-08), and covers sends, edits, and typing. | Late follow-ups to contacts are impossible; follow-ups become reminders/drafts for the owner. Autonomous actions expire when the window closes; an owner-approved card is not blocked or expired by the assistant's own window estimate: Telegram enforces the window at the one send attempt (owner decision 2026-10-30, P2-O20). |
 | C-04 | The owner's own manual messages in managed chats are visible to the bot (after the fact). | Takeover detection is feasible but only after the owner acts; conflicts can be reduced, not eliminated. |
 | C-05/C-06 | No per-chat pause signal; no history API; updates lost after ~24 h of downtime. | The assistant must be honest about coverage and must survive restarts quickly. |
 | C-08 | Channels: bots read only channels where they are admins; terms prohibit scraping/aggregation. | Channel features limited to owned/admin channels and owner-forwarded posts (R3). |
@@ -155,7 +155,7 @@ Detailed and sourced in TELEGRAM_FEASIBILITY.md. Product-relevant summary:
 |---|---|
 | Coverage = chats the owner includes in Chat Automation, from connection time, excluding outages > ~24 h. No history import. | Onboarding sets expectations; summaries state coverage; "what can you see?" command; outage gaps recorded. |
 | Owner chooses connection rights; Desktop defaults to view-only. | Three capability tiers: **Observe-only**, **Can reply**, **Extended** (mark read, delete own). Features degrade gracefully per tier. |
-| Reply window: 24 h after the contact's last message; owner messages are not expected to reopen it (LV-08). | The assistant cannot start conversations or send late follow-ups as the owner. Drafts show "sendable until …"; expired drafts become copy-ready text. |
+| Reply window: 24 h after the contact's last message; owner messages are not expected to reopen it (LV-08). | The assistant cannot start conversations or send late follow-ups as the owner. Drafts show "sendable until …"; expired drafts become copy-ready text. For an owner-approved send, Telegram's own enforcement decides; the card warns when the assistant's estimate says the window is closed (owner decision 2026-10-30, P2-O20). |
 | Bot cannot see the owner typing/reading, or tell a paused chat from a quiet one. | Takeover is detected after the owner's message; send delays and pre-send re-checks reduce conflicts. Send failures may mean "paused by owner". |
 | Owner controls (approve/edit/reject) cannot be placed in contacts' chats. | All controls live in the control chat. |
 | Bot cannot forward/copy/react on the owner's behalf; no streaming into managed chats. | Content from managed chats is quoted/re-rendered in the control chat. |
@@ -212,12 +212,12 @@ Owner: "I was studying from 2 to 7. What happened?" → a structured catch-up: c
 Owner: "Draft a response to Alex, but don't send it until I approve."
 
 1. The assistant drafts using that conversation, Alex's notes, and the owner's style preferences.
-2. An **approval card** shows: the contact, the message(s) being answered, the draft, "sendable until 18:42" (window), and buttons **Approve · Edit · Reject**.
+2. An **approval card** shows: the contact, the message(s) being answered, the draft, "sendable until 18:42" (the approval period; for autonomous actions also the window), a warning line when the assistant's window estimate says the contact has not written in the last 24 hours (owner decision 2026-10-30, P2-O20), and buttons **Approve · Edit · Reject**.
 3. **Edit:** the owner replies with corrected text or an instruction ("shorter, more formal"); the card updates.
-4. **Approve:** the application re-verifies connection, rights, window, takeover, staleness, and duplicate state, then sends. The card updates to **Sent ✓ 18:05** or **Failed — reason**, or **Delivery uncertain — check the chat**.
+4. **Approve:** the application re-verifies connection, rights, takeover, staleness, and duplicate state, then sends once; Telegram enforces the reply window, and its refusal is a definite "not sent" with copy-ready text, never retried (owner decision 2026-10-30, P2-O20). The card updates to **Sent ✓ 18:05** or **Failed — reason**, or **Delivery uncertain — check the chat**.
 5. If Alex writes again or the owner replies manually before approval, the card becomes **Outdated** with a one-tap "Re-draft".
 
-Edge cases: window closes before approval (card offers copy-ready text); rights lack *reply* (card offers copy-ready text and explains how to enable); double-tap on Approve (sent once); the sent message is deleted in the chat (recorded as a deletion with a note and shown in the activity log, summaries and reports; Telegram does not say who deleted it, TF §12 LV-07 — owner decision 2026-10-26, replacing "recorded as owner rejection").
+Edge cases: window closes before approval (the card stays approvable with a warning; if Telegram refuses the send, the card says it was not sent because Telegram did not allow it and offers copy-ready text — owner decision 2026-10-30, P2-O20); rights lack *reply* (card offers copy-ready text and explains how to enable); double-tap on Approve (sent once); the sent message is deleted in the chat (recorded as a deletion with a note and shown in the activity log, summaries and reports; Telegram does not say who deleted it, TF §12 LV-07 — owner decision 2026-10-26, replacing "recorded as owner rejection").
 
 ### J5 — "I'm studying until 7 PM" delegation (R2)
 
@@ -368,8 +368,8 @@ In a managed chat, the owner taps **Manage Bot** in Telegram's action bar → th
 | FR-DRF-02 | In *Assist* mode, proactively offer drafts for contact messages that need a reply (debounced; one card per conversation burst). | Must | R1 |
 | FR-DRF-03 | Approval card with contact, triggering message(s), draft, sendable-until time, Approve / Edit / Reject; state updates in place. | Must | R1 |
 | FR-DRF-04 | Edit by sending corrected text or a revision instruction. | Must | R1 |
-| FR-DRF-05 | Drafts become **Outdated** when a newer contact message arrives, the owner writes manually, the source message is edited/deleted, or the connection/rights change. They become **Expired** when the reply window closes or the maximum card age passes. | Must | R1 |
-| FR-DRF-06 | If sending is impossible (no reply right, window closed, chat unavailable), the card explains why and provides copy-ready text. | Must | R1 |
+| FR-DRF-05 | Drafts become **Outdated** when a newer contact message arrives, the owner writes manually, the source message is edited/deleted, or the connection/rights change. They become **Expired** when the maximum card age passes, when Telegram refuses the send for the reply window, or (autonomous actions only) when the assistant's window estimate closes (owner decision 2026-10-30, P2-O20). | Must | R1 |
+| FR-DRF-06 | If sending is impossible (no reply right, window closed — as Telegram reports it for an owner-approved send, owner decision 2026-10-30, P2-O20 — chat unavailable), the card explains why and provides copy-ready text. | Must | R1 |
 | FR-DRF-07 | At approval time the application re-verifies all send conditions (§12.2) and reports the actual outcome: Sent / Failed (reason) / Delivery uncertain. | Must | R1 |
 | FR-DRF-08 | Owner-dictated messages ("tell Alex I'll be late") always produce a one-tap confirmation card showing the resolved recipient and the exact text (R-05). | Must | R1 |
 | FR-DRF-09 | Each approved draft is sent at most once, including under double taps, retries, and restarts. | Must | R1 |
@@ -509,7 +509,7 @@ Initiating conversations; messaging outside the reply window; sending without pa
 `proposed → awaiting_approval (⇄ revising) → approved → [scheduled] → executing → succeeded | failed | delivery_uncertain`; terminal alternatives: `rejected`, `outdated`, `expired`, `cancelled`, `blocked` (ARCHITECTURE §9.4 is canonical; UI labels: Sending = `executing`, Sent = `succeeded`).
 
 - **Outdated:** a newer contact message, owner manual message, source edit/delete, or connection/rights change. One-tap re-draft.
-- **Expired:** the reply window closed or the card is older than the maximum age (default 12 h); copy-ready text remains.
+- **Expired:** the card is older than the maximum age (default 12 h), Telegram refused the send for the reply window, or (autonomous actions only) the assistant's window estimate closed (owner decision 2026-10-30, P2-O20); copy-ready text remains.
 - **Delivery uncertain:** the send request may or may not have reached Telegram (e.g., network failure mid-request). Never retried automatically; the owner is asked to check the chat.
 
 ### 12.2 Conditions verified immediately before any send (all must pass)
@@ -517,7 +517,7 @@ Initiating conversations; messaging outside the reply window; sending without pa
 1. The owner account is active and has not paused autonomy (for autonomous sends) — /pause blocks autonomous sends only: it stops autonomous sending and cancels pending autonomous actions, while approvals the owner already gave stay valid and drafts stay drafts (clarified 2026-10-29, owner decision OD-31).
 2. The business connection is enabled, belongs to the owner, and currently grants *reply*.
 3. The target conversation belongs to that owner's connection and is not in Ignore mode; it is not a bot chat.
-4. The reply window is open (with a safety margin).
+4. For autonomous sends: the reply window is open (with a safety margin). For owner-approved sends Telegram enforces the window: the send is attempted once and a refusal is a definite not-sent, never retried (owner decision 2026-10-30, P2-O20).
 5. No owner manual message in that conversation dated after the message the action responds to — even if that owner message was received late (takeover).
 6. No newer contact message that the draft did not account for (staleness), unless the approved version's card already showed it.
 7. The action has not already been executed (idempotency).
@@ -553,7 +553,7 @@ Storing every message forever is not memory [D]; summaries and curated facts car
 
 - **Monitors** evaluate only messages in coverage and in non-Ignore conversations. Each monitor has an owner-confirmed natural-language condition plus deterministic pre-filters (contact, conversation, keywords) where possible.
 - **Alerts** carry: what happened, why it matters (the matching rule), and next actions. Quiet hours suppress non-urgent alerts into the next digest. Exception: 'Automatic reply not sent' alerts under a delegation (which offer Draft reply) always arrive at once (owner decision 2026-10-29, OD-11a).
-- **Distinguish four operation types** [D]: (1) reminders to the owner — always possible; (2) sending as the owner — only while the conversation's reply window is open, and only with the owner's approval of that specific text or under an active delegation that passes §12.3; (3) monitoring a condition — always possible within coverage; (4) acting when a condition is met — notify/draft always possible, send only under (2).
+- **Distinguish four operation types** [D]: (1) reminders to the owner — always possible; (2) sending as the owner — only while the conversation's reply window is open (for an owner-approved send, as Telegram enforces it at the attempt, owner decision 2026-10-30, P2-O20), and only with the owner's approval of that specific text or under an active delegation that passes §12.3; (3) monitoring a condition — always possible within coverage; (4) acting when a condition is met — notify/draft always possible, send only under (2).
 - **Time:** all schedules use the owner's timezone; daylight-saving and timezone changes are handled.
 - **Missed schedules** (e.g., after downtime) run late with a note if still relevant, otherwise are skipped with a note.
 
@@ -567,7 +567,7 @@ Storing every message forever is not memory [D]; summaries and curated facts car
 | LLM unavailable or budget exhausted for > 10 min | Deterministic paths continue: messages from VIP contacts alert (respecting quiet hours); deterministic monitors ("when X replies") and reminders fire; one notice "AI review paused — N messages unreviewed"; each active delegation is reported once as paused, and its conversations fall back to alerts that offer a draft for approval (Draft reply) or escalation only (owner decision 2026-10-29, OD-11b). |
 | Owner request fails terminally | Reply "I couldn't process that (ref #<run id>). Nothing was sent or changed." (or truthfully state any card that was created). |
 | Telegram API failure on send | Classified: definitive failure → "Failed: <reason>" with copy-ready text; transient before delivery → retried safely; ambiguous → "Delivery uncertain". |
-| Reply window closed | Card/expiry message with copy-ready text; never retried. |
+| Reply window closed | Autonomous: expiry with copy-ready text. Owner-approved: Telegram's refusal → card "Not sent — Telegram didn't allow this send" with copy-ready text (owner decision 2026-10-30, P2-O20). Never retried. |
 | Rights missing (no *reply*) | Explain how to enable *Reply to Messages*; provide copy-ready text. |
 | Chat appears paused/excluded (send rejected) | Mark conversation "possibly paused"; stop automation there until new messages arrive; tell the owner once. |
 | Connection disabled | Stop all business processing and autonomy; tell the owner; resume when reconnected. |

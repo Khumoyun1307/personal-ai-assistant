@@ -30,7 +30,7 @@ from assistant.actions.lifecycle import (
 )
 from assistant.actions.models import Action
 from assistant.actions.proposals import propose
-from assistant.actions.states import TRANSITIONS, ActionState, StateReason
+from assistant.actions.states import TRANSITIONS, ActionOrigin, ActionState, StateReason
 from assistant.conversations.models import Conversation
 from assistant.core.reply_window import REPLY_WINDOW, SAFETY_MARGIN
 from tests.integration.actions_env import (
@@ -125,17 +125,32 @@ async def test_a_double_approve_applies_once(env: Env) -> None:
     assert (await events(env, action_id)).count("action_approved") == 1
 
 
+async def make_autonomous(env: Env, action_id: int, **values: Any) -> None:
+    """Only later milestones make autonomous cards; the expiry code must
+    still bound them by the window estimate (P2-O20)."""
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            update(Action)
+            .where(Action.id == action_id)
+            .values(origin=ActionOrigin.DELEGATION_AUTO.value, **values)
+        )
+
+
 @pytest.mark.parametrize(
-    ("contact_wrote", "later", "reason"),
+    ("contact_wrote", "later", "autonomous", "reason"),
     [
-        (timedelta(hours=1), timedelta(hours=7), "max_age"),
-        (timedelta(hours=20), timedelta(hours=4), "window_closed"),
+        (timedelta(hours=1), timedelta(hours=7), False, "max_age"),
+        # P2-O20: an owner-approved card expires by max age only, closed window or not.
+        (timedelta(hours=20), timedelta(hours=7), False, "max_age"),
+        (timedelta(hours=20), timedelta(hours=7), True, "window_closed"),
     ],
 )
 async def test_approve_after_expiry_expires_instead(
-    env: Env, contact_wrote: timedelta, later: timedelta, reason: str
+    env: Env, contact_wrote: timedelta, later: timedelta, autonomous: bool, reason: str
 ) -> None:
     chat, action_id, token = await card(env, contact_wrote=contact_wrote)
+    if autonomous:
+        await make_autonomous(env, action_id)
     env.clock.advance(seconds=later.total_seconds())
 
     result = await approve_in(env, chat.account_id, token)
@@ -144,6 +159,18 @@ async def test_approve_after_expiry_expires_instead(
     row = await action(env, action_id)
     assert (row.state, row.state_reason) == ("expired", reason)
     assert row.approved_text_hash is None
+
+
+async def test_an_owner_card_is_approvable_after_the_window_estimate_closes(env: Env) -> None:
+    """Invariant 8 as amended (owner decision 2026-10-30, P2-O20): our 24 h
+    estimate neither expires nor blocks the owner's Approve; Telegram decides."""
+    chat, action_id, token = await card(env, contact_wrote=timedelta(hours=20))
+    env.clock.advance(hours=5)  # the estimate closed an hour ago
+
+    result = await approve_in(env, chat.account_id, token)
+
+    assert result.status is ApproveStatus.APPROVED
+    assert (await action(env, action_id)).state == "approved"
 
 
 async def test_start_edit_moves_to_revising_and_voids_the_token(env: Env) -> None:
@@ -227,7 +254,8 @@ async def test_a_new_version_never_extends_expiry(env: Env) -> None:
     assert later.status is VersionStatus.APPLIED
     assert (await action(env, action_id)).expires_at == original
 
-    # The window now closes before the original expiry: it shortens to it.
+    # The window now closes before the original expiry: an owner-approved
+    # card keeps its max age (P2-O20) ...
     anchor = env.clock.now() - timedelta(hours=23)
     async with env.factory() as session, session.begin():
         await session.execute(
@@ -239,7 +267,16 @@ async def test_a_new_version_never_extends_expiry(env: Env) -> None:
         await start_edit(
             session, account_id=chat.account_id, token=later.token, now=env.clock.now()
         )
-    shorter = await new_version(env, chat, action_id, expected_version=2)
+    kept = await new_version(env, chat, action_id, expected_version=2)
+    assert kept.status is VersionStatus.APPLIED
+    assert (await action(env, action_id)).expires_at == original
+
+    # ... and only an autonomous one shortens to the window's close.
+    await make_autonomous(env, action_id)
+    async with env.factory() as session, session.begin():
+        assert kept.token is not None
+        await start_edit(session, account_id=chat.account_id, token=kept.token, now=env.clock.now())
+    shorter = await new_version(env, chat, action_id, expected_version=3)
     assert shorter.status is VersionStatus.APPLIED
     assert (await action(env, action_id)).expires_at == anchor + REPLY_WINDOW - SAFETY_MARGIN
 
@@ -451,6 +488,8 @@ async def test_expire_due_distinguishes_window_close_from_max_age_and_skips_exec
     fresh, fresh_id, _ = await card(env)
     late, late_id, late_token = await card(env, contact_wrote=timedelta(hours=20))
     approved = await approve_in(env, late.account_id, late_token)
+    _, owner_late_id, _ = await card(env, contact_wrote=timedelta(hours=20))
+    await make_autonomous(env, late_id)
     claimed_chat, claimed_id = await seeded(env, ActionState.EXECUTING)
     async with env.factory() as session, session.begin():
         await session.execute(
@@ -464,8 +503,10 @@ async def test_expire_due_distinguishes_window_close_from_max_age_and_skips_exec
         expired = await expire_due(session, now=env.clock.now())
 
     assert approved.status is ApproveStatus.APPROVED
-    assert sorted(expired) == sorted([fresh_id, late_id])
+    assert sorted(expired) == sorted([fresh_id, late_id, owner_late_id])
     assert ((await action(env, fresh_id)).state_reason) == "max_age"
+    # P2-O20: an owner-approved card with the window estimate closed: max age.
+    assert ((await action(env, owner_late_id)).state_reason) == "max_age"
     assert ((await action(env, late_id)).state, (await action(env, late_id)).state_reason) == (
         "expired",
         "window_closed",
