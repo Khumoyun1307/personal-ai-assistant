@@ -75,7 +75,7 @@ The owner gives corrections to the TL in the conversation or on the owner-gate i
 - **Field:** the dotted path from the record's root. List positions count from 0, so message `mNN` is `messages.<NN − 1>` (`m01` is `messages.0`, `m03` is `messages.2`).
 - **New value:** the exact JSON value: a string in the record's language, `true` or `false`, a list or an object. Removing or reordering items of a list is written as the whole new list at the list's path (for example `expected.must_not` with the full new list).
 - **"—"** means the owner noted a problem without giving the new text.
-- `#` numbers continue across batches; corrections the owner gives before D0 are collected on the issue and form batch 1.
+- `#` numbers continue across batches; the owner's corrections to v1 (reviewed by D+1, P3-T166) form batch 1; the v1.1 corrections (by D+2) form the next batches.
 
 ### 6.2 Classify every row
 

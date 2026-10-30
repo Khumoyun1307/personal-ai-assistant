@@ -335,4 +335,4 @@ Each tagged item assumes the default in `decisions.md`; a different answer chang
 - **The `_change_pending` and `transition` audit additions** must not change the details of non-autonomous rows (existing audit assertions); `test_audit_details_of_other_actions_are_unchanged` guards it.
 - **`policy` imports grow** (`core.autonomy_texts`, `policy.codes`): keep `policy/codes.py` free of `explanations.py` (M6-POL merges codes into explanations, so the reverse import would be a cycle).
 - **OD-15 timing:** the category CHECK is in `0015`; if the owner has not settled the list by CP1, F0-S merges the proposed list and any change becomes `0016` (P3-T50).
-- **Texts not proofread by D0:** F0-S codes F0-C part 2's drafted texts; the owner's proofread lands as a text-only ICR before deploy #1 (P3-T61).
+- **Texts approved (2026-10-30):** the owner approved `autonomy-texts.md` as drafted; marker 🤖, the TL's suggestion, unchanged (decisions §A3); F0-S codes them verbatim. A later wording change is a text-only ICR (P3-T61).

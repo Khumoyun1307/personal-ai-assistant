@@ -20,7 +20,7 @@
 | `actions/autonomy_planner.py` | — | M6-PLAN (J3) | `AutonomyPlanner` implementation (§4.1) |
 | `actions/release.py` | — | M6-SCHED (J1) | `schedule_autonomous` (`proposed → approved → scheduled`, §4.1; called by M6-PLAN's job, so M6-PLAN depends on M6-SCHED, R18) and the `actions.release_scheduled` body: re-check and release or cancel |
 | `core/flags.py` | F0-S (J2) | F0-S | Every P3 flag name (§10.2) |
-| `core/autonomy_texts.py` | F0-S (J2) | F0-S (texts proofread by the owner, OD-4, OD-10) | `GateLanguage`, `AI_MARKER`, default disclosure lines, identity answers, and the Pause-button seam `PAUSE_CALLBACK_DATA` and `pause_button()` (§5.2, R45) |
+| `core/autonomy_texts.py` | F0-S (J2) | F0-S (texts approved by the owner 2026-10-30, OD-4, OD-10) | `GateLanguage`, `AI_MARKER`, default disclosure lines, identity answers, and the Pause-button seam `PAUSE_CALLBACK_DATA` and `pause_button()` (§5.2, R45) |
 | `core/p3_ports.py` | F0-R (E1) | — (protocols) | `DelegationControls`, `AutomationControls`, `TaskControls`, `CatchUpRequester`, `DelegationRequester`, `P3Ports` (§4.5) |
 | `privacy/p3_deletion.py` | F0-S (J1) | F0-S | `purge_p3`, called from every deletion scope |
 | `privacy/export.py` | — | M7-EXP (J3) | `/export` snapshot and per-class JSON parts |
@@ -939,7 +939,7 @@ class GateLanguage(StrEnum):
 
 AI_MARKER: Final[
     str
-]  # fixed neutral marker the TL drafts; the owner decides on an emoji (OD-4, R24)
+]  # "🤖": option A, the TL's suggestion, unchanged when the owner approved the texts on 2026-10-30 (OD-4, R24; decisions §A3)
 DISCLOSURE_DEFAULTS: Mapping[GateLanguage, str]  # one short neutral line per language (OD-4)
 IDENTITY_ANSWERS: Mapping[GateLanguage, str]  # one truthful sentence per language: an AI assistant
 # answering for the owner, offering to pass the message on (OD-10)
@@ -954,7 +954,7 @@ def pause_button() -> (
 
 `pause_button()` is the one builder every renderer uses (R45): the escalation, catch-up, takeover and volume-cap renderers (in `inbox/`, which may not import `assistant.telegram`) and the agent confirmation cards call it directly, so the pause-button release check (LIVE-P3, before enable 3) names one builder. `core` imports no other assistant package, so `Button` comes from `core/channel.py`. M6-PAUSE owns the `pz` press (§12.3) and shares `PAUSE_CALLBACK_DATA` with the fast lane and the handler. The token is never checked.
 
-Each mapping has exactly the four keys (test). The texts contain no names, numbers, links or placeholders. The TL drafts `AI_MARKER`, the four disclosure lines and the four identity answers in F0-C part 2; the owner proofreads them before deploy #1 (OD-4, OD-10, R24); a later change needs the owner's OK. `GateLanguage` lives in `core` so that `config.py`, `policy`, `actions` and `agent` can all import it.
+Each mapping has exactly the four keys (test). The texts contain no names, numbers, links or placeholders. The TL drafted `AI_MARKER`, the four disclosure lines and the four identity answers in F0-C part 2; the owner approved them on 2026-10-30 (`autonomy-texts.md`; OD-4, OD-10, R24); a later change needs the owner's OK. `GateLanguage` lives in `core` so that `config.py`, `policy`, `actions` and `agent` can all import it.
 
 ## 6. Read seams (F0-S)
 
@@ -2027,7 +2027,7 @@ One accountable owner per file. A file not listed here is a new module, and its 
 | `docs/engineering/p3/**` (except `qa/**`), `docs/milestones/M06.md`, `M07.md` | TL | Engineers put report text in their PR description |
 | `docs/engineering/p3/qa/**` (test plan, `p3-verifier.md`, `evidence/**`, trial log) | SQ (QA-P3, OPS-TV3, LIVE-P3) | |
 | `docs/IMPLEMENTATION_PLAN.md` | TL | SQ proposes the RG rows in the QA plan and the TL applies them (F0-C part 2, DOCS-EXIT); §1.4 only with the owner's approval |
-| `docs/TELEGRAM_FEASIBILITY.md` | TL | §12 only from owner-executed tests (OWN-LV16); §13 docs-checks (GW-DOC's `sendDocument` row, F0-C rows) |
+| `docs/TELEGRAM_FEASIBILITY.md` | TL | §12 only from owner-executed tests, plus agent-run follow-up lines on an owner-executed row (OWN-LV16, P3-T168); §13 docs-checks (GW-DOC's `sendDocument` row, F0-C rows) |
 | `docs/ARCHITECTURE.md` | Per §15.4 | Each unit edits only its sections, in its own PR |
 | `AGENTS.md` | TL, with the owner's agreement | |
 

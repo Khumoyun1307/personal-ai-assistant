@@ -274,4 +274,4 @@ Ask on the SENS issue, starting the comment with "Question for E2:" (plain text,
   - *Prompts, flags and settings:* none.
   - *Docs:* none (M7-MEX documents the inferred-memory flow in ARCHITECTURE).
   - *Interface changes:* none.
-  - *Open items for M07.md:* the term list is a TL proposal pending the owner's native review (OD-15); any innocent note you found dropped.
+  - *Open items for M07.md:* the term list is a TL proposal pending the owner's native review (OD-15; reviewed with E2/E4 v1 by D+1, P3-T167; corrections land as one lexicon-only PR before R1); any innocent note you found dropped.

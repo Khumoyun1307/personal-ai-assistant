@@ -57,7 +57,7 @@ Branches are `p3/<unit-id>` from `int/p3` (WORKFLOW §4); before CP1 a unit that
 | E1 | 6 | [PR-OR10](../specs/PR-OR10.md) + the retrieval agent-mode re-run (owner go-ahead, ≈ USD 0.1; SQ or the TL runs it) | D+4..D+5 | every tool unit merged: M6-DELEG, M7-REM, M7-TASK, M7-FUP, M7-AUTO, M7-MACT, RD-DEL, RD-M7 | J3 | QE1 before merge |
 | E2 | 1 | [DELEG-DRAFT](../specs/DELEG-DRAFT.md) (Tier-1A) | D0 | the contract (port, `shareable_for`) | J3; Gemini read; TL deep | QE2 before merge |
 | E2 | 2 | [EV-AUT](../specs/EV-AUT.md) | D+1..D+2 | EV-E4L; `AutonomyPlanner` faked until M6-PLAN merges | J3 | QE2 before merge |
-| E2 | 3 | [PV6](../specs/PV6.md) code (constant, `POLICY_CHANGES`, notice text; the final text lands when the owner approves it, by D+3) | D+2, only while an eval run is in flight (P3-T65) | the TL's draft text | a Josh engineer | QE1 after merge |
+| E2 | 3 | [PV6](../specs/PV6.md) code (constant, `POLICY_CHANGES`, notice text; the text is owner-approved, 2026-10-30, as merged in #223) | D+2, only while an eval run is in flight (P3-T65) | the approved text (PV6 §3.2) | a Josh engineer | QE1 after merge |
 | E2 | 4 | Gate prompt iterations (`draft_delegated` v2–v5) after pre-screen #1; the passing version is frozen | D+3..D+4 | CP-G0 | (DELEG-DRAFT's reviewers) | QE2 |
 | E2 | 5 | [M7-MEX](../specs/M7-MEX.md) (review cards enqueued by `memory.extract`, at most 5 per owner-local day, P3-T56) | D+4 | the frozen candidate; F0-S; SENS (D2) | J3; TL deep | QE2 before merge |
 | E2 | 6 | [M7-SSUM](../specs/M7-SSUM.md) — may land after R1 as a flagged PR to `main` | D+5 | F0-R | J3 | QE1 before merge |

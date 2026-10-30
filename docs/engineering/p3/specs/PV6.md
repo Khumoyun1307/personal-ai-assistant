@@ -5,7 +5,7 @@
 | **Unit** | PV6 — the v6 policy text covering M04–M07 (TL), and the code: `POLICY_VERSION = "v6"`, the v6 entry in `POLICY_CHANGES` (the notice text), notice tests (Edvard E2) |
 | **Team / slot** | TL (text) / Edvard E2 (code) |
 | **Size** | S |
-| **Depends on** | the owner's approval of the text (OD-24, by D+3). The code PR may merge into `int/p3` with the TL's draft notice text; the approved wording lands before R1 (§3.3). E2 writes the code on D+2 while an eval run is in flight, never ahead of DELEG-DRAFT or EV-AUT work (R28) |
+| **Depends on** | the owner's approval of the text (OD-24, by D+3; **approved 2026-10-30**, text and notice, decisions §A3). The code PR uses the approved notice text in §3.2. E2 writes the code on D+2 while an eval run is in flight, never ahead of DELEG-DRAFT or EV-AUT work (R28) |
 | **Branch → base** | text: `docs/p3-pv6` → `main` (TL docs PR); code: `p3/pv6` → `int/p3` |
 | **Peer reviewer** | text: the three leads + SQ read it, the owner approves; code: a Josh engineer (Claude), dispatched by the TL |
 | **QA** | code: QE1, after merge (on `int/p3` before R1) |
@@ -50,7 +50,7 @@ The text contains no IP address, hostname of our infrastructure beyond what v5 a
 
 ### 3.2 The in-bot notice (`POLICY_CHANGES["v6"]`)
 
-Plain, short, with the existing `{link}` placeholder and the opt-outs. Draft (the TL proposes, the owner approves; HTML markup limited to `<code>`, as v4/v5). **TL draft 2, 2026-10-29, written with the v6 text; awaiting the owner's approval (OD-24):**
+Plain, short, with the existing `{link}` placeholder and the opt-outs. Draft (the TL proposes, the owner approves; HTML markup limited to `<code>`, as v4/v5). **TL draft 2, 2026-10-29, written with the v6 text; approved by the owner 2026-10-30 (OD-24):**
 
 > Alviro's privacy policy was updated (version 6). It now covers the replies Alviro prepares for you to approve, chat triage, tasks, alerts and monitors, reminders, follow-ups and scheduled summaries, note suggestions you approve or discard, and <code>/export</code> for a copy of your data. It also covers delegations and the knowledge you allow Alviro to share in them: in chats you delegate and confirm, Alviro can reply for you automatically, after telling the other person that an AI is replying. Automatic replies and note suggestions start no earlier than 24 hours after this message. Your settings stay as they are. Read it here: {link}. If you don't agree: <code>/pause</code> stops automatic replies at once, <code>/privacy revoke</code> stops all AI processing, <code>/privacy delete</code> deletes everything stored (after asking), and to stop Alviro saving your chats, remove it under Settings → Chat Automation.
 
@@ -61,7 +61,7 @@ Rules for the text: fixed application text, no user content, no names, no number
 ### 3.3 Code (E2; `p3/pv6`)
 
 1. `accounts/service.py`: `POLICY_VERSION = "v6"`.
-2. `inbox/policy_notice.py`: add the `"v6"` entry (§3.2 text, or the TL's latest draft if the owner has not approved yet) with a one-line comment above it like v5's; the module docstring's version list `(policy v4, v5)` gains v6 (part of the notice text, the only docstring change). Nothing else changes: the notice goes out once per owner with a consent recorded under an older version (active or revoked), on the first `system.ingestion_watchdog` run after the deploy, settled durably by `accounts.policy_notice_version`, never resent after an uncertain delivery (M02 D59; invariant 6).
+2. `inbox/policy_notice.py`: add the `"v6"` entry (the §3.2 text, owner-approved 2026-10-30) with a one-line comment above it like v5's; the module docstring's version list `(policy v4, v5)` gains v6 (part of the notice text, the only docstring change). Nothing else changes: the notice goes out once per owner with a consent recorded under an older version (active or revoked), on the first `system.ingestion_watchdog` run after the deploy, settled durably by `accounts.policy_notice_version`, never resent after an uncertain delivery (M02 D59; invariant 6).
 3. Consents stay valid across the bump (nothing is re-asked); new consents record `v6`.
 4. Tests that pin the current version as a literal `"v5"` (at least `tests/integration/test_policy_update_notice.py`, `test_connections.py`, `test_visibility.py` on `main`; grep the CP5 tree) read `service.POLICY_VERSION`, except the one explicit assertion `POLICY_VERSION == "v6"`.
 5. If the owner changes the notice wording after this PR merged, E2 opens one follow-up PR (`p3/pv6-text`) changing only the `"v6"` string, before R1.
@@ -69,7 +69,7 @@ Rules for the text: fixed application text, no user content, no names, no number
 
 ### 3.4 Order and gates (OD-24, OD-25)
 
-1. The TL drafts the text and the notice (pre-start, docs only) and opens `docs/p3-pv6`; the leads and SQ read it; the owner approves by D+3 (11-05).
+1. The TL drafts the text and the notice (pre-start, docs only) and opens `docs/p3-pv6`; the leads and SQ read it; the owner approves by D+3 (11-05). Done: #223 merged and the owner approved the text and the notice on 2026-10-30.
 2. E2 merges the code into `int/p3` (it reaches production only with R1).
 3. Before deploy #1 the TL, with the owner's go-ahead, publishes v6 on the same page (`docker compose -f compose.dev.yml run --rm app python tools/legal/publish_policy.py`; the script keeps its token under `var/legal/`, which no agent opens or prints), checks the live page shows version 6, records the date in the publication record, and merges the docs PR. The notice links to the published page, so publication always comes first.
 4. Deploy #1 sends the notice. Enable 4 (`autonomy.send`) and enable 5 (`memory.extract`) wait until the notice is ≥ 24 h old (README §6, OD-24).

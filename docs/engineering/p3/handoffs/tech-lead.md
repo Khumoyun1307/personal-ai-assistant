@@ -6,7 +6,7 @@
 
 You own the plan, both contracts ([P3-schema](../contracts/P3-schema.md), [P3-interfaces](../contracts/P3-interfaces.md)), the specs, integration and the safety sign-off (CP-A). You never write feature code. Josh, Edvard and David each run a team; you are the **review dispatcher** for every cross-team peer review, you run **Senior QA (SQ)**, and you are the only person who merges into `int/p3`.
 
-Your own units: **F0-C** (this package, the daily decisions PRs, ADR-17…21 drafts, the GW-ESC verification, the lower-document corrections in F0-C part 2), the **PV6** policy text, **DOCS-EXIT**, and the TF §12 record of the owner's LV-16 run (OWN-LV16).
+Your own units: **F0-C** (this package, the daily decisions PRs, ADR-17…21 drafts, the GW-ESC verification, the lower-document corrections in F0-C part 2), the **PV6** policy text, **DOCS-EXIT**, and the LV-16 re-test (OWN-LV16): you run SQ's `qa/lv16-runbook.md` on Alviro in the D+6 window, with the owner's go-ahead, before enable 4, and add the result to TF §12's LV-16 row (OD-27 as answered 2026-10-30, P3-T168; the dev bot has no business connection).
 
 You decide routine technical questions inside the approved scope and log them in decisions §B; you rule on ICRs within 2 h; consequential choices go to the owner (ORG §5). Your session is Claude Code running an always-on self-paced loop (§3).
 
@@ -153,13 +153,13 @@ codex exec --sandbox workspace-write -C ../alviro-wt/sq-<unit> -o "$S/sq-<unit>.
 - The rulings that bind P3 are logged in decisions §B (B1–B8, P3-T01…P3-T137); the units, owners, sizes and dependencies are in README §3. Nothing else is needed to resume the plan; planning scratch files are not part of the package.
 - P2: M04 is on `main` and deployed with its flags off; the OPS-RT restore tooling is merged (#130); the gateway double-escape fix and the multi-chunk partial-delivery outcome (P2-T53) are merged (#133), so GW-ESC is verification only (P3-T45); M05 is complete in `int/m05`. The P2 tail (CP3 remainder, the M04 trial, CP4, CP5) follows the P2 tech-lead handoff §8.
 
-**Not yet:** M06 and M07 are `not approved`; there is no P3 code, label, issue or `int/p3`; no lead session has started.
+**Status 2026-10-30:** M06 and M07 are approved (OD-1, 2026-10-29); the autonomy texts and v6 are approved (§A3); labels and issues exist (CP0); there is no P3 code or `int/p3` yet (D0 = Mon 11-02) and no lead session has started.
 
 **Next, in order:**
 1. **Owner answers.** The owner reviews the package, answers decision group A (OD-1…OD-20, OD-31, OD-32, OD-33) or says "approve all defaults", and answers the six document conflicts in decisions §C1 (conflicts 2 and 3 are OD-31 and OD-32). Record the answers in decisions §A and §C1. If an answer differs from a default, change only the sections tagged with that OD.
 2. **Planning PR** (`docs/p3-engineering-plan` → `main`, only `docs/engineering/p3/**`): Josh, Edvard and David each check the team's specs as the first job of the lead session, and SQ checks the QA-facing parts. You merge it once the three leads and SQ have reviewed it clean (AGENTS §15 docs-only rule; P3-T67).
 3. **F0-C part 2**, one docs PR before D0 (decisions §C2, items 7–16 and 21–27; items 17–20 go in the F0-S PR with your text): the IMPLEMENTATION_PLAN §1.4 rows recording the owner's approval with its date, plus §1.2, §8, §9, §10.1 and §13; ARCHITECTURE §7.1, §7.3, §7.5, §8.1, §8.2, §9.3, §9.4, §12.2, §12.4, §15.2 and ADR-17…21 in §20; the AGENTS §2 and §15 lines through the rule-change process (OD-2); the TF §13 docs-check rows (contact-side automation, the OpenAI usage policy for OD-30, `sendDocument` limits); the P3 `.github/pull_request_template.md` (WORKFLOW §4.3; P3-T65); and your drafts of the AI marker, the four disclosure lines and the four identity answers for the owner to proofread (OD-4, OD-10; P3-T61).
 4. **CP0:** labels, unit issues, the `P3 integration` issue, `owner-gate` issues; the lead sessions' capability checks.
-5. **Pre-start:** DATA-E4a, DATA-E2, DATA-E4b (David); QA-P3 and the LV-16 script (SQ); the GW-ESC verification of P2 #133 (you, with an SQ check; §2 pre-start row); the PV6 text (you); the owner's native review of E2/E4 and the LV-16 run.
+5. **Pre-start:** DATA-E4a, DATA-E2, DATA-E4b (David); QA-P3 and the LV-16 script (SQ); the GW-ESC verification of P2 #133 (you, with an SQ check; §2 pre-start row); the PV6 text (you; approved 2026-10-30). The owner's native review of E2/E4 is v1 by D+1 and v1.1 by D+2 (P3-T166); the LV-16 run is yours, on Alviro at D+6 (P3-T168).
 6. **P2 tail to CP5:** CP4 and the owner's `int/m05` → `main` merge (GW-ESC already landed in #133).
 7. **D0:** cut `int/p3`; start the F0 trio and the contract-first units (§2).
