@@ -26,6 +26,9 @@ import pytest
 from sqlalchemy import select, text
 
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, PendingInput
+from assistant.actions.models import Action
+from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
+from assistant.actions.requests import LinkAction, SelectRecipient, update_request
 from assistant.agent.models import AgentRunStep, ToolConfirmation
 from assistant.agent.tools.deletion import (
     DeleteContactDataArgs,
@@ -42,7 +45,9 @@ from assistant.agent.tools.registry import (
     ToolServices,
     default_registry,
 )
+from assistant.conversations.models import Conversation
 from assistant.llm.port import LLMRequest, ToolResultItem
+from assistant.privacy.deletion import delete_conversation_data, delete_everything
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response, tool_response
 from tests.integration.agent_env import (
@@ -65,12 +70,88 @@ from tests.integration.business_env import (
     environment,
     private_message,
 )
+from tests.integration.test_owner_requests import seed_request
 
 pytestmark = pytest.mark.integration
 
 FLAGS = READ_FLAGS | DELETION_FLAGS
 DELETION_TOOLS = {"delete_conversation_data", "delete_contact_data", "delete_everything"}
 CANARY = "SYNTH-DEL-CANARY"
+
+
+@pytest.mark.parametrize("scope", ["conversation", "everything"])
+async def test_deletion_removes_request_proofs_only_inside_the_account(
+    env: Env, scope: str
+) -> None:
+    account_id, conversation_id, _, request_id = await seed_request(env)
+    other_account, _, _, other_request = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        conversation = await session.get(Conversation, conversation_id)
+        assert conversation is not None
+        result = await update_request(
+            session,
+            account_id=account_id,
+            request_id=request_id,
+            expected_version=1,
+            update=SelectRecipient(
+                contact_id=conversation.contact_id,
+                conversation_id=conversation_id,
+                basis="owner_choice",
+            ),
+            now=env.clock.now(),
+        )
+        assert result.status == "applied"
+        action = Action(
+            account_id=account_id,
+            conversation_id=conversation_id,
+            kind="send_message",
+            origin="owner_dictated",
+            state="awaiting_approval",
+            text="Synthetic body",
+        )
+        session.add(action)
+        await session.flush()
+        action_id = action.id
+        linked = await update_request(
+            session,
+            account_id=account_id,
+            request_id=request_id,
+            expected_version=2,
+            update=LinkAction(action_id=action_id, version=1),
+            now=env.clock.now(),
+        )
+        assert linked.status == "applied"
+        if scope == "conversation":
+            report = await delete_conversation_data(
+                session,
+                account_id=account_id,
+                conversation_id=conversation_id,
+                actor="owner",
+                clock=env.clock,
+            )
+        else:
+            report = await delete_everything(
+                session, account_id=account_id, actor="owner", clock=env.clock
+            )
+        assert report.actions == 1
+    async with env.factory() as session:
+        assert await session.get(OwnerRequest, request_id) is None
+        action = await session.get(Action, action_id)
+        assert action is not None
+        assert action.state == "cancelled"
+        assert action.text is None
+        sources = list(
+            await session.scalars(
+                select(OwnerRequestSource).where(OwnerRequestSource.account_id == account_id)
+            )
+        )
+        assert sources == []
+        assert await session.get(OwnerRequest, other_request) is not None
+        assert list(
+            await session.scalars(
+                select(OwnerRequestSource).where(OwnerRequestSource.account_id == other_account)
+            )
+        )
 
 
 @pytest.fixture

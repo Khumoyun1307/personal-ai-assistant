@@ -38,6 +38,7 @@ from assistant.conversations.models import CoverageGap
 from assistant.core.clock import Clock
 from assistant.db.models import KEY_RESTORE_PENDING, SystemState
 from assistant.db.uow import transaction
+from assistant.privacy.owner_requests import cancel_restored_requests
 from assistant.privacy.retention import SweepReport, sweep_all
 
 KEY_RESTORE_NOTICE = "restore_notice_pending"
@@ -92,6 +93,7 @@ async def post_restore(
         # reactivation must not resurrect an old grant. Invalidate old cards
         # and text questions so only a newly displayed consent can re-grant.
         for account in (await session.scalars(select(Account).order_by(Account.id))).all():
+            await cancel_restored_requests(session, account_id=account.id, now=now)
             account.settings = {
                 **(account.settings or {}),
                 service.RESTORE_CONSENT_PENDING: [

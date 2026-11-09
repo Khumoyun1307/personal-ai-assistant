@@ -7,15 +7,109 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from assistant.accounts.models import Account
+from assistant.accounts.models import Account, ControlTurn
 from assistant.actions.models import Action
+from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
+from assistant.actions.requests import LinkAction, update_request
 from assistant.automation.models import Automation, AutomationOccurrence
 from assistant.inbox.models import ConversationTriage, Digest, Notification, Task
 from assistant.privacy.retention import sweep_all
 from tests.integration.business_env import Env
 from tests.integration.test_action_lifecycle_bulk import seed_actions
+from tests.integration.test_owner_requests import seed_request
 
 pytestmark = pytest.mark.integration
+
+
+async def test_request_source_retention_cancels_derived_action_without_pinning_text(
+    env: Env,
+) -> None:
+    account_id, conversation_id, turn_id, request_id = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        account = await session.get(Account, account_id)
+        turn = await session.get(ControlTurn, turn_id)
+        assert account is not None
+        assert turn is not None
+        account.settings = {"retention_days": {"control_chat": 14}}
+        turn.created_at = env.clock.now() - timedelta(days=15)
+        action = Action(
+            account_id=account_id,
+            conversation_id=conversation_id,
+            kind="send_message",
+            origin="owner_dictated",
+            state="awaiting_approval",
+            text="Synthetic retained body",
+            expires_at=env.clock.now() + timedelta(hours=6),
+        )
+        session.add(action)
+        await session.flush()
+        action_id = action.id
+        result = await update_request(
+            session,
+            account_id=account_id,
+            request_id=request_id,
+            expected_version=1,
+            update=LinkAction(action_id=action_id, version=1),
+            now=env.clock.now(),
+        )
+        assert result.status == "applied"
+    await sweep_all(env.factory, env.clock)
+    async with env.factory() as session:
+        request = await session.get(OwnerRequest, request_id)
+        action = await session.get(Action, action_id)
+        turn = await session.get(ControlTurn, turn_id)
+        assert request is not None
+        assert action is not None
+        assert turn is not None
+        assert request.state == "cancelled"
+        assert action.state == "cancelled"
+        assert action.text is None
+        assert turn.text is None
+        assert list(await session.scalars(select(OwnerRequestSource))) == []
+
+
+async def test_action_sweep_unlinks_both_request_action_columns(env: Env) -> None:
+    account_id, conversation_id, _, request_id = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        action = Action(
+            account_id=account_id,
+            conversation_id=conversation_id,
+            kind="send_message",
+            origin="owner_dictated",
+            state="awaiting_approval",
+            text="Synthetic body",
+            created_at=env.clock.now() - timedelta(days=366),
+        )
+        session.add(action)
+        await session.flush()
+        result = await update_request(
+            session,
+            account_id=account_id,
+            request_id=request_id,
+            expected_version=1,
+            update=LinkAction(action_id=action.id, version=1),
+            now=env.clock.now(),
+        )
+        assert result.status == "applied"
+        action.state = "rejected"
+    await sweep_all(env.factory, env.clock)
+    async with env.factory() as session:
+        request = await session.get(OwnerRequest, request_id)
+        assert request is not None
+        assert request.action_id is None
+        assert request.action_version is None
+
+
+async def test_request_metadata_has_a_one_year_ceiling(env: Env) -> None:
+    _, _, _, request_id = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        request = await session.get(OwnerRequest, request_id)
+        assert request is not None
+        request.requested_at = env.clock.now() - timedelta(days=365)
+    assert (await sweep_all(env.factory, env.clock)).owner_requests == 1
+    async with env.factory() as session:
+        assert await session.get(OwnerRequest, request_id) is None
+        assert list(await session.scalars(select(OwnerRequestSource))) == []
 
 
 async def test_action_text_retention_uses_account_period_and_keeps_executing(env: Env) -> None:

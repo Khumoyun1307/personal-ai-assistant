@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # Without these imports autogenerate would cheerfully propose dropping them.
 import assistant.accounts.models
 import assistant.actions.models
+import assistant.actions.request_models
 import assistant.agent.models
 import assistant.automation.models
 import assistant.conversations.models

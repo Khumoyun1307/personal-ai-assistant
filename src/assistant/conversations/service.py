@@ -50,6 +50,7 @@ from assistant.inbox.models import InboundUpdate
 from assistant.memory.search import detect_script, guess_lang, normalize
 from assistant.memory.summaries import invalidate_covering
 from assistant.observability.logging import get_logger
+from assistant.privacy.owner_requests import purge_request_sources
 
 logger = get_logger(__name__)
 
@@ -568,6 +569,16 @@ async def record_deletion(
             )
         )
     if purged_ids:
+        # Include already-cleared targets: a repeated deletion must also
+        # remove any surviving request proof and derived body. Ingestion
+        # already holds the conversation lock; do not upgrade its account lock.
+        await purge_request_sources(
+            session,
+            account_id=account_id,
+            message_ids=purged_ids,
+            now=now,
+            locked=True,
+        )
         await session.execute(
             update(InboundUpdate)
             .where(InboundUpdate.account_id == account_id)

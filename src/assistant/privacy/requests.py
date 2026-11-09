@@ -40,6 +40,7 @@ B).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select, text
@@ -47,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import callbacks, service
 from assistant.accounts.models import Account, AuditLogEntry, PendingInput
+from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
 from assistant.core.channel import Button, ControlChannel, Delivery
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
@@ -56,6 +58,27 @@ from assistant.privacy import deletion
 from assistant.privacy.deletion import DeletionReport, DeletionRequest
 
 logger = get_logger(__name__)
+
+
+async def export_owner_requests(
+    session: AsyncSession, *, account_id: int
+) -> dict[str, list[dict[str, Any]]]:
+    """Account-local structural export seam; no new export UI/job is enabled."""
+    result: dict[str, list[dict[str, Any]]] = {}
+    for model in (OwnerRequest, OwnerRequestSource):
+        rows = await session.scalars(
+            select(model).where(model.account_id == account_id).order_by(model.id)
+        )
+        exported = []
+        for row in rows:
+            values: dict[str, Any] = {}
+            for column in model.__table__.columns:
+                value = getattr(row, column.name)
+                values[column.name] = value.isoformat() if isinstance(value, datetime) else value
+            exported.append(values)
+        result[model.__tablename__] = exported
+    return result
+
 
 SCOPES = (
     deletion.SCOPE_CONVERSATION,

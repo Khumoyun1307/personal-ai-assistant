@@ -1,5 +1,7 @@
 # C1 — Durable owner request (H1/H2)
 
+H1 implementation (2026-11-09): [models](../../../../src/assistant/actions/request_models.py), [service](../../../../src/assistant/actions/requests.py), [privacy helpers](../../../../src/assistant/privacy/owner_requests.py), [migration 0015](../../../../migrations/versions/0015_owner_requests.py), [regressions](../../../../tests/integration/test_owner_requests.py). Time-dependent service operations take explicit `now` (aware UTC) from the caller's Clock. This foundation is inert until H2 and subsequent runtime units adopt it; H5/H11 additions remain unimplemented. Validation, PostgreSQL up/down, lint/type checks and manual Telegram checks are unrun in the restricted implementation worktree and remain lead/CI gates.
+
 Implements D-S2/D-S4; consumed by H3–H13, I13/I14 and A1. Existing `pending_inputs` remains the UI question/card mechanism; it does not own task substance. Request state survives process restart, not source retention/deletion. No copied request text, question text or model summary is stored here.
 
 ## Domain model and persistence

@@ -15,6 +15,20 @@ from assistant.actions.states import PENDING, StateReason
 from assistant.automation.models import Automation
 from assistant.conversations.models import Conversation
 from assistant.inbox.models import ConversationTriage, Notification, Task
+from assistant.privacy.owner_requests import purge_request_sources
+
+
+async def count_actions_for_purge(
+    session: AsyncSession, *, account_id: int, conversation_ids: Sequence[int] | None
+) -> int:
+    """Count before request invalidation can cancel and clear a derived action."""
+    affected = select(func.count(Action.id)).where(
+        Action.account_id == account_id,
+        or_(Action.state.in_(PENDING), Action.text.is_not(None)),
+    )
+    if conversation_ids is not None:
+        affected = affected.where(Action.conversation_id.in_(conversation_ids))
+    return int((await session.execute(affected)).scalar_one())
 
 
 async def purge_p2(
@@ -25,6 +39,7 @@ async def purge_p2(
     contact_ids: Sequence[int],
     scope: Literal["scoped", "everything", "managed"],
     now: datetime,
+    actions_affected: int | None = None,
 ) -> dict[str, int]:
     """Cancel before clearing text, preserving claimed delivery states.
 
@@ -35,13 +50,28 @@ async def purge_p2(
     """
     # Count the union once: a pending row whose text was already purged and
     # a settled row with retained text are distinct affected actions.
-    affected = select(func.count(Action.id)).where(
-        Action.account_id == account_id,
-        or_(Action.state.in_(PENDING), Action.text.is_not(None)),
+    actions = actions_affected
+    if actions is None:
+        actions = await count_actions_for_purge(
+            session, account_id=account_id, conversation_ids=conversation_ids
+        )
+    await purge_request_sources(
+        session,
+        account_id=account_id,
+        now=now,
+        locked=True,
+        remove=True,
+        everything=scope == "everything",
+        conversation_ids=(
+            tuple(conversation_ids)
+            if conversation_ids is not None
+            else tuple(
+                await session.scalars(
+                    select(Conversation.id).where(Conversation.account_id == account_id)
+                )
+            )
+        ),
     )
-    if conversation_ids is not None:
-        affected = affected.where(Action.conversation_id.in_(conversation_ids))
-    actions = int((await session.execute(affected)).scalar_one())
     await cancel_pending(
         session,
         account_id=account_id,
