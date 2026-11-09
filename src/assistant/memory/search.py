@@ -193,22 +193,26 @@ def search_excerpt(text: str | None, queries: Sequence[str], *, limit: int) -> s
     """A bounded original-text window, including omission markers.
 
     Queries are highest-ranked first (ties keep input order). Prefer a whole
-    normalized phrase, then the earliest matching content-term prefix using
-    the very same alternatives as tsquery. Trigram-only hits without a
+    normalized phrase at a token start, then the earliest matching content-term
+    prefix using the very same alternatives as tsquery. Trigram-only hits without a
     locatable phrase or term fall back to the beginning.
     """
     if text is None or len(text) <= limit:
         return text
     key = normalize(text)
+    words = list(_TERM.finditer(key))
     span: tuple[int, int] | None = None
     for query in queries:
         phrase = normalize(query)
-        position = key.find(phrase) if phrase else -1
-        if position >= 0:
-            span = (position, position + len(phrase))
+        # Like tsquery prefixes, phrases must start at a token, not inside
+        # an unrelated word (for example, "art" inside "party").
+        match = next(
+            (word for word in words if phrase and key.startswith(phrase, word.start())), None
+        )
+        if match is not None:
+            span = (match.start(), match.start() + len(phrase))
             break
     if span is None:
-        words = list(_TERM.finditer(key))
         for query in queries:
             alternatives = tuple(
                 alternative

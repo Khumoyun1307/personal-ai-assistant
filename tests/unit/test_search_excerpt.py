@@ -59,6 +59,17 @@ def test_phrase_precedes_an_earlier_individual_term() -> None:
     assert "winner phrase" in excerpt
 
 
+@pytest.mark.parametrize("query", ["art", "art exhibition"])
+def test_phrase_ignores_substrings_inside_unrelated_words(query: str) -> None:
+    value = "party exhibition " + "padding " * 100 + "art exhibition"
+    excerpt = search_excerpt(value, [query], limit=400)
+    assert excerpt is not None
+    assert "art exhibition" in excerpt
+    assert "party" not in excerpt
+    assert excerpt.startswith("…")
+    assert len(excerpt) <= 400
+
+
 def test_term_fallback_uses_first_occurrence() -> None:
     value = "padding " * 100 + "rahmat FIRST " + "padding " * 100 + "rahmat SECOND"
     excerpt = search_excerpt(value, ["raxmat missingword"], limit=400)
