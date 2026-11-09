@@ -37,6 +37,8 @@ EXPECTED_TABLES = {
     "llm_calls",
     "memory_items",
     "pending_inputs",
+    "owner_requests",
+    "owner_request_sources",
     "system_state",
     "tool_confirmations",
     "tasks",
@@ -486,7 +488,96 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0014"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0015"]
+
+
+def test_0015_owner_requests_reverse(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    run_alembic(scratch_url, "0014", down=True)
+    run_alembic(scratch_url, "0015")
+    assert {"owner_requests", "owner_request_sources"} <= tables_in(scratch_url, "app")
+    assert {"action_id", "action_version", "constraints", "requested_at"} <= _columns(
+        scratch_url, "owner_requests"
+    )
+    assert "uq_owner_requests_focused" in _indexes(scratch_url, "owner_requests")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account, conversation = _phase_conversation(conn, 81015)
+        turn = conn.execute(
+            "INSERT INTO app.control_turns (account_id, role, text) "
+            "VALUES (%s, 'owner', 'Synthetic body') RETURNING id",
+            (account,),
+        ).fetchone()
+        assert turn is not None
+        insert = (
+            "INSERT INTO app.owner_requests (account_id, operation, state, focused, "
+            "trigger_turn_id, last_turn_id, requested_at, updated_at, expires_at) "
+            "VALUES (%s, 'dictate', 'collecting', true, %s, %s, now(), now(), "
+            "now() + interval '24 hours')"
+        )
+        conn.execute(insert, (account, turn[0], turn[0]))
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(insert, (account, turn[0], turn[0]))
+        continuation = conn.execute(
+            "INSERT INTO app.control_turns (account_id, role, text) "
+            "VALUES (%s, 'owner', 'Synthetic second request') RETURNING id",
+            (account,),
+        ).fetchone()
+        assert continuation is not None
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(insert, (account, continuation[0], continuation[0]))
+        request = conn.execute(
+            "SELECT id FROM app.owner_requests WHERE account_id = %s", (account,)
+        ).fetchone()
+        assert request is not None
+        source_insert = (
+            "INSERT INTO app.owner_request_sources (account_id, request_id, ordinal, turn_id, "
+            "field, purpose, start_char, end_char, field_sha256) "
+            "VALUES (%s, %s, %s, %s, 'text', 'literal_body', 0, 14, %s)"
+        )
+        conn.execute(source_insert, (account, request[0], 0, turn[0], "a" * 64))
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(source_insert, (account, request[0], 64, turn[0], "a" * 64))
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "UPDATE app.owner_requests SET state = 'completed' WHERE account_id = %s",
+                (account,),
+            )
+        # Exercise the trigger after downgrade/upgrade, both for an ordinary
+        # action deletion and while its parent account is already gone.
+        for remove_account in (False, True):
+            action = conn.execute(
+                "INSERT INTO app.actions (account_id, conversation_id, kind, origin, state) "
+                "VALUES (%s, %s, 'send_message', 'owner_dictated', 'awaiting_approval') "
+                "RETURNING id",
+                (account, conversation),
+            ).fetchone()
+            assert action is not None
+            conn.execute(
+                "UPDATE app.owner_requests SET action_id = %s, action_version = 1 "
+                "WHERE account_id = %s",
+                (action[0], account),
+            )
+            if remove_account:
+                conn.execute("DELETE FROM app.accounts WHERE id = %s", (account,))
+                remaining_requests = conn.execute(
+                    "SELECT id FROM app.owner_requests WHERE account_id = %s", (account,)
+                ).fetchall()
+                assert remaining_requests == []
+                remaining_sources = conn.execute(
+                    "SELECT id FROM app.owner_request_sources WHERE account_id = %s", (account,)
+                ).fetchall()
+                assert remaining_sources == []
+            else:
+                conn.execute("DELETE FROM app.actions WHERE id = %s", (action[0],))
+                links = conn.execute(
+                    "SELECT action_id, action_version FROM app.owner_requests WHERE id = %s",
+                    (request[0],),
+                ).fetchone()
+                assert links == (None, None)
+    run_alembic(scratch_url, "0014", down=True)
+    assert "owner_requests" not in tables_in(scratch_url, "app")
+    assert "owner_request_sources" not in tables_in(scratch_url, "app")
+    run_alembic(scratch_url, "head")
 
 
 def test_0013_actions_reverse(scratch_url: str) -> None:

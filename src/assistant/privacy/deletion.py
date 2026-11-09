@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import ColumnElement, delete, func, or_, select, text, true, update
@@ -30,7 +31,8 @@ from assistant.core.errors import NotInAccountError
 from assistant.inbox.models import InboundUpdate
 from assistant.memory import items
 from assistant.memory.summaries import delete_account_summaries, delete_conversation_summaries
-from assistant.privacy.p2_deletion import purge_p2
+from assistant.privacy.owner_requests import purge_request_sources
+from assistant.privacy.p2_deletion import count_actions_for_purge, purge_p2
 
 #: Raw updates that carry managed content, or the owner's name from the
 #: connection payload (`business_connection.user`).
@@ -187,6 +189,30 @@ async def delete_managed_data(
     def _count(result: object) -> int:
         return int(getattr(result, "rowcount", 0) or 0)
 
+    actions_affected = await count_actions_for_purge(
+        session, account_id=account_id, conversation_ids=None
+    )
+    await purge_request_sources(
+        session,
+        account_id=account_id,
+        now=clock.now(),
+        remove=True,
+        locked=True,
+        conversation_ids=tuple(
+            await session.scalars(
+                select(Conversation.id).where(Conversation.account_id == account_id)
+            )
+        ),
+        turn_ids=tuple(
+            await session.scalars(
+                select(ControlTurn.id).where(
+                    ControlTurn.account_id == account_id,
+                    ControlTurn.contains_managed.is_(True),
+                    _owner_turns_up_to(owner_turns_up_to),
+                )
+            )
+        ),
+    )
     messages = _count(
         await session.execute(delete(Message).where(Message.account_id == account_id))
     )
@@ -256,6 +282,7 @@ async def delete_managed_data(
         contact_ids=(),
         scope="managed",
         now=clock.now(),
+        actions_affected=actions_affected,
     )
     report = DeletionReport(messages, contacts, payloads, turns, summaries, notes, held, **p2)
     details: dict[str, Any] = {**report.counts(), "messages_remaining": int(remaining)}
@@ -308,6 +335,17 @@ async def purge_conversation(
         .where(Conversation.account_id == account_id)
         .where(Conversation.id == conversation_id)
         .with_for_update()
+    )
+    actions_affected = await count_actions_for_purge(
+        session, account_id=account_id, conversation_ids=(conversation_id,)
+    )
+    await purge_request_sources(
+        session,
+        account_id=account_id,
+        now=clock.now(),
+        locked=True,
+        conversation_ids=(conversation_id,),
+        remove=True,
     )
     message_ids = select(Message.id).where(Message.conversation_id == conversation_id)
     payloads = _count(
@@ -373,6 +411,7 @@ async def purge_conversation(
         contact_ids=[] if contact_id is None else [int(contact_id)],
         scope="scoped",
         now=clock.now(),
+        actions_affected=actions_affected,
     )
     return DeletionReport(messages, contacts, payloads, turns, summaries, notes, **p2)
 
@@ -396,6 +435,17 @@ async def redact_turns_referring_to(
     refers = ControlTurn.refs.contains({"conversation_ids": [conversation_id]})
     if contact_id is not None:
         refers = refers | ControlTurn.refs.contains({"contact_ids": [contact_id]})
+    await purge_request_sources(
+        session,
+        account_id=account_id,
+        now=clock.now(),
+        locked=True,
+        turn_ids=tuple(
+            await session.scalars(
+                select(ControlTurn.id).where(ControlTurn.account_id == account_id, refers)
+            )
+        ),
+    )
     redacted = await session.execute(
         update(ControlTurn)
         .where(ControlTurn.account_id == account_id)
@@ -558,6 +608,7 @@ async def _redact_turns(
     *,
     conversation_ids: Sequence[int],
     contact_ids: Sequence[int],
+    now: datetime,
     owner_turns_up_to: int | None = None,
 ) -> tuple[int, list[int]]:
     """Clear control turns whose `refs` name one of these conversations or
@@ -568,6 +619,21 @@ async def _redact_turns(
     conditions += [ControlTurn.refs.contains({"contact_ids": [c]}) for c in contact_ids]
     if not conditions:
         return 0, []
+    await purge_request_sources(
+        session,
+        account_id=account_id,
+        now=now,
+        locked=True,
+        turn_ids=tuple(
+            await session.scalars(
+                select(ControlTurn.id).where(
+                    ControlTurn.account_id == account_id,
+                    or_(*conditions),
+                    _owner_turns_up_to(owner_turns_up_to),
+                )
+            )
+        ),
+    )
     rows = (
         await session.execute(
             update(ControlTurn)
@@ -679,6 +745,17 @@ async def _purge_chats(
     conversation rows stay, content-free."""
     conversation_ids = [chat.conversation_id for chat in chats]
     contact_ids = sorted({chat.contact_id for chat in chats} | set(person_ids))
+    actions_affected = await count_actions_for_purge(
+        session, account_id=account_id, conversation_ids=conversation_ids
+    )
+    await purge_request_sources(
+        session,
+        account_id=account_id,
+        now=clock.now(),
+        locked=True,
+        conversation_ids=conversation_ids,
+        remove=True,
+    )
     payloads = await _clear_chat_payloads(session, account_id, chats)
     await _settle_dead_letters(session, account_id, conversation_ids, clock)
     # The owner's own raw control-chat updates may quote the chat (a forward,
@@ -715,6 +792,7 @@ async def _purge_chats(
         conversation_ids=conversation_ids,
         contact_ids=contact_ids,
         owner_turns_up_to=owner_turns_up_to,
+        now=clock.now(),
     )
     held = await _clear_held_args(
         session,
@@ -732,6 +810,7 @@ async def _purge_chats(
         contact_ids=contact_ids,
         scope="scoped",
         now=clock.now(),
+        actions_affected=actions_affected,
     )
     return DeletionReport(messages, names, payloads, turns, summaries, notes, held, **p2)
 
@@ -949,6 +1028,17 @@ async def delete_everything(
     if account is None:
         raise NotInAccountError("unknown account")
     await _lock_chats(session, account_id, true())
+    actions_affected = await count_actions_for_purge(
+        session, account_id=account_id, conversation_ids=None
+    )
+    await purge_request_sources(
+        session,
+        account_id=account_id,
+        now=clock.now(),
+        everything=True,
+        remove=True,
+        locked=True,
+    )
     payloads = _rows(
         await session.execute(
             update(InboundUpdate)
@@ -1003,6 +1093,7 @@ async def delete_everything(
         contact_ids=(),
         scope="everything",
         now=clock.now(),
+        actions_affected=actions_affected,
     )
     report = DeletionReport(messages, names, payloads, turns, summaries, notes, held, **p2)
     _audit(

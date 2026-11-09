@@ -42,6 +42,15 @@ CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
 #: Deliberately explicit — "everything else" would defeat the check.
 NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
     {
+        ("owner_requests", "operation"),
+        ("owner_requests", "state"),
+        ("owner_requests", "selection_basis"),
+        ("owner_requests", "missing_slot"),
+        ("owner_requests", "constraints"),
+        ("owner_requests", "reason"),
+        ("owner_request_sources", "field"),
+        ("owner_request_sources", "purpose"),
+        ("owner_request_sources", "field_sha256"),
         ("actions", "kind"),
         ("actions", "origin"),
         ("actions", "state"),

@@ -50,6 +50,7 @@ from assistant.accounts.models import (
 )
 from assistant.accounts.service import sweep_expired_cards
 from assistant.actions.models import Action
+from assistant.actions.requests import lock_requests
 from assistant.actions.states import TERMINAL, ActionState
 from assistant.automation.models import Automation, AutomationOccurrence
 from assistant.conversations.models import Contact, Conversation, Message
@@ -66,6 +67,11 @@ from assistant.memory.summaries import (
 )
 from assistant.observability.logging import get_logger
 from assistant.privacy import retention_policy
+from assistant.privacy.owner_requests import (
+    purge_request_sources,
+    sweep_requests,
+    unlink_request_actions,
+)
 from assistant.privacy.retention_policy import CONTROL_CHAT, MESSAGES, RAW_UPDATES
 
 logger = get_logger(__name__)
@@ -110,6 +116,7 @@ class SweepReport:
     occurrences: int = 0
     digests: int = 0
     notifications: int = 0
+    owner_requests: int = 0
 
     @property
     def total(self) -> int:
@@ -137,6 +144,7 @@ class SweepReport:
             + self.occurrences
             + self.digests
             + self.notifications
+            + self.owner_requests
         )
 
 
@@ -234,16 +242,26 @@ async def sweep_control_turns(
     now = clock.now()
     cleared = 0
     for period, account_ids in (await _groups(session_factory, CONTROL_CHAT)).items():
-        async with transaction(session_factory) as uow:
-            cleared += _count(
-                await uow.session.execute(
-                    update(ControlTurn)
-                    .where(ControlTurn.account_id.in_(account_ids))
-                    .where(ControlTurn.created_at < now - period)
-                    .where((ControlTurn.text.is_not(None)) | (ControlTurn.quoted_text.is_not(None)))
-                    .values(text=None, quoted_text=None)
+        for account_id in account_ids:
+            async with transaction(session_factory) as uow:
+                await lock_requests(uow.session, account_id=account_id)
+                due = (
+                    (ControlTurn.account_id == account_id)
+                    & (ControlTurn.created_at < now - period)
+                    & ((ControlTurn.text.is_not(None)) | (ControlTurn.quoted_text.is_not(None)))
                 )
-            )
+                await purge_request_sources(
+                    uow.session,
+                    account_id=account_id,
+                    now=now,
+                    locked=True,
+                    turn_ids=tuple(await uow.session.scalars(select(ControlTurn.id).where(due))),
+                )
+                cleared += _count(
+                    await uow.session.execute(
+                        update(ControlTurn).where(due).values(text=None, quoted_text=None)
+                    )
+                )
     return cleared
 
 
@@ -260,6 +278,10 @@ async def sweep_all(
     now = clock.now()
     inbound = await sweep_inbound_payloads(session_factory, clock)
     inbound_rows = await sweep_inbound_rows(session_factory, clock)
+    requests = 0
+    for account_id in await account_settings_from_factory(session_factory):
+        async with transaction(session_factory) as uow:
+            requests += await sweep_requests(uow.session, account_id=account_id, now=now)
     turns = await sweep_control_turns(session_factory, clock)
     confirmations = await sweep_tool_confirmations(session_factory, clock)
     accounting_cutoff = now - ACCOUNTING_RETENTION
@@ -337,6 +359,7 @@ async def sweep_all(
         inbound_rows,
         action_texts=action_texts,
         triage_verdicts=triage_verdicts,
+        owner_requests=requests,
         **p2_rows,
     )
 
@@ -380,6 +403,17 @@ async def sweep_p2_rows(
     for account_id in await account_settings_from_factory(session_factory):
         async with transaction(session_factory) as uow:
             session = uow.session
+            await lock_requests(session, account_id=account_id)
+            action_ids = tuple(
+                await session.scalars(
+                    select(Action.id).where(
+                        Action.account_id == account_id,
+                        Action.created_at < cutoff,
+                        Action.state.in_(TERMINAL | {ActionState.DELIVERY_UNCERTAIN}),
+                    )
+                )
+            )
+            await unlink_request_actions(session, account_id=account_id, action_ids=action_ids)
             statements = {
                 "actions": delete(Action).where(
                     Action.account_id == account_id,
@@ -564,6 +598,19 @@ async def _purge_messages(
             & (func.coalesce(Message.edited_at, Message.sent_at) < cutoff)
             & ((Message.text.is_not(None)) | (Message.media.is_not(None)))
         )
+        for account_id in sorted(account_ids):
+            await lock_requests(uow.session, account_id=account_id)
+            await purge_request_sources(
+                uow.session,
+                account_id=account_id,
+                now=now,
+                locked=True,
+                message_ids=tuple(
+                    await uow.session.scalars(
+                        select(Message.id).where(due, Message.account_id == account_id)
+                    )
+                ),
+            )
         # §9.4 lock order: the conversations first, then their messages —
         # as ingestion and deletion do — so the sweep cannot deadlock with
         # them on the same chat.
