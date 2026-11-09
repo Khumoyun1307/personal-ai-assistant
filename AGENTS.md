@@ -16,7 +16,7 @@ A **Telegram-native personal AI agent**: one Telegram bot that is both the owner
 | How it is built | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | In what order, with what tests and acceptance criteria | [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) |
 | Milestone reports, eval results | `docs/milestones/`, `docs/evals/` |
-| Phase plans for multi-engineer phases (work units, contracts, specs, handoffs, QA) | `docs/engineering/<phase>/` (P2: [docs/engineering/p2/](docs/engineering/p2/README.md); P3: [docs/engineering/p3/](docs/engineering/p3/README.md)) |
+| Phase plans for multi-engineer phases (work units, contracts, specs, handoffs, QA) | `docs/engineering/<phase>/` (P2: [docs/engineering/p2/](docs/engineering/p2/README.md); P3: [docs/engineering/p3/](docs/engineering/p3/README.md); stabilization: [docs/engineering/stabilization/](docs/engineering/stabilization/README.md)) |
 
 Precedence when documents disagree: **TELEGRAM_FEASIBILITY (verified facts) > PRD > AGENTS §6 safety invariants > ARCHITECTURE > IMPLEMENTATION_PLAN > code comments**. Follow the higher-ranked document and correct the lower one in the same change. Never resolve a conflict by editing the PRD, a §6 invariant or a TF fact; report it to the owner and wait. Only an owner-executed live test (date, client versions, synthetic payload summary) can mark an LV item or behaviour *Verified* in TF §12.
 
