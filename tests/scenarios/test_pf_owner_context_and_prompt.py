@@ -90,17 +90,20 @@ async def test_a_later_run_sees_the_live_card_without_its_text(s: Scenario) -> N
     assert f"chats {s.conversation_id}" in earlier.text
 
 
-async def test_the_block_shows_none_once_the_card_is_no_longer_live(s: Scenario) -> None:
+async def test_the_block_keeps_recent_terminal_card_facts(s: Scenario) -> None:
     row = await s.propose()
     async with s.env.factory() as session:
         action = await session.get(type(row), row.id)
         assert action is not None
         action.state = "rejected"
+        action.state_reason = "owner_rejected"
         await session.commit()
     await plain_turn(s)
     block = live_block(owner_requests(s)[-1])
-    assert block.text.endswith("none.")
-    assert f"action {row.id}" not in block.text
+    assert f"action {row.id}" in block.text
+    assert "rejected" in block.text
+    assert "You rejected this draft." in block.text
+    assert DRAFT not in block.text
 
 
 async def test_the_working_context_does_not_change_taint(s: Scenario) -> None:

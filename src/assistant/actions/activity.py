@@ -11,8 +11,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry
+from assistant.actions.card_facts import (
+    PresentationFact,
+    draft_mode,
+    presentation_facts,
+    state_reason_fact,
+)
 from assistant.actions.models import Action
-from assistant.actions.states import LIVE_CARD, ActionState
+from assistant.actions.states import LIVE_CARD, TERMINAL, ActionState
 from assistant.conversations.models import Contact, Conversation, Message
 
 _GROUP_STATES: dict[str, set[str]] = {
@@ -77,6 +83,16 @@ class ActivityEntry:
     excerpt: str | None
     authorization: Authorization | None
     deleted_in_chat_at: datetime | None
+    updated_at: datetime | None = None
+    mode: str | None = None
+    presentation_outcome: str | None = None
+    presentation_version: int | None = None
+    card_state: str | None = None
+    has_card_message: bool = False
+
+    @property
+    def state_reason_explanation(self) -> str | None:
+        return state_reason_fact(self.state_reason)[1]
 
 
 async def count_activity(
@@ -196,12 +212,16 @@ async def activity(
                         version=int(details["version"]),
                     )
 
+    presentations = await presentation_facts(
+        session, account_id=account_id, action_ids=[action.id for action, _, _, _ in rows]
+    )
     entries: list[ActivityEntry] = []
     for action, contact_id, display_name, username in rows:
         group = group_of(action.state)
         excerpt = action.text[:120] if action.text is not None else None
         auth = auth_by_action.get(action.id) if group in ("sent", "uncertain", "failed") else None
         del_at = deleted_at_by_action.get(action.id) if group == "sent" else None
+        presentation = presentations.get(action.id, PresentationFact())
 
         entries.append(
             ActivityEntry(
@@ -212,7 +232,7 @@ async def activity(
                 contact_username=username,
                 origin=action.origin,
                 state=action.state,
-                state_reason=action.state_reason,
+                state_reason=state_reason_fact(action.state_reason)[0],
                 group=group,
                 created_at=action.created_at,
                 decided_at=action.decided_at,
@@ -221,6 +241,12 @@ async def activity(
                 excerpt=excerpt,
                 authorization=auth,
                 deleted_in_chat_at=del_at,
+                updated_at=action.updated_at,
+                mode=draft_mode(action.draft_flags),
+                presentation_outcome=presentation.outcome,
+                presentation_version=presentation.version,
+                card_state=action.card_state,
+                has_card_message=action.card_message_id is not None,
             )
         )
 
@@ -229,9 +255,7 @@ async def activity(
 
 @dataclass(frozen=True, slots=True)
 class LiveCardFact:
-    """One live approval card as an owner run may see it (PF-15): ids,
-    version, state, origin, the draft mode and whether it answers a chosen
-    message — never its text, never a name (content-free)."""
+    """One live or recent terminal card, without text or contact names."""
 
     action_id: int
     conversation_id: int
@@ -242,17 +266,32 @@ class LiveCardFact:
     #: it is one of the fixed modes.
     mode: str | None
     answers_message: bool
+    state_reason: str | None = None
+    updated_at: datetime | None = None
+    created_at: datetime | None = None
+    presentation_outcome: str | None = None
+    presentation_version: int | None = None
+
+    @property
+    def state_reason_explanation(self) -> str | None:
+        return state_reason_fact(self.state_reason)[1]
 
 
-#: At most this many live cards are loaded for one owner run (newest first).
+#: Shared budget for live cards and recent terminal history in one owner run.
 LIVE_CARDS_LOADED = 50
 
 
 async def live_cards(
     session: AsyncSession, *, account_id: int, limit: int = LIVE_CARDS_LOADED
 ) -> list[LiveCardFact]:
-    """The account's live approval cards (awaiting approval or being
-    revised), newest first: at most one per chat (`ux_actions_live_card`)."""
+    """Live cards first, then the most recently updated terminal cards.
+
+    The shared budget is capped at 50; terminal history cannot hide live
+    cards. No draft text or contact names are read for this context.
+    """
+    limit = max(0, min(limit, LIVE_CARDS_LOADED))
+    if not limit:
+        return []
     rows = await session.execute(
         select(
             Action.id,
@@ -262,15 +301,30 @@ async def live_cards(
             Action.origin,
             Action.draft_flags["mode"].astext,
             Action.base_message_id,
+            Action.state_reason,
+            Action.updated_at,
+            Action.created_at,
         )
         .join(
             Conversation,
             (Conversation.id == Action.conversation_id) & (Conversation.account_id == account_id),
         )
         .where(Action.account_id == account_id)
-        .where(Action.state.in_([state.value for state in LIVE_CARD]))
-        .order_by(Action.id.desc())
+        .where(
+            Action.state.in_(
+                [state.value for state in LIVE_CARD | TERMINAL | {ActionState.DELIVERY_UNCERTAIN}]
+            )
+        )
+        .order_by(
+            Action.state.in_([state.value for state in LIVE_CARD]).desc(),
+            Action.updated_at.desc(),
+            Action.id.desc(),
+        )
         .limit(limit)
+    )
+    card_rows = rows.all()
+    presentations = await presentation_facts(
+        session, account_id=account_id, action_ids=[row[0] for row in card_rows]
     )
     return [
         LiveCardFact(
@@ -281,6 +335,22 @@ async def live_cards(
             origin=origin,
             mode=mode,
             answers_message=base_message_id is not None,
+            state_reason=state_reason_fact(state_reason)[0],
+            updated_at=updated_at,
+            created_at=created_at,
+            presentation_outcome=presentations.get(action_id, PresentationFact()).outcome,
+            presentation_version=presentations.get(action_id, PresentationFact()).version,
         )
-        for action_id, conversation_id, version, state, origin, mode, base_message_id in rows
+        for (
+            action_id,
+            conversation_id,
+            version,
+            state,
+            origin,
+            mode,
+            base_message_id,
+            state_reason,
+            updated_at,
+            created_at,
+        ) in card_rows
     ]
