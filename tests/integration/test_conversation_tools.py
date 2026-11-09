@@ -30,6 +30,7 @@ from assistant.agent.tools.registry import (
     default_registry,
 )
 from assistant.agent.tools.search import WIDENED_NOTE
+from assistant.conversations.models import Contact
 from assistant.inbox.connection_alerts import MANAGED_CONSENT_BUTTONS, MANAGED_CONSENT_QUESTION
 from assistant.llm.port import LLMRequest, Provenance, ToolResultItem
 from tests.fakes.channel import FakeChannel
@@ -343,6 +344,7 @@ async def test_another_accounts_ids_are_not_found(migrated_url: str) -> None:
                 from_id=7000000077,
                 chat_id=7000000077,
                 message_text="OTHER-SYNTH-secret",
+                first_name="Kamola Safo",
             ),
         )
         theirs = await one_id(
@@ -397,6 +399,13 @@ async def test_another_accounts_ids_are_not_found(migrated_url: str) -> None:
         assert [r["status"] for r in results(fake.requests[1])] == ["error"] * 4
         assert all(r["reason"] == "not found" for r in results(fake.requests[1]))
         assert "OTHER-SYNTH" not in request_texts(fake.requests[1])
+
+        resolved = await _resolve(env, "Kamola")
+        assert resolved["verdict"] == "unique_strong"
+        [candidate] = resolved["candidates"]
+        assert candidate["conversation_id"] == ours
+        assert candidate["contact_id"] != their_contact
+        assert "note" not in resolved
 
 
 @pytest.mark.parametrize("length", [1200, 1800])
@@ -907,15 +916,16 @@ async def test_resolve_contact_without_a_match_points_to_a_search_across_all_cha
     [found] = results(fake.requests[1])
     assert found["status"] == "ok"
     assert found["count"] == 0
+    assert found["verdict"] == "none"
     assert found["note"] == NO_CONTACT_NOTE
     assert "search_messages" in NO_CONTACT_NOTE
     assert "across all chats" in NO_CONTACT_NOTE
 
 
-async def _resolve(env: Env, name: str) -> dict[str, Any]:
+async def _resolve(env: Env, name: str, *, limit: int | None = None) -> dict[str, Any]:
     turn = await ask(env, "who is that")
     fake = FakeLLM(
-        tool_response(("c1", "resolve_contact", args(name=name, limit=None))),
+        tool_response(("c1", "resolve_contact", args(name=name, limit=limit))),
         text_response("Asking."),
     )
     await runtime(env, fake, FakeChannel()).run(turn)
@@ -948,6 +958,7 @@ async def test_pf03_a_short_form_comes_back_as_a_weak_candidate_to_confirm(env: 
     found = await _resolve(env, "Dilya")
 
     assert found["count"] == 1
+    assert found["verdict"] == "weak_only"
     [candidate] = found["candidates"]
     assert candidate["match"] == "short_form"
     assert candidate["confidence"] == "weak"
@@ -975,6 +986,81 @@ async def test_pf03_a_real_match_is_not_marked_weak(env: Env) -> None:
     [candidate] = found["candidates"]
     assert (candidate["match"], candidate["confidence"]) == ("exact", "match")
     assert "note" not in found
+
+
+async def test_unique_whole_token_match_excludes_unrelated_weak_guess(env: Env) -> None:
+    await seed(env)
+    await deliver(
+        env,
+        business_message(
+            from_id=OTHER_CONTACT,
+            chat_id=OTHER_CONTACT,
+            message_id=12,
+            message_text="Synthetic greeting",
+            first_name="Kamariddin Nur",
+            date=T_BASE,
+        ),
+    )
+    account_id = await one_id(
+        env, "SELECT id FROM app.accounts WHERE telegram_user_id = :t", t=OWNER
+    )
+    async with env.factory() as session, session.begin():
+        contact = (
+            await session.execute(
+                select(Contact).where(
+                    Contact.account_id == account_id,
+                    Contact.telegram_user_id == CONTACT,
+                )
+            )
+        ).scalar_one()
+        contact.display_name = "Ziyo Kamola"
+
+    found = await _resolve(env, "Kamola")
+
+    assert found["verdict"] == "unique_strong"
+    assert found["count"] == 1
+    [candidate] = found["candidates"]
+    assert "Ziyo Kamola" in candidate["name"]
+    assert candidate["confidence"] == "match"
+    assert "note" not in found
+    assert (await run_row(env)).tainted is True
+
+
+@pytest.mark.parametrize("limit", [None, 1])
+async def test_two_real_contacts_ask_even_when_pagination_hides_one(
+    env: Env, limit: int | None
+) -> None:
+    await seed(env)
+    await deliver(
+        env,
+        business_message(
+            from_id=OTHER_CONTACT,
+            chat_id=OTHER_CONTACT,
+            message_id=12,
+            message_text="Synthetic greeting",
+            first_name="Kamola Safo",
+            date=T_BASE,
+        ),
+    )
+
+    found = await _resolve(env, "Kamola", limit=limit)
+
+    assert found["verdict"] == "ambiguous_strong"
+    assert found["count"] == (1 if limit == 1 else 2)
+    assert "ask the owner" in found["note"]
+    assert all(candidate["confidence"] == "match" for candidate in found["candidates"])
+
+
+async def test_typo_only_is_a_weak_suggestion_to_confirm(env: Env) -> None:
+    await seed(env)
+
+    found = await _resolve(env, "Kamloa")
+
+    assert found["verdict"] == "weak_only"
+    [candidate] = found["candidates"]
+    assert candidate["match"] == "fuzzy"
+    assert candidate["confidence"] == "weak"
+    assert "Ask the owner" in found["note"]
 
 
 # ------------------------------------------------------------ B1 widening, B3 citations
