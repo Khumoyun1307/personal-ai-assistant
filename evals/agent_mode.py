@@ -136,6 +136,7 @@ ROUTE = "owner_request"
 PRODUCTION_FLAGS = frozenset(
     {
         "tool.get_status",
+        "tool.get_preferences",
         "tool.search_messages",
         "tool.resolve_contact",
         "tool.get_conversation",

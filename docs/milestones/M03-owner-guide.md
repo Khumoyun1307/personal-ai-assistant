@@ -35,8 +35,13 @@ says what to do and what you should see. Tell the agent the short phrase in
    added"**; it runs `just prod-env-push` and redeploys:
 
    ```text
-   FEATURE_FLAGS=tool.get_status,tool.search_messages,tool.resolve_contact,tool.get_conversation,tool.list_conversations,tool.summarize_period,tool.get_attention_list,summary.refresh,tool.remember,tool.forget,tool.list_memories,tool.set_conversation_mode,tool.update_preferences,tool.delete_conversation_data,tool.delete_contact_data,tool.delete_everything
+   FEATURE_FLAGS=tool.get_status,tool.get_preferences,tool.search_messages,tool.resolve_contact,tool.get_conversation,tool.list_conversations,tool.summarize_period,tool.get_attention_list,summary.refresh,tool.remember,tool.forget,tool.list_memories,tool.set_conversation_mode,tool.update_preferences,tool.delete_conversation_data,tool.delete_contact_data,tool.delete_everything,tool.set_contact_priority,tool.create_monitor,tool.list_monitors,tool.stop_monitor,tool.get_activity,tool.propose_reply,tool.propose_message,tool.pause_autonomy,tool.resume_autonomy,tool.revise_draft,tool.get_draft
    ```
+
+   The line includes later M04/M05 tools and stabilization Q1's
+   `tool.get_preferences`; enable that new flag only after the lead's checks
+   and the authorized rollout. It defaults off; this guide does not record
+   a completed deployment.
 
    *You see:* the agent reports the deploy healthy; `/status` answers as before.
 3. Send `/settings timezone Asia/Tashkent` (or your own zone), then

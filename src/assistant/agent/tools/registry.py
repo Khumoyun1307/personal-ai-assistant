@@ -401,6 +401,7 @@ def default_registry() -> ToolRegistry:
     from assistant.agent.tools.memory import FORGET, LIST_MEMORIES, REMEMBER
     from assistant.agent.tools.modes import SET_CONVERSATION_MODE, UPDATE_PREFERENCES
     from assistant.agent.tools.monitors import CREATE_MONITOR, LIST_MONITORS, STOP_MONITOR
+    from assistant.agent.tools.preferences import GET_PREFERENCES
     from assistant.agent.tools.priority import SET_CONTACT_PRIORITY
     from assistant.agent.tools.replies import PROPOSE_MESSAGE, PROPOSE_REPLY
     from assistant.agent.tools.search import SEARCH_MESSAGES
@@ -410,6 +411,7 @@ def default_registry() -> ToolRegistry:
     return ToolRegistry(
         [
             GET_STATUS,
+            GET_PREFERENCES,
             SEARCH_MESSAGES,
             RESOLVE_CONTACT,
             GET_CONVERSATION,
