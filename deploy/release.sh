@@ -56,7 +56,9 @@ release_select() {
   git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main
   [ "$(git rev-parse --verify "$sha^{commit}")" = "$sha" ] || release_error "commit not found"
   git merge-base --is-ancestor "$sha" origin/main || release_error "SHA is not on origin/main"
-  git diff --quiet && git diff --cached --quiet || release_error "tracked server files were modified"
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    release_error "tracked server files were modified"
+  fi
   git checkout --detach "$sha"
 }
 release_build() {
@@ -122,7 +124,9 @@ release_rollback() {
     [ "$revision" = "$sha" ] || release_error "previous release image missing or replaced; forward-fix required"
   done
   [ "$(release_heads "${previous[1]}")" = "${previous[3]}" ] || release_error "previous image heads changed; forward-fix required"
-  git diff --quiet && git diff --cached --quiet || release_error "tracked server files were modified"
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    release_error "tracked server files were modified"
+  fi
   printf '%s\n' "$sha" > deploy/release-in-progress
   compose stop app
   git checkout --detach "$sha"
