@@ -36,6 +36,17 @@ the sidecar, because an empty volume now causes an immediate backup.
 
 Rules:
 
+- Manage production settings only through `just prod-env-push <ip>` from
+  the operator's `var/prod.env` and existing cloud inputs. Optional non-secret
+  tuning keys are listed once in [settings-manifest.txt](../settings-manifest.txt):
+  all route model overrides, reasoning efforts, flags, budgets, debounce and
+  approval windows, log level, privacy URL and backup hour. Missing keys keep
+  defaults; explicit empty values survive (an empty effort sends no effort
+  parameter). Invalid values still fail the app's configuration check; the push
+  log prints names only. Secrets and generated/fixed settings use their existing
+  paths. When adding an app setting, update the manifest or its explicit
+  dev-only/secret/generated classification test. Restart/recreate the containers
+  after a settings push to apply it.
 - Deploy only what is on `main` with CI green (AGENTS §15). Never edit files
   on the server (the `.env` comes from `just prod-env-push`); never
   `git pull` a branch.
@@ -70,7 +81,14 @@ Rules:
   types, kinds, statuses and feedback codes only, never a content column.
 
 - **P2 verification and daily trial audit.** `just prod <ip> p2-verify release` reports the
-  schema, flag names and action counts. Other modes are `actions --since
+  schema, effective flag names, model and reasoning effort for every configured
+  route, and action counts. Run it in the approved post-deploy window to check
+  defaults and overrides after a settings push/restart. `effort=omitted` means
+  no configured effort parameter (including reserved routes without an effort
+  setting). This is an explicit non-secret projection, never an environment
+  dump; credentials, database URLs and heartbeat URLs are excluded. The verifier
+  uses a fresh one-off container with current Compose settings; it does not
+  prove that an already-running app was restarted. Other modes are `actions --since
   <ISO timestamp with timezone>`, `action <id>`, `script P2-4 --expect 401-409`,
   `notifications`, `tasks` and `digests` (the last two and notifications also
   accept `--since`). The one-off container mounts the verifier read-only;

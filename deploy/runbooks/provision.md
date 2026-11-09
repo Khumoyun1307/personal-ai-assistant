@@ -153,6 +153,24 @@ Any `ERROR:` line → stop and report it.
 `var/prod.env` or `var/cloud/b2.env`. `PRIVACY_POLICY_URL` defaults to the
 published policy page.
 
+Optional non-secret settings accepted from `var/prod.env` are reviewed in
+[settings-manifest.txt](../settings-manifest.txt), the single list used to read
+and render production tuning: route models, all configured efforts, flags,
+budget, timing windows, log level, privacy URL and backup hour. An omitted key
+keeps defaults; an explicit empty value is copied too (use an empty effort to
+omit that provider parameter). The push validates required inputs by name;
+the app validates tuning values at startup/healthcheck. Secrets, owner ids and
+generated/fixed stack values retain their existing handling. CI checks that
+every app setting is inventoried or explicitly classified as dev-only,
+secret/required, generated or fixed, and renders every manifest key using
+temporary synthetic inputs without SSH.
+
+After pushing, restart/recreate the services. In the planned owner-approved
+server window, `just prod <ip> p2-verify release` prints effective flag names
+and each route's model/effort using app defaults and overrides; no secrets are
+printed. Its fresh container reflects the current Compose settings, so also
+ensure the running app has been restarted after the push.
+
 **B6. First start.** Before this, confirm with the owner that nothing else
 polls Alviro (the laptop's `.env` holds the dev bot's token). Then
 `just deploy <ip>` → `compose ps`: `db` healthy, `migrate` exited 0, `app`

@@ -8,9 +8,8 @@
 #   var/prod.env           BOT_TOKEN, OPENAI_API_KEY, HEARTBEAT_URL (owner);
 #                          OWNER_TELEGRAM_IDS (written by `just dev-bot-switch`;
 #                          --owner-ids overrides it);
-#                          optional: PRIVACY_POLICY_URL, LLM_MONTHLY_BUDGET_USD,
-#                          FEATURE_FLAGS, LLM_DEFAULT_MODEL,
-#                          LLM_OWNER_REQUEST_EFFORT, LOG_LEVEL, BACKUP_HOUR_UTC
+#                          optional: deploy/settings-manifest.txt (non-secret
+#                          tuning; explicit empty values are preserved)
 #   var/cloud/b2.env       B2_BUCKET, B2_KEY_ID, B2_APP_KEY (B2_ENDPOINT is
 #                          accepted but unused: rclone's native b2 backend
 #                          discovers its API endpoint when it authorizes)
@@ -32,8 +31,18 @@ PROD_ENV="${PROD_ENV:-$WORK/var/prod.env}"
 B2_ENV="$CLOUD_DIR/b2.env"
 AGE_IDENTITY="$CLOUD_DIR/age-identity.txt"
 GENERATED_ENV="$CLOUD_DIR/prod-generated.env"
-OPTIONAL_KEYS=(PRIVACY_POLICY_URL LLM_MONTHLY_BUDGET_USD FEATURE_FLAGS LLM_DEFAULT_MODEL
-  LLM_OWNER_REQUEST_EFFORT LOG_LEVEL BACKUP_HOUR_UTC)
+# Resolve from the script, not WORK: tests use an isolated WORK for inputs.
+manifest="$(dirname "$0")/../settings-manifest.txt"
+[ -r "$manifest" ] || die "deploy/settings-manifest.txt is missing"
+OPTIONAL_KEYS=()
+while IFS= read -r key || [ -n "$key" ]; do
+  key="${key%$'\r'}"
+  [[ -z "$key" || "$key" == \#* ]] && continue
+  [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "invalid setting name in settings manifest"
+  [[ " ${OPTIONAL_KEYS[*]} " != *" $key "* ]] || die "duplicate setting name in settings manifest"
+  OPTIONAL_KEYS+=("$key")
+done < "$manifest"
+[ "${#OPTIONAL_KEYS[@]}" -gt 0 ] || die "settings manifest is empty"
 
 ip=""
 owner_ids=""
@@ -79,6 +88,18 @@ read_env() {
   ' "$file"
 }
 
+# Presence is separate from value: an explicit empty effort means no effort.
+has_env() {
+  awk -v k="$2" '
+    /^[[:space:]]*#/ { next }
+    {
+      sub(/^[[:space:]]*(export[[:space:]]+)?/, "")
+      if (index($0, k "=") == 1) found = 1
+    }
+    END { exit !found }
+  ' "$1"
+}
+
 [ -r "$PROD_ENV" ] || die "var/prod.env is missing (owner step A6 in runbooks/provision.md)"
 [ -r "$B2_ENV" ] || die "var/cloud/b2.env is missing (owner step A4)"
 # After A8 the identity is off the laptop: the recipient (a public key) is then
@@ -118,8 +139,9 @@ v[BACKUP_HOUR_UTC]=02
 # place for each version). var/prod.env may override it.
 v[PRIVACY_POLICY_URL]="https://telegra.ph/Personal-AI-assistant--privacy-policy-v1-10-19"
 for key in "${OPTIONAL_KEYS[@]}"; do
-  value="$(read_env "$PROD_ENV" "$key")"
-  if [ -n "$value" ]; then v[$key]="$value"; fi
+  if has_env "$PROD_ENV" "$key"; then
+    v[$key]="$(read_env "$PROD_ENV" "$key")"
+  fi
 done
 v[POSTGRES_USER]=assistant
 v[POSTGRES_DB]=assistant
@@ -169,10 +191,9 @@ if [ "${#problems[@]}" -gt 0 ]; then
   die "server .env not pushed"
 fi
 
-order=(APP_ENV LOG_LEVEL LOG_FORMAT DATABASE_URL BOT_TOKEN OWNER_TELEGRAM_IDS
-  OPENAI_API_KEY LLM_DEFAULT_MODEL LLM_MONTHLY_BUDGET_USD LLM_OWNER_REQUEST_EFFORT
-  FEATURE_FLAGS PRIVACY_POLICY_URL HEARTBEAT_URL BACKUP_STATUS_PATH DATA_DIR
-  AGE_RECIPIENT BACKUP_REMOTE BACKUP_HOUR_UTC RCLONE_CONFIG_OFFSITE_TYPE
+order=(APP_ENV LOG_FORMAT DATABASE_URL BOT_TOKEN OWNER_TELEGRAM_IDS
+  OPENAI_API_KEY "${OPTIONAL_KEYS[@]}" HEARTBEAT_URL BACKUP_STATUS_PATH DATA_DIR
+  AGE_RECIPIENT BACKUP_REMOTE RCLONE_CONFIG_OFFSITE_TYPE
   RCLONE_CONFIG_OFFSITE_ACCOUNT RCLONE_CONFIG_OFFSITE_KEY
   RCLONE_CONFIG_OFFSITE_HARD_DELETE POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB)
 render() {
