@@ -79,8 +79,10 @@ from tests.integration.p2_factories import (
 
 pytestmark = pytest.mark.integration
 
-#: 21:00 in Tashkent (UTC+5) on 2026-10-18: the default digest time.
+#: 21:00 in Tashkent (UTC+5) on 2026-10-18: the digest time these owners chose
+#: (the default is off since the owner decision of 2026-11-09).
 EVENING = datetime(2026, 10, 18, 16, 0, tzinfo=UTC)
+DIGEST_AT_21 = {"digest_time": "21:00"}
 CANARY = "SYNTH-CANARY message text that must never reach a digest"
 
 
@@ -92,6 +94,7 @@ class Chat:
 
 
 async def owner(env: Env, *, timezone: str = "Asia/Tashkent", **fields: Any) -> int:
+    fields.setdefault("settings", DIGEST_AT_21)
     async with env.factory() as session, session.begin():
         return (await seed_account(session, timezone=timezone, **fields)).id
 
@@ -191,7 +194,7 @@ async def notification(env: Env, notification_id: int) -> Notification:
 
 # ============================================================ the schedule
 async def test_the_digest_automation_follows_the_preference(db_session: AsyncSession) -> None:
-    account = await seed_account(db_session, timezone="Asia/Tashkent")
+    account = await seed_account(db_session, timezone="Asia/Tashkent", settings=DIGEST_AT_21)
     now = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)  # 14:00 in Tashkent
     # Without flag `digest.daily` nothing is created.
     assert (await reconcile_due(db_session, now)).digests == 0
@@ -254,7 +257,7 @@ async def _digest_automations(session: AsyncSession, account_id: int) -> list[Au
 async def test_turning_the_digest_off_pauses_it_and_on_resumes_it(
     db_session: AsyncSession,
 ) -> None:
-    account = await seed_account(db_session, timezone="Asia/Tashkent")
+    account = await seed_account(db_session, timezone="Asia/Tashkent", settings=DIGEST_AT_21)
     now = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
     await reconcile_due(db_session, now, digest_enabled=True)
     [digest] = await _digest_automations(db_session, account.id)
@@ -275,6 +278,31 @@ async def test_turning_the_digest_off_pauses_it_and_on_resumes_it(
     # Resumed from now: the evening of `later`, with no backlog of skips.
     assert digest.next_run_at == EVENING + timedelta(days=1)
     assert len(await _digest_automations(db_session, account.id)) == 1
+
+
+async def test_with_no_chosen_time_the_digest_is_off_and_a_running_one_pauses(
+    db_session: AsyncSession,
+) -> None:
+    """Owner decision 2026-11-09: the digest is off until the owner picks a
+    time. An account that never chose one gets no digest automation, and one
+    created under the old 21:00 default is paused at the next reconcile."""
+    account = await seed_account(db_session, timezone="Asia/Tashkent")
+    now = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
+    assert (await reconcile_due(db_session, now, digest_enabled=True)).digests == 0
+    assert await _digest_automations(db_session, account.id) == []
+
+    # As on a deployment from before the change: the old default made one.
+    account.settings = DIGEST_AT_21
+    await db_session.flush()
+    await reconcile_due(db_session, now, digest_enabled=True)
+    [digest] = await _digest_automations(db_session, account.id)
+    assert digest.status == "active"
+    account.settings = {}
+    await db_session.flush()
+    report = await reconcile_due(db_session, EVENING, digest_enabled=True)
+    await db_session.refresh(digest)
+    assert digest.status == "paused"
+    assert report.claimed == ()
 
 
 # ============================================================ content

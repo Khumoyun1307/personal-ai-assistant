@@ -708,7 +708,7 @@ Voice and audio understanding; document processing; advanced semantic search; ri
 | Q-04 | Default AI-disclosure wording and languages. | Short neutral line, owner-editable, in the reply language. | M06 |
 | Q-05 | Takeover cooldown (R-09). | Until owner re-enables or delegation ends. | M06 |
 | Q-06 | Default mode for new conversations (R-03). | Observe. | M03 |
-| Q-07 | Digest time and quiet hours defaults. | Digest 21:00 local; quiet hours 23:00–08:00 with urgent bypass off by default. | M05 |
+| Q-07 | Digest time and quiet hours defaults. | Digest off until the owner picks a time (owner decision 2026-11-09; was 21:00 local); quiet hours 23:00–08:00 with urgent bypass off by default. | M05 |
 | Q-08 | Should the owner be able to enable mark-as-read? | Allowed as an opt-in setting, logged. | M08 |
 | Q-09 | Confirmation for owner-dictated sends (R-05). | **Resolved:** always confirmed in Personal v1; revisit an opt-out after the Personal v1 trial. | — |
 | Q-10 | Which managed chats to include in Chat Automation for the first weeks. | Start with a small set of trusted contacts and the test account; expand after R1. | M02 |

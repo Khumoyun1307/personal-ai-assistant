@@ -26,6 +26,10 @@ PREFS: dict[str, Any] = {
     "message_retention_days": None,
     "control_chat_retention_days": None,
     "raw_update_retention_days": None,
+    "digest_time": None,
+    "quiet_hours": None,
+    "urgent_bypass": None,
+    "alert_cap_per_hour": None,
 }
 
 

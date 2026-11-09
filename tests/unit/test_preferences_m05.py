@@ -20,7 +20,8 @@ def test_quiet_hours_parse_and_default() -> None:
 
 
 def test_digest_time_off_and_default() -> None:
-    assert preferences.current(account())["digest_time"] == "21:00"
+    # Off until the owner picks a time (owner decision 2026-11-09).
+    assert preferences.current(account())["digest_time"] == "off"
     assert preferences.check_digest_time("off") == "off"
     assert preferences.check_digest_time("09:15") == "09:15"
     for value in ("24:00", "00:60", "9:00", "bad"):
@@ -41,6 +42,6 @@ def test_an_invalid_stored_value_reads_as_the_default() -> None:
         account(quiet_hours="bad", digest_time=3, alert_cap_per_hour=True, urgent_bypass="yes")
     )
     assert current["quiet_hours"] == "23:00-08:00"
-    assert current["digest_time"] == "21:00"
+    assert current["digest_time"] == "off"
     assert current["alert_cap_per_hour"] == 6
     assert current["urgent_bypass"] is False
