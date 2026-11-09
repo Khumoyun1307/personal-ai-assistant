@@ -91,6 +91,8 @@ class SearchHit:
     score: float
     #: Matched on words (`search_tsv @@ tsquery`), not only by trigrams.
     word_match: bool = False
+    #: The variant whose score won for this hit; ties keep query input order.
+    matched_query: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +204,7 @@ async def _run(
             text=row[5],
             score=float(row[6]),
             word_match=bool(row[7]),
+            matched_query=key,
         )
         for row in rows
     ]

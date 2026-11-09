@@ -180,6 +180,14 @@ class GetConversationArgs(BaseModel):
 
     conversation_id: OptionalId = Field(description="The conversation, or null to use contact_id.")
     contact_id: OptionalId = Field(description="The contact whose chat to read, or null.")
+    message_id: OptionalId = Field(
+        default_factory=lambda: None,
+        description=(
+            "Read only this retained message id from the selected chat, or null for a page. "
+            "Text is capped at 1500 characters; text_truncated says whether more remains. "
+            "Use a null cursor and limit when selecting one message."
+        ),
+    )
     cursor: Annotated[str | None, AfterValidator(_cursor)] = Field(
         description="For older messages: next_cursor from the previous page, or null."
     )
@@ -191,6 +199,8 @@ class GetConversationArgs(BaseModel):
     def _exactly_one_target(self) -> Self:
         if (self.conversation_id is None) == (self.contact_id is None):
             raise ArgumentRuleError(ONE_TARGET_RULE)
+        if self.message_id is not None and (self.cursor is not None or self.limit is not None):
+            raise ArgumentRuleError("message_id cannot be combined with cursor or limit")
         return self
 
 
@@ -215,6 +225,7 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
             conversation_id,
             before=decode_cursor(args.cursor),
             limit=args.limit or 30,
+            message_id=args.message_id,
         )
         stored = await summaries.rolling_summary(session, ctx.account_id, conversation_id)
         authors = (
@@ -272,6 +283,7 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
                     "type": m.content_type,
                     "media": m.media_kind,
                     "text": message_text(m.text, m.direction, limit=MESSAGE_LIMIT),
+                    "text_truncated": m.text is not None and len(m.text) > MESSAGE_LIMIT,
                 }
                 for m in page.messages
             ],
@@ -315,7 +327,9 @@ GET_CONVERSATION = ToolDefinition(
         "Read the stored messages of one chat with another person, newest page first "
         "(each page oldest to newest), by conversation_id or contact_id, with the chat's "
         "running summary when there is one. Use next_cursor as cursor for older "
-        "messages. Includes what the record cannot contain (coverage start, "
+        "messages, or set message_id to read just that retained message in this chat "
+        "(text capped at 1500 characters, text_truncated is explicit). "
+        "Includes what the record cannot contain (coverage start, "
         "deleted/expired messages, gaps)."
     ),
     args_model=GetConversationArgs,
