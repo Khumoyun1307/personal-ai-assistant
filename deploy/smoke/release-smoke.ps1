@@ -65,6 +65,9 @@ exit $LASTEXITCODE
         Set-Content -LiteralPath $env:RELEASE_SMOKE_CALLS -Value ''
         $output = & pwsh -NoLogo -NoProfile -File $harness -Target $target -Scenario $Scenario -Release $Release -Flags $Flags 2>&1
         $code = $LASTEXITCODE
+        # Keep the child's result for assertions without leaking expected
+        # failures into the CI PowerShell wrapper's final exit status.
+        $global:LASTEXITCODE = 0
         $calls = Get-Content -LiteralPath $env:RELEASE_SMOKE_CALLS
         $dockerCalls = @($calls | Where-Object { $_ -like 'docker *' })
         if (($code -eq 0) -ne $Success) { throw "Unexpected result for ${Scenario}: $output" }
@@ -100,3 +103,4 @@ exit $LASTEXITCODE
     $env:RELEASE_SMOKE_CALLS = $oldCalls
     Remove-Item -LiteralPath $scratch -Recurse -Force
 }
+exit 0
