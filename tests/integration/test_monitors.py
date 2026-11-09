@@ -39,7 +39,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select, text
 
-from assistant.accounts.models import AuditLogEntry, PendingInput
+from assistant.accounts.models import Account, AuditLogEntry, PendingInput
 from assistant.agent import prompt_registry
 from assistant.agent.models import AgentRun
 from assistant.agent.monitor_eval import (
@@ -455,9 +455,47 @@ async def test_notify_me_when_daniel_replies_fires_exactly_once(env: Env) -> Non
     assert len(await alerts(env)) == 1
 
 
+async def test_one_shot_monitor_delivers_after_quiet_hours_with_digest_off(env: Env) -> None:
+    """R3-02 / D-S8: completing the monitor must not strand its held alert."""
+    await setup(env)
+    owner = await account_id(env)
+    async with env.factory() as session, session.begin():
+        account = await session.get(Account, owner)
+        assert account is not None
+        account.settings = {"digest_time": "off"}
+    env.clock.set(datetime(2026, 10, 18, 23, 30, tzinfo=UTC))
+    kamola = await contact_id(env)
+    watched = await monitor(env, "contact_replied", contact_ids=[kamola], contact=kamola)
+    env.clock.advance(minutes=1)
+    await say(env, 2, "SYNTH-A reply during quiet hours")
+    [alert] = await alerts(env)
+    completed = await automation(env, watched)
+    assert completed is not None
+    assert completed.status == "completed"
+    assert alert.refs["automation_ids"] == [watched]
+    original_refs = dict(alert.refs)
+    channel = FakeChannel()
+    service = delivery(env, channel)
+    assert (await service.deliver(alert.id)).status == "deferred"
+    [held] = await alerts(env)
+    quiet_end = datetime(2026, 10, 19, 8, tzinfo=UTC)
+    assert (held.status, held.deliver_after) == ("queued", quiet_end)
+    assert channel.sends == []
+    assert (await service.deliver(alert.id)).status == "not_due"
+    env.clock.set(quiet_end)
+    assert (await service.deliver(alert.id)).status == "sent"
+    assert (await service.deliver(alert.id)).status == "not_queued"
+    [sent] = await alerts(env)
+    assert sent.refs == original_refs
+    assert len(channel.sends) == 1
+    assert "<b>Monitor:</b>" in channel.sends[0]
+    assert "Kamola" in channel.sends[0]
+    assert "SYNTH-A reply during quiet hours" not in channel.sends[0]
+
+
 async def test_a_bypass_monitor_alerts_during_quiet_hours(env: Env) -> None:
     """A monitor that asked to reach the owner in quiet hours does (R9); one
-    that did not waits for the digest. 23:30 UTC is inside the default
+    that did not waits for quiet hours to end. 23:30 UTC is inside the default
     quiet hours (23:00-08:00, the owner's timezone is UTC)."""
     await setup(env)
     env.clock.set(datetime(2026, 10, 18, 23, 30, tzinfo=UTC))
@@ -474,7 +512,7 @@ async def test_a_bypass_monitor_alerts_during_quiet_hours(env: Env) -> None:
     service = delivery(env, channel)
     sent = await service.deliver(by_monitor[loud].id)
     held = await service.deliver(by_monitor[quiet].id)
-    assert (sent.status, held.status, held.reason) == ("sent", "batched", "quiet_hours")
+    assert (sent.status, held.status, held.reason) == ("sent", "deferred", "quiet_hours")
     [text_sent] = channel.sends
     assert "Monitor:" in text_sent
     assert "Kamola" in text_sent

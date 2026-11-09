@@ -21,6 +21,28 @@ from assistant.jobs.reconcile import DeferRequest, Reconciler
 NOTIFICATION_GRACE = timedelta(seconds=30)
 NOTIFICATION_BATCH = 500
 
+# D-S8: these rows were policy holds, never sent or claimed. Restore the
+# existing queued/deferred path for undigested alerts written before the fix.
+_RECOVER_BATCHED_HOLDS = text(
+    """
+    WITH held AS (
+        SELECT n.id, n.account_id
+        FROM app.notifications AS n
+        WHERE n.status = 'batched'
+          AND n.digest_id IS NULL
+          AND n.alert_class = 'standard'
+          AND n.reason_code IN ('quiet_hours', 'cap')
+        ORDER BY n.created_at, n.id
+        LIMIT :limit
+        FOR UPDATE SKIP LOCKED
+    )
+    UPDATE app.notifications AS n
+    SET status = 'queued', deliver_after = NULL
+    FROM held
+    WHERE n.id = held.id AND n.account_id = held.account_id
+    """
+)
+
 _UNQUEUED_NOTIFICATIONS = text(
     """
     SELECT n.id
@@ -48,6 +70,8 @@ def notification_reconciler(*, enabled: bool) -> Reconciler:
     meant to wait, so only system rows are recovered — no churn."""
 
     async def reconcile(session: AsyncSession, now: datetime) -> list[DeferRequest]:
+        if enabled:
+            await session.execute(_RECOVER_BATCHED_HOLDS, {"limit": NOTIFICATION_BATCH})
         result = await session.execute(
             _UNQUEUED_NOTIFICATIONS,
             {

@@ -43,9 +43,10 @@ from assistant.automation.models import Automation
 from assistant.automation.schedules import ensure_digest_schedule, reconcile_due
 from assistant.conversations.models import CoverageGap, Message
 from assistant.core.jobs import DIGEST_TASK
-from assistant.inbox.digest import DIGEST_CARD, DigestDelivery, DigestResult
+from assistant.inbox.digest import DIGEST_CARD, DigestDelivery, DigestResult, build_digest
 from assistant.inbox.models import Digest, Notification
 from assistant.privacy.deletion import delete_conversation_data, delete_everything
+from assistant.privacy.retention import sweep_all
 from assistant.telegram.control.agent_channel import GatewayControlChannel
 from assistant.telegram.control.digest import (
     handle_digest_command,
@@ -782,6 +783,71 @@ async def test_slash_digest_sends_one_digest_now(routed: Env) -> None:
         datetime(2026, 10, 17, 12, 30, tzinfo=UTC),
         datetime(2026, 10, 18, 12, 30, tzinfo=UTC),
     )
+
+
+async def test_slash_digest_with_digest_off_includes_old_normal_batches(routed: Env) -> None:
+    """R3-02: disabling daily delivery must not hide the ordinary backlog."""
+    await connect(routed)
+    async with routed.factory() as session, session.begin():
+        account = await session.scalar(select(Account).where(Account.telegram_user_id == OWNER))
+        assert account is not None
+        account_id = account.id
+        account.settings = {"digest_time": "off"}
+    where = await chat(routed, account_id, "Synthetic backlog contact")
+    async with routed.factory() as session, session.begin():
+        alert = await seed_notification(
+            session,
+            account_id=account_id,
+            conversation_id=where.conversation_id,
+            contact_id=where.contact_id,
+            kind="triage_needs_reply",
+            priority="normal",
+            status="batched",
+            reason_code="quiet_by_default",
+            created_at=EVENING - timedelta(days=3),
+            updated_at=EVENING - timedelta(days=3),
+        )
+        alert_id = alert.id
+    routed.clock.set(EVENING + timedelta(seconds=20))
+    assert (await sweep_all(routed.factory, routed.clock)).notifications == 0
+    await deliver(routed, private_message(OWNER, "/digest"))
+    assert await digest_jobs(routed) == [(account_id, int(EVENING.timestamp()))]
+    channel = FakeChannel()
+    assert (await deliverer(routed, channel).build(account_id, EVENING)).status == "sent"
+    assert len(channel.sends) == 1
+    assert "1 chat(s) waiting for a reply" in channel.sends[0]
+    assert "SYNTH-CANARY" not in channel.sends[0]
+    [digest] = await digests(routed, account_id)
+    assert (await notification(routed, alert_id)).digest_id == digest.id
+    # A later on-demand digest does not repeat an already carried alert.
+    async with routed.factory() as session:
+        content = await build_digest(
+            session,
+            account_id=account_id,
+            period_start=EVENING,
+            period_end=EVENING + timedelta(minutes=1),
+        )
+    assert content.other_alerts == ()
+    # Digest claims do not extend the normal 30-day retention period.
+    assert (await sweep_all(routed.factory, routed.clock)).notifications == 0
+    routed.clock.advance(days=28)
+    assert (await sweep_all(routed.factory, routed.clock)).notifications == 1
+
+
+async def test_undigested_backlog_ages_out_after_thirty_days(env: Env) -> None:
+    account_id = await owner(env, settings={"digest_time": "off"})
+    where = await chat(env, account_id, "Synthetic backlog contact")
+    await batched(env, where, "triage_needs_reply", created=EVENING - timedelta(days=45))
+    assert (await sweep_all(env.factory, env.clock)).notifications == 1
+    async with env.factory() as session:
+        content = await build_digest(
+            session,
+            account_id=account_id,
+            period_start=EVENING - timedelta(days=1),
+            period_end=EVENING,
+        )
+    assert content.covered_notification_ids == frozenset()
+    assert content.other_alerts == ()
 
 
 async def test_slash_digest_asks_an_unfinished_owner_to_start(routed: Env) -> None:

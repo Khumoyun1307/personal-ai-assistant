@@ -52,6 +52,10 @@ class NotificationFacts:
     contact_priority: str | None
     #: A monitor spec that asked to reach the owner in quiet hours (R9).
     bypass_quiet_hours: bool
+    #: A prior policy hold or definite-failure retry proves this alert already
+    #: qualified for direct delivery. A rolling priority boost may expire
+    #: while it waits; current muting, quiet hours and the cap still apply.
+    previously_important: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +77,9 @@ class RecentLoad:
     immediate_last_hour: int
     #: Earlier suspicious alerts about this contact in the last 24 h.
     suspicious_from_contact_24h: int
+    #: Next instant a counted send/claim leaves the hourly window. Delivery
+    #: re-checks the cap then: settings or other claims may have changed.
+    cap_retry_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,18 +114,17 @@ def decide_delivery(
     priority = effective_priority(facts, load)
     if priority != Priority.URGENT and _is_muted(facts, settings.muted):
         return _decision(Verdict.BATCH, "feedback")
-    if priority in (Priority.LOW, Priority.NORMAL):
+    if priority in (Priority.LOW, Priority.NORMAL) and not facts.previously_important:
         return _decision(Verdict.BATCH, "quiet_by_default")
 
     quiet_until = _quiet_period_end(settings, now)
     if quiet_until is not None and not _bypasses_quiet_hours(facts, settings, priority):
-        if priority == Priority.HIGH:
-            return _decision(Verdict.BATCH, "quiet_hours")
-        # Held, never dropped: the owner sees it when the quiet hours end.
+        # D-S8: important alerts reach the owner even with the digest off.
         return DeliveryDecision(Verdict.DEFER, quiet_until, "quiet_hours")
 
     if load.immediate_last_hour >= settings.cap_per_hour:
-        return _decision(Verdict.BATCH, "cap")
+        retry_at = load.cap_retry_at or now + timedelta(minutes=1)
+        return DeliveryDecision(Verdict.DEFER, retry_at, "cap")
     return _decision(Verdict.IMMEDIATE, "immediate")
 
 

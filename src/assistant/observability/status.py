@@ -144,7 +144,7 @@ class StatusReport:
         """The `/status` line for alerts (S05.2 §3.8)."""
         n = self.notifications
         return (
-            f"Alerts: {n.queued} queued, {n.deferred} held for quiet hours, "
+            f"Alerts: {n.queued} queued, {n.deferred} held for quiet hours or cap, "
             f"{n.batched} waiting for the digest, {n.uncertain_24h} uncertain (24 h)"
         )
 
