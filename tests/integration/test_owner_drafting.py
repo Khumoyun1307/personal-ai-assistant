@@ -27,6 +27,7 @@ from assistant.agent.drafting import DraftStatus
 from assistant.agent.models import AgentRun
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime
 from assistant.agent.tools.registry import default_registry
+from assistant.agent.tools.replies import REQUEST_DIGEST
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.errors import NotInAccountError
 from assistant.core.jobs import DraftReason
@@ -435,11 +436,9 @@ async def test_a_dictated_message_can_answer_a_named_earlier_message(denv: Draft
     assert result["status"] == "awaiting_approval"
     assert result["answers_message_id"] == earlier
     [card] = await actions_of(denv.env, conversation)
-    assert (card.origin, card.base_message_id, card.draft_flags) == (
-        "owner_dictated",
-        earlier,
-        None,
-    )
+    assert (card.origin, card.base_message_id) == ("owner_dictated", earlier)
+    assert card.draft_flags is not None
+    assert set(card.draft_flags) == {REQUEST_DIGEST}
     assert await _card_excerpts(denv, account_id, card.id) == ("SYNTH-EARLIER-ASK",)
     assert denv.fake.requests == []  # no model run
     [line] = [entry for entry in logs if entry.get("tool") == "propose_message" and "code" in entry]
@@ -723,11 +722,12 @@ async def test_text_in_the_owners_own_words_is_dictated(denv: DraftEnv) -> None:
     assert result["status"] == "awaiting_approval"
     assert result["written_by"] == "owner"
     [card] = await actions_of(denv.env, conversation)
-    assert (card.origin, card.text, card.draft_flags) == (
+    assert (card.origin, card.text) == (
         "owner_dictated",
         "Ertaga soat 5 da ko'rishamiz.",
-        None,
     )
+    assert card.draft_flags is not None
+    assert set(card.draft_flags) == {REQUEST_DIGEST}
     [line] = [entry for entry in logs if entry.get("tool") == "propose_message" and "code" in entry]
     assert line["provenance"] == "owner"
 
@@ -754,10 +754,12 @@ async def test_a_suggestion_the_assistant_made_is_the_assistants_proposal(denv: 
     [card] = await actions_of(denv.env, conversation)
     assert card.origin == "agent_proposal"  # never "Message you dictated"
     assert card.base_message_id is None
+    assert card.draft_flags is not None
     assert card.draft_flags == {
         "source": "assistant_suggestion",
         "ai_generated": True,
         "target": "none",
+        REQUEST_DIGEST: card.draft_flags[REQUEST_DIGEST],
     }
     assert card.trigger_turn_id == turn_id
     assert denv.fake.requests == []  # no model run
