@@ -11,7 +11,8 @@
 # volume; it decrypts and pg_restores into a scratch database with the same
 # tables; a failing pg_dump records nothing; off-site sync mirrors rotation
 # (deletes included), honours the --max-delete guard, and an upload failure
-# leaves no upload marker. Everything is removed afterwards (down -v).
+# leaves no upload marker; missed schedules catch up once and pending uploads
+# survive fresh processes. Everything is removed afterwards (down -v).
 # Nothing here is real data; the only "secrets" are generated placeholders.
 set -euo pipefail
 
@@ -20,7 +21,7 @@ export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 # Shell variables win over --env-file in Compose interpolation; the smoke
 # stack must see only its own placeholder file (CI sets some of these).
 unset POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATABASE_URL DATA_DIR \
-  AGE_RECIPIENT BACKUP_REMOTE BACKUP_HOUR_UTC
+  AGE_RECIPIENT BACKUP_REMOTE BACKUP_HOUR_UTC BACKUP_TEST_NOW
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
@@ -204,5 +205,60 @@ dc run --rm -T --no-deps -e BACKUP_REMOTE=nosuchremote:bucket backup once > /dev
 [ "$rc" -eq 3 ] || fail "upload failure exited $rc, expected 3"
 bk '! test -e /backups/last_upload_success' || fail "upload marker written despite the failure"
 ok "exit 3, dump recorded, no upload marker"
+
+step "missed schedule catches up once across restarts"
+# Stop each real loop at its first sleep, without waiting or changing the
+# production loop. Each bk call starts a fresh process on the same volume.
+loop_once='sleep() { exit 0; }; export -f sleep; backup.sh loop'
+schedule_env='export BACKUP_DIR=/backups/schedule-smoke BACKUP_HOUR_UTC=02 BACKUP_REMOTE='
+bk "$schedule_env; mkdir -p \"\$BACKUP_DIR\"; printf '%s\n' 2026-11-08T06:00:00Z > \"\$BACKUP_DIR/last_success\""
+# Still less than 24 hours old: today's missed schedule must also trigger.
+out="$(bk "$schedule_env; export BACKUP_TEST_NOW=2026-11-09T04:00:00Z; $loop_once")"
+[[ "$out" == *"wrote 20261109T040000Z.dump.age"* ]] || fail "missed schedule did not catch up"
+out="$(bk "$schedule_env; export BACKUP_TEST_NOW=2026-11-09T04:05:00Z; $loop_once")"
+[[ "$out" != *"wrote "* ]] || fail "restart repeated a completed catch-up dump"
+# shellcheck disable=SC2016  # expanded by the container's shell
+bk 'test "$(ls -1 /backups/schedule-smoke/daily | wc -l)" -eq 1' || fail "catch-up made duplicate dumps"
+ok "missed hour catches up once, including after restart"
+
+step "24-hour age and empty volume catch up before the scheduled hour"
+out="$(bk "$schedule_env; export BACKUP_HOUR_UTC=06 BACKUP_TEST_NOW=2026-11-10T04:00:00Z; $loop_once")"
+[[ "$out" == *"wrote 20261110T040000Z.dump.age"* ]] || fail "24-hour-old dump did not catch up before scheduled hour"
+out="$(bk "mkdir -p /backups/empty-smoke; export BACKUP_DIR=/backups/empty-smoke BACKUP_REMOTE= BACKUP_HOUR_UTC=02 BACKUP_TEST_NOW=2026-11-09T01:00:00Z; $loop_once")"
+[[ "$out" == *"wrote 20261109T010000Z.dump.age"* ]] || fail "empty volume did not back up at startup"
+ok "stale and missing success markers trigger an immediate dump"
+
+step "pending upload and hourly retry survive restarts"
+retry_env='export BACKUP_DIR=/backups/retry-smoke BACKUP_HOUR_UTC=02'
+rc=0
+bk "$retry_env; mkdir -p \"\$BACKUP_DIR\"; export BACKUP_TEST_NOW=2026-11-09T06:00:00Z BACKUP_REMOTE=nosuchremote:bucket; backup.sh once" > /dev/null 2>&1 || rc=$?
+[ "$rc" -eq 3 ] || fail "restart fixture upload failure exited $rc, expected 3"
+out="$(bk "$retry_env; export BACKUP_TEST_NOW=2026-11-09T06:30:00Z BACKUP_REMOTE=smoke:/backups/retry-remote RCLONE_CONFIG_SMOKE_TYPE=local; $loop_once")"
+[[ "$out" != *"wrote "* && "$out" != *"off-site sync complete"* ]] || fail "restart retried before the hour or repeated the dump"
+# Another failing attempt, in a fresh process, must persist its retry time.
+bk "$retry_env; export BACKUP_TEST_NOW=2026-11-09T07:00:00Z BACKUP_REMOTE=nosuchremote:bucket; $loop_once" > /dev/null 2>&1
+# shellcheck disable=SC2016  # expanded by the container's shell
+bk 'test "$(cat /backups/retry-smoke/last_upload_attempt)" = 2026-11-09T07:00:00Z && ! test -e /backups/retry-smoke/last_upload_success' \
+  || fail "hourly failed retry was forgotten"
+out="$(bk "$retry_env; export BACKUP_TEST_NOW=2026-11-09T08:00:00Z BACKUP_REMOTE=smoke:/backups/retry-remote RCLONE_CONFIG_SMOKE_TYPE=local; $loop_once")"
+[[ "$out" == *"off-site sync complete"* && "$out" != *"wrote "* ]] || fail "fresh process did not retry just the pending upload"
+# shellcheck disable=SC2016  # expanded by the container's shell
+bk 'test "$(cat /backups/retry-smoke/last_success)" = 2026-11-09T06:00:00Z &&
+    test "$(cat /backups/retry-smoke/last_upload_success)" = 2026-11-09T08:00:00Z &&
+    test -s /backups/retry-remote/daily/20261109T060000Z.dump.age' \
+  || fail "restart lost the dump or upload success"
+out="$(bk "$retry_env; export BACKUP_TEST_NOW=2026-11-09T09:00:00Z BACKUP_REMOTE=smoke:/backups/retry-remote RCLONE_CONFIG_SMOKE_TYPE=local; $loop_once")"
+[[ "$out" != *"off-site sync complete"* && "$out" != *"wrote "* ]] || fail "completed upload retried again"
+ok "failed uploads retry hourly across restarts without repeating the dump"
+
+step "newest completed dump triggers upload even if its success marker was not written"
+bk 'mkdir -p /backups/newest-smoke/daily
+    cp /backups/retry-smoke/daily/20261109T060000Z.dump.age /backups/newest-smoke/daily/20261109T083000Z.dump.age
+    printf "%s\n" 2026-11-09T08:00:00Z > /backups/newest-smoke/last_success
+    printf "%s\n" 2026-11-09T08:15:00Z > /backups/newest-smoke/last_upload_success'
+out="$(bk "export BACKUP_DIR=/backups/newest-smoke BACKUP_HOUR_UTC=02 BACKUP_TEST_NOW=2026-11-09T09:00:00Z BACKUP_REMOTE=smoke:/backups/newest-remote RCLONE_CONFIG_SMOKE_TYPE=local; $loop_once")"
+[[ "$out" == *"off-site sync complete"* && "$out" != *"wrote "* ]] || fail "newest completed dump was ignored"
+bk 'test -s /backups/newest-remote/daily/20261109T083000Z.dump.age' || fail "newest dump not uploaded"
+ok "completed files recover an upload without an attempt marker (including upgrades)"
 
 printf '\nSMOKE OK\n'

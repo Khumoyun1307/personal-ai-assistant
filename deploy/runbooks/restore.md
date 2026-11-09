@@ -89,8 +89,10 @@ live acceptance requirement.
 
 ## C. Rebuilding a lost host
 
-Provision a fresh host (`provision.md` B2–B5), then, **before the first
-backup runs** (it is daily at `BACKUP_HOUR_UTC`):
+Provision a fresh host (`provision.md` B2–B5), then, **before starting the
+backup sidecar**: an empty backups volume triggers an immediate dump and
+off-site sync. Missed daily schedules also catch up at startup rather than
+waiting for the next `BACKUP_HOUR_UTC`.
 
 0. If the old `alviro-data` block volume survived, attach it instead of a
    new one: `prepare` never formats a device with any signature, keeps its
@@ -101,14 +103,28 @@ backup runs** (it is daily at `BACKUP_HOUR_UTC`):
    sentinel (`just prod-status <ip>` → `sentinel present`; ARCHITECTURE
    §15.4 mount guard).
 
-1. On the server: `dc build && dc up -d db backup` — **not** the app: an app
+1. On the server: `dc build && dc up -d db` — keep the backup sidecar and
+   app stopped while recovering. An app
    polling into the empty database would consume the updates Telegram has
    queued (up to 24 h), which the restore would then overwrite.
 2. Fetch the off-site history into the new, empty backups volume, so the
    first sync mirrors the full set instead of deleting it:
-   `dc exec backup bash -c 'rclone copy "$BACKUP_REMOTE/daily" /backups/daily && rclone copy "$BACKUP_REMOTE/weekly" /backups/weekly'`.
-3. Restore as in §B steps 3–4, then `just deploy <ip>` (starts migrate and
-   the app) and §B step 6.
+   `dc run --rm --no-deps --entrypoint bash backup -c 'rclone copy "$BACKUP_REMOTE/daily" /backups/daily && rclone copy "$BACKUP_REMOTE/weekly" /backups/weekly'`.
+3. Restore with a one-off container while the sidecar stays stopped (the
+   `just prod-restore` wrapper in §B requires a running sidecar). First
+   recreate the target database on the server:
+   `dc exec -T db sh -c 'dropdb -U "$POSTGRES_USER" --if-exists --force "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'`.
+   Stream the age identity from the laptop over SSH into the following
+   server command's stdin, substituting the chosen dump name for `<file>`:
+   `dc run --rm --no-deps -T --entrypoint sh backup -c 'exec restore.sh "$1" "$PGDATABASE"' sh '/backups/daily/<file>'`.
+   The identity must never be written to the server's disk. Run §B step 4
+   (`post-restore`), then `just deploy <ip>` (starts migrate, the app and
+   backup sidecar) and §B step 6. The first new dump catches up
+   immediately; do not copy success/attempt markers from the old host to
+   suppress it. On an ordinary restart with the original backups volume,
+   keep those markers: `last_success` avoids duplicate catch-up dumps, and
+   `last_upload_attempt` plus `last_upload_success` resume pending off-site
+   retries at hourly intervals without repeating a successful dump.
 
 Guard: `backup.sh` refuses an off-site sync that would delete more than
 `BACKUP_MAX_REMOTE_DELETE` (default 7) remote dumps in one go, writes no
