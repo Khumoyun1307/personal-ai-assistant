@@ -30,14 +30,16 @@ from assistant.actions.requests import (
     resolve_continuation,
     update_request,
 )
-from assistant.conversations.models import Conversation, Message
+from assistant.conversations.events import ObservedDeletion
+from assistant.conversations.models import Contact, Conversation, Message
+from assistant.conversations.service import record_deletion
 from assistant.privacy.owner_requests import (
     cancel_restored_requests,
     delete_source_turns,
     purge_request_sources,
 )
 from assistant.privacy.requests import export_owner_requests
-from tests.integration.actions_env import seed_chat
+from tests.integration.actions_env import add_message, seed_chat
 from tests.integration.business_env import Env
 
 pytestmark = pytest.mark.integration
@@ -737,3 +739,292 @@ async def test_target_source_loss_never_selects_a_newer_message(env: Env) -> Non
         assert view is not None
         assert view.state == "cancelled"
         assert view.target_message_id is None
+
+
+@pytest.mark.parametrize("action_state", ["awaiting_approval", "executing"])
+async def test_telegram_target_deletion_invalidates_request_and_body_preserving_claim(
+    env: Env, action_state: str
+) -> None:
+    account, conversation, turn_id, request_id = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        chat = await session.get(Conversation, conversation)
+        assert chat is not None
+        target = await session.scalar(select(Message).where(Message.account_id == account))
+        assert target is not None
+        assert target.telegram_message_id is not None
+        target_id = target.id
+        event = ObservedDeletion(chat.business_chat_id, (target.telegram_message_id,))
+        selected = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=1,
+            update=SelectRecipient(
+                contact_id=chat.contact_id, conversation_id=conversation, basis="owner_choice"
+            ),
+            now=env.clock.now(),
+        )
+        assert selected.status == "applied"
+        targeted = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=selected.view.version,
+            update=SetTarget(message_id=target_id),
+            now=env.clock.now(),
+        )
+        assert targeted.status == "applied"
+        action = Action(
+            account_id=account,
+            conversation_id=conversation,
+            kind="send_message",
+            origin="owner_dictated",
+            state="awaiting_approval",
+            text="Synthetic derived reply",
+            base_message_id=target_id,
+        )
+        session.add(action)
+        await session.flush()
+        action_id = action.id
+        linked = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=targeted.view.version,
+            update=LinkAction(action_id=action.id, version=action.version),
+            now=env.clock.now(),
+        )
+        assert linked.status == "applied"
+        question = PendingInput(
+            account_id=account,
+            kind="owner_request",
+            ref_id=request_id,
+            expires_at=env.clock.now() + timedelta(minutes=30),
+        )
+        session.add(question)
+        await session.flush()
+        asked = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=linked.view.version,
+            update=SetQuestion(slot="constraints", input_id=question.id),
+            now=env.clock.now(),
+        )
+        assert asked.status == "applied"
+        action.state = action_state
+        newer_id = await add_message(
+            session, account, conversation, direction="contact", sent_at=env.clock.now()
+        )
+    async with env.factory() as session, session.begin():
+        outcome = await record_deletion(session, account_id=account, event=event, clock=env.clock)
+        assert outcome.purged_message_ids == (target_id,)
+    async with env.factory() as session:
+        view = await load_request(session, account_id=account, request_id=request_id)
+        assert view is not None
+        assert view.state == "cancelled"
+        assert view.target_message_id is None
+        assert view.action_id is None
+        assert view.action_version is None
+        assert view.sources == ()
+        request = await session.get(OwnerRequest, request_id)
+        assert request is not None
+        assert request.question_input_id is None
+        assert request.focused is False
+        questions = await session.scalar(
+            select(func.count()).select_from(PendingInput).where(PendingInput.ref_id == request_id)
+        )
+        assert questions == 0
+        action = await session.get(Action, action_id)
+        assert action is not None
+        assert action.text is None
+        expected_state = "cancelled" if action_state == "awaiting_approval" else action_state
+        assert action.state == expected_state
+        target = await session.get(Message, target_id)
+        assert target is not None
+        assert target.text is None
+        assert target.deleted_at == env.clock.now()
+        newer = await session.get(Message, newer_id)
+        assert newer is not None
+        assert newer.text == "Synthetic message"
+        continuation = await resolve_continuation(
+            session,
+            account_id=account,
+            turn_id=turn_id,
+            reply_to_message_id=None,
+            now=env.clock.now(),
+        )
+        assert continuation.status == "none"
+
+
+@pytest.mark.parametrize("action_first", [False, True])
+@pytest.mark.parametrize("same_recipient", [False, True])
+async def test_recipient_and_linked_action_must_match_in_both_update_orders(
+    env: Env, *, action_first: bool, same_recipient: bool
+) -> None:
+    account, conversation, _, request_id = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        chat = await session.get(Conversation, conversation)
+        assert chat is not None
+        contact = Contact(account_id=account, telegram_user_id=chat.business_chat_id + 1)
+        session.add(contact)
+        await session.flush()
+        other = Conversation(
+            account_id=account, contact_id=contact.id, business_chat_id=contact.telegram_user_id
+        )
+        session.add(other)
+        action = Action(
+            account_id=account,
+            conversation_id=conversation,
+            kind="send_message",
+            origin="owner_dictated",
+            state="awaiting_approval",
+            text="Synthetic original draft",
+        )
+        session.add(action)
+        await session.flush()
+        recipient = chat if same_recipient else other
+        selection = SelectRecipient(
+            contact_id=recipient.contact_id, conversation_id=recipient.id, basis="owner_choice"
+        )
+        linkage = LinkAction(action_id=action.id, version=action.version)
+        first, second = (linkage, selection) if action_first else (selection, linkage)
+        applied = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=1,
+            update=first,
+            now=env.clock.now(),
+        )
+        assert applied.status == "applied"
+        result = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=applied.view.version,
+            update=second,
+            now=env.clock.now(),
+        )
+        if same_recipient:
+            assert result.status == "applied"
+            assert result.view.conversation_id == conversation
+            assert result.view.action_id == action.id
+        else:
+            assert result.status == "unavailable"
+            assert result.code == "invalid_reference"
+            unchanged = await load_request(session, account_id=account, request_id=request_id)
+            assert unchanged == applied.view
+        await session.refresh(action)
+        assert action.conversation_id == conversation
+        assert action.state == "awaiting_approval"
+        assert action.text == "Synthetic original draft"
+
+
+@pytest.mark.parametrize("state", ["collecting", "ready", "preparing"])
+@pytest.mark.parametrize("after_deadline", [False, True])
+async def test_leaving_approval_restores_and_enforces_original_request_ttl(
+    env: Env, state: str, *, after_deadline: bool
+) -> None:
+    account, conversation, turn_id, request_id = await seed_request(env)
+    original_deadline = env.clock.now() + timedelta(hours=24)
+    env.clock.advance(hours=23)
+    action_deadline = env.clock.now() + timedelta(hours=6)
+    async with env.factory() as session, session.begin():
+        chat = await session.get(Conversation, conversation)
+        assert chat is not None
+        selected = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=1,
+            update=SelectRecipient(
+                contact_id=chat.contact_id, conversation_id=conversation, basis="owner_choice"
+            ),
+            now=env.clock.now(),
+        )
+        assert selected.status == "applied"
+        action = Action(
+            account_id=account,
+            conversation_id=conversation,
+            kind="send_message",
+            origin="owner_dictated",
+            state="awaiting_approval",
+            text="Synthetic body",
+            expires_at=action_deadline,
+        )
+        session.add(action)
+        await session.flush()
+        action_id = action.id
+        linked = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=selected.view.version,
+            update=LinkAction(action_id=action.id, version=action.version),
+            now=env.clock.now(),
+        )
+        assert linked.status == "applied"
+        staged = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=linked.view.version,
+            update=SetState(state="awaiting_approval", reason=None),
+            now=env.clock.now(),
+        )
+        assert staged.status == "applied"
+        assert staged.view.expires_at == action_deadline
+    env.clock.advance(hours=2 if after_deadline else 0, minutes=30)
+    async with env.factory() as session, session.begin():
+        resumed = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=staged.view.version,
+            update=SetState.model_validate({"state": state, "reason": None}),
+            now=env.clock.now(),
+        )
+        if after_deadline:
+            assert resumed.status == "unavailable"
+            assert resumed.code == "not_available"
+            unchanged = await load_request(session, account_id=account, request_id=request_id)
+            assert unchanged == staged.view
+        else:
+            assert resumed.status == "applied"
+            assert resumed.view.expires_at == original_deadline
+            assert resumed.view.requested_at == original_deadline - timedelta(hours=24)
+    if after_deadline:
+        return
+    env.clock.advance(hours=1)
+    async with env.factory() as session, session.begin():
+        assert resumed.status == "applied"
+        continued = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=resumed.view.version,
+            update=SetConstraints(
+                constraints=RequestConstraints(min_words=None, max_words=20, reply_language=None)
+            ),
+            now=env.clock.now(),
+        )
+        assert continued.status == "unavailable"
+        assert continued.code == "not_available"
+        continuation = await resolve_continuation(
+            session,
+            account_id=account,
+            turn_id=turn_id,
+            reply_to_message_id=None,
+            now=env.clock.now(),
+        )
+        assert continuation.status == "none"
+        assert await expire_requests(session, account_id=account, now=env.clock.now()) == 1
+    async with env.factory() as session:
+        view = await load_request(session, account_id=account, request_id=request_id)
+        assert view is not None
+        assert view.state == "expired"
+        assert view.expires_at == original_deadline
+        action = await session.get(Action, action_id)
+        assert action is not None
+        assert action.expires_at == action_deadline

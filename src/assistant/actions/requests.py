@@ -548,6 +548,13 @@ async def update_request(
     ending = isinstance(update, SetState) and update.state in ("cancelled", "superseded", "expired")
     if row.state != "awaiting_approval" and row.expires_at <= now and not ending:
         return RequestUnavailable("not_available")
+    unfinished = isinstance(update, SetState) and update.state in (
+        "collecting",
+        "ready",
+        "preparing",
+    )
+    if unfinished and row.requested_at + REQUEST_TTL <= now:
+        return RequestUnavailable("not_available")
     sources = await _sources(session, account_id=account_id, request_id=request_id)
     for source in () if ending else sources:
         if isinstance(
@@ -586,6 +593,15 @@ async def update_request(
             return RequestUnavailable("invalid_reference")
         if row.conversation_id is not None and row.conversation_id != conversation.id:
             return RequestUnavailable("recipient_changed")
+        if row.action_id is not None:
+            action = await session.scalar(
+                select(Action)
+                .where(Action.account_id == account_id, Action.id == row.action_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if action is None or action.conversation_id != conversation.id:
+                return RequestUnavailable("invalid_reference")
         row.contact_id = update.contact_id
         row.conversation_id = update.conversation_id
         row.selection_basis = update.basis
@@ -667,6 +683,8 @@ async def update_request(
             await cancel_linked_action(session, row, now=now)
         row.state = update.state
         row.reason = update.reason
+        if unfinished:
+            row.expires_at = row.requested_at + REQUEST_TTL
         if row.state not in ("collecting", "suspended"):
             row.missing_slot = None
         if row.state in TERMINAL_REQUEST_STATES:
