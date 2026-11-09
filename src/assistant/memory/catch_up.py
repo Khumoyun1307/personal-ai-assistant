@@ -12,7 +12,8 @@ Account-scoped queries plus pure functions:
   that arrived while their chat was in Ignore (M03 fix round C3), chats
   that may be paused, expired and deleted messages;
 - `unanswered` — attention-list candidates: the contact spoke last and
-  neither the owner nor the assistant has answered since;
+  neither the owner nor the assistant has answered since; with
+  `include_obligations`, also chats with open tasks (I10, D-S9);
 - `waiting_questions` + `has_question` — the application's own "may be
   waiting" rule, no model call (M03 fix round, C1): the contact asked a
   question after the owner's last answer;
@@ -45,7 +46,7 @@ from assistant.actions.states import ActionState
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.conversations.read import not_stored_while_ignored
 from assistant.inbox import tasks
-from assistant.inbox.models import ConversationTriage
+from assistant.inbox.models import ConversationTriage, Task
 from assistant.inbox.tasks import TaskView
 
 #: Gap certainties a summary reports. `delayed` means the messages arrived
@@ -598,21 +599,47 @@ class Unanswered:
     contact_id: int
     display_name: str | None
     username: str | None
-    last_contact_msg_at: datetime
+    last_contact_msg_at: datetime | None
     #: The owner's or assistant's last message, if any.
     last_answer_at: datetime | None
     #: Content arrived that no summary has seen yet (`pending_ai_since`).
     summary_stale: bool
 
+    @property
+    def unanswered(self) -> bool:
+        return self.last_contact_msg_at is not None and (
+            self.last_answer_at is None or self.last_answer_at < self.last_contact_msg_at
+        )
+
 
 async def unanswered(
-    session: AsyncSession, account_id: int, *, since: datetime, limit: int
+    session: AsyncSession,
+    account_id: int,
+    *,
+    since: datetime,
+    limit: int,
+    include_obligations: bool = False,
 ) -> list[Unanswered]:
     """Attention-list candidates (FR-SUM-03 v1): Observe/Assist chats whose
     last message is the contact's, sent since `since`, with no answer from
     the owner or the assistant after it. Waiting longest first; past `limit`
-    the chats waiting longest are the ones left out, never the newest (C1)."""
+    the chats waiting longest are the ones left out, never the newest (C1).
+    With `include_obligations`, union these with chats with open actionable
+    tasks, regardless of age or who spoke last; the same cap applies.
+    """
     answered = func.greatest(Conversation.last_owner_msg_at, Conversation.last_assistant_msg_at)
+    eligible = (Conversation.last_contact_msg_at >= since) & (
+        answered.is_(None) | (answered < Conversation.last_contact_msg_at)
+    )
+    if include_obligations:
+        # A reply and the age of a promise say nothing about its completion.
+        eligible = eligible | (
+            select(Task.id)
+            .where(Task.account_id == account_id)
+            .where(Task.conversation_id == Conversation.id)
+            .where(Task.status == "open")
+            .exists()
+        )
     rows = (
         await session.execute(
             select(Conversation, Contact)
@@ -621,10 +648,8 @@ async def unanswered(
             .where(Contact.account_id == account_id)
             .where(Contact.is_bot.is_(False))
             .where(Conversation.mode.in_(ATTENTION_MODES))
-            .where(Conversation.last_contact_msg_at.is_not(None))
-            .where(Conversation.last_contact_msg_at >= since)
-            .where(answered.is_(None) | (answered < Conversation.last_contact_msg_at))
-            .order_by(Conversation.last_contact_msg_at.desc(), Conversation.id.desc())
+            .where(eligible)
+            .order_by(Conversation.last_contact_msg_at.desc().nulls_last(), Conversation.id.desc())
             .limit(limit)
         )
     ).all()
@@ -641,7 +666,7 @@ async def unanswered(
                 contact_id=contact.id,
                 display_name=contact.display_name,
                 username=contact.username,
-                last_contact_msg_at=conversation.last_contact_msg_at,  # type: ignore[arg-type]
+                last_contact_msg_at=conversation.last_contact_msg_at,
                 last_answer_at=max(answers) if answers else None,
                 summary_stale=conversation.pending_ai_since is not None,
             )
@@ -801,7 +826,10 @@ async def covering_triage(
     ).scalars()
     found = {row.conversation_id: row for row in verdicts}
     open_tasks = await tasks.open_by_conversation(
-        session, account_id=account_id, conversation_ids=list(found)
+        session,
+        account_id=account_id,
+        conversation_ids=list(found),
+        limit_per_conversation=ATTENTION_TASKS,
     )
     return {
         conversation_id: AttentionTriage(

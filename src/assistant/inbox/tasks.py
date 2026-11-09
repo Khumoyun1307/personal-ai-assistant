@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Boolean, Row, literal_column, select, text, update
+from sqlalchemy import Boolean, Row, func, literal_column, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -247,23 +247,68 @@ async def open_for_conversation(
 
 
 async def open_by_conversation(
-    session: AsyncSession, *, account_id: int, conversation_ids: Collection[int]
+    session: AsyncSession,
+    *,
+    account_id: int,
+    conversation_ids: Collection[int],
+    limit_per_conversation: int | None = None,
 ) -> dict[int, list[TaskView]]:
     """`open_for_conversation` for several chats in one query."""
     found: dict[int, list[TaskView]] = {conversation_id: [] for conversation_id in conversation_ids}
     if not found:
         return found
-    rows = await session.execute(
+    stmt = (
         select(Task)
         .where(Task.account_id == account_id)
         .where(Task.conversation_id.in_(sorted(found)))
         .where(Task.status == "open")
         .order_by(Task.due_at.asc().nulls_last(), Task.created_at, Task.id)
     )
+    if limit_per_conversation is not None:
+        ranked = (
+            select(
+                Task.id,
+                func.row_number()
+                .over(
+                    partition_by=Task.conversation_id,
+                    order_by=(Task.due_at.asc().nulls_last(), Task.created_at, Task.id),
+                )
+                .label("position"),
+            )
+            .where(Task.account_id == account_id)
+            .where(Task.conversation_id.in_(sorted(found)))
+            .where(Task.status == "open")
+            .subquery()
+        )
+        stmt = stmt.join(ranked, ranked.c.id == Task.id).where(
+            ranked.c.position <= limit_per_conversation
+        )
+    rows = await session.execute(stmt)
     for row in rows.scalars():
         if row.conversation_id is not None:
             found[row.conversation_id].append(_view(row))
     return found
+
+
+async def digest_commitments(
+    session: AsyncSession, *, account_id: int, end: datetime, limit: int
+) -> tuple[list[TaskView], int]:
+    """Open promises: all overdue/undated and those due before the horizon.
+
+    Oldest discovered first, so undated promises compete fairly with dated
+    ones. Count overflow in SQL; only the capped titles leave the database.
+    """
+    eligible = (
+        select(Task)
+        .where(Task.account_id == account_id)
+        .where(Task.status == "open")
+        .where(Task.kind.in_(COMMITMENT_KINDS))
+        .where(Task.due_at.is_(None) | (Task.due_at < end))
+    )
+    total = int(await session.scalar(select(func.count()).select_from(eligible.subquery())) or 0)
+    rows = await session.execute(eligible.order_by(Task.created_at, Task.id).limit(limit))
+    views = [_view(row) for row in rows.scalars()]
+    return views, max(0, total - len(views))
 
 
 async def due_between(

@@ -29,6 +29,9 @@ type (`agent/summarize.py`):
   `next_actions` (`draft_reply` only with `tool.propose_reply` on, the
   drafter wired and the reply window open — ICR-2; `open_panel` always); it
   needs no summary call and ranks urgent → decision → needs reply → others.
+  **I10 (D-S9):** union unanswered chats with chats with open actionable
+  tasks, regardless of age or who spoke last. Tasks load independently of
+  covering verdicts; `reply_needed` and `obligation_open` are separate.
 
 A chat whose summary fails is listed as not summarized (or unchecked); it
 never aborts the other chats. A summary written from messages that changed
@@ -87,6 +90,7 @@ from assistant.agent.untrusted import Source, wrap
 from assistant.conversations.models import Contact, Conversation
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
+from assistant.inbox import tasks
 from assistant.memory import catch_up, summaries
 from assistant.memory.summaries import StoreResult
 from assistant.observability.logging import get_logger
@@ -522,7 +526,10 @@ class GetAttentionListArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     active_within_days: Annotated[int | None, _bounded(1, 30)] = Field(
-        description="Only chats whose contact wrote in the last N days, 1-30 (default 7), or null."
+        description=(
+            "Unanswered chats whose contact wrote in the last N days, 1-30 (default 7), "
+            "or null. Chats with open obligations are included regardless of age."
+        )
     )
     limit: Annotated[int | None, _bounded(1, MAX_ATTENTION_LIMIT)] = Field(
         description="How many chats, 1-20 (default 10), or null."
@@ -530,7 +537,9 @@ class GetAttentionListArgs(BaseModel):
 
 
 ATTENTION_RULE = (
-    "Listed: chats where the contact wrote last and neither the owner nor the assistant "
+    "Listed: chats with open actionable tasks (either side's commitments included), "
+    "regardless of age or who spoke last, plus chats where the contact wrote last and "
+    "neither the owner nor the assistant "
     "answered since (an automatic away or greeting message is not an answer). Chats that "
     "may be waiting come first; waiting_count counts them. may_be_waiting is the "
     "application's own check, not a model's: the contact asked a question after the "
@@ -542,13 +551,17 @@ ATTENTION_RULE = (
     "relay its notice. requests_to_owner: what the contact asked the owner to do that the "
     "owner has not agreed to. not_listed: more such chats beyond the limit — say how many, "
     "how many of them may be waiting and how many were not checked (unknown, never "
-    "'nothing needed')."
+    "'nothing needed'). reply_needed is the current reply verdict (null means unknown); "
+    "obligation_open independently reports open tasks. An answer is not completion. "
+    "open_tasks are loaded even without a covering triage verdict; due_state is "
+    "no_due_date, overdue or scheduled. Never claim an undated promise has a deadline."
 )
 
 
 ATTENTION_TRIAGE_RULE = (
     "triage (when present) is the chat's triage verdict, which has read the contact's newest "
-    "message: relay its reasons as given. open_tasks are the chat's open loops; never present "
+    "message: relay its reasons as given. It may predate the owner's answer; reply_needed "
+    "is the current reply verdict. open_tasks are the chat's open loops; never present "
     "one as done. next_actions are what the owner can do now: draft_reply (propose_reply) "
     "only when listed, open_panel always."
 )
@@ -584,7 +597,11 @@ def _tier(
 def _order(candidate: catch_up.Unanswered, tier: int, triaged: bool) -> tuple[int, int, float]:
     """Within a tier, chats with a verdict first, newest contact message
     first (§3.9); v1 chats keep their order (sorted() is stable)."""
-    newest = -candidate.last_contact_msg_at.timestamp() if triaged else 0.0
+    newest = (
+        -candidate.last_contact_msg_at.timestamp()
+        if triaged and candidate.last_contact_msg_at is not None
+        else 0.0
+    )
     return (tier, 0 if triaged else 1, newest)
 
 
@@ -643,6 +660,7 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             ctx.account_id,
             since=now - timedelta(days=days),
             limit=MAX_ATTENTION_CANDIDATES,
+            include_obligations=True,
         )
         found_ids = [c.conversation_id for c in found]
         rolling = await summaries.rolling_summaries(session, ctx.account_id, found_ids)
@@ -668,8 +686,8 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
     }
     first_tier = {
         c.conversation_id: _tier(
-            triaged_before.get(c.conversation_id),
-            known.get(c.conversation_id),
+            triaged_before.get(c.conversation_id) if c.unanswered else None,
+            known.get(c.conversation_id) if c.unanswered else False,
             c.conversation_id in asked_before,
         )
         for c in found
@@ -687,6 +705,7 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         c.conversation_id
         for c in candidates
         if c.conversation_id not in triaged_before
+        and c.unanswered
         and (c.summary_stale or c.conversation_id not in rolling)
     ][:MAX_INLINE_CHECKS]
     summarizer = services.summarizer
@@ -748,6 +767,12 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         asked = await catch_up.waiting_questions(session, ctx.account_id, ids)
         # Read again too: a task closed or a verdict replaced meanwhile.
         triaged = await catch_up.covering_triage(session, ctx.account_id, ids)
+        open_tasks = await tasks.open_by_conversation(
+            session,
+            account_id=ctx.account_id,
+            conversation_ids=ids,
+            limit_per_conversation=catch_up.ATTENTION_TASKS,
+        )
 
     tz = account.timezone
     can_draft = _draft_offered(ctx)
@@ -775,7 +800,9 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             "contact_id": candidate.contact_id,
             "contact_name": name(candidate.display_name),
             "contact_username": name(candidate.username),
-            "waiting_since": local_time(candidate.last_contact_msg_at, tz),
+            "waiting_since": (
+                local_time(candidate.last_contact_msg_at, tz) if candidate.unanswered else None
+            ),
             "last_answer": local_time(candidate.last_answer_at, tz),
             "needs_reply": None,
             "check": (
@@ -813,8 +840,32 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             if entry["needs_reply"] is None:
                 entry["needs_reply"] = triage.needs_reply
                 entry["check"] = "triage"
+        if not candidate.unanswered:
+            # Stored summaries/verdicts describe the contact's earlier turn.
+            entry["needs_reply"] = False
+        entry["reply_needed"] = True if entry["may_be_waiting"] else entry["needs_reply"]
+        entry["obligation_open"] = bool(open_tasks[candidate.conversation_id])
+        if open_tasks[candidate.conversation_id] or triage is not None:
+            entry["open_tasks"] = [
+                {
+                    "task_id": task.task_id,
+                    "kind": task.kind,
+                    "title": wrap(task.title, Source.TASK_TITLE),
+                    "due": local_time(task.due_at, tz),
+                    "due_state": (
+                        "no_due_date"
+                        if task.due_at is None
+                        else "overdue"
+                        if task.due_at < now
+                        else "scheduled"
+                    ),
+                }
+                for task in open_tasks[candidate.conversation_id]
+            ]
         tiers[candidate.conversation_id] = _tier(
-            triage, entry["needs_reply"], entry["may_be_waiting"]
+            triage if candidate.unanswered else None,
+            entry["needs_reply"],
+            entry["may_be_waiting"],
         )
         entries.append(entry)
     by_id = {c.conversation_id: c for c in candidates}
@@ -839,7 +890,7 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         "attribution_rule": ATTRIBUTION_RULE,
     }
     if not entries:
-        data["note"] = "No stored chat is waiting for the owner's reply in this window."
+        data["note"] = "No stored chat has an unanswered turn in this window or an open obligation."
     if cut:
         more = f"at least {len(cut)}" if len(found) == MAX_ATTENTION_CANDIDATES else str(len(cut))
         larger = (
@@ -852,7 +903,8 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         # A cut chat nobody checked is unknown, never "not waiting".
         data["not_listed_not_checked"] = cut_unchecked
         data["note_not_listed"] = (
-            f"{more} more chat(s) where the contact wrote last are not listed (limit {limit}): "
+            f"{more} more chat(s) with unanswered turns or open obligations "
+            f"are not listed (limit {limit}): "
             f"{cut_waiting} may be waiting, {cut_unchecked} not checked (unknown, never "
             f"'nothing needed'). Say so.{larger}"
         )
@@ -887,7 +939,8 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
 GET_ATTENTION_LIST = ToolDefinition(
     name="get_attention_list",
     description=(
-        "Chats waiting for the owner: the contact wrote last and nobody answered (an "
+        "Chats with open obligations of either side, regardless of age or who spoke last, "
+        "plus chats waiting for the owner: the contact wrote last and nobody answered (an "
         "automatic away message is not an answer). Each with when the contact wrote; "
         "whether it may be waiting (the application's own check: a question after the "
         "owner's last answer, with that question); whether the chat's summary says a reply "
