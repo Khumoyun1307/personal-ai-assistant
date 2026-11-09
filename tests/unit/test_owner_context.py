@@ -115,6 +115,33 @@ def test_the_block_never_shows_a_mode_outside_the_fixed_set() -> None:
     assert "mode" not in text.splitlines()[1]
 
 
+def test_terminal_facts_are_fixed_and_times_are_owner_local() -> None:
+    text = render_live_cards(
+        [
+            card(
+                state="outdated",
+                state_reason="takeover",
+                created_at=NOW,
+                updated_at=NOW,
+                presentation_outcome="shown",
+                presentation_version=1,
+            )
+        ],
+        "Asia/Tashkent",
+    )
+    assert "reason takeover: You replied in this chat after this draft was made." in text
+    assert "created 2026-10-30 14:00" in text
+    assert "updated 2026-10-30 14:00" in text
+    assert "presentation shown, presentation version 1" in text
+
+
+def test_arbitrary_reason_and_presentation_strings_are_not_trusted_context() -> None:
+    text = render_live_cards([card(state_reason=SECRET_DRAFT, presentation_outcome=SECRET_NAME)])
+    assert SECRET_DRAFT not in text
+    assert SECRET_NAME not in text
+    assert "reason unknown: The reason is unavailable." in text
+
+
 def test_the_block_says_none_when_no_card_is_live() -> None:
     text = render_live_cards([])
     assert "none" in text.lower()

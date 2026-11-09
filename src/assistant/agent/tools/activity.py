@@ -21,6 +21,7 @@ from sqlalchemy import select
 
 from assistant.accounts.models import Account
 from assistant.actions.activity import activity, count_activity
+from assistant.actions.card_facts import state_reason_fact
 from assistant.agent.tools.common import (
     ArgumentRuleError,
     OptionalId,
@@ -185,6 +186,7 @@ async def get_activity_tool(ctx: ToolContext, args: GetActivityArgs) -> ToolOutc
 
     rendered_entries: list[dict[str, Any]] = []
     for entry in entries:
+        reason, explanation = state_reason_fact(entry.state_reason)
         contact_name = entry.contact_display_name or (
             f"@{entry.contact_username}" if entry.contact_username else None
         )
@@ -195,7 +197,18 @@ async def get_activity_tool(ctx: ToolContext, args: GetActivityArgs) -> ToolOutc
                 "contact_id": entry.contact_id,
                 "contact_name": name(contact_name),
                 "group": entry.group,
-                "state_reason": entry.state_reason,
+                "state": entry.state,
+                "state_reason": reason,
+                "state_reason_explanation": explanation,
+                "version": entry.version,
+                "origin": entry.origin,
+                "mode": entry.mode,
+                "presentation_outcome": entry.presentation_outcome,
+                "presentation_version": entry.presentation_version,
+                "card_state": entry.card_state,
+                "has_card_message": entry.has_card_message,
+                "created_at": local_time(entry.created_at, tz),
+                "updated_at": local_time(entry.updated_at, tz),
                 "time": local_time(entry.executed_at or entry.decided_at or entry.created_at, tz),
                 "excerpt": (
                     wrap(entry.excerpt, Source.OWNER_IN_BUSINESS_CHAT)

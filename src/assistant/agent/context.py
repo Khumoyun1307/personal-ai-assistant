@@ -12,8 +12,8 @@ flagged `contains_managed` are excluded unless `ai_managed` is active
 (ARCHITECTURE §14.3) — defence in depth behind the consent wrapper.
 Forwarded and quoted third-party text is wrapped as untrusted, and a context
 that carries any of it, or managed content, starts the run tainted (§7.1).
-With `ai_managed`, it also sees its working context (PF-15): the live approval
-cards (ids and states, never text or names) and the ids each earlier turn
+With `ai_managed`, it also sees its working context (PF-15, Q3): live and
+recent terminal cards (fixed facts, never text or names) and the ids each earlier turn
 concerned, both written by the application and both content-free.
 """
 
@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from assistant.accounts.models import Account, ControlTurn
 from assistant.actions.activity import LiveCardFact
+from assistant.actions.card_facts import state_reason_fact
 from assistant.agent.attribution import FALLBACK_NAMES, clean_name, you_word
 from assistant.agent.draft_owner_schemas import OWNER_DRAFT_MODES
 from assistant.agent.locales import supported_locale
@@ -98,10 +99,14 @@ def build_owner_request(
         if past.text
     ]
     if live_cards is not None and managed_allowed:
-        # Volatile, so after the history (prompt caching): which cards are
-        # live now. Ids and enums only, so it carries no managed text and is
+        # Volatile, so after the history (prompt caching): current card facts.
+        # Fixed facts only, so it carries no managed text and is
         # the owner's own control data; it never changes taint (PF-15).
-        items.append(TextItem("user", render_live_cards(live_cards), Provenance.OWNER_CONTROL))
+        items.append(
+            TextItem(
+                "user", render_live_cards(live_cards, account.timezone), Provenance.OWNER_CONTROL
+            )
+        )
     if turn.contains_managed and not managed_allowed:
         # The owner forwarded or quoted a message from one of their managed
         # chats, without `ai_managed`: its text must not reach the model
@@ -121,18 +126,18 @@ def build_owner_request(
     )
 
 
-#: At most this many live cards are listed in an owner run's context.
+#: At most this many live/recent terminal cards are listed in an owner run's context.
 LIVE_CARDS_SHOWN = 20
 
 LIVE_CARDS_HEADER = (
-    "Live approval cards now (application data, not a message from the owner; ids and "
-    "states only, never the draft's text):"
+    "Live approval cards now and recent terminal cards (application data, not a message "
+    "from the owner; fixed facts only, never the draft's text):"
 )
 LIVE_CARDS_NONE = "Live approval cards now (application data, not a message from the owner): none."
 
 
-def render_live_cards(cards: Sequence[LiveCardFact]) -> str:
-    """The live approval cards as the owner run sees them (PF-15): content-free
+def render_live_cards(cards: Sequence[LiveCardFact], timezone: str = "UTC") -> str:
+    """The approval cards as the owner run sees them (PF-15, Q3): content-free
     by construction — ids, the version, enum values from the database's check
     constraints, and the mode only when it is one of the fixed modes."""
     if not cards:
@@ -149,6 +154,17 @@ def render_live_cards(cards: Sequence[LiveCardFact]) -> str:
             parts.append(f"mode {card.mode}")
         if card.answers_message:
             parts.append("answers a specific message")
+        reason, explanation = state_reason_fact(card.state_reason)
+        if reason is not None:
+            parts.append(f"reason {reason}: {explanation}")
+        if card.created_at is not None:
+            parts.append(f"created {_local(card.created_at, timezone)}")
+        if card.updated_at is not None:
+            parts.append(f"updated {_local(card.updated_at, timezone)}")
+        if card.presentation_outcome in ("claimed", "shown", "not_delivered"):
+            parts.append(f"presentation {card.presentation_outcome}")
+            if card.presentation_version is not None:
+                parts.append(f"presentation version {int(card.presentation_version)}")
         lines.append(", ".join(parts))
     rest = len(cards) - LIVE_CARDS_SHOWN
     if rest > 0:
