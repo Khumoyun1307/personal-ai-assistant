@@ -42,6 +42,7 @@ from tests.integration.business_env import OWNER, Env, deliver, private_message
 READ_FLAGS = frozenset(
     {
         "tool.get_status",
+        "tool.get_preferences",
         "tool.search_messages",
         "tool.resolve_contact",
         "tool.get_conversation",
@@ -70,7 +71,6 @@ MEMORY_FLAGS = frozenset(
         "tool.remember",
         "tool.forget",
         "tool.list_memories",
-        "tool.get_preferences",
         "tool.update_preferences",
         "tool.set_conversation_mode",
         "tool.set_contact_priority",

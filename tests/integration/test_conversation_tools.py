@@ -400,7 +400,7 @@ def test_the_registry_offers_read_tools_only_with_flag_consent_and_run_type() ->
 
     assert offered() >= READ_TOOLS
     assert offered(enabled_flags=frozenset({"tool.get_status"})) == {"get_status"}
-    assert offered(managed_consent=False) == {"get_status"}
+    assert offered(managed_consent=False) == {"get_status", "get_preferences"}
     for contact_run in ("triage", "draft_reply", "summarize", "extract_memory", "evaluate_monitor"):
         assert offered(run_type=contact_run) == set()
     for tool in registry.all():
