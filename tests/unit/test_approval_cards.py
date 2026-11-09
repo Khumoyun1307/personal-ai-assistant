@@ -90,6 +90,42 @@ def shown(card_text: str) -> str:
     return part
 
 
+@pytest.mark.parametrize(
+    ("origin", "mode", "proactive", "source", "heading"),
+    [
+        (ActionOrigin.AGENT_PROPOSAL, "reply", False, None, "Draft reply"),
+        (ActionOrigin.AGENT_PROPOSAL, "new_message", False, None, "New message"),
+        (ActionOrigin.AGENT_PROPOSAL, None, False, None, "Draft reply"),
+        (ActionOrigin.OWNER_DICTATED, "reply", False, None, "Message you dictated"),
+        (ActionOrigin.OWNER_DICTATED, "new_message", False, None, "Message you dictated"),
+        (ActionOrigin.AGENT_PROPOSAL, "new_message", True, None, "Assist draft"),
+        (ActionOrigin.DELEGATION_AUTO, "new_message", False, None, "Automatic reply"),
+        (
+            ActionOrigin.AGENT_PROPOSAL,
+            "new_message",
+            False,
+            "assistant_suggestion",
+            "Message the assistant suggested",
+        ),
+    ],
+)
+def test_card_heading_reflects_message_mode_and_preserves_authorship(
+    origin: ActionOrigin,
+    mode: str | None,
+    proactive: bool,
+    source: str | None,
+    heading: str,
+) -> None:
+    card = render_card(
+        view(origin=origin, proactive=proactive, draft_flags={"mode": mode, "source": source})
+    )
+    text = shown(card.text)
+
+    assert text.startswith(f"📝 <b>{heading}</b>")
+    assert "To: <b>Synthetic Contact</b>" in text
+    assert f"<blockquote>{TEXT}</blockquote>" in text
+
+
 def buttons(markup: Any) -> list[dict[str, Any]]:
     if markup is None:
         return []

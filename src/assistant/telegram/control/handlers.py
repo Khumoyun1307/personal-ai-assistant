@@ -141,6 +141,8 @@ HELP_TEXT = (
     "<b>What I can do</b>\n\n"
     "/start — set up or re-run onboarding\n"
     "/help — this message\n"
+    "/pause — stop automatic replies\n"
+    "/resume — allow automatic replies again\n"
     "/status — what I can see: connection, rights, coverage, gaps, consent\n"
     "/activity — what I sent or drafted today\n"
     "/settings — language, timezone, chat modes, replies, how long things are kept, "
@@ -149,7 +151,9 @@ HELP_TEXT = (
     "/privacy — what I store, who sees it, and how to delete it "
     "(<code>/privacy delete</code> deletes everything, after asking)\n\n"
     "Send me anything else and I will answer it.\n"
-    "Send <b>stop</b> at any time to pause everything."
+    "Send <b>stop</b> at any time to pause automatic replies.\n"
+    "Alerts, digest and replies you approve keep working.\n"
+    "To stop everything, disconnect me in Telegram's Chat Automation settings."
 )
 
 
@@ -1031,6 +1035,7 @@ def render_status(report: StatusReport, *, visibility: str) -> str:
         f"Autonomy: {'paused' if report.autonomy.paused else 'active'}",
         # S04.4 §3.9: counts only.
         escape(report.actions.line),
+        escape(report.notifications_line),
         f"Timezone: {escape(tz)}",
         "",
         "<b>Connection</b>",
