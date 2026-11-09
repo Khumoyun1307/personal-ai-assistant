@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, time, timedelta
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -180,8 +180,8 @@ def quiet_hours(value: object) -> tuple[time, time] | None:
 
 def _failures(reason_code: str | None) -> int:
     """Definite failures so far: the `:<n>` that `not_delivered:<n>` carries,
-    and a later hold keeps (`quiet_hours:<n>`). No column holds the count, so
-    a hold must not drop it, or quiet hours would reset the attempt budget
+    and a later hold keeps (`quiet_hours:<n>` or `cap:<n>`). No column holds
+    the count, so a hold must not drop it, or it would reset the attempt budget
     (QA B1, #87)."""
     if not reason_code:
         return 0
@@ -461,18 +461,24 @@ class NotificationDelivery:
     ) -> RecentLoad:
         since = now - _CAP_WINDOW
         # Claimed (`uncertain`) rows count like sent ones (TL ruling, #53).
-        immediate = await session.scalar(
-            select(func.count(Notification.id))
-            .where(Notification.account_id == notification.account_id)
-            .where(Notification.alert_class == AlertClass.STANDARD)
-            .where(Notification.id != notification.id)
-            .where(
-                or_(
-                    and_(Notification.status == "sent", Notification.sent_at >= since),
-                    and_(Notification.status == "uncertain", Notification.updated_at >= since),
+        counted_at = case(
+            (Notification.status == "sent", Notification.sent_at),
+            else_=Notification.updated_at,
+        )
+        immediate, oldest = (
+            await session.execute(
+                select(func.count(Notification.id), func.min(counted_at))
+                .where(Notification.account_id == notification.account_id)
+                .where(Notification.alert_class == AlertClass.STANDARD)
+                .where(Notification.id != notification.id)
+                .where(
+                    or_(
+                        and_(Notification.status == "sent", Notification.sent_at >= since),
+                        and_(Notification.status == "uncertain", Notification.updated_at >= since),
+                    )
                 )
             )
-        )
+        ).one()
         suspicious = 0
         if notification.contact_id is not None:
             suspicious = (
@@ -487,7 +493,13 @@ class NotificationDelivery:
                 or 0
             )
         return RecentLoad(
-            immediate_last_hour=immediate or 0, suspicious_from_contact_24h=suspicious
+            immediate_last_hour=immediate or 0,
+            suspicious_from_contact_24h=suspicious,
+            # The count includes the lower bound (>= since). Move just past
+            # it so an on-time job cannot re-defer at its own current time.
+            cap_retry_at=(
+                None if oldest is None else oldest + _CAP_WINDOW + timedelta(microseconds=1)
+            ),
         )
 
 
@@ -497,7 +509,7 @@ class NotificationCounts:
     """The `/status` notifications block (S05.2 §3.8): counts only."""
 
     queued: int = 0
-    #: Held until the owner's quiet hours end.
+    #: Held until quiet hours end or an hourly-cap slot expires.
     deferred: int = 0
     #: Waiting for the next digest.
     batched: int = 0
@@ -509,16 +521,18 @@ async def notification_counts(
     session: AsyncSession, *, account_id: int, now: datetime
 ) -> NotificationCounts:
     held = and_(Notification.deliver_after.is_not(None), Notification.deliver_after > now)
-    # `quiet_hours`, or `quiet_hours:<n>` after earlier failed attempts.
-    quiet = or_(
+    # Holds preserve earlier failed attempts in the reason's suffix.
+    policy_hold = or_(
         Notification.reason_code == _QUIET_HOURS,
         Notification.reason_code.startswith(f"{_QUIET_HOURS}:"),
+        Notification.reason_code == "cap",
+        Notification.reason_code.startswith("cap:"),
     )
     row = (
         await session.execute(
             select(
                 func.count().filter(and_(Notification.status == "queued", ~held)),
-                func.count().filter(and_(Notification.status == "queued", held, quiet)),
+                func.count().filter(and_(Notification.status == "queued", held, policy_hold)),
                 func.count().filter(
                     and_(Notification.status == "batched", Notification.digest_id.is_(None))
                 ),
@@ -549,20 +563,29 @@ class NotificationView:
 
 
 async def notifications_batched_since(
-    session: AsyncSession, *, account_id: int, since: datetime
+    session: AsyncSession,
+    *,
+    account_id: int,
+    since: datetime | None = None,
+    before: datetime | None = None,
 ) -> list[NotificationView]:
-    """This account's alerts batched for the digest since `since` and not yet
-    carried by one; oldest first."""
-    rows = (
-        await session.execute(
-            select(Notification)
-            .where(Notification.account_id == account_id)
-            .where(Notification.status == "batched")
-            .where(Notification.digest_id.is_(None))
-            .where(Notification.created_at >= since)
-            .order_by(Notification.created_at, Notification.id)
-        )
-    ).scalars()
+    """Undigested batches, oldest first; optional bounds restrict the read.
+
+    The digest omits `since` to include unseen alerts outside its activity
+    period. The retention sweep still removes all alerts after 30 days.
+    """
+    statement = (
+        select(Notification)
+        .where(Notification.account_id == account_id)
+        .where(Notification.status == "batched")
+        .where(Notification.digest_id.is_(None))
+        .order_by(Notification.created_at, Notification.id)
+    )
+    if since is not None:
+        statement = statement.where(Notification.created_at >= since)
+    if before is not None:
+        statement = statement.where(Notification.created_at < before)
+    rows = (await session.execute(statement)).scalars()
     return [
         NotificationView(
             notification_id=row.id,

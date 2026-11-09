@@ -336,6 +336,55 @@ async def test_a_quiet_hours_hold_keeps_the_failed_attempts(env: Env) -> None:
     assert len(channel.sends) == 3
 
 
+async def test_a_cap_hold_keeps_failures_and_rechecks_quiet_hours(env: Env) -> None:
+    env.clock.set(DAY)
+    where = await chat(env)
+    notification = await add(env, where)
+    assert notification is not None
+    channel = FakeChannel(deliver=False)
+    service = delivery(env, channel)
+    assert (await service.deliver(notification)).status == "retry"
+    env.clock.advance(seconds=30)
+    async with env.factory() as session, session.begin():
+        account = await session.get(Account, where.account_id)
+        assert account is not None
+        account.settings = {"alert_cap_per_hour": 1, "digest_time": "off"}
+        await seed_notification(
+            session,
+            account_id=where.account_id,
+            status="uncertain",
+            reason_code="claimed",
+            updated_at=env.clock.now(),
+        )
+    assert (await service.deliver(notification)).status == "deferred"
+    held = await row(env, notification)
+    assert held.reason_code == "cap:1"
+    assert held.deliver_after is not None
+    async with env.factory() as session, session.begin():
+        account = await session.get(Account, where.account_id)
+        assert account is not None
+        account.settings = {**(account.settings or {}), "quiet_hours": "00:00-23:59"}
+    env.clock.set(held.deliver_after)
+    assert (await service.deliver(notification)).status == "deferred"
+    held = await row(env, notification)
+    assert held.reason_code == "quiet_hours:1"
+    assert held.deliver_after is not None
+    env.clock.set(held.deliver_after)
+    assert (await service.deliver(notification)).status == "retry"
+    held = await row(env, notification)
+    assert held.reason_code == "not_delivered:2"
+    assert held.deliver_after is not None
+    # The next retry would be inside the new day's quiet hours. Remove
+    # them to verify the third definite refusal still exhausts the budget.
+    async with env.factory() as session, session.begin():
+        account = await session.get(Account, where.account_id)
+        assert account is not None
+        account.settings = {**(account.settings or {}), "quiet_hours": "off"}
+    env.clock.set(held.deliver_after)
+    assert (await service.deliver(notification)).status == "failed"
+    assert len(channel.sends) == 3
+
+
 async def test_a_deleted_source_suppresses_the_alert(env: Env) -> None:
     """The renderer reads the verdict from its refs; when the chat's data is
     gone, nothing is sent and the row says why."""
@@ -377,9 +426,14 @@ async def test_a_deferred_alert_is_delivered_after_quiet_hours(env: Env) -> None
     assert len(channel.sends) == 1
 
 
-async def test_batched_alerts_wait_for_the_digest(env: Env) -> None:
+@pytest.mark.parametrize("digest_time", ["off", "21:00"])
+async def test_batched_alerts_wait_for_the_digest(env: Env, digest_time: str) -> None:
     env.clock.set(DAY)
     where = await chat(env)
+    async with env.factory() as session, session.begin():
+        account = await session.get(Account, where.account_id)
+        assert account is not None
+        account.settings = {"digest_time": digest_time}
     notification = await add(
         env,
         where,
@@ -445,8 +499,17 @@ async def test_the_hourly_cap_counts_claimed_alerts(env: Env) -> None:
     notification = await add(env, where)
     assert notification is not None
     channel = FakeChannel()
-    assert (await delivery(env, channel).deliver(notification)).status == "batched"
-    assert (await row(env, notification)).reason_code == "cap"
+    service = delivery(env, channel)
+    assert (await service.deliver(notification)).status == "deferred"
+    held = await row(env, notification)
+    cap_end = DAY + timedelta(minutes=50, microseconds=1)
+    assert (held.status, held.reason_code, held.deliver_after) == ("queued", "cap", cap_end)
+    assert channel.sends == []
+    assert (await service.deliver(notification)).status == "not_due"
+    env.clock.set(cap_end)
+    assert (await service.deliver(notification)).status == "sent"
+    assert (await service.deliver(notification)).status == "not_queued"
+    assert len(channel.sends) == 1
 
 
 async def wait_for_lock_waiter(env: Env, *, deadline: float = 15.0) -> None:
@@ -473,7 +536,7 @@ async def test_two_alerts_cannot_both_take_the_last_cap_slot(env: Env) -> None:
     """QA B2 (#87), rule 6 / P2-T38: with one slot left under the cap, two
     deliveries of different alerts race; the first is held right after it
     read the load. The second must not read the same load: it waits for the
-    first's claim, sees the cap reached and batches."""
+    first's claim, sees the cap reached and defers."""
     env.clock.set(DAY)
     where = await chat(env)
     async with env.factory() as session, session.begin():
@@ -533,7 +596,7 @@ async def test_two_alerts_cannot_both_take_the_last_cap_slot(env: Env) -> None:
         watcher.cancel()
     release.set()
     results = await asyncio.gather(one, two)
-    assert [r.status for r in results] == ["sent", "batched"]
+    assert [r.status for r in results] == ["sent", "deferred"]
     assert results[1].reason == "cap"
     assert loads == [5, 6]
     assert len(channel.sends) == 1
@@ -578,6 +641,81 @@ async def test_the_reconciler_recovers_a_lost_delivery(env: Env) -> None:
     await env.scheduler.defer(request.task, args=request.args, queueing_lock=request.queueing_lock)
     async with env.factory() as session:
         assert await reconcile(session, env.clock.now()) == []
+
+
+async def test_the_reconciler_recovers_a_lost_quiet_hours_release(env: Env) -> None:
+    env.clock.set(NIGHT)
+    where = await chat(env)
+    notification = await add(env, where, priority=Priority.HIGH)
+    assert notification is not None
+    channel = FakeChannel()
+    service = delivery(env, channel)
+    assert (await service.deliver(notification)).status == "deferred"
+    # Simulate losing the after-commit defer, using synthetic job rows only.
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text("DELETE FROM procrastinate.procrastinate_jobs WHERE queueing_lock = :q"),
+            {"q": f"notify:{notification}"},
+        )
+    reconcile = notification_reconciler(enabled=True)
+    async with env.factory() as session:
+        assert await reconcile(session, env.clock.now()) == []
+    env.clock.set(QUIET_END)
+    async with env.factory() as session:
+        [request] = await reconcile(session, env.clock.now())
+    assert dict(request.args) == {"notification_id": notification}
+    assert request.lock is None
+    assert (await service.deliver(notification)).status == "sent"
+    assert (await service.deliver(notification)).status == "not_queued"
+    assert len(channel.sends) == 1
+
+
+async def test_the_reconciler_requeues_old_important_batches_only(env: Env) -> None:
+    """Recover undigested holds written before D-S8, never sent/uncertain rows."""
+    env.clock.set(DAY)
+    where = await chat(env)
+    ids: dict[str, int] = {}
+    async with env.factory() as session, session.begin():
+        for status, reason in (
+            ("batched", "quiet_hours"),
+            ("batched", "cap"),
+            ("batched", "quiet_by_default"),
+            ("batched", "feedback"),
+            ("uncertain", "cap"),
+            ("sent", "quiet_hours"),
+        ):
+            key = f"{status}:{reason}"
+            notification = await seed_notification(
+                session,
+                account_id=where.account_id,
+                conversation_id=where.conversation_id,
+                contact_id=where.contact_id,
+                priority="urgent",
+                kind="triage_urgent",
+                status=status,
+                reason_code=reason,
+                dedupe_key=key,
+                created_at=DAY - timedelta(days=3),
+                updated_at=DAY - timedelta(days=3),
+            )
+            ids[key] = notification.id
+    async with env.factory() as session, session.begin():
+        assert await notification_reconciler(enabled=False)(session, DAY) == []
+    assert (await row(env, ids["batched:cap"])).status == "batched"
+    async with env.factory() as session, session.begin():
+        recovered = await notification_reconciler(enabled=True)(session, DAY)
+    assert {r.args["notification_id"] for r in recovered} == {
+        ids["batched:quiet_hours"],
+        ids["batched:cap"],
+    }
+    channel = FakeChannel()
+    service = delivery(env, channel)
+    for request in recovered:
+        notification_id = request.args["notification_id"]
+        assert isinstance(notification_id, int)
+        assert (await service.deliver(notification_id)).status == "sent"
+        assert (await service.deliver(notification_id)).status == "not_queued"
+    assert len(channel.sends) == 2
 
 
 async def test_notifications_never_cross_accounts(env: Env) -> None:
@@ -659,6 +797,7 @@ async def test_status_counts_alerts_by_state(env: Env) -> None:
             (
                 ("queued", None, None, DAY),
                 ("queued", "quiet_hours", DAY + timedelta(hours=8), DAY),
+                ("queued", "cap:1", DAY + timedelta(minutes=10), DAY),
                 ("batched", "quiet_by_default", None, DAY),
                 ("batched", "quiet_by_default", None, DAY),
                 ("uncertain", "ambiguous", None, DAY - timedelta(hours=2)),
@@ -685,10 +824,11 @@ async def test_status_counts_alerts_by_state(env: Env) -> None:
         assert account is not None
         report = await build_status(session, account, DAY, monthly_budget_usd=None)
     assert report.notifications == NotificationCounts(
-        queued=1, deferred=1, batched=2, uncertain_24h=1
+        queued=1, deferred=2, batched=2, uncertain_24h=1
     )
     assert report.notifications_line == (
-        "Alerts: 1 queued, 1 held for quiet hours, 2 waiting for the digest, 1 uncertain (24 h)"
+        "Alerts: 1 queued, 2 held for quiet hours or cap, "
+        "2 waiting for the digest, 1 uncertain (24 h)"
     )
     assert report.as_dict()["notifications"]["batched"] == 2
 

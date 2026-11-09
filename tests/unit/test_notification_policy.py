@@ -261,9 +261,9 @@ def test_normal_and_low_are_batched_by_default(priority: Priority, now: datetime
 
 
 @pytest.mark.parametrize("now", [LATE_EVENING, SMALL_HOURS])
-def test_quiet_hours_batch_non_urgent_into_the_digest(now: datetime) -> None:
+def test_quiet_hours_hold_high_alerts_until_they_end(now: datetime) -> None:
     assert decide(AFTERNOON) == IMMEDIATE
-    assert decide(now) == batch("quiet_hours")
+    assert decide(now) == DeliveryDecision(Verdict.DEFER, QUIET_ENDS, "quiet_hours")
 
 
 @pytest.mark.parametrize("now", [LATE_EVENING, SMALL_HOURS])
@@ -323,10 +323,15 @@ def test_urgent_bypasses_quiet_hours_only_when_enabled() -> None:
     assert decide(SMALL_HOURS, urgent, bypass) == IMMEDIATE
     assert decide(SMALL_HOURS, urgent).verdict == Verdict.DEFER
     # The owner's bypass is for urgent alerts only.
-    assert decide(SMALL_HOURS, settings=bypass) == batch("quiet_hours")
+    assert decide(SMALL_HOURS, settings=bypass) == DeliveryDecision(
+        Verdict.DEFER, QUIET_ENDS, "quiet_hours"
+    )
     # Bypassing quiet hours does not bypass the cap.
-    capped = RecentLoad(immediate_last_hour=6, suspicious_from_contact_24h=0)
-    assert decide(SMALL_HOURS, urgent, bypass, capped) == batch("cap")
+    retry_at = SMALL_HOURS + timedelta(minutes=10)
+    capped = RecentLoad(immediate_last_hour=6, suspicious_from_contact_24h=0, cap_retry_at=retry_at)
+    assert decide(SMALL_HOURS, urgent, bypass, capped) == DeliveryDecision(
+        Verdict.DEFER, retry_at, "cap"
+    )
 
 
 def test_a_monitor_spec_can_bypass_quiet_hours() -> None:
@@ -334,7 +339,9 @@ def test_a_monitor_spec_can_bypass_quiet_hours() -> None:
     asked = replace(monitor, bypass_quiet_hours=True)
 
     assert decide(SMALL_HOURS, asked) == IMMEDIATE
-    assert decide(SMALL_HOURS, monitor) == batch("quiet_hours")
+    assert decide(SMALL_HOURS, monitor) == DeliveryDecision(
+        Verdict.DEFER, QUIET_ENDS, "quiet_hours"
+    )
     urgent_asked = replace(asked, priority=Priority.URGENT)
     assert decide(SMALL_HOURS, urgent_asked) == IMMEDIATE
 
@@ -388,13 +395,14 @@ def test_an_end_in_the_skipped_hour_is_never_early() -> None:
 
 
 @pytest.mark.parametrize("priority", [Priority.HIGH, Priority.URGENT])
-def test_the_hourly_cap_batches_every_standard_alert_over_it(priority: Priority) -> None:
+def test_the_hourly_cap_holds_important_alerts_until_a_slot_expires(priority: Priority) -> None:
     facts = replace(FACTS, priority=priority)
     under = RecentLoad(immediate_last_hour=5, suspicious_from_contact_24h=0)
-    at_cap = RecentLoad(immediate_last_hour=6, suspicious_from_contact_24h=0)
+    retry_at = AFTERNOON + timedelta(minutes=10)
+    at_cap = RecentLoad(immediate_last_hour=6, suspicious_from_contact_24h=0, cap_retry_at=retry_at)
 
     assert decide(AFTERNOON, facts, load=under) == IMMEDIATE
-    assert decide(AFTERNOON, facts, load=at_cap) == batch("cap")
+    assert decide(AFTERNOON, facts, load=at_cap) == DeliveryDecision(Verdict.DEFER, retry_at, "cap")
 
 
 # --- inputs ------------------------------------------------------------------

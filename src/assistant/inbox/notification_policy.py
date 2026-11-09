@@ -73,6 +73,9 @@ class RecentLoad:
     immediate_last_hour: int
     #: Earlier suspicious alerts about this contact in the last 24 h.
     suspicious_from_contact_24h: int
+    #: Next instant a counted send/claim leaves the hourly window. Delivery
+    #: re-checks the cap then: settings or other claims may have changed.
+    cap_retry_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,13 +115,12 @@ def decide_delivery(
 
     quiet_until = _quiet_period_end(settings, now)
     if quiet_until is not None and not _bypasses_quiet_hours(facts, settings, priority):
-        if priority == Priority.HIGH:
-            return _decision(Verdict.BATCH, "quiet_hours")
-        # Held, never dropped: the owner sees it when the quiet hours end.
+        # D-S8: important alerts reach the owner even with the digest off.
         return DeliveryDecision(Verdict.DEFER, quiet_until, "quiet_hours")
 
     if load.immediate_last_hour >= settings.cap_per_hour:
-        return _decision(Verdict.BATCH, "cap")
+        retry_at = load.cap_retry_at or now + timedelta(minutes=1)
+        return DeliveryDecision(Verdict.DEFER, retry_at, "cap")
     return _decision(Verdict.IMMEDIATE, "immediate")
 
 

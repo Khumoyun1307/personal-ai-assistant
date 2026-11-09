@@ -11,20 +11,27 @@ from tests.scenarios.m05_drive import M05Scenario, advance, run_queued
 pytestmark = pytest.mark.integration
 
 
-async def test_quiet_hours_move_non_urgent_alerts_to_the_digest(m05: M05Scenario) -> None:
+async def test_quiet_hours_hold_high_alerts_for_direct_delivery(m05: M05Scenario) -> None:
     await m05.preferences(quiet_hours="00:00-23:59")
     await m05.alert()
     await run_queued(m05, "notify.deliver")
     [row] = await m05.rows(Notification)
-    assert (row.status, row.reason_code) == ("batched", "quiet_hours")
+    assert (row.status, row.reason_code) == ("queued", "quiet_hours")
+    assert row.deliver_after is not None
     assert m05.env.sender.sends == []
     await advance(m05, 60)
     await m05.job("digest.build", account_id=m05.account_id, period_end=m05.date)
     [row] = await m05.rows(Notification)
     [digest] = await m05.rows(Digest)
-    assert row.digest_id == digest.id
+    assert row.digest_id is None  # a digest preview does not consume the hold
     assert digest.status == "sent"
     assert len(m05.env.sender.sends) == 1
+    assert row.deliver_after is not None
+    m05.env.clock.set(row.deliver_after)
+    await run_queued(m05, "notify.deliver")
+    [row] = await m05.rows(Notification)
+    assert row.status == "sent"
+    assert len(m05.env.sender.sends) == 2
 
 
 async def test_urgent_bypasses_quiet_hours_only_when_enabled(m05: M05Scenario) -> None:
@@ -44,15 +51,20 @@ async def test_urgent_bypasses_quiet_hours_only_when_enabled(m05: M05Scenario) -
     assert len(m05.env.sender.sends) == 1
 
 
-async def test_the_hourly_cap_batches_extra_standard_alerts(m05: M05Scenario) -> None:
+async def test_the_hourly_cap_defers_extra_standard_alerts(m05: M05Scenario) -> None:
     await m05.preferences(quiet_hours="off", alert_cap_per_hour=2)
     for i in range(3):
         await m05.alert(key=f"cap:{i}")
         await run_queued(m05, "notify.deliver")
     rows = await m05.rows(Notification)
-    assert [r.status for r in rows] == ["sent", "sent", "batched"]
+    assert [r.status for r in rows] == ["sent", "sent", "queued"]
     assert rows[-1].reason_code == "cap"
     assert len(m05.env.sender.sends) == 2
+    assert rows[-1].deliver_after is not None
+    m05.env.clock.set(rows[-1].deliver_after)
+    await run_queued(m05, "notify.deliver")
+    assert [r.status for r in await m05.rows(Notification)] == ["sent", "sent", "sent"]
+    assert len(m05.env.sender.sends) == 3
 
 
 async def test_a_system_alert_is_delivered_during_quiet_hours_with_the_cap_reached(

@@ -222,11 +222,9 @@ async def build_digest(
     timezone = await session.scalar(select(Account.timezone).where(Account.id == account_id))
     if timezone is None:
         raise NotInAccountError("account not found")
-    # An alert no digest carried is still news up to the longest period, even
-    # when the digest before failed (it never linked its alerts).
-    batched = await notifications_batched_since(
-        session, account_id=account_id, since=period_end - MAX_PERIOD
-    )
+    # Unseen batches can outlive the digest's activity period (D-S8),
+    # within the unchanged 30-day alert retention limit.
+    batched = await notifications_batched_since(session, account_id=account_id, before=period_end)
     held = await _held_needs_you(session, account_id, period_start, period_end)
     needs_you_alerts = [
         n for n in (*batched, *held) if n.kind in NEEDS_YOU_KINDS and n.conversation_id is not None
@@ -313,7 +311,7 @@ def _first_reason(reasons: Sequence[str]) -> str | None:
 async def _held_needs_you(
     session: AsyncSession, account_id: int, period_start: datetime, period_end: datetime
 ) -> list[NotificationView]:
-    """Urgent/decision alerts of the period still held (quiet hours): they
+    """Urgent/decision alerts of the period still held (quiet hours or cap): they
     are delivered when the hold ends, and listed here meanwhile."""
     rows = (
         await session.execute(
