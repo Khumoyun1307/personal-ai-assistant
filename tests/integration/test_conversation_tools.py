@@ -307,6 +307,11 @@ GET_ARGS: dict[str, Any] = {
         ("list_conversations", {**LIST_ARGS, "contact_id": 0}),
         ("list_conversations", {**LIST_ARGS, "contact_id": -5}),
         ("get_conversation", {**GET_ARGS, "conversation_id": 2**63}),
+        ("get_conversation", {**GET_ARGS, "conversation_id": 1, "message_id": 0}),
+        (
+            "get_conversation",
+            {**GET_ARGS, "conversation_id": 1, "message_id": 1, "limit": 1},
+        ),
         # J: a cursor that is not a next_cursor value.
         ("get_conversation", {**GET_ARGS, "conversation_id": 1, "cursor": "12; DROP"}),
         ("get_conversation", {**GET_ARGS, "conversation_id": 1, "cursor": "5"}),
@@ -328,7 +333,7 @@ async def test_schema_valid_but_semantically_invalid_arguments_are_refused(
 async def test_another_accounts_ids_are_not_found(migrated_url: str) -> None:
     other = 7000000002
     async with environment(migrated_url, owner_ids=frozenset({OWNER, other})) as env:
-        await seed(env)
+        ours = await seed(env)
         await onboard(env, other)
         await deliver(env, connection_update(user_id=other, connection_id="synthetic-conn-b"))
         await deliver(
@@ -345,6 +350,9 @@ async def test_another_accounts_ids_are_not_found(migrated_url: str) -> None:
         )
         their_contact = await one_id(
             env, "SELECT id FROM app.contacts WHERE telegram_user_id = 7000000077"
+        )
+        their_message = await one_id(
+            env, "SELECT id FROM app.messages WHERE conversation_id = :c", c=theirs
         )
         turn = await ask(env, "Show me that chat")
         fake = FakeLLM(
@@ -377,17 +385,104 @@ async def test_another_accounts_ids_are_not_found(migrated_url: str) -> None:
                         limit=None,
                     ),
                 ),
+                (
+                    "c4",
+                    "get_conversation",
+                    args(**{**GET_ARGS, "conversation_id": ours, "message_id": their_message}),
+                ),
             ),
             text_response("ok"),
         )
         await runtime(env, fake, FakeChannel()).run(turn)
-        assert [r["status"] for r in results(fake.requests[1])] == ["error", "error", "error"]
+        assert [r["status"] for r in results(fake.requests[1])] == ["error"] * 4
         assert all(r["reason"] == "not found" for r in results(fake.requests[1]))
         assert "OTHER-SYNTH" not in request_texts(fake.requests[1])
 
 
+@pytest.mark.parametrize("length", [1200, 1800])
+async def test_read_one_retained_message_by_id_with_explicit_cap(env: Env, length: int) -> None:
+    value = "Synthetic retained text. " * (length // 25) + "END"
+    conversation_id = await seed(env, message_text=value)
+    message_id = await one_id(
+        env, "SELECT id FROM app.messages WHERE conversation_id = :c", c=conversation_id
+    )
+    await deliver(
+        env,
+        business_message(message_id=12, message_text="Newer synthetic message", date=T_BASE + 1),
+    )
+    turn = await ask(env, "Read that message")
+    fake = FakeLLM(
+        tool_response(
+            (
+                "c1",
+                "get_conversation",
+                args(**{**GET_ARGS, "conversation_id": conversation_id, "message_id": message_id}),
+            )
+        ),
+        text_response("Read it."),
+    )
+    await runtime(env, fake, FakeChannel()).run(turn)
+    [found] = results(fake.requests[1])
+    assert found["status"] == "ok"
+    [message] = found["messages"]
+    assert message["message_id"] == message_id
+    assert value[:1500] in message["text"]
+    assert message["text_truncated"] is (len(value) > 1500)
+    assert '<untrusted source="contact"' in message["text"]
+    assert found["next_cursor"] is None
+    assert (await run_row(env)).tainted is True
+
+
+async def test_single_message_read_without_consent_is_withheld(env: Env) -> None:
+    conversation_id = await seed(env, managed=False, message_text="SYNTHETIC-WITHHELD")
+    message_id = await one_id(
+        env, "SELECT id FROM app.messages WHERE conversation_id = :c", c=conversation_id
+    )
+    turn = await ask(env, "Read that message")
+    fake = FakeLLM(
+        tool_response(
+            (
+                "c1",
+                "get_conversation",
+                args(**{**GET_ARGS, "conversation_id": conversation_id, "message_id": message_id}),
+            )
+        ),
+        text_response("Chat access is off."),
+    )
+    await runtime(env, fake, FakeChannel()).run(turn)
+    assert results(fake.requests[1])[0]["status"] == CHAT_ACCESS_OFF
+    assert "SYNTHETIC-WITHHELD" not in request_texts(fake.requests[1])
+    assert (await run_row(env)).tainted is False
+
+
+async def test_search_excerpt_shows_the_tail_match(env: Env) -> None:
+    await seed(env, message_text="Synthetic introduction. " * 70 + "Шаҳарга учрашув")
+    turn = await ask(env, "Find the meeting")
+    fake = FakeLLM(
+        tool_response(
+            (
+                "c1",
+                "search_messages",
+                args(**{**SEARCH_ARGS, "queries": ["shaharga uchrashuv"]}),
+            )
+        ),
+        text_response("Found it."),
+    )
+    await runtime(env, fake, FakeChannel()).run(turn)
+    [found] = results(fake.requests[1])
+    [hit] = found["results"]
+    assert "Шаҳарга учрашув" in hit["text"]
+    # The untrusted wrapper's NFKC normalization expands the omission marker.
+    assert "..." in hit["text"]
+    assert '<untrusted source="contact"' in hit["text"]
+
+
 def test_the_registry_offers_read_tools_only_with_flag_consent_and_run_type() -> None:
     registry = default_registry()
+    get_tool = next(tool for tool in registry.all() if tool.name == "get_conversation")
+    schema = get_tool.spec().parameters
+    assert "message_id" in schema["required"]
+    assert "default" not in schema["properties"]["message_id"]
 
     def offered(**kwargs: Any) -> set[str]:
         values: dict[str, Any] = {

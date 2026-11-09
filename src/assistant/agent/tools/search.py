@@ -46,6 +46,7 @@ from assistant.conversations.models import Contact
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.memory.retrieval import MAX_LIMIT, MAX_QUERIES, SearchFilters, search_messages
+from assistant.memory.search import search_excerpt
 
 RELEASE_FLAG = "tool.search_messages"
 SNIPPET_LIMIT = 400
@@ -164,7 +165,17 @@ async def search_messages_tool(ctx: ToolContext, args: SearchMessagesArgs) -> To
             "contact_name": name(names.get(hit.contact_id)),
             "from": DIRECTION_LABELS.get(hit.direction, hit.direction),
             "sent_at": local_time(hit.sent_at, account.timezone),
-            "text": message_text(hit.text, hit.direction, limit=SNIPPET_LIMIT),
+            "text": message_text(
+                search_excerpt(
+                    hit.text,
+                    list(dict.fromkeys([hit.matched_query, *result.searched]))
+                    if hit.matched_query is not None
+                    else result.searched,
+                    limit=SNIPPET_LIMIT,
+                ),
+                hit.direction,
+                limit=SNIPPET_LIMIT,
+            ),
         }
         for hit in result.hits
     ]
@@ -210,9 +221,11 @@ SEARCH_MESSAGES = ToolDefinition(
         "question as several short phrases in different scripts and languages (Uzbek "
         "Latin, Uzbek Cyrillic, Russian, English). Optional filters: one contact "
         "(use resolve_contact first for a name), one conversation, a date range. "
-        "Returns the best matches with message_id, contact, time and text, plus coverage "
+        "Returns the best matches with message_id, contact, time and match-centred text "
+        "excerpts (at most 400 characters), plus coverage "
         "limits. If nothing matches in the chosen contact's or conversation's chat, all "
-        "chats are searched and the result says widened: true."
+        "chats are searched and the result says widened: true. Use get_conversation "
+        "with conversation_id and message_id to read a retained message beyond its excerpt."
     ),
     args_model=SearchMessagesArgs,
     capability=CapabilityClass.READ,

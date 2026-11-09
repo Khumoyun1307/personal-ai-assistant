@@ -284,13 +284,16 @@ async def conversation_page(
     *,
     before: tuple[datetime, int] | None = None,
     limit: int = 30,
+    message_id: int | None = None,
 ) -> ConversationPage:
     """One page of a conversation's retained messages, newest page first.
 
     Keyset pagination on `(sent_at, id)`, the order the page is read in, so
     a message whose id is out of step with its date (a re-queued dead
     letter: a new id for an old message) is neither skipped nor repeated.
-    Raises `NotInAccountError` for an id that is unknown or another account's.
+    With `message_id`, read just that retained message in this conversation.
+    Raises `NotInAccountError` for an id that is unknown or another account's,
+    or a selected message that is not retained in this conversation.
     """
     limit = max(1, min(limit, MAX_PAGE))
     pair = (
@@ -314,7 +317,9 @@ async def conversation_page(
         .where(Message.sent_at.is_not(None))
         .where((Message.text.is_not(None)) | (Message.media.is_not(None)))
     )
-    if before is not None:
+    if message_id is not None:
+        statement = statement.where(Message.id == message_id)
+    elif before is not None:
         statement = statement.where(tuple_(Message.sent_at, Message.id) < tuple_(*before))
     rows = list(
         (
@@ -326,6 +331,8 @@ async def conversation_page(
         .all()
     )
     more = len(rows) > limit
+    if message_id is not None and not rows:
+        raise NotInAccountError("retained message not found in this conversation")
     rows = rows[:limit]
     messages = tuple(
         PageMessage(

@@ -4,13 +4,15 @@ pages with a cursor, coverage facts, the contact directory. Synthetic data."""
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import text, update
 
+from assistant.conversations.models import Message
 from assistant.conversations.read import (
     contact_directory,
     conversation_page,
     list_conversations,
 )
+from assistant.core.errors import NotInAccountError
 from tests.integration.business_env import (
     CONTACT,
     OTHER_CONTACT,
@@ -86,6 +88,41 @@ async def test_conversations_are_listed_by_latest_activity(env: Env) -> None:
         rows = await list_conversations(session, await account_id(env))
     assert [row.display_name for row in rows] == ["Bobur", "Aziza"]
     assert all(row.retained_messages == 1 for row in rows)
+
+
+@pytest.mark.parametrize("state", ["deleted", "purged", "other_chat", "unknown"])
+async def test_selected_message_must_be_retained_in_the_selected_chat(env: Env, state: str) -> None:
+    await connect(env)
+    await say(env, "Synthetic retained content", contact=CONTACT)
+    await say(env, "Synthetic other chat", contact=OTHER_CONTACT)
+    selected_chat = await conversation_id(env, CONTACT)
+    target_chat = (
+        await conversation_id(env, OTHER_CONTACT) if state == "other_chat" else selected_chat
+    )
+    owner_account = await account_id(env)
+    async with env.factory() as session, session.begin():
+        selected_message = int(
+            (
+                await session.execute(
+                    text("SELECT id FROM app.messages WHERE conversation_id = :c"),
+                    {"c": target_chat},
+                )
+            ).scalar_one()
+        )
+        if state in {"deleted", "purged"}:
+            values = {"deleted_at" if state == "deleted" else "purged_at": env.clock.now()}
+            await session.execute(
+                update(Message)
+                .where(Message.account_id == owner_account)
+                .where(Message.id == selected_message)
+                .values(**values)
+            )
+        if state == "unknown":
+            selected_message = 2**63 - 1
+        with pytest.raises(NotInAccountError):
+            await conversation_page(
+                session, owner_account, selected_chat, message_id=selected_message
+            )
 
 
 async def test_awaiting_reply_lists_only_chats_where_the_contact_spoke_last(env: Env) -> None:

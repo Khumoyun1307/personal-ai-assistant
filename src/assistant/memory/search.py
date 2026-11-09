@@ -172,6 +172,72 @@ def normalize(text: str) -> str:
     return folded
 
 
+def _original_offset(text: str, position: int, *, end: bool = False) -> int:
+    """Map a normalized position back without assuming transliteration is 1:1.
+
+    Normalize prefixes with the same context-dependent folding as the key.
+    Binary search avoids normalizing every prefix of a long message.
+    """
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high) // 2
+        length = len(normalize(text[:middle]))
+        if length < position or (not end and length == position):
+            low = middle + 1
+        else:
+            high = middle
+    return low if end else max(0, low - 1)
+
+
+def search_excerpt(text: str | None, queries: Sequence[str], *, limit: int) -> str | None:
+    """A bounded original-text window, including omission markers.
+
+    Queries are highest-ranked first (ties keep input order). Prefer a whole
+    normalized phrase at a token start, then the earliest matching content-term
+    prefix using the very same alternatives as tsquery. Trigram-only hits without a
+    locatable phrase or term fall back to the beginning.
+    """
+    if text is None or len(text) <= limit:
+        return text
+    key = normalize(text)
+    words = list(_TERM.finditer(key))
+    span: tuple[int, int] | None = None
+    for query in queries:
+        phrase = normalize(query)
+        # Like tsquery prefixes, phrases must start at a token, not inside
+        # an unrelated word (for example, "art" inside "party").
+        match = next(
+            (word for word in words if phrase and key.startswith(phrase, word.start())), None
+        )
+        if match is not None:
+            span = (match.start(), match.start() + len(phrase))
+            break
+    if span is None:
+        for query in queries:
+            alternatives = tuple(
+                alternative
+                for term in content_terms(query_terms(query))
+                for alternative in term_alternatives(term)
+            )
+            match = next((word for word in words if word.group().startswith(alternatives)), None)
+            if match is not None:
+                span = match.span()
+                break
+    if span is None:
+        return text[: limit - 1] + "…"
+    first = _original_offset(text, span[0])
+    last = _original_offset(text, span[1], end=True)
+    # Reserve both markers, then use any spare character at the boundaries.
+    budget = limit - 2
+    start = max(0, min(first - max(0, budget - (last - first)) // 2, len(text) - budget))
+    if start == 0:
+        budget += 1
+    stop = min(len(text), start + budget)
+    if stop == len(text) and start > 0:
+        start -= 1
+    return ("…" if start else "") + text[start:stop] + ("…" if stop < len(text) else "")
+
+
 # ------------------------------------------------------------------- queries
 #: Short suffixes stripped for a stem variant, longest first (one per term),
 #: each with the shortest stem it may leave. Uzbek case, possessive and plural
