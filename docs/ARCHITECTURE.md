@@ -1200,6 +1200,20 @@ Versioned in `docs/legal/privacy-policy.md`, registered with @BotFather, served 
 
 ### 15.2 Configuration
 
+Production optional non-secret tuning is inventoried once in
+`deploy/settings-manifest.txt`. `deploy/oci/push-env.sh` derives both accepted
+optional keys and their rendering order from it; explicit empty assignments
+are preserved (an empty effort omits the provider parameter), while absent
+keys keep defaults. Secrets, the required owner allowlist and generated/fixed
+stack settings retain separate handling. CI checks every `Settings` field
+against the manifest or an explicit dev-only/secret/required/generated/fixed
+classification and renders all manifest keys with synthetic inputs. Production
+settings remain managed through `just prod-env-push`. The post-deploy
+`p2-verify release` view loads `Settings` from the environment and prints only
+effective flag names and route models/efforts alongside its structural audit;
+`omitted` denotes no configured effort. Its one-off container reports current
+Compose settings; the app must also be restarted to apply a settings push.
+
 pydantic-settings reads environment variables (from `.env`, git-ignored; `.env.example` committed). Key settings: `BOT_TOKEN`, `OWNER_TELEGRAM_IDS`, `DATABASE_URL` (`postgresql+psycopg://…`) (procrastinate's PsycopgConnector receives a libpq DSN derived from it: `make_url(DATABASE_URL).set(drivername="postgresql").render_as_string(hide_password=False)`; unit-tested), `OPENAI_API_KEY`, `LLM_DEFAULT_MODEL`, route overrides, `LLM_MONTHLY_BUDGET_USD`, `HEARTBEAT_URL`, `APPROVAL_MAX_AGE` (default 12 h, bounded by the reply window), retention overrides.
 
 **Feature flags.** There is one convention: `FEATURE_FLAGS`, a comma-separated list of release-flag names (`core/flags.py`; every flag defaults off; tool flags are `tool.<name>`). Examples: `assist.drafts`, `triage.run`, `actions.send`. There are no per-feature `FEATURE_*` settings. The P3 flags are `autonomy.run`, `autonomy.send` (the single stop-the-line flag; off = shadow mode), `delegations.standing`, `reminders.run`, `followups.run`, `followups.nudge`, `scheduled_summaries.run`, `commitments.due_alerts`, `memory.extract`, `export.enabled`, `rating.weekly` and `monitors.p3_actions`, plus the P3 tool flags; their enable order is [P3-interfaces §10.3](engineering/p3/contracts/P3-interfaces.md).

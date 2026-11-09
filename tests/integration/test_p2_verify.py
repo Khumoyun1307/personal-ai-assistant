@@ -767,7 +767,9 @@ async def test_trial_check_reports_empty_history_and_respects_until(
     assert "total_sends=1" in scoped.stdout
 
 
-async def test_release_prints_flag_names_and_no_other_setting(env: Env, migrated_url: str) -> None:
+async def test_release_prints_routes_and_flags_without_unrelated_settings(
+    env: Env, migrated_url: str
+) -> None:
     async with transaction(env.factory) as uow:
         account = await seed_account(uow.session)
         chat = await seed_conversation(uow.session, account_id=account.id)
@@ -779,6 +781,9 @@ async def test_release_prints_flag_names_and_no_other_setting(env: Env, migrated
     assert "0014" in result.stdout
     assert "actions.send" in result.stdout
     assert "tool.get_activity" in result.stdout
+    assert "route=owner_request model=gpt-6-luna effort=medium\n" in result.stdout
+    assert "route=draft_reply model=gpt-6-luna effort=medium\n" in result.stdout
+    assert "route=triage model=gpt-6-luna effort=low\n" in result.stdout
     assert CANARY not in result.stdout + result.stderr
     assert "state=proposed count=1" in result.stdout
 

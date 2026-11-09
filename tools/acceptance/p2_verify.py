@@ -1,7 +1,8 @@
 """Content-free P2 views and the M04 send-history trial check.
 
 Run in the dev container or through deploy/server.sh p2-verify. Only ids,
-states, counts, timings and selected audit codes may reach stdout.
+states, counts, timings, selected audit codes and the explicit non-secret
+release projection (flags, route models and efforts) may reach stdout.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import psycopg
+
+from assistant.config import ROUTE_RUN_TYPES, Settings
 
 TABLES = (
     "actions",
@@ -183,12 +186,16 @@ def details(values: dict[str, Any]) -> str:
 
 
 def release(conn: psycopg.Connection[Any]) -> None:
+    # Load the same defaults/overrides as the app, without reading a local file.
+    # Only this explicit non-secret projection may reach the release report.
+    settings = Settings(_env_file=None)
     for (head,) in conn.execute("SELECT version_num FROM app.alembic_version ORDER BY version_num"):
         print(f"alembic={head}")
-    flags = sorted(
-        {v for v in os.environ.get("FEATURE_FLAGS", "").replace(" ", "").split(",") if v}
-    )
-    print("flags=" + ",".join(flags))
+    print("flags=" + ",".join(sorted(settings.feature_flags)))
+    for route in ROUTE_RUN_TYPES:
+        model = settings.model_routes.model_for(route)
+        effort = getattr(settings, f"llm_{route}_effort", None)
+        print(f"route={route} model={model} effort={effort if effort is not None else 'omitted'}")
     for table in TABLES:
         row = conn.execute("SELECT to_regclass(%s) IS NOT NULL", (f"app.{table}",)).fetchone()
         present = bool(row and row[0])

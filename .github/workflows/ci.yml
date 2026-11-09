@@ -154,6 +154,9 @@ jobs:
           docker run --rm -v "$PWD:/mnt:ro" -w /mnt koalaman/shellcheck:v0.11.0 \
             -x -P SCRIPTDIR $(git ls-files '*.sh') .githooks/pre-commit
 
+      - name: Production settings push (synthetic inputs only)
+        run: bash deploy/smoke/push-env-smoke.sh
+
       # Production compose with placeholder secrets: backup.sh once, decrypt
       # with a throwaway age key, pg_restore into a scratch database, failure
       # and off-site sync semantics. Uses the default Docker builder, so it

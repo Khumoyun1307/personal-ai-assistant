@@ -3,6 +3,7 @@
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import psycopg
 import pytest
@@ -10,6 +11,35 @@ from tools.acceptance import p2_verify
 from tools.acceptance.p2_verify import details
 
 from assistant.actions.states import ActionState, StateReason
+from assistant.config import ROUTE_RUN_TYPES, Settings
+
+
+@pytest.mark.parametrize("effort", ["high", ""])
+def test_release_reports_effective_routes_efforts_and_flags_without_secrets(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    effort: str,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://private-db-canary/db")
+    monkeypatch.setenv("BOT_TOKEN", "private-token-canary")
+    monkeypatch.setenv("OPENAI_API_KEY", "private-key-canary")
+    monkeypatch.setenv("HEARTBEAT_URL", "https://private-heartbeat-canary.example")
+    monkeypatch.setenv("LLM_ROUTE_OWNER_REQUEST_MODEL", "gpt-synthetic-override")
+    monkeypatch.setenv("LLM_DEFAULT_MODEL", "gpt-synthetic-default")
+    monkeypatch.setenv("LLM_DRAFT_REPLY_EFFORT", effort)
+    monkeypatch.setenv("FEATURE_FLAGS", "tool.get_status,actions.send")
+    settings = Settings(_env_file=None)
+    p2_verify.release(MagicMock())
+    output = capsys.readouterr().out
+    assert "flags=actions.send,tool.get_status\n" in output
+    for route in ROUTE_RUN_TYPES:
+        model = settings.model_routes.model_for(route)
+        effective_effort = getattr(settings, f"llm_{route}_effort", None)
+        label = "omitted" if effective_effort is None else effective_effort
+        assert f"route={route} model={model} effort={label}\n" in output
+    assert "route=owner_request model=gpt-synthetic-override effort=medium\n" in output
+    assert "private-" not in output
 
 
 def test_verifier_state_and_reason_allowlists_match_the_lifecycle() -> None:

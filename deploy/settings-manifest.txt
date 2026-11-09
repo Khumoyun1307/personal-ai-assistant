@@ -1,0 +1,32 @@
+# Optional non-secret production settings accepted from the operator's file.
+# One KEY per line, no values, inline comments or shell syntax. Order here is
+# the output order. Settings not provided retain push-env/app defaults;
+# explicit empty values are preserved (e.g. an effort cleared to send none).
+# Secrets, the required owner allowlist and generated/fixed stack settings
+# stay on their existing paths in deploy/oci/push-env.sh.
+LOG_LEVEL
+LLM_DEFAULT_MODEL
+LLM_MONTHLY_BUDGET_USD
+LLM_ROUTE_OWNER_REQUEST_MODEL
+LLM_ROUTE_TRIAGE_MODEL
+LLM_ROUTE_DRAFT_REPLY_MODEL
+LLM_ROUTE_SUMMARIZE_MODEL
+LLM_ROUTE_EXTRACT_MEMORY_MODEL
+LLM_ROUTE_EVALUATE_MONITOR_MODEL
+LLM_ROUTE_INTERPRET_INSTRUCTION_MODEL
+LLM_OWNER_REQUEST_EFFORT
+LLM_SUMMARIZE_EFFORT
+LLM_DRAFT_REPLY_EFFORT
+LLM_TRIAGE_EFFORT
+LLM_EVALUATE_MONITOR_EFFORT
+FEATURE_FLAGS
+SUMMARY_REFRESH_DEBOUNCE_MINUTES
+SUMMARY_REFRESH_MAX_WAIT_HOURS
+APPROVAL_MAX_AGE_HOURS
+DRAFT_DEBOUNCE_SECONDS
+TRIAGE_DEBOUNCE_SECONDS
+MONITOR_DEBOUNCE_SECONDS
+MARK_UNCERTAIN_AFTER_SECONDS
+CONNECTION_STALE_ALERT_MINUTES
+PRIVACY_POLICY_URL
+BACKUP_HOUR_UTC
