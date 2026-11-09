@@ -5,7 +5,7 @@ control chat and a connected business bot on the owner's account. See
 [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md) for the vision and
 [AGENTS.md](AGENTS.md) for the rules every change must follow.
 
-**Status:** M02 (Account connection & observation) — S02.1–S02.5 merged; S02.6 production hardening merged 2026-10-23 (PR #8). Remaining for M02: the privacy-policy/consent PR (policy v4), provisioning the production server (Oracle Cloud, US East Ashburn) and the R0 live session (docs/milestones/M02.md). Two bots: **Alviro** is production-only and polled only by the server; local runs use a separate dev bot (AGENTS §9).
+**Status (2026-11-09):** Stabilization of M02–M05 is approved; M04/M05 acceptance remains open and P3 is on hold. See the maintained [release and privacy record](docs/RELEASE.md) for last recorded production values, merged repairs and owner actions. Two bots: **Alviro** is production-only and polled only by the server; local runs use a separate dev bot (AGENTS §9).
 
 ## Development
 
@@ -36,3 +36,4 @@ configuration with `just healthcheck`, which reports setting *names* only.
 | What to build | [docs/PRODUCT_REQUIREMENTS.md](docs/PRODUCT_REQUIREMENTS.md) |
 | How it is built | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | In what order | [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) |
+| Current release, privacy and acceptance | [docs/RELEASE.md](docs/RELEASE.md) |
