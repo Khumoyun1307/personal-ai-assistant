@@ -15,10 +15,15 @@ from assistant.agent.persistence import DbConsentReader
 from assistant.conversations.models import Message
 from assistant.db.models import KEY_RESTORE_PENDING, SystemState
 from assistant.db.uow import transaction
+from assistant.inbox.backup_check import deliver_restore_notice
+from assistant.inbox.connection_alerts import notify_connection_change, send_managed_consent_card
+from assistant.inbox.notify import OwnerAlerts
 from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.port import LLMRequest, Provenance, TextItem
 from assistant.privacy import post_restore as recovery
 from assistant.privacy.deletion import delete_managed_data
+from assistant.telegram.ingress.writer import write_batch
+from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response
 from tests.integration.business_env import (
     OWNER,
@@ -27,6 +32,7 @@ from tests.integration.business_env import (
     callback,
     connect,
     deliver,
+    events,
     grant_managed,
     own_card,
     press_own,
@@ -57,6 +63,19 @@ def request(account_id: int, *, managed: bool = False) -> LLMRequest:
         max_output_tokens=100,
         timeout_seconds=10,
     )
+
+
+async def agree_to_current_prompt(env: Env) -> None:
+    async with env.factory() as session:
+        prompt_id = await session.scalar(
+            select(PendingInput.prompt_message_id)
+            .join(Account, Account.id == PendingInput.account_id)
+            .where(Account.telegram_user_id == OWNER, PendingInput.kind == "onboarding_consent")
+        )
+        assert prompt_id is not None
+    reply = private_message(OWNER, "yes")
+    reply["message"]["message_id"] = prompt_id + 1
+    await deliver(env, reply)
 
 
 async def test_rg08_restored_revocation_and_deleted_content_need_fresh_control_chat_consent(
@@ -130,7 +149,7 @@ async def test_rg08_restored_revocation_and_deleted_content_need_fresh_control_c
     assert "revocations" in prompt
     assert "/settings" in prompt
     assert "/privacy revoke" in prompt
-    await deliver(env, private_message(OWNER, "yes"))
+    await agree_to_current_prompt(env)
     await gated.complete(request(account_id))
     # Control consent never implicitly re-enables processing managed text.
     with pytest.raises(ConsentMissingError):
@@ -199,7 +218,7 @@ async def test_restore_reconsent_is_account_scoped(env: Env) -> None:
         )
     await recovery.post_restore(env.factory, env.clock, backup_taken_at=env.clock.now())
     await deliver(env, private_message(OWNER, "/start"))
-    await deliver(env, private_message(OWNER, "yes"))
+    await agree_to_current_prompt(env)
     gated = ConsentGatedLLMClient(FakeLLM(), DbConsentReader(env.factory))
     with pytest.raises(ConsentMissingError):
         await gated.complete(request(other_id))
@@ -212,3 +231,135 @@ async def test_restore_reconsent_is_account_scoped(env: Env) -> None:
         assert not (
             await service.active_consent(session, other_id, kind=service.CONSENT_AI_CONTROL)
         ).granted
+
+
+@pytest.mark.parametrize("reply_offset", [-1, 0])
+async def test_restored_inbox_reply_cannot_answer_a_new_consent_prompt(
+    env: Env, reply_offset: int
+) -> None:
+    await connect(env)
+    async with env.factory() as session:
+        account_id = await session.scalar(
+            select(Account.id).where(Account.telegram_user_id == OWNER)
+        )
+        assert account_id is not None
+    taken_at = env.clock.now()
+    # The snapshot includes unprocessed /start + yes. The fake sender's
+    # next id is 10001, just as a real newly delivered prompt follows the
+    # restored messages in the same control chat.
+    env.sender._next_message_id = 10000
+    start = private_message(OWNER, "/start")
+    start["message"]["message_id"] = 9000
+    old_yes = private_message(OWNER, "yes")
+    old_yes["message"]["message_id"] = 10001 + reply_offset
+    async with transaction(env.factory) as uow:
+        await write_batch(uow.session, bot_id=env.bot_id, updates=[start, old_yes])
+    env.clock.advance(hours=1)
+    await recovery.post_restore(env.factory, env.clock, backup_taken_at=taken_at)
+    # Replaying /start sends a NEW prompt, but the next inbox row is still
+    # the old yes. Processing time must not turn it into a fresh decision.
+    await env.processor.process_batch()
+    fake = FakeLLM(text_response("Synthetic answer"))
+    gated = ConsentGatedLLMClient(fake, DbConsentReader(env.factory))
+    with pytest.raises(ConsentMissingError):
+        await gated.complete(request(account_id))
+    assert fake.requests == []
+    async with env.factory() as session:
+        pending = await service.get_pending_input(session, account_id=account_id, clock=env.clock)
+        assert pending is not None
+        assert pending.prompt_message_id == 10001
+        assert pending.kind == "onboarding_consent"
+    # The stale reply neither grants nor consumes the new question. A new
+    # owner reply after that prompt can renew consent without another /start.
+    fresh_yes = private_message(OWNER, "yes")
+    fresh_yes["message"]["message_id"] = 10002
+    await deliver(env, fresh_yes)
+    await gated.complete(request(account_id))
+
+
+async def test_restore_consent_without_a_prompt_id_stays_quarantined(env: Env) -> None:
+    await connect(env)
+    await recovery.post_restore(env.factory, env.clock, backup_taken_at=env.clock.now())
+    await deliver(env, private_message(OWNER, "/start"))
+    async with transaction(env.factory) as uow:
+        account_id = await uow.session.scalar(
+            select(Account.id).where(Account.telegram_user_id == OWNER)
+        )
+        assert account_id is not None
+        pending = await service.get_pending_input(
+            uow.session, account_id=account_id, clock=env.clock
+        )
+        assert pending is not None
+        pending.prompt_message_id = None
+    await deliver(env, private_message(OWNER, "yes"))
+    fake = FakeLLM()
+    gated = ConsentGatedLLMClient(fake, DbConsentReader(env.factory))
+    with pytest.raises(ConsentMissingError):
+        await gated.complete(request(account_id))
+    assert fake.requests == []
+    async with env.factory() as session:
+        assert await service.get_pending_input(session, account_id=account_id, clock=env.clock)
+
+
+def assert_privacy_warning(prompt: str) -> None:
+    assert "deletions" in prompt.lower()
+    assert "revocations" in prompt
+    assert "after the backup time may have been undone" in prompt
+    assert "/settings → Delete data" in prompt
+    assert "/privacy revoke" in prompt
+
+
+@pytest.mark.parametrize("language", ["en", "uz_latn", "uz_cyrl", "ru"])
+async def test_restore_language_picker_consent_repeats_warning_when_notice_fails(
+    env: Env, language: str
+) -> None:
+    await connect(env)
+    async with transaction(env.factory) as uow:
+        account = (
+            await uow.session.scalars(select(Account).where(Account.telegram_user_id == OWNER))
+        ).one()
+        account.locale_pref = None
+    await recovery.post_restore(env.factory, env.clock, backup_taken_at=env.clock.now())
+    channel = FakeChannel(deliver=False)
+    alerts = OwnerAlerts(env.factory, channel, env.clock)
+    assert not await deliver_restore_notice(env.factory, alerts)
+    await deliver(env, private_message(OWNER, "/start"))
+    await press_own(env, "onb_lang", language)
+    assert_privacy_warning(env.sender.texts[-1])
+    async with env.factory() as session:
+        pending = await service.get_pending_input(session, account_id=account.id, clock=env.clock)
+        assert pending is not None
+        assert pending.prompt_message_id is not None
+
+
+@pytest.mark.parametrize("entry_point", ["connection_notice", "agent_card", "command"])
+async def test_restore_managed_consent_entry_points_repeat_warning_when_notice_fails(
+    env: Env, entry_point: str
+) -> None:
+    await connect(env)
+    await recovery.post_restore(env.factory, env.clock, backup_taken_at=env.clock.now())
+    channel = FakeChannel(deliver=False)
+    alerts = OwnerAlerts(env.factory, channel, env.clock)
+    assert not await deliver_restore_notice(env.factory, alerts)
+    channel.deliver = True
+    async with env.factory() as session:
+        account_id = await session.scalar(
+            select(Account.id).where(Account.telegram_user_id == OWNER)
+        )
+        assert account_id is not None
+    if entry_point == "connection_notice":
+        event = (await events(env))[-1]
+        assert (await notify_connection_change(env.factory, env.clock, alerts, event.id)).sent
+        prompt = channel.sends[-1]
+    elif entry_point == "agent_card":
+        result = await send_managed_consent_card(
+            env.factory, env.clock, channel, account_id=account_id, chat_id=OWNER
+        )
+        assert result is not None
+        assert result.ok
+        prompt = channel.sends[-1]
+    else:
+        await deliver(env, private_message(OWNER, "/privacy managed"))
+        prompt = env.sender.texts[-1]
+    assert_privacy_warning(prompt)
+    assert await own_card(env, service.MANAGED_CONSENT_CARD) is not None

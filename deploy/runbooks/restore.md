@@ -103,8 +103,13 @@ live acceptance requirement.
    for a deterministic control-chat consent prompt, and `/privacy managed`
    only if AI should read connected chats again. Each scope requires fresh
    agreement; renewing one account or scope never renews another. The
-   warning is repeated at the consent prompt if the restore notice was
-   missed. `/status` names any scopes still in `restore_consent_pending`.
+   warning is repeated at every consent prompt if the restore notice was
+   missed, including after choosing a language and on connection-triggered
+   or owner-request-triggered managed-consent cards. For control consent,
+   send a new answer after the newly delivered question. Restored inbox
+   replies that predate that prompt are ignored and leave the question
+   open; replaying an old `/start` followed by an old `yes` cannot renew
+   consent. `/status` names any scopes still in `restore_consent_pending`.
    Automatic replay of privacy decisions outside the snapshot is a later
    I20 design; this procedure does not recover or prove those decisions.
 6. The owner deletes `var/cloud/age-identity.txt` from the laptop again.

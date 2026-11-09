@@ -29,17 +29,6 @@ from zoneinfo import ZoneInfo
 
 from assistant.agent.locales import SupportedLocale, supported_locale
 
-#: Deterministic recovery warning, shown before either fresh consent scope.
-#: Translation review is part of the stabilization wording unit (I22).
-RESTORE_PRIVACY_WARNING = (
-    "AI processing was blocked after a restore. Deletions and consent revocations "
-    "made after the backup time may have been undone. Before agreeing again, "
-    "redo deletions in /settings → Delete data (or /privacy delete for everything), "
-    "and redo consent revocations with /privacy revoke. "
-    "Use /start to renew consent for this control chat, then /privacy managed "
-    "only if you want AI to read connected chats again."
-)
-
 #: The picker's options, as `(callback op, stored tag, label)`. Ops are
 #: callback-safe (`accounts/callbacks.py`); each label is in its own
 #: language. Uzbek Latin uses U+02BB in oʻ (M01 D13).
