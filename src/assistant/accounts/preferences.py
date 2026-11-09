@@ -76,7 +76,8 @@ REPLY_DEFAULTS = {
 M05_DEFAULTS: dict[str, str | int | bool] = {
     "quiet_hours": "23:00-08:00",
     "urgent_bypass": False,
-    "digest_time": "21:00",
+    # Off until the owner chooses a time (owner decision 2026-11-09).
+    "digest_time": "off",
     "alert_cap_per_hour": 6,
 }
 #: Owner-facing names of the fields.

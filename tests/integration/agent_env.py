@@ -86,6 +86,11 @@ S035_PREFS_UNCHANGED: dict[str, None] = {
     "message_retention_days": None,
     "control_chat_retention_days": None,
     "raw_update_retention_days": None,
+    # The alert settings (2026-11-09).
+    "digest_time": None,
+    "quiet_hours": None,
+    "urgent_bypass": None,
+    "alert_cap_per_hour": None,
 }
 #: The S03.5 deletion tools (always a confirmation card).
 DELETION_FLAGS = frozenset(

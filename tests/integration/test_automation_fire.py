@@ -32,6 +32,8 @@ pytestmark = pytest.mark.integration
 #: 21:00 in Tashkent on 2026-10-18 (the env clock starts at 12:00 UTC that day).
 EVENING = datetime(2026, 10, 18, 16, 0, tzinfo=UTC)
 EPOCH = int(EVENING.timestamp())
+#: The digest is off by default (owner decision 2026-11-09): these accounts choose 21:00.
+DIGEST_AT_21 = {"digest_time": "21:00"}
 
 
 def jobs(env: Env, channel: FakeChannel | None = None, *, digest: bool = True) -> ScheduleJobs:
@@ -83,7 +85,7 @@ async def due_digest(env: Env, **automation_fields: Any) -> tuple[int, int]:
     """An account whose digest automation is due at EVENING, claimed by the
     reconciler job: (account id, automation id)."""
     async with env.factory() as session, session.begin():
-        account = await seed_account(session, timezone="Asia/Tashkent")
+        account = await seed_account(session, timezone="Asia/Tashkent", settings=DIGEST_AT_21)
         automation = await seed_automation(
             session,
             account_id=account.id,
@@ -163,7 +165,7 @@ async def test_a_digest_fire_with_the_flag_off_is_skipped(env: Env) -> None:
 
 async def test_a_kind_without_a_handler_is_skipped_with_a_note(env: Env) -> None:
     async with env.factory() as session, session.begin():
-        account = await seed_account(session, timezone="UTC")
+        account = await seed_account(session, timezone="UTC", settings=DIGEST_AT_21)
         reminder = await seed_automation(
             session,
             account_id=account.id,

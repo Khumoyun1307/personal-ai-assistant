@@ -292,6 +292,10 @@ def prefs_args(**values: Any) -> str:
         "message_retention_days": None,
         "control_chat_retention_days": None,
         "raw_update_retention_days": None,
+        "digest_time": None,
+        "quiet_hours": None,
+        "urgent_bypass": None,
+        "alert_cap_per_hour": None,
     }
     base.update(values)
     return args(**base)
@@ -439,3 +443,53 @@ def test_an_invalid_stored_retention_reads_as_the_shortest_period() -> None:
     for garbage in ("x", 5, 9999, [1], True):
         assert retention_policy.days({"retention_days": {"messages": garbage}}, "messages") == 14
     assert retention_policy.days({"retention_days": "junk"}, "raw_updates") == 1
+
+
+async def test_update_preferences_turns_the_digest_off_and_sets_alerts(env: Env) -> None:
+    """2026-11-09: the owner can stop the daily digest (and set the other
+    alert settings) by asking in chat, not only on the /settings panel. No
+    card: these settings delete nothing, and the echo offers Undo."""
+    await connect(env)
+    async with env.factory() as session, session.begin():
+        owner = (await session.execute(select(Account))).scalar_one()
+        await preferences.update(
+            session, owner, digest_time="21:00", actor="owner", clock=env.clock
+        )
+    turn = await ask(env, "Stop the daily digest, quiet hours 22:00-07:00, at most 3 alerts")
+    fake = FakeLLM(
+        tool_response(
+            (
+                "c1",
+                "update_preferences",
+                prefs_args(
+                    digest_time="off",
+                    quiet_hours="22:00-07:00",
+                    urgent_bypass=True,
+                    alert_cap_per_hour=3,
+                ),
+            ),
+        ),
+        text_response("Done."),
+    )
+    await runtime(env, fake, FakeChannel(), flags=MEMORY_FLAGS).run(turn)
+    (result,) = results(fake.requests[1])
+    assert result["status"] == "ok"
+    assert result["changed"] is True
+    current = preferences.current(await account(env))
+    assert current["digest_time"] == "off"
+    assert current["quiet_hours"] == "22:00-07:00"
+    assert current["urgent_bypass"] is True
+    assert current["alert_cap_per_hour"] == 3
+
+
+async def test_update_preferences_refuses_an_invalid_digest_time(env: Env) -> None:
+    await connect(env)
+    turn = await ask(env, "Digest at 25 o'clock")
+    fake = FakeLLM(
+        tool_response(("c1", "update_preferences", prefs_args(digest_time="25:00"))),
+        text_response("That time does not exist."),
+    )
+    await runtime(env, fake, FakeChannel(), flags=MEMORY_FLAGS).run(turn)
+    (result,) = results(fake.requests[1])
+    assert result["status"] != "ok"
+    assert preferences.current(await account(env))["digest_time"] == "off"

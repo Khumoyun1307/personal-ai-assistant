@@ -28,6 +28,10 @@ S035_UNCHANGED: dict[str, Any] = dict.fromkeys(
         "message_retention_days",
         "control_chat_retention_days",
         "raw_update_retention_days",
+        "digest_time",
+        "quiet_hours",
+        "urgent_bypass",
+        "alert_cap_per_hour",
     )
 )
 

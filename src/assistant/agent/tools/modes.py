@@ -276,6 +276,20 @@ def _reply_language(value: str | None) -> str | None:
     return None if value is None else preferences.check_reply_language(value)
 
 
+def _alert[T](check: Callable[[object], T]) -> Callable[[T | None], T | None]:
+    """An M05 alert setting checked by `preferences` (one validation, all paths)."""
+
+    def run(value: T | None) -> T | None:
+        if value is None:
+            return None
+        try:
+            return check(value)
+        except preferences.PreferenceError as error:
+            raise ArgumentRuleError(str(error)) from error
+
+    return run
+
+
 def _days(key: str) -> Callable[[int | None], int | None]:
     """A retention value inside the class's allowed range (M03 D80)."""
 
@@ -319,6 +333,28 @@ class UpdatePreferencesArgs(BaseModel):
     raw_update_retention_days: Annotated[int | None, AfterValidator(_days(RAW_UPDATES))] = Field(
         description="Keep raw Telegram updates this many days (1-7), or null."
     )
+    # M05 alert settings (planned for this tool by M03 D76; added 2026-11-09).
+    digest_time: Annotated[str | None, AfterValidator(_alert(preferences.check_digest_time))] = (
+        Field(
+            description=(
+                "The daily digest: a local time HH:MM (e.g. 21:00), or 'off' to stop it; or null."
+            ),
+        )
+    )
+    quiet_hours: Annotated[str | None, AfterValidator(_alert(preferences.check_quiet_hours))] = (
+        Field(
+            description=(
+                "Quiet hours when alerts wait, local HH:MM-HH:MM (e.g. 23:00-08:00), or 'off'; "
+                "or null."
+            ),
+        )
+    )
+    urgent_bypass: bool | None = Field(
+        description="Whether urgent alerts still arrive during quiet hours, or null."
+    )
+    alert_cap_per_hour: Annotated[
+        int | None, AfterValidator(_alert(preferences.check_alert_cap))
+    ] = Field(description="The most alerts per hour (1-30), or null.")
 
     @model_validator(mode="after")
     def _something(self) -> Self:
@@ -358,6 +394,10 @@ async def update_preferences_tool(ctx: ToolContext, args: UpdatePreferencesArgs)
                 reply_tone=args.reply_tone,
                 reply_style=args.reply_style,
                 retention=args.retention(),
+                quiet_hours=args.quiet_hours,
+                urgent_bypass=args.urgent_bypass,
+                digest_time=args.digest_time,
+                alert_cap_per_hour=args.alert_cap_per_hour,
                 actor="agent",
                 clock=services.clock,
             )
@@ -366,7 +406,7 @@ async def update_preferences_tool(ctx: ToolContext, args: UpdatePreferencesArgs)
         echo = None
         if change.audit_id is not None:
             lines = [
-                f"{FIELD_LABELS[f]}: {html.escape(str(old or 'auto'))} → {html.escape(str(new))}"
+                f"{FIELD_LABELS[f]}: {html.escape(_shown(old))} → {html.escape(_shown(new))}"
                 for f, (old, new) in change.changes.items()
             ]
             # A retention period has no Undo (M03 D85): the owner changes it
@@ -387,6 +427,13 @@ async def update_preferences_tool(ctx: ToolContext, args: UpdatePreferencesArgs)
             "ok", {"changed": False, "note": "those settings already had these values"}
         )
     return ToolOutcome("ok", {"changed": True, "values": changed, "echo": echo.note})
+
+
+def _shown(value: Any) -> str:
+    """A setting value in the echo: on/off for a switch, `auto` for unset."""
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    return "auto" if value is None or value == "" else str(value)
 
 
 def _sets_retention(args: Any) -> bool:
@@ -436,8 +483,10 @@ UPDATE_PREFERENCES = ToolDefinition(
     description=(
         "Change the owner's settings: preferred answer language, timezone, the mode "
         "new chats start in, the default reply language, tone and style for replies "
-        "to contacts, and how long messages, this chat and raw updates are kept "
-        "(shorter only). The owner sees the change with an Undo button; a retention "
+        "to contacts, how long messages, this chat and raw updates are kept "
+        "(shorter only), the daily digest time (or 'off' to stop the digest), quiet "
+        "hours, whether urgent alerts bypass them, and the most alerts per hour. The "
+        "owner sees the change with an Undo button; a retention "
         "change needs the owner's tap on a card first and has no Undo. Free-text "
         "style wishes are not settings: save them with remember."
     ),

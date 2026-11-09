@@ -187,20 +187,20 @@ async def test_settings_has_an_alerts_and_digest_button(env: Env) -> None:
 
 
 async def test_alerts_screen_shows_the_defaults(env: Env) -> None:
-    """PRD Q-07: quiet 23:00-08:00, bypass off, digest 21:00, cap 6 an hour."""
+    """PRD Q-07: quiet 23:00-08:00, bypass off, digest off (owner 2026-11-09), cap 6 an hour."""
     await open_alerts(env)
     screen = env.sender.edits[-1]
     text = screen["text"]
     assert "Quiet hours: 23:00-08:00" in text
     assert 'urgent alerts wait too, unless "Urgent bypass" is on' in text
     assert "Urgent bypass: off" in text
-    assert "Daily digest: 21:00" in text
+    assert "Daily digest: off" in text
     assert "Most alerts per hour: 6" in text
     assert "Times are in your timezone (UTC)." in text
 
     markup = screen["reply_markup"]
     assert keyboard_ops(markup) == ALERTS_OPS
-    assert ticked(markup) == ["q_2308", "b_off", "d_2100", "c_6"]
+    assert ticked(markup) == ["q_2308", "b_off", "d_off", "c_6"]
     assert keyboard_labels(markup) == [
         "Off",
         "22–07",  # noqa: RUF001 (the buttons' en dash)
@@ -208,11 +208,11 @@ async def test_alerts_screen_shows_the_defaults(env: Env) -> None:
         "00–08",  # noqa: RUF001
         "Bypass on",
         "Bypass off ✓",
-        "Off",
+        "Off ✓",
         "08:00",
         "12:00",
         "18:00",
-        "21:00 ✓",
+        "21:00",
         "3/h",
         "6/h ✓",
         "10/h",
@@ -261,9 +261,12 @@ async def test_turning_quiet_hours_off_saves_off(env: Env) -> None:
     assert (await current(env))["quiet_hours"] == "off"
     screen = env.sender.edits[-1]
     assert "Quiet hours: off" in screen["text"]
-    assert ticked(screen["reply_markup"]) == ["q_off", "b_off", "d_2100", "c_6"]
-    # The digest's "Off" is a different button: only the quiet row is ticked.
+    assert ticked(screen["reply_markup"]) == ["q_off", "b_off", "d_off", "c_6"]
+    # The digest's "Off" is a different button: quiet "Off" leaves its time.
+    await preferences_set(env, digest_time="21:00")
+    await tap(env, panels.ALERTS_CARD, "q_off")  # already off: nothing changes
     assert (await current(env))["digest_time"] == "21:00"
+    assert ticked(env.sender.edits[-1]["reply_markup"]) == ["q_off", "b_off", "d_2100", "c_6"]
 
 
 # ------------------------------------------------------------ urgent bypass
@@ -273,13 +276,13 @@ async def test_urgent_bypass_toggles(env: Env) -> None:
     assert (await current(env))["urgent_bypass"] is True
     on = env.sender.edits[-1]
     assert "Urgent bypass: on" in on["text"]
-    assert ticked(on["reply_markup"]) == ["q_2308", "b_on", "d_2100", "c_6"]
+    assert ticked(on["reply_markup"]) == ["q_2308", "b_on", "d_off", "c_6"]
 
     await tap(env, panels.ALERTS_CARD, "b_off")
     assert (await current(env))["urgent_bypass"] is False
     off = env.sender.edits[-1]
     assert "Urgent bypass: off" in off["text"]
-    assert ticked(off["reply_markup"]) == ["q_2308", "b_off", "d_2100", "c_6"]
+    assert ticked(off["reply_markup"]) == ["q_2308", "b_off", "d_off", "c_6"]
 
 
 # ------------------------------------------------------------ digest
@@ -300,6 +303,7 @@ async def test_choosing_a_digest_time_saves_it(env: Env, op: str, stored: str) -
 
 async def test_turning_the_digest_off_saves_off(env: Env) -> None:
     await open_alerts(env)
+    await preferences_set(env, digest_time="21:00")  # the default is off (2026-11-09)
     await tap(env, panels.ALERTS_CARD, "d_off")
     assert (await current(env))["digest_time"] == "off"
     screen = env.sender.edits[-1]
@@ -331,7 +335,7 @@ async def test_a_value_set_another_way_ticks_nothing_in_its_row(env: Env) -> Non
     screen = env.sender.edits[-1]
     assert "Quiet hours: 01:00-09:00" in screen["text"]
     assert "Most alerts per hour: 15" in screen["text"]
-    assert ticked(screen["reply_markup"]) == ["b_on", "d_2100"]
+    assert ticked(screen["reply_markup"]) == ["b_on", "d_off"]
 
 
 # ------------------------------------------------------------ navigation and refusals
@@ -526,7 +530,7 @@ async def test_each_change_writes_one_content_free_audit_row(env: Env) -> None:
     assert changes[1:] == [
         {"quiet_hours": ["23:00-08:00", "off"]},
         {"urgent_bypass": [False, True]},
-        {"digest_time": ["21:00", "08:00"]},
+        {"digest_time": ["off", "08:00"]},
         {"alert_cap_per_hour": [6, 10]},
     ]
     assert await audit_details(env, priority.EVENT_PRIORITY_CHANGED) == [
