@@ -17,6 +17,15 @@ shift
 
 prepare_ssh
 command="cd $PROD_DIR && bash deploy/server.sh $(printf '%q ' "$@")"
+if [ "$1" = deploy ]; then
+  [ "$#" = 2 ] || die "usage: ssh.sh <ip> deploy <full SHA>"
+  sha="$2"
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "deploy requires a full commit SHA"
+  # Bootstrap from the pinned commit, including the first upgrade from the
+  # old pull-main server.sh. Never execute the old checkout's deploy action.
+  # Hold fd 9 through the checkout and the selected server script's exec.
+  command="cd $PROD_DIR && exec 9>deploy/.release-lock && flock -n 9 && git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main && git merge-base --is-ancestor $sha origin/main && git diff --quiet && git diff --cached --quiet && git checkout --detach $sha && exec bash deploy/server.sh _deploy $sha"
+fi
 if [ -n "${SSH_STDIN_FILE:-}" ]; then
   # e.g. the age identity for restore-test: streamed, never copied to disk.
   [ -r "$SSH_STDIN_FILE" ] || die "$(basename "$SSH_STDIN_FILE") is not readable"

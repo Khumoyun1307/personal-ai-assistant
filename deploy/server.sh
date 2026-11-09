@@ -3,7 +3,8 @@
 # `just prod-*` recipes over SSH (deploy/oci/ssh.sh). Keeping them in one
 # script avoids quoting compose commands through PowerShell, docker and ssh.
 #
-#   deploy/server.sh deploy          pull main (ff-only), rebuild, migrate, restart
+#   deploy/server.sh deploy SHA      fetch/check out exactly SHA, build, migrate, restart
+#   deploy/server.sh rollback        use previous images, only with identical heads
 #   deploy/server.sh status          containers, app healthcheck, backup markers
 #   deploy/server.sh logs [N]        last N (default 200) app log lines (content-free)
 #   deploy/server.sh backup          a backup now (exit 3: dump ok, upload failed)
@@ -35,6 +36,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 [ -f .env ] || { echo "ERROR: $(pwd)/.env is missing (deploy/oci/push-env.sh)" >&2; exit 1; }
+# shellcheck source=deploy/release.sh
+. deploy/release.sh
+release_load
 compose() { docker compose --env-file .env -f deploy/compose.prod.yml "$@"; }
 # db_client <dropdb|createdb|psql> ARGS: a client inside the db container,
 # connecting as the role the server .env names ($POSTGRES_USER reaches the
@@ -74,19 +78,30 @@ shift || true
 case "$action" in
   deploy)
     require_data_volume
-    git pull --ff-only --quiet
-    echo "at $(git log -1 --format='%h %cs')"
-    # Re-exec so the steps below come from the version just pulled.
-    exec bash deploy/server.sh _up
+    exec 9>deploy/.release-lock
+    flock -n 9 || release_error "another release operation is running"
+    release_load
+    release_select "${1:-}"
+    # Keep fd 9 (the release lock) across the selected script's execution.
+    exec bash deploy/server.sh _deploy "$1"
     ;;
-  _up)
+  _deploy)
     require_data_volume
-    compose up -d --build --remove-orphans
-    compose ps
+    # Internal action: the SSH bootstrap or `deploy` must hold this lock.
+    [ -e /proc/$$/fd/9 ] || release_error "_deploy requires the release lock"
+    release_up "${1:-}"
+    ;;
+  rollback)
+    require_data_volume
+    exec 9>deploy/.release-lock
+    flock -n 9 || release_error "another release operation is running"
+    release_load
+    release_rollback
     ;;
   status)
     # First, because nothing below means anything without the volume.
     require_data_volume
+    release_status
     printf 'data dir: %s (sentinel present)\n' "$(findmnt -no SOURCE,TARGET --target "$data_dir/postgres")"
     compose ps
     compose exec -T app python -m assistant healthcheck
@@ -273,7 +288,7 @@ case "$action" in
       app python tools/acceptance/p2_verify.py trial-check "$@"
     ;;
   *)
-    echo "usage: deploy/server.sh deploy|status|logs [N]|backup|nfr04 [DAYS]|verify-r0 ARGS|p2-verify ARGS|trial-check ARGS" >&2
+    echo "usage: deploy/server.sh deploy SHA|rollback|status|logs [N]|backup|nfr04 [DAYS]|verify-r0 ARGS|p2-verify ARGS|trial-check ARGS" >&2
     exit 2
     ;;
 esac

@@ -1,0 +1,267 @@
+"""Release selection and rollback use synthetic infrastructure only."""
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+OLD = "a" * 40
+NEW = "b" * 40
+
+
+def run_release(tmp_path: Path, script: str) -> subprocess.CompletedProcess[str]:
+    helper = ROOT / "deploy/release.sh"
+    harness = r"""
+set -euo pipefail
+cd "$WORK"
+mkdir -p deploy
+source "$HELPER"
+git() {
+  printf 'git %s\n' "$*" >> calls
+  case "$1" in
+    rev-parse) echo "$SELECTED" ;;
+    merge-base) [ "${FOREIGN:-0}" = 0 ] ;;
+    archive) echo synthetic-build-context ;;
+  esac
+}
+docker() {
+  printf 'docker %s\n' "$*" >> calls
+  case "$*" in
+    'image inspect --format'*)
+      [ "${EXISTING:-0}" = 1 ] || return 1
+      case "$*" in
+        *assistant-backup:aaaaaaaaaaaa|*assistant:aaaaaaaaaaaa) printf 'a%.0s' {1..40}; echo ;;
+        *) printf 'b%.0s' {1..40}; echo ;;
+      esac ;;
+    build*) cat >/dev/null ;;
+    run*) echo "${HEADS:-0042} (head)"; [ "${FAIL_HEADS:-0}" = 0 ] ;;
+  esac
+}
+compose() {
+  printf 'compose %s image=%s backup=%s\n' "$*" "$ASSISTANT_IMAGE" "$BACKUP_IMAGE" >> calls
+  case "$*" in
+    'run --rm --no-deps -T --no-build migrate') [ "${FAIL_MIGRATE:-0}" = 0 ] ;;
+    *'--remove-orphans app') [ "${FAIL_STARTUP:-0}" = 0 ] ;;
+  esac
+}
+"""
+    path = tmp_path / "harness.sh"
+    path.write_text(harness + script, encoding="utf-8")
+    return subprocess.run(  # noqa: S603 — fixed helper with fakes, no Docker or network
+        ["/bin/bash", str(path)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "WORK": str(tmp_path),
+            "HELPER": str(helper),
+            "SELECTED": NEW,
+        },
+    )
+
+
+def state(sha: str, heads: str = "0042") -> str:
+    return f"{sha}\tassistant:{sha[:12]}\tassistant-backup:{sha[:12]}\t{heads}\n"
+
+
+def seed(tmp_path: Path, current: str = NEW, previous: str = OLD, heads: str = "0042") -> None:
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    (deploy / "release-state").write_text(state(current, heads) + state(previous), encoding="utf-8")
+
+
+def test_deploy_pins_checkout_and_keeps_both_release_images(tmp_path: Path) -> None:
+    seed(tmp_path, current=OLD, previous=OLD)
+    result = run_release(tmp_path, f"release_load\nrelease_select {NEW}\nrelease_up {NEW}\n")
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls").read_text("utf-8")
+    assert f"checkout --detach {NEW}" in calls
+    assert "pull" not in calls
+    assert f"assistant:{NEW[:12]}" in calls
+    assert f"assistant-backup:{NEW[:12]}" in calls
+    assert "--no-build" in calls
+    assert "prune" not in calls
+    assert "--network none" in calls
+    assert "stop app" in calls
+    assert calls.index("stop app") < calls.index("run --rm --no-deps -T --no-build migrate")
+    assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(NEW) + state(OLD)
+    assert not (tmp_path / "deploy/release-in-progress").exists()
+
+
+@pytest.mark.parametrize("sha", ["", "main", "-bad", "f" * 39])
+def test_server_rejects_non_full_sha_before_fetch(tmp_path: Path, sha: str) -> None:
+    result = run_release(tmp_path, f"release_select '{sha}'\n")
+    assert result.returncode != 0
+    assert not (tmp_path / "calls").exists()
+
+
+def test_server_refuses_sha_outside_main_without_checkout(tmp_path: Path) -> None:
+    result = run_release(tmp_path, f"FOREIGN=1\nrelease_select {NEW}\n")
+    assert result.returncode != 0
+    calls = (tmp_path / "calls").read_text("utf-8")
+    assert "fetch" in calls
+    assert "checkout" not in calls
+    assert "docker" not in calls
+
+
+@pytest.mark.parametrize("failure", ["FAIL_MIGRATE=1", "FAIL_STARTUP=1"])
+def test_failed_transition_keeps_old_state_and_blocks_rollback(
+    tmp_path: Path, failure: str
+) -> None:
+    seed(tmp_path)
+    before = (tmp_path / "deploy/release-state").read_text("utf-8")
+    result = run_release(tmp_path, f"release_load\n{failure}\nrelease_up {NEW}\n")
+    assert result.returncode != 0
+    assert (tmp_path / "deploy/release-state").read_text("utf-8") == before
+    assert (tmp_path / "deploy/release-in-progress").exists()
+    blocked = run_release(tmp_path, "release_load\nrelease_rollback\n")
+    assert blocked.returncode != 0
+    assert "forward-fix" in blocked.stderr
+
+
+def test_rollback_uses_previous_images_without_build_or_migration(tmp_path: Path) -> None:
+    seed(tmp_path)
+    result = run_release(tmp_path, "release_load\nEXISTING=1\nrelease_rollback\n")
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls").read_text("utf-8")
+    assert f"checkout --detach {OLD}" in calls
+    assert f"image=assistant:{OLD[:12]}" in calls
+    assert f"backup=assistant-backup:{OLD[:12]}" in calls
+    assert "--no-deps --no-build" in calls
+    assert "docker build" not in calls
+    assert " migrate" not in calls
+    assert "fetch" not in calls
+    assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(OLD) + state(NEW)
+
+
+@pytest.mark.parametrize("problem", ["schema", "missing", "pending", "malformed"])
+def test_rollback_fails_closed_before_switching(tmp_path: Path, problem: str) -> None:
+    seed(tmp_path, heads="0043" if problem == "schema" else "0042")
+    if problem == "missing":
+        (tmp_path / "deploy/release-state").write_text(state(NEW), encoding="utf-8")
+    elif problem == "pending":
+        (tmp_path / "deploy/release-in-progress").touch()
+    elif problem == "malformed":
+        (tmp_path / "deploy/release-state").write_text(
+            "$(touch should-not-exist)\n", encoding="utf-8"
+        )
+    result = run_release(tmp_path, "release_load\nrelease_rollback\n")
+    assert result.returncode != 0
+    assert not (tmp_path / "calls").exists()
+    assert not (tmp_path / "should-not-exist").exists()
+
+
+def test_redeploy_preserves_previous_release(tmp_path: Path) -> None:
+    seed(tmp_path)
+    result = run_release(tmp_path, f"release_load\nrelease_up {NEW}\n")
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(NEW) + state(OLD)
+
+
+def test_release_status_is_content_free(tmp_path: Path) -> None:
+    seed(tmp_path)
+    result = run_release(tmp_path, "release_load\nrelease_status\n")
+    assert result.returncode == 0, result.stderr
+    assert NEW in result.stdout
+    assert OLD in result.stdout
+    assert f"assistant:{NEW[:12]}" in result.stdout
+    assert f"assistant-backup:{OLD[:12]}" in result.stdout
+
+
+def test_ssh_bootstraps_the_selected_script_under_a_release_lock() -> None:
+    source = (ROOT / "deploy/oci/ssh.sh").read_text("utf-8")
+    assert "exec 9>deploy/.release-lock && flock -n 9" in source
+    assert "git checkout --detach" in source
+    assert "git merge-base --is-ancestor" in source
+    assert "_deploy" in source
+
+
+def test_ssh_ignores_the_old_server_script_and_keeps_the_selected_sha(tmp_path: Path) -> None:
+    source = (ROOT / "deploy/oci/ssh.sh").read_text("utf-8")
+    branch = source.split('if [ "$1" = deploy ]; then\n', 1)[1].split("\nfi\n", 1)[0]
+    (tmp_path / "deploy").mkdir()
+    (tmp_path / "deploy/server.sh").write_text("exit 88\n", encoding="utf-8")
+    (tmp_path / "selected-server").write_text(
+        'set -eu\nprintf "selected %s\\n" "$*" >> "$CALLS"\n'
+        # A distinct open-file description cannot claim the inherited lock.
+        "if flock -n deploy/.release-lock -c true; then exit 89; fi\n",
+        encoding="utf-8",
+    )
+    harness = f"""
+set -euo pipefail
+cd "$WORK"
+PROD_DIR="$WORK"
+die() {{ echo "$*" >&2; exit 1; }}
+git() {{
+  printf 'git %s\\n' "$*" >> "$CALLS"
+  case "$1" in
+    merge-base) [ "$3" = {NEW} ] ;;
+    checkout) [ "$3" = {NEW} ]; cp selected-server deploy/server.sh ;;
+  esac
+}}
+set -- deploy {NEW}
+{branch}
+eval "$command"
+"""
+    script = tmp_path / "ssh-harness.sh"
+    script.write_text(harness, encoding="utf-8")
+    calls_file = tmp_path / "calls"
+    result = subprocess.run(  # noqa: S603 — real selection branch, fake git and server
+        ["/bin/bash", str(script)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "WORK": str(tmp_path),
+            "CALLS": str(calls_file),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    calls = calls_file.read_text("utf-8")
+    assert f"selected _deploy {NEW}" in calls
+    assert "pull" not in calls
+
+
+def test_existing_release_tags_are_reused_without_building(tmp_path: Path) -> None:
+    seed(tmp_path)
+    result = run_release(tmp_path, f"release_load\nEXISTING=1\nrelease_up {NEW}\n")
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls").read_text("utf-8")
+    assert "docker build" not in calls
+
+
+def test_release_tag_collision_is_refused(tmp_path: Path) -> None:
+    result = run_release(
+        tmp_path,
+        f"release_load\nEXISTING=1\nrelease_build {OLD} assistant:{NEW[:12]} app\n",
+    )
+    assert result.returncode != 0
+    assert "collision" in result.stderr
+    assert "docker build" not in (tmp_path / "calls").read_text("utf-8")
+
+
+def test_missing_previous_image_cannot_trigger_a_rebuild(tmp_path: Path) -> None:
+    seed(tmp_path)
+    result = run_release(tmp_path, "release_load\nrelease_rollback\n")
+    assert result.returncode != 0
+    calls = (tmp_path / "calls").read_text("utf-8")
+    assert "build" not in calls
+    assert "checkout" not in calls
+
+
+@pytest.mark.parametrize("setup", ["HEADS='?'", "FAIL_HEADS=1"])
+def test_unknown_image_heads_refuse_before_migration(tmp_path: Path, setup: str) -> None:
+    seed(tmp_path)
+    result = run_release(tmp_path, f"release_load\n{setup}\nrelease_up {NEW}\n")
+    assert result.returncode != 0
+    assert "migrate" not in (tmp_path / "calls").read_text("utf-8")
+    assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(NEW) + state(OLD)
+
+
+def test_first_release_has_no_invented_previous_artifact(tmp_path: Path) -> None:
+    result = run_release(tmp_path, f"release_load\nrelease_up {NEW}\n")
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(NEW)

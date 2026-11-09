@@ -6,6 +6,12 @@
 # Runtime data: probe dumps, backups, logs. Never committed (AGENTS §9).
 var/
 
+# Content-free server release records and locks (never deploy configuration).
+/deploy/release-state
+/deploy/release-in-progress
+/deploy/.release-lock
+/deploy/.release-state.*
+
 # Python
 __pycache__/
 *.py[cod]

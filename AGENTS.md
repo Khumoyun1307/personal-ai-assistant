@@ -32,7 +32,7 @@ Never treat these documents as a substitute for the official Telegram Bot API do
 
 ## 4. Commands
 
-The owner develops on **Windows 11 + Docker Desktop (WSL2 backend)**. All Python tooling runs **inside the dev container** (service `app` in `compose.dev.yml` at the repo root). The Windows host needs only Docker Desktop, git and `just` (`winget install Casey.Just`). The justfile sets `set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]`, and every recipe except `up`/`down` wraps `docker compose -f compose.dev.yml run --rm app <cmd>`. **Never run `uv`, `python`, `pytest` or `alembic` on the Windows host** (native Windows is unsupported: psycopg async requires a selector event loop). The container keeps its virtualenv outside the bind mount (`UV_PROJECT_ENVIRONMENT=/opt/venv`). Integration tests use the Compose `db` with a separate `assistant_test` database (`TEST_DATABASE_URL`, created by an init script); CI uses a Postgres service container (no testcontainers).
+The owner develops on **Windows 11 + Docker Desktop (WSL2 backend)**. All Python tooling runs **inside the dev container** (service `app` in `compose.dev.yml` at the repo root). The Windows host needs Docker Desktop, git and `just` (`winget install Casey.Just`); deploying also needs authenticated GitHub CLI (`gh`) for the exact-SHA CI gate. Windows PowerShell is built in. The justfile sets `set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]`, and development Python recipes wrap `docker compose -f compose.dev.yml run --rm app <cmd>`. Production recipes use the OCI CLI container over SSH; `deploy` first runs git/gh preflight on the laptop. **Never run `uv`, `python`, `pytest` or `alembic` on the Windows host** (native Windows is unsupported: psycopg async requires a selector event loop). The container keeps its virtualenv outside the bind mount (`UV_PROJECT_ENVIRONMENT=/opt/venv`). Integration tests use the Compose `db` with a separate `assistant_test` database (`TEST_DATABASE_URL`, created by an init script); CI uses a Postgres service container (no testcontainers).
 
 | Task | Host (PowerShell) | In container |
 |---|---|---|
@@ -54,7 +54,8 @@ The owner develops on **Windows 11 + Docker Desktop (WSL2 backend)**. All Python
 | Stop dev stack and delete its volumes (dev database) | `just down-hard` | — |
 | M00 probe (dev bot only, §9) | `just probe <cmd>` | `python tools/probe/probe.py <cmd>` |
 | Sanitise a probe dump into fixtures (§9) | `just sanitize var/probe/<dump>` | `python tools/probe/sanitize.py` |
-| Deploy `main` to the production server | `just deploy <ip>` | — (over SSH) |
+| Deploy a verified explicit `main` commit (default: laptop resolves/prints `origin/main`) | `just deploy <ip> [sha] [--skip-ci-check]` (bypass for documented emergencies only) | — (laptop git/gh/PowerShell preflight, then SSH; runbooks/deploy.md) |
+| Roll back to the recorded previous images/SHA without rebuilding (identical migration heads only) | `just prod-rollback <ip>` | — (over SSH; schema recovery beyond this guard is stabilization I23) |
 | Production log / status / backup now / R0 verifier / restore test | `just prod-logs <ip>` / `just prod-status <ip>` / `just prod-backup <ip>` / `just prod-verify-r0 <ip>` / `just prod-restore-test <ip>` | — (over SSH; server actions in `deploy/server.sh`) |
 | Provision the Oracle VM; backup key; bootstrap it; push the production `.env` | `just oci-provision <email>` / `just prod-age-key` / `just prod-bootstrap <ip>` / `just prod-env-push <ip>` (owner ids from `var/prod.env`) | — (OCI CLI container; `deploy/runbooks/provision.md`) |
 | Switch the laptop to the dev bot (step D, D40; recreates the dev database) | `just dev-bot-switch` | `python tools/dev/switch_dev_bot.py` |
