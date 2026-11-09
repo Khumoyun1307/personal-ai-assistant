@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from assistant.conversations.read import DirectoryEntry, match_contacts
+import pytest
+
+from assistant.conversations.read import DirectoryEntry, match_contacts, resolve_contacts
 from assistant.memory.search import NORMALIZER_VERSION, normalize
 
 
@@ -101,11 +103,14 @@ def test_pf03_a_nickname_style_short_form_is_a_weak_match() -> None:
     assert (jah.entry.contact_id, jah.kind, jah.is_weak) == (15, "short_form", True)
 
 
-def test_pf03_a_short_form_ranks_below_every_real_match() -> None:
+def test_a_unique_real_match_is_not_vetoed_by_a_short_form() -> None:
     directory = [*NAMES, entry(16, "Shuha Aliyeva")]
-    found = match_contacts(directory, "Shuxa")
-    assert [(m.entry.contact_id, m.kind) for m in found] == [(16, "prefix"), (11, "short_form")]
-    assert [m.is_weak for m in found] == [False, True]
+    result = resolve_contacts(directory, "Shuxa")
+    assert result.verdict == "unique_strong"
+    assert [m.entry.contact_id for m in result.strong] == [16]
+    assert result.total_strong == 1
+    assert result.selected_contact_id == 16
+    assert result.selected_conversation_id == 116
 
 
 def test_pf03_a_short_form_needs_three_letters_and_a_longer_name() -> None:
@@ -138,3 +143,123 @@ def test_pf03_the_persisted_search_normal_form_is_unchanged() -> None:
     assert normalize("Shuxrat") == "shuxrat"
     assert normalize("Shuhrat") == "shuhrat"
     assert NORMALIZER_VERSION == 3
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["Kamola", "Kamola Ziyo", "Ziyo Kamola", "Камола Зиё", "Зиё Камола"],
+)
+def test_full_name_tokens_in_any_order_and_script_are_strong(query: str) -> None:
+    result = resolve_contacts([entry(1, "Kamola Ziyo"), entry(2, "Kamariddin Nur")], query)
+    assert result.verdict == "unique_strong"
+    assert result.selected_contact_id == 1
+
+
+@pytest.mark.parametrize("query", ["Nora Vale", "Vale Nora", "Нора Вале"])
+def test_english_full_name_tokens(query: str) -> None:
+    assert resolve_contacts([entry(1, "Nora Vale")], query).verdict == "unique_strong"
+
+
+@pytest.mark.parametrize("query", ["Shuxrat", "Шуҳрат", "Shuhrat"])
+def test_matching_fold_is_name_only(query: str) -> None:
+    result = resolve_contacts([entry(1, "Шуҳрат Karimov")], query)
+    assert result.verdict == "unique_strong"
+    assert result.reason == "full_token"
+
+
+@pytest.mark.parametrize("query", ["Kamola", "Камола", "Kam"])
+def test_all_real_matches_count_before_pagination(query: str) -> None:
+    result = resolve_contacts(
+        [entry(1, "Kamola Ziyo"), entry(2, "Камола Сафо", day=5)], query, limit=1
+    )
+    assert result.verdict == "ambiguous_strong"
+    assert result.total_strong == 2
+    assert result.omitted == 1
+    assert len(result.strong) == 1
+    assert result.selected_contact_id is None
+    assert result.selected_conversation_id is None
+    assert result.reason == "multiple_real"
+
+
+def test_shared_prefix_does_not_pick_the_more_recent_contact() -> None:
+    result = resolve_contacts(
+        [entry(1, "Kamola Ziyo"), entry(2, "Kamron Safi", day=5)], "Kam", limit=1
+    )
+    assert result.verdict == "ambiguous_strong"
+    assert result.total_strong == 2
+    assert result.omitted == 1
+    assert result.selected_contact_id is None
+
+
+def test_weak_suggestions_are_counted_before_the_page_limit() -> None:
+    result = resolve_contacts([entry(1, "Shuhrat"), entry(2, "Shuhriddin")], "Shuxa", limit=1)
+    assert result.verdict == "weak_only"
+    assert len(result.suggestions) == 1
+    assert result.omitted == 1
+    assert result.reason == "short_form_guess"
+
+
+@pytest.mark.parametrize("query", ["Kamloa", "Shuxa", "Lola"])
+def test_typo_nickname_and_nearest_names_are_only_guesses(query: str) -> None:
+    result = resolve_contacts([entry(1, "Kamola Ziyo"), *NAMES], query)
+    assert result.verdict == "weak_only"
+    assert result.total_strong == 0
+    assert result.strong == ()
+    assert result.suggestions
+    assert all(m.is_weak for m in result.suggestions)
+    assert result.selected_contact_id is None
+
+
+@pytest.mark.parametrize("query", ["Ka", "Kam Kam", "Zebiniso Olimova", " "])
+def test_short_or_reused_prefix_is_not_strong(query: str) -> None:
+    result = resolve_contacts([entry(1, "Kamola Ziyo")], query)
+    assert result.total_strong == 0
+    assert result.selected_contact_id is None
+
+
+def test_exact_full_name_narrows_prefix_alternatives_but_not_duplicates() -> None:
+    directory = [entry(1, "Kamola Ziyo"), entry(2, "Kamolaxon Ziyoda")]
+    result = resolve_contacts(directory, "Ziyo Kamola")
+    assert result.verdict == "unique_strong"
+    assert result.reason == "exact_identity"
+    assert result.selected_contact_id == 1
+    duplicate = resolve_contacts([*directory, entry(3, "Ziyo Kamola")], "Kamola Ziyo")
+    assert duplicate.verdict == "ambiguous_strong"
+    assert duplicate.total_strong == 2
+
+
+def test_exact_full_name_does_not_hide_another_complete_token_match() -> None:
+    result = resolve_contacts([entry(1, "Nora Vale"), entry(2, "Nora Vale Smith")], "Nora Vale")
+    assert result.verdict == "ambiguous_strong"
+    assert result.total_strong == 2
+
+
+def test_distinct_prefixes_can_be_assigned_in_a_different_order() -> None:
+    result = resolve_contacts([entry(1, "Kamola Kamron Ziyo")], "Kam Kamol")
+    assert result.verdict == "unique_strong"
+    assert result.reason == "token_prefix"
+
+
+@pytest.mark.parametrize("query", ["Rustam G'aniyev", "Gʻaniyev Rustam", "Рустам Ғаниев"])
+def test_name_apostrophes_and_script_use_existing_fold(query: str) -> None:
+    result = resolve_contacts([entry(1, "Rustam Gʻaniyev")], query)
+    assert result.verdict == "unique_strong"
+    assert result.selected_contact_id == 1
+
+
+def test_exact_username_beats_name_evidence_without_script_or_xh_fold() -> None:
+    directory = [entry(1, "Nora Vale", "shuxrat"), entry(2, "Shuxrat"), entry(3, "Шухрат")]
+    assert resolve_contacts(directory, "@SHUXRAT").selected_contact_id == 1
+    assert resolve_contacts(directory, "shuxrat").selected_contact_id == 1
+    assert resolve_contacts([entry(1, None, "shuxrat")], "shuhrat").total_strong == 0
+    assert resolve_contacts([entry(1, None, "shuxrat")], "шухрат").total_strong == 0
+    duplicate = resolve_contacts([entry(1, None, "nora"), entry(2, None, "nora")], "@nora")
+    assert duplicate.verdict == "ambiguous_strong"
+
+
+def test_no_observed_match_has_no_selection_or_suggestions() -> None:
+    result = resolve_contacts(NAMES, "Zebiniso Olimova")
+    assert result.verdict == "none"
+    assert result.reason == "no_observed_match"
+    assert result.suggestions == ()
+    assert result.selected_contact_id is None

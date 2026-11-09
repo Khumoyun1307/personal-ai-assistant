@@ -378,7 +378,8 @@ async def resolve_contact_tool(ctx: ToolContext, args: ResolveContactArgs) -> To
     async with transaction(services.session_factory) as uow:
         account = await _account(ctx, uow.session)
         directory = await read.contact_directory(uow.session, ctx.account_id)
-    matches = read.match_contacts(directory, args.name, limit=args.limit or 5)
+    resolution = read.resolve_contacts(directory, args.name, limit=args.limit or 5)
+    matches = resolution.strong or resolution.suggestions
     candidates = [
         {
             "contact_id": m.entry.contact_id,
@@ -391,12 +392,16 @@ async def resolve_contact_tool(ctx: ToolContext, args: ResolveContactArgs) -> To
         }
         for m in matches
     ]
-    data: dict[str, object] = {"candidates": candidates, "count": len(candidates)}
-    if matches and matches[0].is_weak:
+    data: dict[str, object] = {
+        "candidates": candidates,
+        "count": len(candidates),
+        "verdict": resolution.verdict,
+    }
+    if resolution.verdict == "weak_only":
         data["note"] = WEAK_MATCH_NOTE
-    elif len(candidates) > 1 and matches[0].kind == matches[1].kind:
-        data["note"] = "Several contacts match equally: ask the owner which one they mean."
-    if not candidates:
+    elif resolution.verdict == "ambiguous_strong":
+        data["note"] = "Several real contacts match: ask the owner which one they mean."
+    elif resolution.verdict == "none":
         data["note"] = NO_CONTACT_NOTE
     return ToolOutcome(
         "ok",

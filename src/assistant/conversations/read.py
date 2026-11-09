@@ -22,6 +22,7 @@ import difflib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 from sqlalchemy import ColumnElement, and_, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -487,7 +488,7 @@ async def managed_origin(
 class ContactMatch:
     entry: DirectoryEntry
     #: `exact` > `prefix` > `token_prefix` > `fuzzy`, then the weak kinds
-    #: `short_form` and `not_sure` (see `WEAK_KINDS`).
+    #: `short_form` and `not_sure`; fuzzy evidence is also weak (C5).
     kind: str
     score: float
 
@@ -504,10 +505,10 @@ _KIND_RANK = {
     "short_form": 4,
     "not_sure": 5,
 }
-#: Guesses, never a confirmed person: a nickname-style short form of a name
+#: Guesses, never a confirmed person: fuzzy typos, nickname-style short forms
 #: ("Shuxa" for "Shuhrat") and the nearest names when nothing matched. No
 #: caller may pick one by itself; the owner confirms it (PF-03, FR-DRF-08).
-WEAK_KINDS = frozenset({"short_form", "not_sure"})
+WEAK_KINDS = frozenset({"fuzzy", "short_form", "not_sure"})
 FUZZY_THRESHOLD = 0.75
 #: The shortest folded query a short form is tried for, and how many letters
 #: of it must open a name word.
@@ -566,10 +567,12 @@ def match_contacts(
     Names are compared in the matching form, so "Камола", "Kamola" and
     "kamola" are one name, and so are "Shuxrat" and "Shuhrat". Exact beats
     prefix ("kam") beats a prefix of any word of the name ("Aliyeva" in "Kamola
-    Aliyeva") beats difflib similarity of at least 0.75 (typos). Below those
-    come the weak kinds: `short_form` (a three-letter start shared with a word
+    Aliyeva") beats difflib similarity of at least 0.75 (weak typo evidence).
+    Below those come `short_form` (a three-letter start shared with a word
     of the name) and, when nothing matched at all, the nearest few names as
-    `not_sure`. A weak match is a question for the owner, never a pick.
+    `not_sure`. A weak match is a question for the owner, never a pick. This
+    legacy ranked helper does not decide identity; use `resolve_contacts`
+    for the C5 verdict and its stricter name/username evidence rules.
     """
     wanted = _fold(query.lstrip("@"))
     if not wanted:
@@ -625,3 +628,147 @@ def _nearest(directory: Sequence[DirectoryEntry], wanted: str) -> list[ContactMa
             nearest.append(ContactMatch(entry, "not_sure", ratio))
     nearest.sort(key=_ranking)
     return nearest[:NOT_SURE_LIMIT]
+
+
+ResolutionKind = Literal["unique_strong", "ambiguous_strong", "weak_only", "none"]
+ResolutionReason = Literal[
+    "exact_identity",
+    "full_token",
+    "token_prefix",
+    "multiple_real",
+    "typo_guess",
+    "short_form_guess",
+    "no_observed_match",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class Resolution:
+    verdict: ResolutionKind
+    strong: tuple[ContactMatch, ...]
+    suggestions: tuple[ContactMatch, ...]
+    selected_contact_id: int | None
+    selected_conversation_id: int | None
+    total_strong: int
+    omitted: int
+    reason: ResolutionReason
+
+
+def _distinct_tokens(wanted: list[str], tokens: list[str], *, prefix: bool) -> bool:
+    """Bipartite matching: a name token cannot satisfy two supplied tokens."""
+    assigned: dict[int, int] = {}
+
+    def assign(index: int, seen: set[int]) -> bool:
+        for position, token in enumerate(tokens):
+            matches = token.startswith(wanted[index]) if prefix else token == wanted[index]
+            if not matches or position in seen:
+                continue
+            seen.add(position)
+            if position not in assigned or assign(assigned[position], seen):
+                assigned[position] = index
+                return True
+        return False
+
+    return all(assign(index, set()) for index in range(len(wanted)))
+
+
+def _strong_name(entry: DirectoryEntry, wanted: str) -> ContactMatch | None:
+    key = _fold(entry.display_name or "")
+    words, tokens = wanted.split(), key.split()
+    if not key:
+        return None
+    if sorted(words) == sorted(tokens):
+        return ContactMatch(entry, "exact", 1.0)
+    full_tokens = _distinct_tokens(words, tokens, prefix=False)
+    adequate_prefixes = all(len(word) >= 3 and word.isalpha() for word in words)
+    if not full_tokens and not (adequate_prefixes and _distinct_tokens(words, tokens, prefix=True)):
+        return None
+    kind = "prefix" if key.startswith(wanted) else "token_prefix"
+    return ContactMatch(entry, kind, len(wanted) / len(key))
+
+
+def resolve_contacts(
+    directory: Sequence[DirectoryEntry], query: str, *, limit: int = 5
+) -> Resolution:
+    """C5 identity verdict before pagination; ranking never selects an identity.
+
+    Names alone use the script/apostrophe/x-h fold. Usernames are observed
+    identifiers, compared only without leading @ and case. No state is bound.
+    """
+    limit = max(1, limit)
+    identifier = query.strip().lstrip("@").casefold()
+    wanted = _fold(query.strip().lstrip("@"))
+    usernames = [
+        ContactMatch(entry, "exact", 1.0)
+        for entry in directory
+        if identifier and entry.username and entry.username.lstrip("@").casefold() == identifier
+    ]
+    names = [
+        match
+        for entry in directory
+        if wanted and (match := _strong_name(entry, wanted)) is not None
+    ]
+    # A first name can be a complete profile name and still refer to two
+    # people. Only a supplied full name narrows prefix-only alternatives.
+    exact_names = [match for match in names if match.kind == "exact" and len(wanted.split()) > 1]
+    if exact_names:
+        names = [
+            match
+            for match in names
+            if _distinct_tokens(
+                wanted.split(), _fold(match.entry.display_name or "").split(), prefix=False
+            )
+        ]
+    strong = usernames or names
+    strong.sort(key=_ranking)
+    if strong:
+        selected = strong[0].entry if len(strong) == 1 else None
+        reason: ResolutionReason = "multiple_real"
+        if selected is not None:
+            if usernames or strong[0].kind == "exact":
+                reason = "exact_identity"
+            elif _distinct_tokens(
+                wanted.split(), _fold(selected.display_name or "").split(), prefix=False
+            ):
+                reason = "full_token"
+            else:
+                reason = "token_prefix"
+        return Resolution(
+            verdict="unique_strong" if selected is not None else "ambiguous_strong",
+            strong=tuple(strong[:limit]),
+            suggestions=(),
+            selected_contact_id=selected.contact_id if selected is not None else None,
+            selected_conversation_id=selected.conversation_id if selected is not None else None,
+            total_strong=len(strong),
+            omitted=max(0, len(strong) - limit),
+            reason=reason,
+        )
+    guesses: list[ContactMatch] = []
+    nearest: list[ContactMatch] = []
+    for entry in directory:
+        key = _fold(entry.display_name or "")
+        if not wanted or not key:
+            continue
+        ratio = _similarity(wanted, key)
+        if _is_short_form(wanted, key.split()):
+            guesses.append(ContactMatch(entry, "short_form", ratio))
+        elif ratio >= FUZZY_THRESHOLD:
+            guesses.append(ContactMatch(entry, "fuzzy", ratio))
+        elif ratio >= NOT_SURE_FLOOR:
+            nearest.append(ContactMatch(entry, "not_sure", ratio))
+    nearest.sort(key=_ranking)
+    guesses = guesses or nearest[:NOT_SURE_LIMIT]
+    guesses.sort(key=_ranking)
+    guess_reason: ResolutionReason = "no_observed_match"
+    if guesses:
+        guess_reason = "short_form_guess" if guesses[0].kind == "short_form" else "typo_guess"
+    return Resolution(
+        verdict="weak_only" if guesses else "none",
+        strong=(),
+        suggestions=tuple(guesses[:limit]),
+        selected_contact_id=None,
+        selected_conversation_id=None,
+        total_strong=0,
+        omitted=max(0, len(guesses) - limit),
+        reason=guess_reason,
+    )
