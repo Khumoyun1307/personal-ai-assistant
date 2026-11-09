@@ -2,6 +2,8 @@
 
 *Engineering plan for the phase after M03. Owner-approved 2026-10-26 (see [decisions.md](decisions.md)). Written by the Technical Lead. This folder is the **single entry point** for every engineer in P2: start here, then read your handoff in [handoffs/](handoffs/).*
 
+**Historical snapshot below (2026-10-28), preserved unchanged.** M05 subsequently merged to `main`; use the maintained [current release and privacy record](../../RELEASE.md) for later production evidence, source merges and open acceptance gates. The line saying “M05 units are on `int/m05`” describes that earlier date.
+
 **Status (2026-10-28):** **M04 source is on `main`; M05 units are on `int/m05`.** The earlier M04 deployment (`de19e05`) kept every new flag off. Trial-verifier, restore-tool and gateway fixes have since merged; CP4 sync (#132) is tracked in the [current TL handoff](handoffs/tech-lead.md#9-resumed-source-work-2026-10-28). The owner deferred further production until they initiate it. Live acceptance, trials, paid evaluations and owner review remain pending; both milestones stay `in progress` (interim [M04](../../milestones/M04.md), [M05](../../milestones/M05.md)). D0 remains 2026-10-27 ([decisions.md](decisions.md) B4); #43 is the integration record.
 
 ---

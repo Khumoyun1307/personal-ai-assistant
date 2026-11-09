@@ -15,6 +15,7 @@ A **Telegram-native personal AI agent**: one Telegram bot that is both the owner
 | What to build and how it must behave | [docs/PRODUCT_REQUIREMENTS.md](docs/PRODUCT_REQUIREMENTS.md) |
 | How it is built | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | In what order, with what tests and acceptance criteria | [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) |
+| Current release, privacy publication, acceptance and open risks | [docs/RELEASE.md](docs/RELEASE.md) |
 | Milestone reports, eval results | `docs/milestones/`, `docs/evals/` |
 | Phase plans for multi-engineer phases (work units, contracts, specs, handoffs, QA) | `docs/engineering/<phase>/` (P2: [docs/engineering/p2/](docs/engineering/p2/README.md); P3: [docs/engineering/p3/](docs/engineering/p3/README.md); stabilization: [docs/engineering/stabilization/](docs/engineering/stabilization/README.md)) |
 
