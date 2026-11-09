@@ -178,6 +178,25 @@ def test_a_repeated_suspicious_alert_is_raised() -> None:
     assert effective_priority(other, repeat) == Priority.NORMAL
 
 
+@pytest.mark.parametrize("priority", [Priority.LOW, Priority.NORMAL])
+def test_previously_important_alerts_keep_delivery_eligibility(priority: Priority) -> None:
+    facts = replace(
+        FACTS,
+        kind=NotificationKind.TRIAGE_SUSPICIOUS,
+        priority=priority,
+        previously_important=True,
+    )
+    # The earlier suspicious alert has left the rolling window.
+    assert effective_priority(facts, LOAD) == priority
+    assert decide(AFTERNOON, facts) == IMMEDIATE
+    assert decide(SMALL_HOURS, facts) == DeliveryDecision(Verdict.DEFER, QUIET_ENDS, "quiet_hours")
+    retry_at = AFTERNOON + timedelta(minutes=10)
+    capped = replace(LOAD, immediate_last_hour=SETTINGS.cap_per_hour, cap_retry_at=retry_at)
+    assert decide(AFTERNOON, facts, load=capped) == DeliveryDecision(Verdict.DEFER, retry_at, "cap")
+    muted = replace(SETTINGS, muted=frozenset({("triage_suspicious", CONTACT)}))
+    assert decide(AFTERNOON, facts, settings=muted) == batch("feedback")
+
+
 # --- rule 3: feedback mute ---------------------------------------------------
 
 

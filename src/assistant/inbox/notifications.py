@@ -415,6 +415,10 @@ class NotificationDelivery:
                     .where(Contact.id == notification.contact_id)
                 )
             ).scalar_one_or_none()
+        # These reasons are written only after qualifying for direct
+        # delivery. Keep that eligibility through holds and bounded
+        # retries without freezing the priority or bypassing feedback.
+        previous_reason = (notification.reason_code or "").partition(":")[0]
         return NotificationFacts(
             kind=NotificationKind(notification.kind),
             alert_class=AlertClass(notification.alert_class),
@@ -422,6 +426,7 @@ class NotificationDelivery:
             contact_id=notification.contact_id,
             contact_priority=contact_priority,
             bypass_quiet_hours=notification.bypass_quiet_hours,
+            previously_important=previous_reason in (_QUIET_HOURS, "cap", _NOT_DELIVERED),
         )
 
     async def _settings(

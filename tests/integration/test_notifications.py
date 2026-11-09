@@ -405,6 +405,63 @@ async def test_a_deleted_source_suppresses_the_alert(env: Env) -> None:
     assert channel.sends == []
 
 
+@pytest.mark.parametrize("retry_after_failure", [False, True])
+async def test_a_held_repeat_is_delivered_after_its_repetition_window_expires(
+    env: Env, *, retry_after_failure: bool
+) -> None:
+    """D-S8: a transient priority boost must survive a hold with digest off."""
+    env.clock.set(NIGHT - timedelta(hours=23))
+    where = await chat(env)
+    async with env.factory() as session, session.begin():
+        account = await session.get(Account, where.account_id)
+        assert account is not None
+        account.settings = {"digest_time": "off"}
+    earlier = await add(
+        env,
+        where,
+        kind=NotificationKind.TRIAGE_SUSPICIOUS,
+        priority=Priority.NORMAL,
+        key="suspicious:earlier",
+    )
+    assert earlier is not None
+    channel = FakeChannel(deliver=not retry_after_failure)
+    service = delivery(env, channel)
+    assert (await service.deliver(earlier)).status == "batched"
+
+    env.clock.set(NIGHT)
+    repeat = await add(
+        env,
+        where,
+        kind=NotificationKind.TRIAGE_SUSPICIOUS,
+        priority=Priority.NORMAL,
+        key="suspicious:repeat",
+    )
+    assert repeat is not None
+    result = await service.deliver(repeat)
+    assert result.status == "deferred"
+    assert result.reason == "quiet_hours"
+    held = await row(env, repeat)
+    assert held.priority == "normal"
+    assert held.deliver_after == QUIET_END
+    assert channel.sends == []
+
+    env.clock.set(QUIET_END)
+    assert (await row(env, earlier)).created_at < env.clock.now() - timedelta(hours=24)
+    if retry_after_failure:
+        assert (await service.deliver(repeat)).status == "retry"
+        retry = await row(env, repeat)
+        assert retry.deliver_after is not None
+        env.clock.set(retry.deliver_after)
+        channel.deliver = True
+    assert (await service.deliver(repeat)).status == "sent"
+    assert (await row(env, repeat)).sent_at == env.clock.now()
+    sends = len(channel.sends)
+    assert sends == (2 if retry_after_failure else 1)
+    assert (await service.deliver(repeat)).status == "not_queued"
+    assert len(channel.sends) == sends
+    assert (await row(env, earlier)).status == "batched"
+
+
 async def test_a_deferred_alert_is_delivered_after_quiet_hours(env: Env) -> None:
     env.clock.set(NIGHT)
     where = await chat(env)

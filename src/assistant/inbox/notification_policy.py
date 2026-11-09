@@ -52,6 +52,10 @@ class NotificationFacts:
     contact_priority: str | None
     #: A monitor spec that asked to reach the owner in quiet hours (R9).
     bypass_quiet_hours: bool
+    #: A prior policy hold or definite-failure retry proves this alert already
+    #: qualified for direct delivery. A rolling priority boost may expire
+    #: while it waits; current muting, quiet hours and the cap still apply.
+    previously_important: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +114,7 @@ def decide_delivery(
     priority = effective_priority(facts, load)
     if priority != Priority.URGENT and _is_muted(facts, settings.muted):
         return _decision(Verdict.BATCH, "feedback")
-    if priority in (Priority.LOW, Priority.NORMAL):
+    if priority in (Priority.LOW, Priority.NORMAL) and not facts.previously_important:
         return _decision(Verdict.BATCH, "quiet_by_default")
 
     quiet_until = _quiet_period_end(settings, now)
