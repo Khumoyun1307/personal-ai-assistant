@@ -33,6 +33,10 @@ from aiogram.exceptions import (
 
 from assistant.core.delivery import ErrorClass as ErrorClass
 
+#: Only an edit may treat this refusal as success: its requested content is
+#: already shown. Keep the general classification a failure for send callers.
+MESSAGE_NOT_MODIFIED = "message is not modified"
+
 #: Classes that mean "try again later"; the work stays pending and does not
 #: count as an attempt (§6.2).
 RETRYABLE: frozenset[ErrorClass] = frozenset({ErrorClass.RATE_LIMITED, ErrorClass.TRANSIENT})
@@ -68,6 +72,7 @@ class ClassifiedError:
 #: Description fragments → class. Checked in order; first match wins, so more
 #: specific fragments must come first.
 _DESCRIPTION_RULES: tuple[tuple[str, ErrorClass], ...] = (
+    (MESSAGE_NOT_MODIFIED, ErrorClass.BAD_REQUEST),
     # LV-08, 2026-10-21: an expired 24 h window fails a business send or a
     # typing action with PEER_ID_INVALID, not with the MTProto code the docs
     # suggest. The MTProto rule stays in case the Bot API ever surfaces it.

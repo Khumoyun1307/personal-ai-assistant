@@ -41,7 +41,12 @@ from assistant.core.clock import Clock
 from assistant.core.delivery import SendResult as SendResult
 from assistant.observability.logging import get_logger
 from assistant.telegram.business_targets import BusinessTarget, BusinessTargetResolver
-from assistant.telegram.errors import ClassifiedError, ErrorClass, classify_exception
+from assistant.telegram.errors import (
+    MESSAGE_NOT_MODIFIED,
+    ClassifiedError,
+    ErrorClass,
+    classify_exception,
+)
 from assistant.telegram.render import render_control_message
 
 logger = get_logger(__name__)
@@ -252,6 +257,12 @@ class OutboundGateway:
                 business_connection_id=None,
             )
         except Exception as error:
+            classified = classify_exception(error)
+            if (
+                classified.error_class is ErrorClass.BAD_REQUEST
+                and classified.code == MESSAGE_NOT_MODIFIED
+            ):
+                return SendResult(ErrorClass.OK, message_id=message_id)
             return self._classify_failure(error, account_id=target.account_id)
         return SendResult(ErrorClass.OK, message_id=message_id)
 

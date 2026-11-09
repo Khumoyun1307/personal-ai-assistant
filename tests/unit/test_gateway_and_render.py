@@ -63,6 +63,40 @@ async def test_sends_to_one_chat_are_spaced_by_the_injected_sleep(
     assert sleep.waits == [pytest.approx(0.04), 1.0]
 
 
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("Bad Request: message is not modified", ErrorClass.OK),
+        ("Bad Request: MESSAGE IS NOT MODIFIED: synthetic detail", ErrorClass.OK),
+        ("Bad Request: can't parse entities", ErrorClass.BAD_REQUEST),
+        ("Bad Request: message to edit not found", ErrorClass.BAD_REQUEST),
+        ("Bad Request: synthetic other refusal", ErrorClass.BAD_REQUEST),
+    ],
+)
+async def test_only_not_modified_is_a_success_equivalent_control_edit(
+    gateway: OutboundGateway,
+    sender: FakeTelegramSender,
+    description: str,
+    expected: ErrorClass,
+) -> None:
+    sender.fail_with = telegram_error(description, status_code=400)
+    result = await gateway.edit_control_text(CONTROL, 42, "Synthetic card")
+    assert result.error_class is expected
+    if result.ok:
+        assert result.message_id == 42
+    assert len(sender.edits) == 1
+    assert sender.business_calls == 0
+
+
+async def test_not_modified_is_not_success_for_a_send(
+    gateway: OutboundGateway, sender: FakeTelegramSender
+) -> None:
+    sender.fail_with = telegram_error("Bad Request: message is not modified", status_code=400)
+    result = await gateway.send_text(CONTROL, "Synthetic card")
+    assert result.error_class is ErrorClass.BAD_REQUEST
+    assert result.message_id is None
+
+
 # ------------------------------------------------------------------ renderer
 def test_untrusted_text_cannot_inject_markup() -> None:
     """A contact's message containing tags must not become markup."""

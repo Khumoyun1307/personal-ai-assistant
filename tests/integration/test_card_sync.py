@@ -19,7 +19,7 @@ from assistant.actions.states import StateReason
 from assistant.db.uow import transaction
 from assistant.telegram.control import approvals
 from assistant.telegram.control.approvals import SYNC_MAX_FAILURES
-from tests.fakes.sender import network_error
+from tests.fakes.sender import network_error, telegram_error
 from tests.integration.p2_factories import seed_action
 from tests.scenarios.p2_drive import DRAFT, Scenario, advance, m04_environment
 
@@ -128,11 +128,8 @@ async def test_the_sync_stops_after_ten_failed_edits_of_one_card(s: Scenario) ->
     assert state == "awaiting_approval"
 
 
-async def test_a_card_telegram_refuses_to_edit_is_settled_not_retried(s: Scenario) -> None:
-    """ "Message is not modified" (or a card the owner deleted) is a 400:
-    repeating the edit cannot help, so the card counts as synced."""
-    from tests.fakes.sender import telegram_error
-
+async def test_an_unchanged_card_is_settled_not_retried(s: Scenario) -> None:
+    """Only "message is not modified" confirms the requested card is shown."""
     row = await s.seed()
     await cancel_outside_the_card_flow(s)
     s.env.sender.edits.clear()
@@ -141,26 +138,69 @@ async def test_a_card_telegram_refuses_to_edit_is_settled_not_retried(s: Scenari
     assert (await s.action(row.id)).card_state == "cancelled"
     await advance(s, 60, periodic=SYNC)
     assert len(s.env.sender.edits) == 1
+    assert s.env.sender.business_calls == 0
 
 
-async def test_a_refused_card_edit_leaves_a_content_free_log_line(s: Scenario) -> None:
-    """A 400 settles the card, so a refusal that is not "not modified" (a
-    parse error) would otherwise leave a stale card and no trace of it."""
-    from tests.fakes.sender import telegram_error
-
+@pytest.mark.parametrize(
+    "description",
+    [
+        "Bad Request: can't parse entities",
+        "Bad Request: message to edit not found",
+        "Bad Request: synthetic other refusal",
+    ],
+)
+async def test_a_refused_card_edit_stays_recoverable_with_content_free_logs(
+    s: Scenario, description: str
+) -> None:
+    """A definite edit refusal must never record an unseen card as shown."""
     row = await s.seed()
     await cancel_outside_the_card_flow(s)
-    s.env.sender.fail_with = telegram_error("Bad Request: can't parse entities", status_code=400)
+    s.env.sender.edits.clear()
+    sends_before = len(s.env.sender.sends)
+    s.env.sender.fail_with = telegram_error(description, status_code=400)
     with capture_logs() as logs:
         await advance(s, 60, periodic=SYNC)
-    refused = [entry for entry in logs if entry["event"] == "approval_card_edit_refused"]
+    stale = await s.action(row.id)
+    assert stale.card_message_id == row.card_message_id
+    assert stale.card_state == "awaiting_approval"
+    assert stale.state == "cancelled"
+    refused = [entry for entry in logs if entry["event"] == "approval_card_edit_failed"]
     assert len(refused) == 1
     [entry] = refused
     assert entry["action_id"] == row.id
-    assert entry["state"] == "cancelled"
     assert "error" in entry
-    assert "code" in entry
+    assert entry["failures"] == 1
     assert "parse" not in str(entry)
+    assert description not in str(logs)
+    await advance(s, 60, periodic=SYNC)
+    assert len(s.env.sender.edits) == 2
+    assert (await s.action(row.id)).card_state == "awaiting_approval"
+    s.env.sender.fail_with = None
+    await advance(s, 60, periodic=SYNC)
+    assert len(s.env.sender.edits) == 3
+    assert (await s.action(row.id)).card_state == "cancelled"
+    assert len(s.env.sender.sends) == sends_before
+    assert s.env.sender.business_calls == 0
+
+
+@pytest.mark.parametrize(
+    "description",
+    ["Bad Request: can't parse entities", "Bad Request: message to edit not found"],
+)
+async def test_refused_card_edits_stop_at_the_existing_retry_bound(
+    s: Scenario, description: str
+) -> None:
+    row = await s.seed()
+    await cancel_outside_the_card_flow(s)
+    s.env.sender.edits.clear()
+    sends_before = len(s.env.sender.sends)
+    s.env.sender.fail_with = telegram_error(description, status_code=400)
+    for _ in range(SYNC_MAX_FAILURES + 2):
+        await advance(s, 60, periodic=SYNC)
+    assert len(s.env.sender.edits) == SYNC_MAX_FAILURES
+    assert (await s.action(row.id)).card_state == "awaiting_approval"
+    assert len(s.env.sender.sends) == sends_before
+    assert s.env.sender.business_calls == 0
 
 
 async def test_the_sync_tries_again_once_the_state_moves_on_after_giving_up(
