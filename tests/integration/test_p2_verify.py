@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import psycopg
 import pytest
+from alembic.script import ScriptDirectory
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +35,7 @@ from assistant.privacy.deletion import (
 )
 from tests.integration import execution_env
 from tests.integration.business_env import Env, business_message, deliver
+from tests.integration.conftest import alembic_config
 from tests.integration.p2_factories import seed_account, seed_action, seed_conversation, seed_task
 from tests.integration.test_data_deletion import OTHER_OWNER, env, hits, seed
 
@@ -778,7 +780,8 @@ async def test_release_prints_routes_and_flags_without_unrelated_settings(
         migrated_url, "release", flags=" tool.get_activity ,actions.send, tool.get_activity "
     )
     assert result.returncode == 0, result.stderr
-    assert "0014" in result.stdout
+    head = ScriptDirectory.from_config(alembic_config()).get_current_head()
+    assert f"alembic={head}" in result.stdout
     assert "actions.send" in result.stdout
     assert "tool.get_activity" in result.stdout
     assert "route=owner_request model=gpt-6-luna effort=medium\n" in result.stdout
