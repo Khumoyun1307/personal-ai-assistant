@@ -61,7 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 async def _check_database(database_url: str) -> int | None:
-    """Open a connection and run `SELECT 1`. Raises on failure.
+    """Reach the database; raise on failure or incomplete restore recovery.
 
     Returns the stored search-normalizer version, or None when the schema is
     not migrated yet (no `system_state` table or no row) or when no message
@@ -72,12 +72,24 @@ async def _check_database(database_url: str) -> int | None:
     from sqlalchemy.ext.asyncio import create_async_engine
     from sqlalchemy.pool import NullPool
 
+    from assistant.privacy.post_restore import RestorePendingError
+
     # hide_parameters keeps statement parameters out of exception text (§14.4).
     engine = create_async_engine(database_url, hide_parameters=True, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
             try:
+                pending = (
+                    await connection.execute(
+                        text(
+                            "SELECT EXISTS (SELECT 1 FROM app.system_state "
+                            "WHERE key = 'restore_pending')"
+                        )
+                    )
+                ).scalar_one()
+                if pending:
+                    raise RestorePendingError("restore_pending")
                 value = (
                     await connection.execute(
                         text(
@@ -136,8 +148,13 @@ def healthcheck() -> int:
 
     from sqlalchemy.exc import SQLAlchemyError
 
+    from assistant.privacy.post_restore import RestorePendingError
+
     try:
         stored_version = asyncio.run(_check_database(settings.database_url.get_secret_value()))
+    except RestorePendingError:
+        print("Blocked: restore_pending; mandatory recovery incomplete", file=sys.stderr)
+        return EXIT_FAILED
     except (SQLAlchemyError, OSError) as error:
         # Reported by exception type: the message would quote the URL (§14.4).
         print(
@@ -337,7 +354,8 @@ def post_restore_command(args: argparse.Namespace) -> int:
             f"OK: post-restore done — {report.accounts_paused} account(s) paused, "
             f"{report.jobs_deleted} queued job(s) dropped, {report.gaps_recorded} coverage "
             f"gap(s) recorded, retention swept {report.sweep.total} item(s). "
-            "restore_pending cleared; the owner is notified when the app starts."
+            "restore_pending cleared; AI remains blocked until fresh owner consent. "
+            "The owner is notified when the app starts."
         )
         return EXIT_OK
 

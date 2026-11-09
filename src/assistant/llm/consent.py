@@ -6,6 +6,8 @@ it. It raises — it does not return a value to branch on — when:
 - the request's model has no known processor, or one this adapter does not
   serve (`core/model_routes.py` — a route configured to another provider), or
 - the account has no active `ai_control` consent naming that processor, or
+- recovery is pending or that consent scope is quarantined after a restore
+  (the database reader returns no active consent until a fresh grant), or
 - the request carries any `Provenance.MANAGED` item and the account has no
   active `ai_managed` consent naming that processor.
 

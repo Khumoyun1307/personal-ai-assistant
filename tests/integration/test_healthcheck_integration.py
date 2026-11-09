@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import create_engine, text
 
-from assistant.__main__ import EXIT_OK, main, normalizer_warning
+from assistant.__main__ import EXIT_FAILED, EXIT_OK, main, normalizer_warning
 from assistant.memory.search import NORMALIZER_VERSION
 
 pytestmark = pytest.mark.integration
@@ -117,3 +117,31 @@ def test_normalizer_warning_only_for_an_older_stored_version() -> None:
     assert normalizer_warning(None) is None
     assert normalizer_warning(NORMALIZER_VERSION) is None
     assert normalizer_warning(NORMALIZER_VERSION - 1) is not None
+
+
+def test_healthcheck_reports_restore_gate_by_name_only(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    migrated_url: str,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", migrated_url)
+    monkeypatch.chdir("/")
+    engine = create_engine(migrated_url, hide_parameters=True)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO app.system_state (key, value) VALUES "
+                    "('restore_pending', '{\"file\": \"synthetic-private-marker\"}') "
+                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+                )
+            )
+        assert main(["healthcheck"]) == EXIT_FAILED
+        output = capsys.readouterr()
+        assert "Blocked: restore_pending" in output.err
+        assert "synthetic-private-marker" not in output.out + output.err
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM app.system_state WHERE key = 'restore_pending'"))
+        engine.dispose()

@@ -38,6 +38,7 @@ from assistant.memory import undo
 from assistant.observability.logging import get_logger
 from assistant.observability.status import StatusReport
 from assistant.privacy import deletion
+from assistant.privacy.consent_prompts import render_consent_prompt
 from assistant.privacy.requests import MANAGED_DELETE_CARD, QUEUED_TEXT
 from assistant.telegram.control import onboarding_texts as texts
 from assistant.telegram.control.cards import card_keyboard, rows_keyboard
@@ -247,7 +248,8 @@ async def ask_consent(
     message answers it only once it has arrived (C4): consent is never
     given to a question the owner did not see (SEC-02)."""
     locale = supported_locale(account.locale_pref)
-    result = await gateway.send_text(target, texts.consent_prompt(locale, AI_PROCESSORS))
+    prompt = render_consent_prompt(account, texts.consent_prompt(locale, AI_PROCESSORS))
+    result = await gateway.send_text(target, prompt)
     if result.ok:
         await arm_consent_question(session, clock, account.id, result.message_id)
     return result
@@ -315,6 +317,18 @@ async def handle_consent_reply(
     then, either way, the time-zone card (C4)."""
     target = ControlChat(account_id=account.id, chat_id=message.chat_id)
     locale = supported_locale(account.locale_pref)
+    if service.CONSENT_AI_CONTROL in service.restore_consent_pending(account):
+        pending = await service.get_pending_input(session, account_id=account.id, clock=clock)
+        # Inbox replay can deliver an old /start followed by an old yes.
+        # Only an owner message after the newly delivered recovery prompt
+        # may renew restored consent. Keep the question open on rejection.
+        if (
+            pending is None
+            or pending.kind != ONBOARDING_CONSENT
+            or pending.prompt_message_id is None
+            or message.telegram_message_id <= pending.prompt_message_id
+        ):
+            return HandlerResult(True, "consent", None, note="stale_reply")
     agreed = message.text.strip().lower() in AGREEMENT_WORDS
     await service.clear_pending_input(session, account_id=account.id)
 
@@ -385,9 +399,12 @@ async def handle_managed_consent_request(
         ttl=service.MANAGED_CONSENT_TTL,
     )
     assert card.token is not None
+    prompt = render_consent_prompt(
+        account, MANAGED_CONSENT_TEXT.format(processors=", ".join(AI_PROCESSORS))
+    )
     result = await gateway.send_text(
         target,
-        MANAGED_CONSENT_TEXT.format(processors=", ".join(AI_PROCESSORS)),
+        prompt,
         keyboard=card_keyboard(
             service.MANAGED_CONSENT_CARD,
             card.token,
@@ -1058,6 +1075,11 @@ def render_status(report: StatusReport, *, visibility: str) -> str:
         f"  This chat: {'granted' if consent.control_chat else 'not granted'}",
         f"  Included chats: {'granted' if consent.managed_chats else 'not granted'}",
     ]
+    if consent.restore_pending:
+        lines.append("  restore_pending: recovery incomplete; AI processing blocked")
+    if consent.restore_consent_pending:
+        scopes = ", ".join(consent.restore_consent_pending)
+        lines.append(f"  restore_consent_pending: {scopes}; renew with /start or /privacy managed")
     if report.autonomy.conversations_paused:
         detail = ", ".join(
             f"{count} {reason}"

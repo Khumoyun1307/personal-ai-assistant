@@ -63,6 +63,7 @@ from assistant.core.clock import Clock
 from assistant.core.jobs import JobScheduler
 from assistant.db.uow import after_commit, transaction
 from assistant.privacy import deletion, retention_policy
+from assistant.privacy.consent_prompts import render_consent_prompt
 from assistant.telegram.control import onboarding_texts as texts
 from assistant.telegram.control.cards import Rows, rows_keyboard
 from assistant.telegram.control.handlers import (
@@ -737,9 +738,10 @@ async def _press_onboarding_language(
     if consent.granted:
         return HandlerResult(True, "card", None, note="language")
     account_id = account.id
+    prompt = render_consent_prompt(account, texts.consent_prompt(locale, AI_PROCESSORS))
 
     async def ask(factory: async_sessionmaker[AsyncSession]) -> None:
-        result = await gateway.send_text(target, texts.consent_prompt(locale, AI_PROCESSORS))
+        result = await gateway.send_text(target, prompt)
         if not result.ok:
             return  # never shown: nothing for a "yes" to answer
         async with transaction(factory) as uow:

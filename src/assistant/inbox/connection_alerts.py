@@ -25,6 +25,7 @@ from assistant.core.channel import Button, ControlChannel, Delivery
 from assistant.core.clock import Clock
 from assistant.db.uow import transaction
 from assistant.inbox.notify import AlertKind, AlertResult, OwnerAlerts
+from assistant.privacy.consent_prompts import render_consent_prompt
 
 TIER_TEXT: dict[Tier, str] = {
     Tier.NONE: "<b>No permissions</b> — the connection is off.",
@@ -164,8 +165,9 @@ async def notify_connection_change(
                 # The card is recorded only once the question has arrived
                 # (below): a failed send leaves nothing open.
                 token = new_token()
-                body += "\n\n" + MANAGED_CONSENT_QUESTION.format(
-                    processors=", ".join(service.AI_PROCESSORS)
+                body += "\n\n" + render_consent_prompt(
+                    account,
+                    MANAGED_CONSENT_QUESTION.format(processors=", ".join(service.AI_PROCESSORS)),
                 )
         account_id = account.id
 
@@ -213,6 +215,9 @@ async def send_managed_consent_card(
     one-line "chat access is off" text still says how to turn it on.
     """
     async with transaction(session_factory) as uow:
+        account = await uow.session.get(Account, account_id)
+        if account is None:
+            return None
         if not await _managed_consent_missing(uow.session, account_id):
             return None
         if await connection_for_account(uow.session, account_id) is None:
@@ -223,11 +228,15 @@ async def send_managed_consent_card(
             since=clock.now() - service.MANAGED_CONSENT_TTL,
         ):
             return None
+        prompt = render_consent_prompt(
+            account,
+            MANAGED_CONSENT_QUESTION.format(processors=", ".join(service.AI_PROCESSORS)),
+        )
     token = new_token()
     delivery = await channel.send(
         account_id=account_id,
         chat_id=chat_id,
-        text=MANAGED_CONSENT_QUESTION.format(processors=", ".join(service.AI_PROCESSORS)),
+        text=prompt,
         buttons=consent_buttons(token),
     )
     if delivery.ok:

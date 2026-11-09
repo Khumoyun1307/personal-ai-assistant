@@ -104,7 +104,13 @@ ALERT_TEXT: dict[AlertKind, str] = {
         "♻️ The database was restored from a backup taken {backup_taken_at}. Everything "
         "decided after that is undone: autonomy is paused, open approvals were cancelled, "
         "and messages from the gap may be missing (it is recorded as a coverage gap). "
-        "Please check /status and re-apply any settings, consent or pause you changed since."
+        "Restored AI consents were revoked; processing requires fresh consent. "
+        "Deletions and consent revocations after the backup time may have been undone: "
+        "redo deletions via "
+        "/settings → Delete data (or /privacy delete for everything), and revoke consent "
+        "with /privacy revoke. Review this before renewing consent with /start for this "
+        "control chat, then /privacy managed for connected chats. "
+        "Please check /status and re-apply settings or pauses you changed since."
         "{actions}"
     ),
     AlertKind.CONFIRMATION_INTERRUPTED: (

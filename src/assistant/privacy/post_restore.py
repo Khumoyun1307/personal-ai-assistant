@@ -3,9 +3,10 @@
 A restore rewinds the database by up to 24 h. Everything decided after the
 dump — pauses, consent changes, deletions, approvals — is undone, and
 messages Telegram delivered in between are gone for good. `post_restore`
-makes the restored state safe and honest in one transaction:
+makes the restored state safe and honest, keeping the gate through the sweep:
 
-1. autonomy paused for every account;
+1. gate committed, restored AI consents revoked, pending inputs/cards removed;
+   autonomy paused for every account;
 2. open actions cancelled and executing ones made uncertain (from M04, when
    the `actions` table exists — recorded here so the step is not forgotten);
 3. queued procrastinate jobs deleted (reconcilers re-create valid work);
@@ -24,10 +25,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from assistant.accounts.models import Account, AuditLogEntry
+from assistant.accounts import service
+from assistant.accounts.models import Account, AuditLogEntry, PendingInput
 from assistant.actions.lifecycle import cancel_pending
 from assistant.actions.models import Action
 from assistant.actions.states import PENDING, StateReason
@@ -78,8 +80,28 @@ async def post_restore(
     now = clock.now()
     if backup_taken_at > now:
         raise ValueError("backup_taken_at is in the future")
+    # Commit the gate first, even for a direct invocation without restore.sh.
+    # A later failure (including a separately committed sweep) cannot open it.
+    async with transaction(session_factory) as uow:
+        marker = await uow.session.get(SystemState, KEY_RESTORE_PENDING)
+        if marker is None:
+            uow.session.add(SystemState(key=KEY_RESTORE_PENDING, value={}))
     async with transaction(session_factory) as uow:
         session = uow.session
+        # Revoke every restored scope, including inactive accounts: a later
+        # reactivation must not resurrect an old grant. Invalidate old cards
+        # and text questions so only a newly displayed consent can re-grant.
+        for account in (await session.scalars(select(Account).order_by(Account.id))).all():
+            account.settings = {
+                **(account.settings or {}),
+                service.RESTORE_CONSENT_PENDING: [
+                    service.CONSENT_AI_CONTROL,
+                    service.CONSENT_AI_MANAGED,
+                ],
+            }
+            for kind in (service.CONSENT_AI_CONTROL, service.CONSENT_AI_MANAGED):
+                await service.revoke_consent(session, account, kind=kind, clock=clock)
+            await session.execute(delete(PendingInput).where(PendingInput.account_id == account.id))
         # 1. Autonomy off everywhere until the owner looks (§15.6).
         paused = await session.execute(
             update(Account).where(Account.status == "active").values(autonomy_paused=True)
@@ -186,11 +208,6 @@ async def post_restore(
                     details={"backup_taken_at": backup_taken_at.isoformat()},
                 )
             )
-        # 7a. The marker goes; a notice for the owner is queued for the running app.
-        marker = await session.get(SystemState, KEY_RESTORE_PENDING)
-        if marker is not None:
-            await session.delete(marker)
-        notice = await session.get(SystemState, KEY_RESTORE_NOTICE)
         payload = {
             "backup_taken_at": backup_taken_at.isoformat(),
             "at": now.isoformat(),
@@ -200,13 +217,32 @@ async def post_restore(
                 str(account_id): count for account_id, count in schedules_skipped.items()
             },
         }
-        if notice is None:
-            session.add(SystemState(key=KEY_RESTORE_NOTICE, value=payload))
+        marker = await session.get(SystemState, KEY_RESTORE_PENDING)
+        assert marker is not None  # committed before any recovery work
+        previous = marker.value.get("recovery_notice")
+        if (
+            isinstance(previous, dict)
+            and previous.get("backup_taken_at") == payload["backup_taken_at"]
+        ):
+            # A retry after a failed sweep sees already-cancelled actions.
+            # Keep their original receipt rather than replacing it with zeros.
+            payload = previous
         else:
-            notice.value = payload
+            marker.value = {**marker.value, "recovery_notice": payload}
         await session.flush()
     # 6. Retention, outside the big transaction (each class commits on its own).
     sweep = await sweep_all(session_factory, clock)
+    # 7. Publish the notice and open the startup gate only after every step
+    # succeeded. AI remains quarantined independently until fresh consent.
+    async with transaction(session_factory) as uow:
+        notice = await uow.session.get(SystemState, KEY_RESTORE_NOTICE)
+        if notice is None:
+            uow.session.add(SystemState(key=KEY_RESTORE_NOTICE, value=payload))
+        else:
+            notice.value = payload
+        marker = await uow.session.get(SystemState, KEY_RESTORE_PENDING)
+        if marker is not None:
+            await uow.session.delete(marker)
     return PostRestoreReport(
         accounts_paused,
         jobs_deleted,

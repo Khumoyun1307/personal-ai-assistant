@@ -4,8 +4,9 @@ A restore rewinds the database by up to 24 h. Messages Telegram already
 delivered in between are gone for good (it does not redeliver), and any
 action, consent change, deletion or setting made after the dump is undone.
 The mandatory post-restore step makes that honest and safe: it pauses
-autonomy, cancels open actions, records a `possible` coverage gap and tells
-the owner.
+autonomy, quarantines restored AI consent, cancels open actions, records a
+`possible` coverage gap and tells the owner. AI stays blocked until the
+owner explicitly renews each consent scope in the control chat.
 
 **The age identity (private key) never touches the server's disk.** It is
 streamed from the laptop over SSH into `restore.sh`'s standard input
@@ -77,14 +78,40 @@ live acceptance requirement.
    timestamp. The restore sets `system_state.restore_pending`;
    `assistant run` refuses to start roles while it is set.
 4. `just prod <ip> post-restore <ts>` (the dump name is the UTC time, e.g.
-   `20261022T020000Z` → `2026-10-22T02:00:00Z`): one transaction — autonomy
-   paused for every account, open actions cancelled (`restored_from_backup`)
+   `20261022T020000Z` → `2026-10-22T02:00:00Z`): the restore gate is committed
+   first. The recovery transaction revokes both restored AI consent scopes
+   for every account, sets per-scope quarantine and invalidates restored
+   pending questions/cards. Autonomy is paused for active accounts,
+   open actions cancelled (`restored_from_backup`)
    and executing ones moved to `delivery_uncertain`, queued jobs deleted
    (reconcilers re-create valid work), schedules recomputed, a `possible`
-   coverage gap for [backup_taken_at, now], the retention sweep, then
-   `restore_pending` cleared. It prints what it changed.
+   coverage gap recorded for [backup_taken_at, now]. The retention sweep
+   runs afterwards in separate transactions. Only after every step succeeds
+   is the notice published and `restore_pending` cleared. It prints counts
+   and states only. A failure leaves the gate closed; healthcheck fails with
+   `restore_pending` by name only. Fix the cause and rerun this step with the
+   same backup timestamp; never manually delete the gate. A sweep may have
+   partially committed: that does not authorize starting the app. The
+   original action notice receipt is retained across sweep retries.
 5. `just prod <ip> app-start`. The owner receives the restore notice listing
-   what to re-apply (consent, settings, pause).
+   what to re-apply. AI is still quarantined; starting the app does not
+   restore authorization. Before agreeing again, the owner reviews privacy:
+   deletions and consent revocations made after the backup time may have
+   been undone. Redo deletions in `/settings` → Delete data (or
+   `/privacy delete` for everything), and redo revocations with
+   `/privacy revoke`. Review settings and pauses too. Then use `/start`
+   for a deterministic control-chat consent prompt, and `/privacy managed`
+   only if AI should read connected chats again. Each scope requires fresh
+   agreement; renewing one account or scope never renews another. The
+   warning is repeated at every consent prompt if the restore notice was
+   missed, including after choosing a language and on connection-triggered
+   or owner-request-triggered managed-consent cards. For control consent,
+   send a new answer after the newly delivered question. Restored inbox
+   replies that predate that prompt are ignored and leave the question
+   open; replaying an old `/start` followed by an old `yes` cannot renew
+   consent. `/status` names any scopes still in `restore_consent_pending`.
+   Automatic replay of privacy decisions outside the snapshot is a later
+   I20 design; this procedure does not recover or prove those decisions.
 6. The owner deletes `var/cloud/age-identity.txt` from the laptop again.
 
 ## C. Rebuilding a lost host
