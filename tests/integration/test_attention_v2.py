@@ -27,11 +27,13 @@ from typing import Any
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime, RunStatus
 from assistant.agent.tools.registry import ToolContext, ToolOutcome, ToolServices, default_registry
 from assistant.agent.tools.summaries import GetAttentionListArgs, get_attention_list_tool
 from assistant.llm.port import ToolResultItem
+from assistant.memory import catch_up
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response, tool_response
 from tests.integration.agent_env import args, ask, gated, one_id
@@ -39,6 +41,7 @@ from tests.integration.business_env import (
     CONTACT,
     NOW,
     OTHER_CONTACT,
+    OWNER,
     Env,
     business_message,
     connect,
@@ -46,6 +49,7 @@ from tests.integration.business_env import (
     environment,
     grant_managed,
 )
+from tests.integration.p2_factories import seed_account, seed_conversation, seed_task
 
 pytestmark = pytest.mark.integration
 
@@ -212,6 +216,133 @@ async def test_attention_shows_reasons_and_tasks_from_a_covering_verdict(env: En
     order = [e["conversation_id"] for e in outcome.data["conversations"]]
     assert order == [a, b]
     assert outcome.data["waiting_count"] == 1
+
+
+async def test_an_answer_does_not_hide_an_old_open_promise(env: Env) -> None:
+    account, a, b = await seed(env)
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE app.conversations SET last_contact_msg_at = :old, "
+                "last_owner_msg_at = :answer WHERE id = :c"
+            ),
+            {"old": NOW - timedelta(days=40), "answer": NOW, "c": a},
+        )
+        for kind, due in (
+            ("contact_commitment", None),
+            ("owner_commitment", NOW - timedelta(days=20)),
+        ):
+            await seed_task(
+                session,
+                account_id=account,
+                conversation_id=a,
+                kind=kind,
+                title="Synthetic promise to send a document",
+                due_at=due,
+            )
+    await deliver(
+        env,
+        business_message(
+            message_id=12,
+            from_id=OWNER,
+            message_text="SYNTH okay",
+            date=int(NOW.timestamp()),
+        ),
+    )
+    # No covering verdict: obligations must be loaded independently.
+    outcome = await attention(env, account)
+    shown = entry(outcome, a)
+    assert shown["obligation_open"] is True
+    assert shown["reply_needed"] is False
+    assert shown["needs_reply"] is False
+    assert shown["may_be_waiting"] is False
+    assert [task["due_state"] for task in shown["open_tasks"]] == ["overdue", "no_due_date"]
+    assert entry(outcome, b)["reply_needed"] is None
+
+
+async def test_obligation_tasks_are_capped_without_a_covering_verdict(env: Env) -> None:
+    account, a, _ = await seed(env)
+    for index in range(7):
+        await add_task(env, account, a, f"Synthetic open loop {index}")
+    shown = entry(await attention(env, account), a)
+    assert shown["obligation_open"] is True
+    assert len(shown["open_tasks"]) == 5
+    assert "triage" not in shown
+
+
+async def test_foreign_tasks_do_not_make_an_answered_chat_an_attention_candidate(env: Env) -> None:
+    account, a, _ = await seed(env)
+    async with env.factory() as session, session.begin():
+        other: int = (
+            await session.execute(
+                text("INSERT INTO app.accounts (telegram_user_id) VALUES (7000000077) RETURNING id")
+            )
+        ).scalar_one()
+        await session.execute(
+            text("UPDATE app.conversations SET last_owner_msg_at = :now WHERE id = :c"),
+            {"now": NOW, "c": a},
+        )
+    await add_task(env, other, a, "Synthetic foreign obligation")
+    outcome = await attention(env, account)
+    assert a not in [item["conversation_id"] for item in outcome.data["conversations"]]
+
+
+async def test_obligation_candidate_union_is_scoped_deduplicated_and_capped(
+    db_session: AsyncSession,
+) -> None:
+    account = await seed_account(db_session)
+    foreign = await seed_account(db_session)
+    expected: list[int] = []
+    for index in range(3):
+        conversation = await seed_conversation(
+            db_session,
+            account_id=account.id,
+            last_contact_msg_at=NOW - timedelta(days=40 - index),
+            last_owner_msg_at=NOW,
+        )
+        expected.append(conversation.id)
+        for _ in range(2):
+            await seed_task(
+                db_session,
+                account_id=account.id,
+                conversation_id=conversation.id,
+                kind="contact_commitment",
+            )
+    for tenant, mode, status in (
+        (foreign.id, "observe", "open"),
+        (account.id, "ignore", "open"),
+        (account.id, "observe", "done"),
+    ):
+        conversation = await seed_conversation(
+            db_session,
+            account_id=tenant,
+            mode=mode,
+            last_contact_msg_at=NOW - timedelta(days=40),
+            last_owner_msg_at=NOW,
+        )
+        await seed_task(
+            db_session,
+            account_id=tenant,
+            conversation_id=conversation.id,
+            kind="owner_commitment",
+            status=status,
+        )
+    found = await catch_up.unanswered(
+        db_session,
+        account.id,
+        since=NOW - timedelta(days=7),
+        limit=2,
+        include_obligations=True,
+    )
+    assert [candidate.conversation_id for candidate in found] == expected[1:]
+    all_found = await catch_up.unanswered(
+        db_session,
+        account.id,
+        since=NOW - timedelta(days=7),
+        limit=100,
+        include_obligations=True,
+    )
+    assert [candidate.conversation_id for candidate in all_found] == expected
 
 
 async def test_a_decision_comes_before_a_reply_and_a_tier_lists_newest_first(env: Env) -> None:

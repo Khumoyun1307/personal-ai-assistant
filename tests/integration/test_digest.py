@@ -43,7 +43,13 @@ from assistant.automation.models import Automation
 from assistant.automation.schedules import ensure_digest_schedule, reconcile_due
 from assistant.conversations.models import CoverageGap, Message
 from assistant.core.jobs import DIGEST_TASK
-from assistant.inbox.digest import DIGEST_CARD, DigestDelivery, DigestResult, build_digest
+from assistant.inbox.digest import (
+    DIGEST_CARD,
+    MAX_TASK_LINES,
+    DigestDelivery,
+    DigestResult,
+    build_digest,
+)
 from assistant.inbox.models import Digest, Notification
 from assistant.privacy.deletion import delete_conversation_data, delete_everything
 from assistant.privacy.retention import sweep_all
@@ -194,6 +200,73 @@ async def notification(env: Env, notification_id: int) -> Notification:
 
 
 # ============================================================ the schedule
+async def test_open_undated_and_old_overdue_promises_survive_an_answer(
+    migrated_url: str,
+) -> None:
+    async with environment(migrated_url) as env:
+        account_id = await owner(env)
+        where = await chat(env, account_id, "Synthetic contact", last_owner_msg_at=EVENING)
+        async with env.factory() as session, session.begin():
+            for kind, due in (
+                ("contact_commitment", None),
+                ("owner_commitment", EVENING - timedelta(days=40)),
+            ):
+                await seed_task(
+                    session,
+                    account_id=account_id,
+                    conversation_id=where.conversation_id,
+                    kind=kind,
+                    title="Synthetic <document> promise",
+                    due_at=due,
+                )
+            content = await build_digest(
+                session,
+                account_id=account_id,
+                period_start=EVENING - timedelta(days=1),
+                period_end=EVENING,
+            )
+        assert len(content.commitments) == 2
+        assert content.waiting == ()
+        rendered = "\n".join(render_digest(content))
+        assert "no due date" in rendered
+        assert "overdue" in rendered
+        assert "&lt;document&gt;" in rendered
+        assert CANARY not in rendered
+
+
+async def test_digest_undated_promises_are_capped_oldest_first_and_account_scoped(
+    db_session: AsyncSession,
+) -> None:
+    account = await seed_account(db_session)
+    foreign = await seed_account(db_session)
+    await seed_task(
+        db_session,
+        account_id=foreign.id,
+        kind="contact_commitment",
+        title="Foreign synthetic promise",
+        created_at=EVENING - timedelta(days=100),
+    )
+    ids: list[int] = []
+    for index in range(MAX_TASK_LINES + 2):
+        task = await seed_task(
+            db_session,
+            account_id=account.id,
+            kind="contact_commitment",
+            title=f"Synthetic promise {index}",
+            created_at=EVENING - timedelta(days=40) + timedelta(minutes=index),
+        )
+        ids.append(task.id)
+    content = await build_digest(
+        db_session,
+        account_id=account.id,
+        period_start=EVENING - timedelta(days=1),
+        period_end=EVENING,
+    )
+    assert [task.task_id for task in content.commitments] == ids[:MAX_TASK_LINES]
+    assert content.commitments_more == 2
+    assert "Foreign synthetic promise" not in "\n".join(render_digest(content))
+
+
 async def test_the_digest_automation_follows_the_preference(db_session: AsyncSession) -> None:
     account = await seed_account(db_session, timezone="Asia/Tashkent", settings=DIGEST_AT_21)
     now = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)  # 14:00 in Tashkent

@@ -3,8 +3,9 @@
 
 **Content** (`build_digest`) is read from what P2 already stores — no model
 call: the batched alerts that need the owner, the chats waiting for a reply
-(attention list v1 selection, narrowed by a triage verdict that covers the
-newest contact message), commitments due, tasks triage closed, counts of the
+(unanswered selection, narrowed by a triage verdict that covers the
+newest contact message), open commitments (undated, overdue or due before
+the horizon), tasks triage closed, counts of the
 other batched alerts, deletions in the period (never who deleted — TF §12
 LV-07; owner decision E2), and the period's coverage caveats. Contact names,
 verdict reasons and task titles are the only content in it — what alerts and
@@ -86,8 +87,6 @@ MAX_PERIOD = timedelta(hours=48)
 #: Commitments due before this long after the period ends are listed
 #: (J7 step 2: due today and still open → in the next digest).
 COMMITMENT_HORIZON = timedelta(hours=24)
-#: Overdue commitments are listed until triage expires them.
-COMMITMENT_LOOKBACK = tasks.COMMITMENT_EXPIRY_AFTER_DUE
 #: The attention list's default window (`get_attention_list`) and size.
 WAITING_WINDOW = timedelta(days=7)
 WAITING_CANDIDATES = 100
@@ -378,18 +377,15 @@ async def _task_lines(
 async def _commitments(
     session: AsyncSession, account_id: int, period_end: datetime
 ) -> tuple[tuple[TaskLine, ...], int]:
-    """Open commitments (either side) due before the horizon, soonest first,
-    overdue ones included back to when triage expires them (S05.1's
-    `tasks.due_between`)."""
-    due = await tasks.due_between(
+    """Open promises of either side, including undated and all overdue ones."""
+    due, more = await tasks.digest_commitments(
         session,
         account_id=account_id,
-        start=period_end - COMMITMENT_LOOKBACK,
         end=period_end + COMMITMENT_HORIZON,
-        kinds=COMMITMENT_KINDS,
+        limit=MAX_TASK_LINES,
     )
-    lines = await _task_lines(session, account_id, due[:MAX_TASK_LINES])
-    return lines, len(due) - len(lines)
+    lines = await _task_lines(session, account_id, due)
+    return lines, more
 
 
 async def _closed(

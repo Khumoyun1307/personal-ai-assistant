@@ -95,7 +95,7 @@ def _commitment(task: TaskLine, zone: ZoneInfo, period_end: datetime) -> str:
     who = _name(task.name)
     # Who promised what (S03.7 attribution): the task's kind says.
     side = f"you promised {who}" if task.kind == "owner_commitment" else f"{who} promised"
-    due = ""
+    due = ", no due date"
     if task.due_at is not None:
         due = f", due {_when(task.due_at, zone)}"
         if task.due_at < period_end:
@@ -169,7 +169,7 @@ def _lines(content: DigestContent) -> list[str]:
     commitments = [_commitment(task, zone, content.period_end) for task in content.commitments]
     if content.commitments_more:
         commitments.append(f"• …and {content.commitments_more} more")
-    section("Commitments due", commitments)
+    section("Commitments", commitments)
     closed = [
         f"• {html.escape(task.title)}" + (f" ({_name(task.name)})" if task.name else "")
         for task in content.closed
