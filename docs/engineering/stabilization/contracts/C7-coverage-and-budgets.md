@@ -2,6 +2,8 @@
 
 Frozen seams for I2/I4/I6 and I15/I16. These repairs do not change model routing or authorize paid evaluations. The existing newest-first 60/30-message selection and 2,000-character clipping cannot certify complete review. Distinguish data unavailable to the bot from retained data not yet reviewed.
 
+**Merge prerequisite:** H10 must merge before I2 or I4 (and therefore I6). Its C6 `conversations.content_revision` migration and ingestion/edit/deletion/retention update hooks do not exist in the baseline. Preparatory reader work may use this contract, but neither reader repair may merge against a stub revision or omit the during-call revision check. H10 retains one PR; its context hooks follow H7 in the shared-file lane. I3 separately implements reassessment behind an already-settled cursor.
+
 ## Review coverage model
 
 ```python
@@ -174,7 +176,7 @@ async def settle_call(
 
 | Column | SQL type / nullability |
 |---|---|
-| `id`, `account_id` | bigint identity PK NOT NULL; bigint NOT NULL FK |
+| `id`, `account_id` | bigint identity PK NOT NULL; bigint NOT NULL FK accounts ON DELETE RESTRICT (account-scoped accounting exception to the shared CASCADE convention) |
 | `operation_id`, `attempt_id` | uuid NOT NULL; uuid NOT NULL UNIQUE(account_id, attempt_id) |
 | `run_id`, `llm_call_id` | bigint NULL FKs agent_runs/llm_calls ON DELETE SET NULL, same account |
 | `model`, `price_version` | text NOT NULL (validated configured identifier / static version, never arbitrary prose) |
@@ -185,7 +187,7 @@ async def settle_call(
 | `created_at`, `updated_at` | timestamptz NOT NULL |
 | `error_code` | text NULL, fixed classification only |
 
-Retention: ≤1 year from creation **after billing reconciled**; unresolved reservation remains held and visible until explicit reconciliation, not automatically freed at timeout/month rollover. Account/all deletion deletes rows; scoped message deletion removes source/run linkage where applicable, retaining only permitted aggregate accounting. No text; no additional provider consent class or processor. I16 must document how accounting-only records are treated by privacy export/deletion and add tests.
+Retention: reconciled accounting follows the existing ≤1-year accounting retention; an unresolved reservation remains held and visible until explicit reconciliation, never automatically freed at timeout/month rollover or by content deletion. `delete_everything` preserves consents and accounting today: it must also preserve the minimal admission identity, account/month, attempt, reservation, status and settlement fields above, including an in-flight or billing-uncertain attempt. Scoped/content deletion removes source/run linkage where applicable (`run_id`/`llm_call_id` may become NULL), without releasing allowance, deleting the settlement identity or recreating it under a new attempt. No content is retained for accounting. Physical account removal is blocked while retained admissions remain; do not cascade them away. I16 documents accounting retention/export/deletion and eventual account-removal handling before code; it cannot silently remove outstanding liabilities. No additional provider consent class or processor: accounting settlement requires no content/provider call and remains possible after consent withdrawal.
 
 | Admission rule | Required behavior |
 |---|---|
@@ -193,7 +195,8 @@ Retention: ≤1 year from creation **after billing reconciled**; unresolved rese
 | Bounds | Conservative input-token bound includes all serialized context/tools/cache charged at full price unless verified discount; output bound includes allowed generation/reasoning. No unbounded SDK retry. Disable implicit retries or account for every separately admitted attempt. |
 | Concurrent work | Serialize reservation under account budget lock; sum reconciled charges + all outstanding reservations, without double-counting linked llm_calls. Account → admission order, commit before provider. Two jobs cannot both spend same remaining USD. |
 | Uncertain billing/crash | Mark dispatched reservation uncertain; hold full reserve, conservative token charge. No automatic release or replay. Late response reconciles same attempt once. |
+| Deletion during dispatch | Serialize deletion/link cleanup with settlement using the account → admission order. Once dispatched, content deletion or consent withdrawal cannot classify the call as unused. Retain the same admission/attempt and reserve; late response settles once even after source/run linkage is removed. Missing usage stays billing_uncertain; a second admission cannot spend that held allowance. A pre-dispatch release requires proof no provider attempt started. |
 | Actual usage | Reconcile exactly once; lower actual frees difference. If actual exceeds a purported bound, record true cost, block further admission and surface bound failure; never hide overrun. Zero discretionary overshoot by default; any permitted bounded exception requires owner decision. |
 | Month boundary | Outstanding earlier-month reservations remain held in that month; no timeout reset; usage reconciles against admission month with visible late accounting. |
 
-Tests use FakeClock/FakeLLM and concurrent PostgreSQL transactions: oldest backlog drain/restart, tail-only evidence, invalid monitor output, edited covered source; nested calls plus truncation retry, cancelled multi-tool batch, two admissions for last allowance, unpriced model, unknown billing, late settlement. No real API runs. Update architecture §7.2/7.4/§10/§12/§14/§17 and affected P2 specs when implemented.
+Tests use FakeClock/FakeLLM and concurrent PostgreSQL transactions: oldest backlog drain/restart, tail-only evidence, invalid monitor output, edited covered source, edit/delete during paused reader call rejects stale settlement; nested calls plus truncation retry, cancelled multi-tool batch, two admissions for last allowance, unpriced model, unknown billing, late settlement. **Deletion-during-dispatch regression first:** pause FakeLLM after dispatch, run delete_everything/scoped deletion and consent withdrawal, verify source content/link cleanup but the same admission/reserve survives, deny competing spend, then settle a late response exactly once (or retain billing_uncertain if usage is unknown). Include physical account deletion restriction and accounting sweep/export tests. No real API runs. Update architecture §7.2/7.4/§10/§12/§14/§17 and affected P2 specs when implemented.

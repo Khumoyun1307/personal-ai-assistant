@@ -6,9 +6,9 @@
 |---|---|
 | [Review, 2026-11-09](review-2026-11-09.md) | Read-only synthesis, findings, original recommendations, scenarios and playtest |
 | [Raw reviews R0–R4](reviews/) | Supporting research and reviewer evidence; preserved as historical analysis |
-| [DECISIONS.md](DECISIONS.md) | Owner answers D-S1–D-S14, superseded rulings and required document changes |
+| [DECISIONS.md](DECISIONS.md) | Owner answers D-S1–D-S15, superseded rulings and required document changes |
 | [PLAN.md](PLAN.md) | Amended work units, dependencies, parallel lanes and acceptance |
-| [Contracts C1–C9](contracts/README.md) | Typed target interfaces, storage/privacy boundaries and open I20 recovery choice |
+| [Contracts C1–C9](contracts/README.md) | Typed target interfaces, storage/privacy boundaries and D-S15's decided I20 hybrid journal/manual recovery |
 | [Unit briefs](specs/README.md) / [synthetic cases](cases/README.md) | H1–H13/Q4 implementation criteria and multilingual A1 acceptance scenarios |
 | [Milestone status](../../IMPLEMENTATION_PLAN.md#14-working-agreement-per-milestone) | Authorization and milestone reporting |
 | [P3 hold](../p3/README.md) | Deferred plan to rebaseline after acceptance |

@@ -14,12 +14,12 @@ These briefs implement [PLAN](../PLAN.md), [owner decisions](../DECISIONS.md), a
 | H7 | [Artifact-grounded reporting](H7.md) | H1/Q3, integrate after H6; runtime/cards before H8 |
 | H8 | [Task-preserving Re-draft](H8.md) | H1/H4/H6/H7/H9/H10; runtime/replies/cards before H11 |
 | H9 | [Per-version authorship](H9.md) | H1/H3 and Q2/Q5; provenance seam before H4 |
-| H10 | [Source freshness](H10.md) | P0-2; separate schema foundation early, context hooks after H7; before H8/I3 |
+| H10 | [Source freshness](H10.md) | P0-2; foundation may prepare early, context hooks after H7; full PR merges before I2/I4/I3/H8/H11 |
 | H11 | [Owner precedence](H11.md) | H1/H10; runtime/cards after H8; before I13 |
 | H12 | [Taint lifecycle](H12.md) | H1/H2; runtime/context before H4/H6 |
 | H13 | [Trusted preferences](H13.md) | H1/H4/H12 contracts; registry after H5, memory before I12/H6 |
 
-Shared-file order is binding even when conceptual dependencies permit preparation. H4/H6 may land disabled/testable before H10 runtime hooks; **no repaired candidate is activated/released with a missing freshness fence**. H10 standalone foundation can prepare earlier, but do not skip H7→H10 hooks→H8 ordering. This is a seam completion gate, not authorization to move unrelated runtime edits ahead of their lane.
+Shared-file order is binding even when conceptual dependencies permit preparation. H4/H6 may land disabled/testable before H10 runtime hooks; **no repaired candidate is activated/released with a missing freshness fence**. H10 standalone foundation can prepare earlier, but do not skip H7→H10 hooks→H8 ordering. I2/I4 must wait for merged H10, including the revision migration and all input update hooks, before their own merge; a frozen interface or preparatory edits alone do not fulfill the prerequisite. This is a seam completion gate, not authorization to move unrelated runtime edits ahead of their lane.
 
 ## Common acceptance for every code unit
 

@@ -85,7 +85,40 @@ Canonical semantic identity includes exact body hash, source ids and proofs, mod
 
 Lookup order: validate schema/account scope and existing effect key/digest first; an exact completed retry returns current artifact facts **before** requiring the old request version still to be current. For a new effect, validate active request/version/sources/fence before staging. Persist `effect_action_id: int`, `effect_version: int`, `run_id: int`, `tool_call_id: str` (bounded provider identifier), `semantic_digest: str` in an ids-only `tool_effect_recorded` audit event in the same transaction as the effect; serialize/recheck under the proposal/revision lock and enforce a unique partial expression index on `(account_id, details.run_id, details.tool_call_id)` for that event. Existing actions `(run_id, tool_call_id)` uniqueness remains. The old effect version and the current receipt version are separate: a retry after later edits cannot claim its original body is still the current artifact. Missing/purged artifacts yield factual unavailable/no-longer-pending, never replay.
 
-`ProposalReceipt` combines [C3 ActionReceipt](C3-receipts-and-card-facts.md) with `status: staged | revised | reused_exact | needs_input | proposal_conflict | idempotency_conflict | stale | blocked | not_available | invalid_arguments`, `reason: fixed_code|None`, `request_id: int`, `request_version: int`, `effect_version: int|None`, `requested_change_applied: bool`. Applied means an effect committed **in this call**; exact retry/conflict sets false and reports its original effect version plus fresh current receipt. Staged/revised means still needs a card tap; **never “sent.”**
+`ProposalReceipt` contains an **optional** [C3 ActionReceipt](C3-receipts-and-card-facts.md); it does not inherit mandatory action fields:
+
+```python
+@dataclass(frozen=True)
+class ProposalReceipt:
+    status: Literal[
+        "staged",
+        "revised",
+        "reused_exact",
+        "needs_input",
+        "proposal_conflict",
+        "idempotency_conflict",
+        "stale",
+        "blocked",
+        "not_available",
+        "invalid_arguments",
+    ]
+    reason: ProposalReason | None  # fixed enum, never arbitrary error prose
+    request_id: int | None  # only a validated, account-scoped request
+    request_version: int | None  # present iff request_id is present
+    action: ActionReceipt | None
+    effect_version: int | None  # version committed by this idempotency key, if any
+    requested_change_applied: bool
+```
+
+| Result | Action/effect requirements |
+|---|---|
+| staged / revised | `action` required; `effect_version` is the committed version; applied=true. |
+| reused_exact | `action` required for a retained artifact; applied=false. Same-key retry reports original effect_version plus current receipt; a different-key exact reuse has no new effect_version. Purged artifact instead returns not_available with action=NULL. |
+| proposal_conflict (Q4 interim existing_draft_conflict) | Existing scoped `action` required, applied=false; no effect_version for the rejected call. Its requested text was not staged. |
+| needs_input / invalid_arguments before staging | `action=NULL`, `effect_version=NULL`, applied=false. Missing content or invalid/missing source cannot create an action, version, presentation record or fabricated receipt. Existing unrelated live cards remain separate C3 facts. Invalid/foreign request IDs return both request fields NULL. |
+| idempotency_conflict / stale / blocked / not_available | applied=false; `action` is present only if an actual relevant scoped artifact can be read. `effect_version` is present only for an already recorded effect of this same key, never inferred from an unrelated card. Otherwise NULL. |
+
+Applied means an effect committed **in this call**. No-action failures create no `tool_effect_recorded` event; their content-free validation/run-step outcome is not an action effect. Consumers branch on `action is None`, never fill action_id/version/state with sentinels or infer a card from request linkage. Staged/revised still needs a card tap; **never “sent.”** Regression tests must exercise missing-content and invalid-source proposal responses with `action=NULL` and unchanged action/version/presentation counts; cover foreign request IDs without leaking facts and exact retries/conflicts with real fresh receipts.
 
 ## Authorship is per version (H9)
 
