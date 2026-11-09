@@ -21,7 +21,7 @@ export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 # Shell variables win over --env-file in Compose interpolation; the smoke
 # stack must see only its own placeholder file (CI sets some of these).
 unset POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATABASE_URL DATA_DIR \
-  AGE_RECIPIENT BACKUP_REMOTE BACKUP_HOUR_UTC BACKUP_TEST_NOW
+  AGE_RECIPIENT BACKUP_REMOTE BACKUP_HOUR_UTC BACKUP_TEST_NOW ASSISTANT_IMAGE BACKUP_IMAGE
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
@@ -95,6 +95,7 @@ ok "app (prod target) and backup images built"
 step "data-volume guard (ARCHITECTURE §15.4): no volume, nothing starts"
 mkdir -p "$guard/repo/deploy" "$guard/unmounted"
 cp deploy/server.sh "$guard/repo/deploy/server.sh"
+cp deploy/release.sh "$guard/repo/deploy/release.sh"
 printf 'DATA_DIR=%s\n' "$guard/unmounted" > "$guard/repo/.env"
 for action in deploy status backup app-start; do
   rc=0

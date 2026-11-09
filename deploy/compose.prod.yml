@@ -74,7 +74,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
       target: prod
-    image: assistant:prod
+    image: ${ASSISTANT_IMAGE:-assistant:prod}
     env_file: ../.env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-assistant}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-assistant}
@@ -86,7 +86,7 @@ services:
     logging: *logging
 
   app:
-    image: assistant:prod
+    image: ${ASSISTANT_IMAGE:-assistant:prod}
     env_file: ../.env
     environment:
       APP_ENV: prod
@@ -125,7 +125,7 @@ services:
       # The Dockerfile COPYs backup.sh and restore.sh from its own directory.
       context: ./backup
       dockerfile: Dockerfile
-    image: assistant-backup:prod
+    image: ${BACKUP_IMAGE:-assistant-backup:prod}
     # AGE_RECIPIENT, BACKUP_REMOTE, BACKUP_HOUR_UTC and RCLONE_CONFIG_* come
     # from here unchanged.
     env_file: ../.env

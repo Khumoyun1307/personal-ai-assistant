@@ -135,13 +135,15 @@ jobs:
   # One result for the whole gate (the name `check` is what PRs show).
   check:
     if: always()
-    needs: [lint, tests]
+    needs: [lint, tests, deploy-scripts, images]
     runs-on: ubuntu-latest
     steps:
-      - name: Lint and every test shard passed
+      - name: Every required release job passed
         run: |
           test "${{ needs.lint.result }}" = success
           test "${{ needs.tests.result }}" = success
+          test "${{ needs.deploy-scripts.result }}" = success
+          test "${{ needs.images.result }}" = success
 
   # Deployment scripts and the backup path of deploy/compose.prod.yml (S02.6).
   deploy-scripts:
@@ -156,6 +158,10 @@ jobs:
 
       - name: Production settings push (synthetic inputs only)
         run: bash deploy/smoke/push-env-smoke.sh
+
+      - name: Release selection (fake git, gh and Docker only)
+        shell: pwsh
+        run: ./deploy/smoke/release-smoke.ps1
 
       # Production compose with placeholder secrets: backup.sh once, decrypt
       # with a throwaway age key, pg_restore into a scratch database, failure
