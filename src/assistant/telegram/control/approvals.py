@@ -187,6 +187,7 @@ _HEADERS = {
     "dictated": "📝 <b>Message you dictated</b> — check the recipient and the text",
     "assist": "📝 <b>Assist draft</b>",
     "requested": "📝 <b>Draft reply</b>",
+    "new_message": "📝 <b>New message</b>",
     "automatic": "📝 <b>Automatic reply</b>",
     # PF-12: a text the assistant suggested in the control chat, which the
     # owner picked — never labelled as dictated.
@@ -488,7 +489,11 @@ def _header(view: ApprovalCardView) -> str:
         return _HEADERS["automatic"]
     if (view.draft_flags or {}).get(FLAG_SOURCE) == SOURCE_ASSISTANT_SUGGESTION:
         return _HEADERS["suggested"]
-    return _HEADERS["assist" if view.proactive else "requested"]
+    if view.proactive:
+        return _HEADERS["assist"]
+    if (view.draft_flags or {}).get("mode") == "new_message":
+        return _HEADERS["new_message"]
+    return _HEADERS["requested"]
 
 
 def _short(reason: StateReason | None) -> str:
