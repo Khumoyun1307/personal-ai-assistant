@@ -104,7 +104,8 @@ DELETION_FLAGS = frozenset(
 #: production runs with). A unit test keeps it equal to every registered
 #: tool's flag plus the background refresh (M03 fix round C2).
 PRODUCTION_LINE = (
-    "tool.get_status,tool.search_messages,tool.resolve_contact,tool.get_conversation,"
+    "tool.get_status,tool.get_preferences,tool.search_messages,tool.resolve_contact,"
+    "tool.get_conversation,"
     "tool.list_conversations,tool.summarize_period,tool.get_attention_list,summary.refresh,"
     "tool.remember,tool.forget,tool.list_memories,tool.set_conversation_mode,"
     "tool.update_preferences,tool.delete_conversation_data,tool.delete_contact_data,"
