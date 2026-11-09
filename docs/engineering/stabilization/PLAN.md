@@ -2,7 +2,25 @@
 
 [Owner decisions](DECISIONS.md) amend [review §5](review-2026-11-09.md#5-implementation-plan). Unit IDs and acceptance criteria are retained below; D-S6 replaces the separate owner-requested writer with composition/revision by the main chat model. This is approved repair scope across M02–M05, not authorization to start P3.
 
-**In progress now:** P0-1, Q1, I7, I19, I21. All other units are approved scope awaiting dependencies/dispatch; none is marked done. Each unit has one implementation agent and one PR to `main`.
+**Status, 2026-11-09 (owner-provided merge/review record):** P0-1 merged **#240**; Q1 merged **#236**; I19 merged **#238**; I21 merged **#237**; I7 in review **#239**; **P0-2 in progress**. All other units are approved scope awaiting dependencies/dispatch. A unit merge does not mark any milestone done. Each unit has one implementation agent and one PR to `main`.
+
+### Contract and implementation index
+
+P0-2 specifies the target interfaces; these documents do not claim deployed behavior. [Shared conventions and compatibility seams](contracts/README.md) apply to every unit. [Phase 2 briefs](specs/README.md) give H1–H13 and Q4 exact acceptance, regression-first tests, affected docs and lane dependencies. [A1 synthetic cases](cases/README.md) include the full scenario matrix and four incident-pattern families in Uzbek Latin/Cyrillic, Russian and English.
+
+| Contract | Scope / owning units |
+|---|---|
+| [C1 — Request state](contracts/C1-request-state.md) | H1/H2 durable sources, continuation, cancellation and retention |
+| [C2 — Proposals](contracts/C2-proposals.md) | Q4/H3/H9/H4 main-model text, exact copying, version authorship and revision |
+| [C3 — Receipts/card facts](contracts/C3-receipts-and-card-facts.md) | Q3/Q5/H7 current and terminal facts, presentation and final-answer freshness |
+| [C4 — Taint lifecycle](contracts/C4-taint-lifecycle.md) | H12 precise context selection and preserved owner instructions |
+| [C5 — Contact resolution](contracts/C5-contact-resolution.md) | H5 deterministic verdict and request-bound selection |
+| [C6 — Freshness/precedence](contracts/C6-freshness-and-precedence.md) | H10/H11 source revisions, request time and settlement |
+| [C7 — Coverage/budgets](contracts/C7-coverage-and-budgets.md) | I2/I4/I6 contiguous complete review; I15/I16 shared allowance/admission |
+| [C8 — Preferences](contracts/C8-preferences.md) | H13 source-verified owner preferences for main chat and scoped Assist |
+| [C9 — Privacy recovery options](contracts/C9-privacy-recovery-options.md) | I20 design alternatives; **owner choice still required** |
+
+Allocate each migration's next free revision from merged main at implementation time: **0014 is currently the head**. P3's planned `0015_p3` is on hold and will rebaseline; it reserves no number. H4/H6 may land disabled against the typed freshness seam; H10's source foundation may prepare early and its runtime hooks follow H7. No repaired candidate is activated/released until the fence checks are complete. This preserves the shared-file merge order below.
 
 ### Execution rules for every work unit
 
@@ -22,12 +40,12 @@ Sizes: **S** = narrow change; **M** = one workflow; **L** = bounded cross-layer 
 
 ### Phase 0 — Research and decisions
 
-Research synthesis is preserved in the review. Owner decisions are recorded; contract specification is next.
+Research synthesis is preserved in the review. Owner decisions are recorded; P0-2 contract specification is in progress with the linked interfaces and cases ready for review.
 
 | Unit | Goal and scope | Acceptance criteria and verification | Dependencies / parallelism | Size |
 |---|---|---|---|---|
-| **P0-1 — Decision record and amended plan** | Record D-S1–14, approved repair scope, P3 hold and amended unit/dependency plan; update IMPLEMENTATION_PLAN, P3 README and AGENTS document pointer. **In progress.** | Earlier rulings and required document changes are mapped; D-S6 trade-off and P3 parallel-work answer are explicit. Documentation only; no milestone marked done. | Owner decisions; P0-2 may prepare sections in parallel, then freeze against this record. | M |
-| **P0-2 — Contracts and acceptance specification** | Freeze request/source-span state, main-model proposal/revision schema, version authorship, action receipts, freshness revisions, coverage, shared budgets, privacy recovery and synthetic cases. | Account/consent/retention boundaries, cancellation/topic switching, strict tool APIs and approved thresholds are reviewable. Cases precede dependent implementation. Journal/manual recovery design is explicit; no journal choice is inferred from D-S11. | P0-1 decisions; independent sections prepared together. Early Q1/I7/I19/I21 use existing interfaces and do not assume an unapproved contract. | M |
+| **P0-1 — Decision record and amended plan** | Record D-S1–14, approved repair scope, P3 hold and amended unit/dependency plan; update IMPLEMENTATION_PLAN, P3 README and AGENTS document pointer. **Merged #240.** | Earlier rulings and required document changes are mapped; D-S6 trade-off and P3 parallel-work answer are explicit. Documentation only; no milestone marked done. | Owner decisions; P0-2 freezes against this record. | M |
+| **P0-2 — Contracts and acceptance specification** | Freeze [contracts C1–C9](contracts/README.md), [unit briefs](specs/README.md) and [synthetic cases](cases/README.md): request/source state, main-model proposals, authorship, receipts, freshness, coverage, budgets and recovery. **In progress.** | Account/consent/retention boundaries, cancellation/topic switching, strict tool APIs and approved thresholds are reviewable. Cases precede dependent implementation. Journal/manual recovery options explicit; owner choice still required. | P0-1 merged; early Q1/I7/I19/I21 use existing interfaces. | M |
 
 ### Phase 1 — Owner-UX fixes requiring no new product decision
 
@@ -35,7 +53,7 @@ These repair existing promises without changing drafting authority or approved t
 
 | Unit | Goal and scope | Acceptance criteria and tests | Dependencies / parallelism | Size |
 |---|---|---|---|---|
-| **Q1 — Read effective settings** | Add a content-free preference read model through `observability/status`, owner status tooling, and existing preference services. | Chat can inspect digest time, quiet hours, cap, bypass, and reply defaults after button changes/Undo. Tests cover effective defaults and account isolation. | Approved stabilization scope; parallel. **In progress.** | S |
+| **Q1 — Read effective settings** | Add a content-free preference read model through `observability/status`, owner status tooling, and existing preference services. **Merged #236.** | Chat can inspect digest time, quiet hours, cap, bypass, and reply defaults after button changes/Undo. Tests cover effective defaults and account isolation. | Approved stabilization scope; parallel. | S |
 | **Q2 — Truthful deterministic UI** | Correct `/help`, `/status`, and mode-sensitive card headings in `handlers.py` and `approvals.py`. | Help accurately scopes pause and lists pause/resume; status includes alert backlog; standalone messages are labelled accordingly. Rendered-output regressions. | Scope approval; sequence shared renderer edits. | S |
 | **Q3 — Expose existing card facts** | Extend `get_draft`/activity output with state reason, relevant terminal facts, version, and available presentation outcome. | A read can explain an outdated/rejected/failed card without guessing. Tests cover terminal state, missing text, consent, and foreign-account IDs. | Scope approval; parallel with Q1. | M |
 | **Q4 — Honest proposal conflicts** | Fix same-turn differing-argument reuse in `agent/tools/replies.py`. | Exact-call retries remain idempotent. A different proposal returns an explicit existing-draft conflict instead of implying its requested text was staged. | Scope approval; before H3/H8 edits to the same module. | S |
@@ -83,7 +101,7 @@ Privacy recovery, backup durability, and alert-loss repairs should start alongsi
 | **I4 — Reliable semantic-monitor review** | Repair monitor burst ordering, failure settlement, and degraded status in `monitor_eval`/automation/jobs. | No message is silently skipped by limits or invalid output. Retries are bounded; exhausted work remains inspectable/recoverable. Monitor eval and failure/restart tests. | P0 coverage contract; parallel with I2. | M |
 | **I5 — Useful retrieval excerpts** | Match-centered search snippets and explicit retained-message retrieval through existing conversation reads. | A match near the tail is visible and attributable; owner can retrieve the full retained message. Tests cover multiple matches and account/consent boundaries. | Scope approval; parallel. | S |
 | **I6 — Complete long-message review** | Add bounded chunk/completeness handling for summary, triage, and semantic-monitor readers. | A deadline beyond character 2,000 is examined or explicitly left unreviewed; cursors never certify a clipped tail. Route-specific regressions and affected eval sets. | I2/I4 coverage contracts; coordinate prompt versions. | L |
-| **I7 — Durable held-alert delivery** | Replace delivery sinks with recoverable defer/inbox semantics; retain monitor identity and explanation. **In progress.** | Digest-off, quiet hours, hourly cap, restart and one-shot monitor scenarios preserve eventual important-alert delivery. No ambiguous send is replayed. | D-S8; independent of harness; existing delivery contracts until P0-2 freezes deltas. | M |
+| **I7 — Durable held-alert delivery** | Replace delivery sinks with recoverable defer/inbox semantics; retain monitor identity and explanation. **In review #239.** | Digest-off, quiet hours, hourly cap, restart and one-shot monitor scenarios preserve eventual important-alert delivery. No ambiguous send is replayed. | D-S8; independent of harness; existing delivery contracts until P0-2 freezes deltas. | M |
 | **I8 — Correct delayed-alert meaning** | Bind notification rendering to triggering verdict/source and current actionable state. | A resolved condition cannot render as an unexplained current urgent request. Historical alerts retain their original explanation. Digest tests cover supersession. | I7 event contract. | M |
 | **I9 — Explicit priority and suppression policy** | Complete urgency mapping; expose derived mutes and reset; scope monitor feedback appropriately. | Every urgency level has tested delivery semantics. Owners can inspect/reset suppression; unrelated new monitors do not inherit unexplained suppression. | D-S8; follows I7. | M |
 | **I10 — Complete obligation read model** | Build attention/digest candidates from unanswered chats plus open obligations, including undated and overdue items. | Speaking last does not hide an unfinished promise. Reply-needed, obligation-open, overdue, and no-due-date states are distinct. | D-S9; parallel with I7. | M |
@@ -105,9 +123,9 @@ Privacy recovery, backup durability, and alert-loss repairs should start alongsi
 | Unit | Goal and scope | Acceptance criteria and tests | Dependencies / parallelism | Size |
 |---|---|---|---|---|
 | **I18 — Configuration parity** | Unify supported production settings and environment-push allowlist/validation. | Route/effort settings survive a placeholder-only render; deployment reports effective non-secret routes/flags. No secret values appear in output. | Before D-S7 promotion; parallel. | M |
-| **I19 — Restore quarantine** | Keep restore startup/content-processing gates until recovery and retention finish; require explicit privacy reconciliation. **In progress.** | Restored active consent cannot authorize processing before clearance. Sweep/recovery failure leaves the gate closed. Synthetic restore tests. No unattended-recovery claim before I20. | D-S11; start early, fail closed on existing recovery seam; I20 design is not assumed. | M |
+| **I19 — Restore quarantine** | Keep restore startup/content-processing gates until recovery and retention finish; require explicit privacy reconciliation. **Merged #238.** | Restored active consent cannot authorize processing before clearance. Sweep/recovery failure leaves the gate closed. Synthetic restore tests. No unattended-recovery claim before I20. | D-S11; fail closed on existing recovery seam; I20 design is not assumed. | M |
 | **I20 — Privacy-decision recovery** | Implement the selected journal/manual reconciliation design outside the rewound snapshot. | Backup → revoke/delete → restore cannot resurrect usable deleted content or authorization. Missing/stale recovery evidence fails closed; journal retention and deletion semantics are documented. | D-S11 design, I19. | L |
-| **I21 — Durable backups** | Add overdue catch-up and restart-safe upload retry to backup scripts. **In progress.** | Startup after the scheduled hour produces an overdue backup once; restart preserves failed-upload work. Placeholder smoke tests cover both. | Independent; start early. Sequence shared deploy script edits with I18/I22/I24. | M |
+| **I21 — Durable backups** | Add overdue catch-up and restart-safe upload retry to backup scripts. **Merged #237.** | Startup after the scheduled hour produces an overdue backup once; restart preserves failed-upload work. Placeholder smoke tests cover both. | Independent. Sequence shared deploy script edits with I18/I22/I24. | M |
 | **I22 — Selected release artifact** | Deploy an explicit SHA and immutable image identity; verify all required checks for that revision. | A moving `main` cannot change the selected release. Script/image checks join the release gate; previous artifact remains available. | Independent of harness; no new registry required by default. | M |
 | **I23 — Migration and release recovery** | Define compatibility/drain sequencing, health wait, and schema-aware rollback/forward recovery. | Failed migration/health prevents release success. A placeholder rehearsal demonstrates previous-compatible or forward recovery and records actual limitations. | I22; relevant migration review. | M |
 | **I24 — Least-privilege services** | Separate app, migration, and backup secrets/database roles in Compose/provisioning. | Each service receives only required credentials; application cannot perform migration-only operations. Placeholder structural/integration checks. | Independent; coordinate I18 environment format. | M |
@@ -233,9 +251,9 @@ Dependencies are merge prerequisites, not permission to edit shared files concur
 | Prompt steward | One steward allocates the next unused version and switches active versions. H6 waits for H2–H5/H9/H12/H13. I1 and I6 own new triage/reader versions but queue prompt-registry changes; A1/A2 and I31 use the resulting manifest. Never edit used versions. No new draft_owner prompt for D-S6. |
 | Preferences/memory | H13 after H4/H12; I12 follows its memory/registry edits. Applicable preferences reach the main chat and scoped Assist loaders. |
 | Triage/tasks | I1 → I2 → I3 (joins H10) → I6 triage handling. I10 may prepare its read model separately; I11 follows I10 and I1 resolution semantics. Freeze source/coverage seams in P0-2. |
-| Monitors/alerts | I4 may start after coverage contract, independently of triage loader edits. I7 (now) → I8 → I9; I6 joins I2/I4 completeness contracts. I10/I11 digest edits queue behind I8. Q2 status/backlog edits coordinate with I26. |
-| Restore/privacy | I19 (now) → approved I20 reconciliation design and implementation → A4. I32 publication/notice reconciliation starts now as documentation work and records final candidate facts later. |
-| Backup/deploy | I21 (now); I18 configuration, I22 artifact, I24 role separation may prepare disjoint files. Shared server/provision/Compose/environment edits merge I21 → I18 → I22 → I24 → I23; I23 also requires I22 release contract. |
+| Monitors/alerts | I4 may start after coverage contract, independently of triage loader edits. I7 (in review #239) → I8 → I9; I6 joins I2/I4 completeness contracts. I10/I11 digest edits queue behind I8. Q2 status/backlog edits coordinate with I26. |
+| Restore/privacy | I19 (merged #238) → owner-selected C9/I20 reconciliation design and implementation → A4. I32 publication/notice reconciliation starts as documentation work and records final candidate facts later. |
+| Backup/deploy | I21 merged #237; I18 configuration, I22 artifact, I24 role separation may prepare disjoint files. Shared server/provision/Compose/environment edits merge I21 → I18 → I22 → I24 → I23; I23 also requires I22 release contract. |
 | Evaluation/exit | A1 can build early after P0-2/H1 contracts. A2 follows repaired candidate plus I16/I18; A3/A4 then run in parallel with required owner participation/authorization; A5 follows all evidence and fixes. |
 
 H5 pure matching, H10 freshness foundation, I5 excerpts and disjoint operations work can proceed alongside the owner harness after their listed contracts exist. “Parallel” never overrides shared-file ownership or a row's dependencies.
