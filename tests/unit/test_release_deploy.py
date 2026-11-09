@@ -23,6 +23,7 @@ git() {
     rev-parse) echo "$SELECTED" ;;
     merge-base) [ "${FOREIGN:-0}" = 0 ] ;;
     archive) echo synthetic-build-context ;;
+    show) [ "${LEGACY_ENV:-0}" = 0 ] && echo 'env_file: ../.env.app' ;;
   esac
 }
 docker() {
@@ -41,6 +42,7 @@ docker() {
 compose() {
   printf 'compose %s image=%s backup=%s\n' "$*" "$ASSISTANT_IMAGE" "$BACKUP_IMAGE" >> calls
   case "$*" in
+    'run --rm --no-deps -T --no-build db-roles') [ "${FAIL_ROLES:-0}" = 0 ] ;;
     'run --rm --no-deps -T --no-build migrate') [ "${FAIL_MIGRATE:-0}" = 0 ] ;;
     *'--remove-orphans app') [ "${FAIL_STARTUP:-0}" = 0 ] ;;
   esac
@@ -85,6 +87,7 @@ def test_deploy_pins_checkout_and_keeps_both_release_images(tmp_path: Path) -> N
     assert "prune" not in calls
     assert "--network none" in calls
     assert "stop app" in calls
+    assert calls.index("--no-build db-roles") < calls.index("stop app")
     assert calls.index("stop app") < calls.index("run --rm --no-deps -T --no-build migrate")
     assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(NEW) + state(OLD)
     assert not (tmp_path / "deploy/release-in-progress").exists()
@@ -158,6 +161,33 @@ def test_redeploy_preserves_previous_release(tmp_path: Path) -> None:
     result = run_release(tmp_path, f"release_load\nrelease_up {NEW}\n")
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(NEW) + state(OLD)
+
+
+def test_missing_roles_refuse_deploy_before_app_stop(tmp_path: Path) -> None:
+    seed(tmp_path)
+    result = run_release(tmp_path, f"release_load\nFAIL_ROLES=1\nrelease_up {NEW}\n")
+    assert result.returncode != 0
+    assert "I24 role upgrade" in result.stderr
+    calls = (tmp_path / "calls").read_text("utf-8")
+    assert "stop app" not in calls
+    assert not (tmp_path / "deploy/release-in-progress").exists()
+
+
+def test_incomplete_settings_push_blocks_deploy_before_external_commands(tmp_path: Path) -> None:
+    seed(tmp_path)
+    (tmp_path / ".env.pending").touch()
+    result = run_release(tmp_path, f"release_load\nrelease_up {NEW}\n")
+    assert result.returncode != 0
+    assert "incomplete settings push" in result.stderr
+    assert not (tmp_path / "calls").exists()
+
+
+def test_rollback_cannot_restore_shared_superuser_environment(tmp_path: Path) -> None:
+    seed(tmp_path)
+    result = run_release(tmp_path, "release_load\nEXISTING=1\nLEGACY_ENV=1\nrelease_rollback\n")
+    assert result.returncode != 0
+    assert "environment separation" in result.stderr
+    assert "stop app" not in (tmp_path / "calls").read_text("utf-8")
 
 
 def test_release_status_is_content_free(tmp_path: Path) -> None:

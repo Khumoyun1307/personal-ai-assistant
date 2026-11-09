@@ -3,13 +3,12 @@
 #   docker compose --env-file .env -f deploy/compose.prod.yml up -d --build
 #
 # Run from the repository root on the server (/opt/assistant). Secrets come
-# from the server's .env (written by deploy/oci/push-env.sh, mode 600).
+# from service-specific files written by push-env.sh (all mode 600).
 # `--env-file .env` is required on every invocation: Compose's project
 # directory is deploy/ (the first -f file's directory), so without it the
 # ${...} interpolation below would look for deploy/.env and find nothing.
-# The `env_file:` entries load the same file into the containers; the
-# `environment:` entries below only add values derived from it (never a
-# pass-through that could override a value with an empty string).
+# Root .env is interpolation/admin settings only; never load it in app,
+# migrate or backup. Run the explicit db-roles setup before the first deploy.
 # The database directory is a bind mount on the encrypted block volume;
 # nothing publishes a port — long polling needs no inbound traffic.
 
@@ -75,9 +74,7 @@ services:
       dockerfile: deploy/Dockerfile
       target: prod
     image: ${ASSISTANT_IMAGE:-assistant:prod}
-    env_file: ../.env
-    environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-assistant}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-assistant}
+    env_file: ../.env.migrate
     command: ["python", "-m", "assistant", "migrate"]
     depends_on:
       db:
@@ -87,15 +84,14 @@ services:
 
   app:
     image: ${ASSISTANT_IMAGE:-assistant:prod}
-    env_file: ../.env
+    env_file: ../.env.app
     environment:
       APP_ENV: prod
       LOG_FORMAT: json
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-assistant}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-assistant}
       # The backup container writes its last-success marker here; the app's
       # daily backup_check alerts the owner when it goes stale (§17).
       # The off-site upload marker (/backups/last_upload_success) sits next to
-      # it and is checked too while BACKUP_REMOTE (from .env) is set.
+      # it and is checked too while the app's BACKUP_REMOTE marker is set.
       BACKUP_STATUS_PATH: /backups/last_success
     command: ["python", "-m", "assistant", "run"]
     depends_on:
@@ -126,20 +122,33 @@ services:
       context: ./backup
       dockerfile: Dockerfile
     image: ${BACKUP_IMAGE:-assistant-backup:prod}
-    # AGE_RECIPIENT, BACKUP_REMOTE, BACKUP_HOUR_UTC and RCLONE_CONFIG_* come
-    # from here unchanged.
-    env_file: ../.env
-    environment:
-      PGHOST: db
-      PGUSER: ${POSTGRES_USER:-assistant}
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      PGDATABASE: ${POSTGRES_DB:-assistant}
+    # Read/dump credentials and backup configuration only.
+    env_file: ../.env.backup
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
     volumes:
       - backups:/backups
+    logging: *logging
+
+  # Explicit operator tasks only, never dependencies of a runtime service.
+  db-roles:
+    image: ${ASSISTANT_IMAGE:-assistant:prod}
+    profiles: [maintenance]
+    env_file: ../.env.roles
+    command: ["python", "-m", "assistant.db.production_roles", "check"]
+    restart: "no"
+    logging: *logging
+
+  restore:
+    image: ${BACKUP_IMAGE:-assistant-backup:prod}
+    profiles: [maintenance]
+    env_file: ../.env.restore
+    entrypoint: ["/usr/local/bin/restore.sh"]
+    restart: "no"
+    volumes:
+      - backups:/backups:ro
     logging: *logging
 
 volumes:

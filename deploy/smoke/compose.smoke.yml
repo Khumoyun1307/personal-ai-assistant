@@ -16,6 +16,12 @@ services:
   backup:
     env_file: !override
       - ${SMOKE_ENV_FILE:?set by backup-smoke.sh}
+  db-roles:
+    env_file: !override
+      - ${SMOKE_ENV_FILE:?set by backup-smoke.sh}
+  restore:
+    env_file: !override
+      - ${SMOKE_ENV_FILE:?set by backup-smoke.sh}
 
 volumes:
   smoke-db:

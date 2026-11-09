@@ -21,6 +21,17 @@ call passes `--env-file .env` (the project directory is `deploy/`; without
 it the root `.env` is not used for interpolation). Below,
 `dc` stands for `docker compose --env-file .env -f deploy/compose.prod.yml`.
 
+**Database roles (I24).** The backup sidecar uses `assistant_backup`, with
+read/dump grants only; it cannot restore. The one-off `restore` service uses
+`.env.restore` and `assistant_migrate` (database/schema owner), with no provider,
+Telegram or B2 secrets. It shares the backup image and mounts dumps read-only.
+Cluster administration (`createdb`/`dropdb`) stays inside `db` as the init role;
+create every restore target with `-O assistant_migrate`. `pg_restore --no-owner
+--no-acl` creates restored objects as that migration role. After restore run
+`db-roles ... setup` for that target to reapply runtime/dump grants before
+post-restore or any app startup. Role passwords are never restored from a dump;
+retain/reuse `var/cloud/prod-generated.env` when rebuilding the host.
+
 ## A. The restore test (before R1; repeat after every major upgrade)
 
 Into a **scratch** database on the server, never over production, and never
@@ -32,7 +43,8 @@ just prod-restore-test <ip>
 
 `deploy/server.sh restore-test` takes the newest dump in `/backups/daily`,
 creates `restore_test`, pipes the identity into
-`dc exec -T backup restore.sh <dump> restore_test`, runs `post-restore`
+`dc run --rm --no-deps -T restore <dump> restore_test`, reapplies grants using
+`db-roles ... setup --database restore_test`, runs `post-restore`
 against the scratch database in a one-off app container (`--no-deps`; the
 scratch URL is derived **inside** the container from its own `DATABASE_URL`,
 so the password never passes through the operator's shell), prints the dump
@@ -74,7 +86,8 @@ live acceptance requirement.
    `dc exec backup bash -c 'rclone copy "$BACKUP_REMOTE/daily/<file>" /backups/daily/'`).
 3. `just prod-restore <ip> <file>` (e.g. `20261022T020000Z.dump.age`):
    refuses while the app runs, drops and recreates the `assistant` database,
-   streams the identity into `restore.sh` and prints the `post-restore`
+   creates it owned by `assistant_migrate`, streams the identity into the
+   one-off `restore` service, reapplies grants and prints the `post-restore`
    timestamp. The restore sets `system_state.restore_pending`;
    `assistant run` refuses to start roles while it is set.
 4. `just prod <ip> post-restore <ts>` (the dump name is the UTC time, e.g.
@@ -124,13 +137,17 @@ waiting for the next `BACKUP_HOUR_UTC`.
 0. If the old `alviro-data` block volume survived, attach it instead of a
    new one: `prepare` never formats a device with any signature, keeps its
    data and writes the sentinel only once the volume is verified mounted.
+   Reconcile roles through the I24 upgrade in `deploy.md` if that volume
+   predates service separation; retain its original init password.
    The database on it is then intact: skip steps 1–3 and run `just deploy
    <ip>`. Either way, every `deploy/server.sh` action that starts, backs up
    or restores the stack refuses until the volume is mounted with its
    sentinel (`just prod-status <ip>` → `sentinel present`; ARCHITECTURE
    §15.4 mount guard).
 
-1. On the server: `dc build && dc up -d db` — keep the backup sidecar and
+1. On the server: `dc build migrate backup && dc up -d --wait db`, then
+   `dc run --rm --no-deps -T db-roles python -m assistant.db.production_roles setup`
+   (use the selected release image, per `deploy.md`) — keep the backup sidecar and
    app stopped while recovering. An app
    polling into the empty database would consume the updates Telegram has
    queued (up to 24 h), which the restore would then overwrite.
@@ -140,11 +157,13 @@ waiting for the next `BACKUP_HOUR_UTC`.
 3. Restore with a one-off container while the sidecar stays stopped (the
    `just prod-restore` wrapper in §B requires a running sidecar). First
    recreate the target database on the server:
-   `dc exec -T db sh -c 'dropdb -U "$POSTGRES_USER" --if-exists --force "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'`.
+   `dc exec -T db sh -c 'dropdb -U "$POSTGRES_USER" --if-exists --force "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" -O assistant_migrate "$POSTGRES_DB"'`.
    Stream the age identity from the laptop over SSH into the following
    server command's stdin, substituting the chosen dump name for `<file>`:
-   `dc run --rm --no-deps -T --entrypoint sh backup -c 'exec restore.sh "$1" "$PGDATABASE"' sh '/backups/daily/<file>'`.
-   The identity must never be written to the server's disk. Run §B step 4
+   `dc run --rm --no-deps -T --entrypoint sh restore -c 'exec restore.sh "$1" "$PGDATABASE"' sh '/backups/daily/<file>'`.
+   The identity must never be written to the server's disk. Reapply grants:
+   `dc run --rm --no-deps -T db-roles python -m assistant.db.production_roles setup`.
+   Run §B step 4
    (`post-restore`), then `just deploy <ip>` (starts migrate, the app and
    backup sidecar) and §B step 6. The first new dump catches up
    immediately; do not copy success/attempt markers from the old host to

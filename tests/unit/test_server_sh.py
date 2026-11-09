@@ -51,7 +51,7 @@ compose() {
   case "$*" in
     *'ls -1'*) echo /backups/daily/20261028T020000Z.dump.age ;;
     *'stat -c'*) echo 123 ;;
-    *'restore.sh'*) cat >/dev/null ;;
+    'run --rm --no-deps -T --no-build restore '*) cat >/dev/null ;;
     *'post-restore'*) [ "$FAILURE" != post-restore ] ;;
     *'scratch_restore release'*|*'scratch_restore actions'*)
       [ "$FAILURE" != release ] || [[ "$*" != *release* ]]
@@ -78,9 +78,19 @@ case restore-test in
     assert result.returncode == (1 if failure else 0), result.stderr
     assert calls[-1] == "dropdb --if-exists restore_test"
     one_off = [call for call in calls if call.startswith("run ")]
-    assert all("tools.acceptance.scratch_restore " in call for call in one_off)
+    # I24 restores as the migration owner, then reapplies scratch-only grants
+    # before the app role can run the existing verification commands.
+    assert one_off[:2] == [
+        "run --rm --no-deps -T --no-build restore "
+        "/backups/daily/20261028T020000Z.dump.age restore_test",
+        "run --rm --no-deps -T --no-build db-roles "
+        "python -m assistant.db.production_roles setup --database restore_test",
+    ]
+    assert all("tools.acceptance.scratch_restore " in call for call in one_off[2:])
     assert all("DATABASE_URL=" not in call for call in one_off)
     assert all("--no-deps" in call for call in one_off)
+    assert "AGE-SECRET-KEY-1-SYNTHETIC" not in result.stdout + result.stderr
+    assert not any("AGE-SECRET-KEY-1-SYNTHETIC" in call for call in calls)
     assert not any("assistant run" in call or call.startswith("up ") for call in calls)
     if not failure:
         for mode in ("release", "actions"):
@@ -136,7 +146,8 @@ compose() {
   case "$*" in
     *'ls -1'*) echo /backups/daily/20261028T020000Z.dump.age ;;
     *'stat -c'*) echo 123 ;;
-    *'restore.sh'*) cat >/dev/null ;;
+    'run --rm --no-deps -T --no-build restore '*) cat >/dev/null ;;
+    *'db-roles python -m assistant.db.production_roles setup'*'restore_test') : ;;
     run*)
       while [ "$1" != app ]; do shift; done
       shift

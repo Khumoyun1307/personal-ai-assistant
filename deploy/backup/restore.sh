@@ -6,7 +6,7 @@
 # The age IDENTITY (the owner's offline private key) is read from standard
 # input by default (AGE_IDENTITY_FILE=-), so it is never written to the
 # server's disk or into the container: the operator pipes it in over SSH
-# (`docker compose exec -T backup restore.sh ... < identity`). Setting
+# (`docker compose run --rm --no-deps -T restore ... < identity`). Setting
 # AGE_IDENTITY_FILE to a path is still supported. The dump is decrypted into
 # a pipe, never to disk.
 #
