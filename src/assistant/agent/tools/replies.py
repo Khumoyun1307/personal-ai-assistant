@@ -30,9 +30,10 @@ invariants 1, 2): a result says `awaiting_approval` (a card is on its way),
   `propose_reply`'s; the card quotes it).
 
 Not gated by taint: the approval card is the gate (§7.1). Idempotent on
-`(run_id, tool_call_id)`, and a retried owner turn reuses its live card
-without drafting again. Ids are resolved within the account; a foreign or
-unknown id reads "not found". Content-free observability (PF-04): the
+`(run_id, tool_call_id)`, and an identical request in a retried owner turn
+reuses its live card without drafting again. Different requests conflict
+explicitly; they never claim the new text was staged. Ids are resolved within
+the account; a foreign or unknown id reads "not found". Content-free observability (PF-04): the
 executor's log line carries `instruction_source`, `mode`,
 `has_answered_target`, `answered_by`, `bounds_retry`, `bounds_met` (and
 `provenance`, `has_answered_target` for `propose_message`) — fixed codes and
@@ -56,6 +57,7 @@ from assistant.actions.proposals import ProposalRefused
 from assistant.actions.states import LIVE_CARD, ActionOrigin, ActionState
 from assistant.agent.draft_owner_schemas import WordBounds
 from assistant.agent.drafting import DraftOutcome, DraftStatus, Stale, propose_draft
+from assistant.agent.persistence import args_digest
 from assistant.agent.tools.common import (
     ONE_TARGET_RULE,
     ArgumentRuleError,
@@ -86,6 +88,11 @@ GUIDANCE_CHARS = 400
 MAX_WORDS = 1000
 #: What every created proposal's result says about the card.
 CARD_NOTE = "queued for the owner"
+REQUEST_DIGEST = "proposal_request_digest"
+CONFLICT_RULE = (
+    "The existing draft was not changed and this request was not staged. "
+    "Use revise_draft when offered, or ask the owner how to proceed."
+)
 GUIDANCE_IGNORED = "tainted_run"
 #: How many recent assistant replies a picked suggestion is looked up in.
 SUGGESTION_TURNS = 6
@@ -281,6 +288,58 @@ async def _existing(session: AsyncSession, ctx: ToolContext, conversation_id: in
     )
 
 
+def _request_digest(args: ProposeReplyArgs | ProposeMessageArgs) -> str:
+    # Target aliases resolve to the same conversation before this comparison.
+    return args_digest(
+        {
+            "tool": "propose_reply" if isinstance(args, ProposeReplyArgs) else "propose_message",
+            "request": args.model_dump(exclude={"conversation_id", "contact_id"}),
+        }
+    )
+
+
+async def _reuse_or_conflict(
+    session: AsyncSession,
+    ctx: ToolContext,
+    target: _Target,
+    action: Action,
+    args: ProposeReplyArgs | ProposeMessageArgs,
+) -> ToolOutcome:
+    same_call = bool(ctx.call_id) and (action.run_id, action.tool_call_id) == (
+        ctx.run_id,
+        ctx.call_id,
+    )
+    if same_call or (action.draft_flags or {}).get(REQUEST_DIGEST) == _request_digest(args):
+        return await _result(session, ctx.account_id, target, action.id, reused=True)
+    # Missing metadata (older cards) cannot establish an identical request.
+    return ToolOutcome(
+        "conflict_existing_draft",
+        {
+            "action_id": action.id,
+            "conversation_id": target.conversation_id,
+            "state": action.state,
+            "rule": CONFLICT_RULE,
+        },
+        contains_managed=True,
+        refs=ToolRefs(frozenset({target.conversation_id}), frozenset({target.contact_id})),
+    )
+
+
+async def _record_request(
+    session: AsyncSession,
+    ctx: ToolContext,
+    action_id: int,
+    args: ProposeReplyArgs | ProposeMessageArgs,
+) -> None:
+    action = await session.scalar(
+        select(Action).where(Action.account_id == ctx.account_id, Action.id == action_id)
+    )
+    if action is None:  # pragma: no cover - just created in this transaction
+        raise NotInAccountError("action")
+    # A hash only, committed with the action; no additional content is stored.
+    action.draft_flags = {**(action.draft_flags or {}), REQUEST_DIGEST: _request_digest(args)}
+
+
 def _status_of(state: ActionState) -> str:
     """The result's status: pending work is never reported as done (RG-20)."""
     if state in LIVE_CARD:
@@ -434,7 +493,7 @@ async def propose_reply_tool(ctx: ToolContext, args: ProposeReplyArgs) -> ToolOu
         if (refusal := _refused(target)) is not None:
             return refusal
         if (existing := await _existing(uow.session, ctx, target.conversation_id)) is not None:
-            return await _result(uow.session, ctx.account_id, target, existing.id, reused=True)
+            return await _reuse_or_conflict(uow.session, ctx, target, existing, args)
         answered = args.answered_message_id
         if answered is not None and answered not in await drafter.answerable_ids(
             uow.session, ctx.account_id, target.conversation_id
@@ -489,6 +548,15 @@ async def propose_reply_tool(ctx: ToolContext, args: ProposeReplyArgs) -> ToolOu
             except ProposalRefused as refused:
                 return _not_available(refused)
             if not isinstance(proposal, Stale):
+                if proposal.reused:
+                    existing = await uow.session.scalar(
+                        select(Action).where(
+                            Action.account_id == ctx.account_id, Action.id == proposal.action_id
+                        )
+                    )
+                    assert existing is not None
+                    return await _reuse_or_conflict(uow.session, ctx, target, existing, args)
+                await _record_request(uow.session, ctx, proposal.action_id, args)
                 return await _result(
                     uow.session,
                     ctx.account_id,
@@ -609,7 +677,7 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
         if (refusal := _refused(target)) is not None:
             return refusal
         if (existing := await _existing(uow.session, ctx, target.conversation_id)) is not None:
-            return await _result(uow.session, ctx.account_id, target, existing.id, reused=True)
+            return await _reuse_or_conflict(uow.session, ctx, target, existing, args)
         answered = args.answered_message_id
         if answered is not None and (
             services.drafter is None
@@ -643,6 +711,15 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
         except ProposalRefused as refused:
             return _not_available(refused)
         assert not isinstance(proposal, Stale)  # a given text is never stale
+        if proposal.reused:
+            existing = await uow.session.scalar(
+                select(Action).where(
+                    Action.account_id == ctx.account_id, Action.id == proposal.action_id
+                )
+            )
+            assert existing is not None
+            return await _reuse_or_conflict(uow.session, ctx, target, existing, args)
+        await _record_request(uow.session, ctx, proposal.action_id, args)
         return await _result(
             uow.session,
             ctx.account_id,
@@ -664,7 +741,9 @@ _RESULT_RULE = (
     "'not_drafted' means no draft was made (the reason says why), "
     "'declined_by_provider' means the AI provider refused to write it; 'reused' means "
     "the card already existed from an earlier call in this turn and this call created "
-    "nothing new. Never say the message was sent."
+    "nothing new. 'conflict_existing_draft' means this request differs from the existing "
+    "draft's request: nothing was changed or staged; use revise_draft when offered or "
+    "ask the owner how to proceed. Never say the message was sent."
 )
 
 PROPOSE_REPLY = ToolDefinition(

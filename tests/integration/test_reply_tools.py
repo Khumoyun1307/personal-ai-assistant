@@ -33,7 +33,12 @@ from assistant.agent.tools.registry import (
     ToolServices,
     default_registry,
 )
-from assistant.agent.tools.replies import GUIDANCE_CHARS, ProposeReplyArgs, propose_reply_tool
+from assistant.agent.tools.replies import (
+    GUIDANCE_CHARS,
+    REQUEST_DIGEST,
+    ProposeReplyArgs,
+    propose_reply_tool,
+)
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.llm.port import StopReason, TextItem, ToolCall
 from tests.fakes.channel import FakeChannel
@@ -381,7 +386,8 @@ async def test_propose_message_has_no_base_message(denv: DraftEnv) -> None:
     assert card.origin == "owner_dictated"
     assert card.base_message_id is None
     assert card.shown_through_message_id == newest  # newest of any direction
-    assert card.draft_flags is None
+    assert card.draft_flags is not None
+    assert set(card.draft_flags) == {REQUEST_DIGEST}
     assert card.draft_run_id is None
     assert card.trigger_turn_id == turn_id
     assert (card.run_id, card.tool_call_id) == (run_id, "c1")
@@ -596,12 +602,10 @@ async def test_a_retried_owner_turn_reuses_the_awaiting_card_without_drafting_ag
     assert len(await actions_of(denv.env, conversation)) == 1
 
 
-async def test_a_second_proposal_in_the_same_turn_says_it_reused_the_first_card(
+async def test_a_changed_message_in_the_same_turn_conflicts_with_the_first_card(
     denv: DraftEnv,
 ) -> None:
-    # PR #106 review (Neryn): "tell them X ... also tell them Y" in one turn
-    # gives one card (the turn's live card); the second result must not read
-    # as a second queued message.
+    # R2-12: a correction must not claim that the new words were staged.
     account_id, conversation = await seed_chat(denv)
     run_id, turn_id = await run_and_turn(denv, account_id)
     ctx = context(denv, account_id, run_id, turn_id)
@@ -609,12 +613,157 @@ async def test_a_second_proposal_in_the_same_turn_says_it_reused_the_first_card(
     second = await call(
         ctx, "propose_message", call_id="c2", **message_args(conversation, "SYNTH-Y")
     )
-    assert first["status"] == second["status"] == "awaiting_approval"
+    assert first["status"] == "awaiting_approval"
+    assert second["status"] == "conflict_existing_draft"
     assert second["action_id"] == first["action_id"]
-    assert second["reused"] is True
+    assert second["state"] == "awaiting_approval"
+    assert "revise_draft" in second["rule"]
+    assert "ask the owner" in second["rule"]
+    assert "reused" not in second
+    assert "card" not in second
     assert "reused" not in first
     [card] = await actions_of(denv.env, conversation)
     assert card.text == "SYNTH-X"
+
+
+@pytest.mark.parametrize("tool", ["propose_reply", "propose_message"])
+async def test_identical_proposal_with_a_new_call_id_reuses_the_card(
+    denv: DraftEnv, tool: str
+) -> None:
+    account_id, conversation = await seed_chat(denv)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    ctx = context(denv, account_id, run_id, turn_id)
+    denv.script(owner_output())
+    arguments = (
+        reply_args(conversation)
+        if tool == "propose_reply"
+        else message_args(conversation, "SYNTH-X")
+    )
+    first = await call(ctx, tool, **arguments)
+    second = await call(ctx, tool, call_id="c2", **arguments)
+    assert second["status"] == "awaiting_approval"
+    assert second["action_id"] == first["action_id"]
+    assert second["reused"] is True
+    assert len(await actions_of(denv.env, conversation)) == 1
+    assert len(denv.fake.requests) == (1 if tool == "propose_reply" else 0)
+
+
+@pytest.mark.parametrize(
+    "changed", ["mode", "guidance", "answered_message_id", "min_words", "max_words"]
+)
+async def test_changed_reply_arguments_conflict_without_another_draft(
+    denv: DraftEnv, changed: str
+) -> None:
+    account_id, conversation = await seed_chat(denv)
+    telegram_id = await contact_says(denv, "SYNTH-QUESTION")
+    answered = await message_row_id(denv.env, telegram_id)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    ctx = context(denv, account_id, run_id, turn_id)
+    denv.script(owner_output())
+    arguments = reply_args(conversation)
+    first = await call(ctx, "propose_reply", **arguments)
+    changes: dict[str, Any] = {
+        "mode": "new_message",
+        "guidance": "SYNTH-CORRECTION",
+        "answered_message_id": answered,
+        "min_words": 10,
+        "max_words": 20,
+    }
+    arguments[changed] = changes[changed]
+    second = await call(ctx, "propose_reply", call_id="c2", **arguments)
+    assert second["status"] == "conflict_existing_draft"
+    assert second["action_id"] == first["action_id"]
+    assert second["state"] == "awaiting_approval"
+    assert "reused" not in second
+    assert "card" not in second
+    assert len(denv.fake.requests) == 1
+    [card] = await actions_of(denv.env, conversation)
+    assert card.id == first["action_id"]
+    assert card.version == 1
+
+
+async def test_changed_message_answer_target_conflicts(denv: DraftEnv) -> None:
+    account_id, conversation = await seed_chat(denv)
+    telegram_id = await contact_says(denv, "SYNTH-QUESTION")
+    answered = await message_row_id(denv.env, telegram_id)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    ctx = context(denv, account_id, run_id, turn_id)
+    first = await call(ctx, "propose_message", **message_args(conversation, "SYNTH-X"))
+    second = await call(
+        ctx,
+        "propose_message",
+        call_id="c2",
+        **message_args(conversation, "SYNTH-X", answered=answered),
+    )
+    assert second["status"] == "conflict_existing_draft"
+    assert second["action_id"] == first["action_id"]
+    [card] = await actions_of(denv.env, conversation)
+    assert card.text == "SYNTH-X"
+    assert card.base_message_id is None
+
+
+@pytest.mark.parametrize("first_tool", ["propose_reply", "propose_message"])
+async def test_switching_proposal_tools_in_the_same_turn_conflicts(
+    denv: DraftEnv, first_tool: str
+) -> None:
+    account_id, conversation = await seed_chat(denv)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    ctx = context(denv, account_id, run_id, turn_id)
+    denv.script(owner_output())
+    arguments = {
+        "propose_reply": reply_args(conversation),
+        "propose_message": message_args(conversation, "SYNTH-X"),
+    }
+    second_tool = "propose_message" if first_tool == "propose_reply" else "propose_reply"
+    first = await call(ctx, first_tool, **arguments[first_tool])
+    second = await call(ctx, second_tool, call_id="c2", **arguments[second_tool])
+    assert second["status"] == "conflict_existing_draft"
+    assert second["action_id"] == first["action_id"]
+    assert len(await actions_of(denv.env, conversation)) == 1
+    assert len(denv.fake.requests) == (1 if first_tool == "propose_reply" else 0)
+
+
+@pytest.mark.parametrize("tool", ["propose_reply", "propose_message"])
+async def test_same_call_id_keeps_its_action_even_with_different_arguments(
+    denv: DraftEnv, tool: str
+) -> None:
+    account_id, conversation = await seed_chat(denv)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    ctx = context(denv, account_id, run_id, turn_id)
+    denv.script(owner_output())
+    arguments = (
+        reply_args(conversation)
+        if tool == "propose_reply"
+        else message_args(conversation, "SYNTH-X")
+    )
+    first = await call(ctx, tool, **arguments)
+    arguments.update(
+        {"guidance": "SYNTH-CHANGED"} if tool == "propose_reply" else {"text": "SYNTH-Y"}
+    )
+    second = await call(ctx, tool, **arguments)
+    assert second["status"] == "awaiting_approval"
+    assert second["action_id"] == first["action_id"]
+    assert second["reused"] is True
+    assert len(await actions_of(denv.env, conversation)) == 1
+    assert len(denv.fake.requests) == (1 if tool == "propose_reply" else 0)
+
+
+async def test_card_without_request_metadata_conflicts_instead_of_guessing(denv: DraftEnv) -> None:
+    account_id, conversation = await seed_chat(denv)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    ctx = context(denv, account_id, run_id, turn_id)
+    arguments = message_args(conversation, "SYNTH-X")
+    first = await call(ctx, "propose_message", **arguments)
+    async with denv.env.factory() as session, session.begin():
+        await session.execute(
+            update(Action)
+            .where(Action.account_id == account_id, Action.id == first["action_id"])
+            .values(draft_flags=None)
+        )
+    second = await call(ctx, "propose_message", call_id="c2", **arguments)
+    assert second["status"] == "conflict_existing_draft"
+    assert second["action_id"] == first["action_id"]
+    assert "reused" not in second
 
 
 # ------------------------------------------------------------ a newest message with nothing to show
