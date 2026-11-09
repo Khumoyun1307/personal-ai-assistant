@@ -8,6 +8,7 @@
 #   deploy/server.sh status          containers, app healthcheck, backup markers
 #   deploy/server.sh logs [N]        last N (default 200) app log lines (content-free)
 #   deploy/server.sh backup          a backup now (exit 3: dump ok, upload failed)
+#   deploy/server.sh db-roles        explicit role/grant upgrade (app/backup stopped)
 #   deploy/server.sh offsite-list    file names in the off-site daily/ and weekly/
 #   deploy/server.sh restore-test    restore the newest dump into a scratch DB;
 #                                    the age identity arrives on stdin only
@@ -98,6 +99,19 @@ case "$action" in
     release_load
     release_rollback
     ;;
+  db-roles)
+    require_data_volume
+    [ ! -e .env.pending ] || release_error "incomplete settings push; repeat prod-env-push first"
+    exec 9>deploy/.release-lock
+    flock -n 9 || release_error "another release operation is running"
+    if [ -n "$(compose ps --status running -q app backup)" ]; then
+      release_error "stop app and backup before role/password maintenance (runbooks/deploy.md I24)"
+    fi
+    # Explicitly authorized maintenance; passwords stay in .env.roles.
+    compose up -d --wait --no-build db
+    compose run --rm --no-deps -T --no-build db-roles \
+      python -m assistant.db.production_roles setup
+    ;;
   status)
     # First, because nothing below means anything without the volume.
     require_data_volume
@@ -146,9 +160,11 @@ case "$action" in
     db_client dropdb --if-exists restore_test
     # Also remove the scratch database if decrypt, post-restore or a gate fails.
     trap 'db_client dropdb --if-exists restore_test; echo "restore_test dropped"' EXIT
-    db_client createdb restore_test
-    printf '%s\n' "$identity" | compose exec -T backup restore.sh "$dump" restore_test
+    db_client createdb -O assistant_migrate restore_test
+    printf '%s\n' "$identity" | compose run --rm --no-deps -T --no-build restore "$dump" restore_test
     unset identity
+    compose run --rm --no-deps -T --no-build db-roles \
+      python -m assistant.db.production_roles setup --database restore_test
     # Select the scratch database structurally inside the container, preserving
     # driver/query/credentials privately. Shell suffix slicing is unsafe when
     # query values contain slashes. --no-deps: no migrate, poller or sends.
@@ -200,11 +216,14 @@ case "$action" in
     # in the db container, $PGDATABASE (the same value) in the backup one.
     # shellcheck disable=SC2016  # expanded inside the db container
     compose exec -T db sh -c \
-      'dropdb -U "$POSTGRES_USER" --if-exists --force "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
-    # shellcheck disable=SC2016  # expanded inside the backup container
+      'dropdb -U "$POSTGRES_USER" --if-exists --force "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" -O assistant_migrate "$POSTGRES_DB"'
+    # shellcheck disable=SC2016  # expanded inside the restore container
     printf '%s\n' "$identity" \
-      | compose exec -T backup sh -c 'exec restore.sh "$1" "$PGDATABASE"' sh "/backups/daily/$file"
+      | compose run --rm --no-deps -T --no-build --entrypoint sh restore \
+        -c 'exec restore.sh "$1" "$PGDATABASE"' sh "/backups/daily/$file"
     unset identity
+    compose run --rm --no-deps -T --no-build db-roles \
+      python -m assistant.db.production_roles setup
     stamp="${file%.dump.age}"
     echo "next: post-restore --backup-taken-at ${stamp:0:4}-${stamp:4:2}-${stamp:6:2}T${stamp:9:2}:${stamp:11:2}:${stamp:13:2}Z"
     ;;
@@ -251,6 +270,7 @@ case "$action" in
     ;;
   app-start)
     require_data_volume
+    [ ! -e .env.pending ] || release_error "incomplete settings push; repeat prod-env-push first"
     compose up -d app
     ;;
   restart-timing)

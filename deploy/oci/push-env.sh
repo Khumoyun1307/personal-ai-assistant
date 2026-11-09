@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assemble the server .env and stream it to /opt/assistant/.env (mode 600).
+# Assemble separate server environment files (all mode 600).
 #
 #   push-env.sh <ip> [--owner-ids <id[,id]>]      validate, then push over SSH
 #   push-env.sh --check [--owner-ids <id[,id]>]   validate only (no SSH)
@@ -15,11 +15,13 @@
 #                          discovers its API endpoint when it authorizes)
 #   var/cloud/age-identity.txt   only its "# public key:" line is read; once
 #                                the key is off the laptop (A8), the public
-#                                key is read from the server's current .env
-#   var/cloud/prod-generated.env POSTGRES_PASSWORD, generated on first run
-#                                and reused afterwards (the database keeps it)
+#                                key is read from the server's .env.backup
+#                                (legacy .env on the first upgrade)
+#   var/cloud/prod-generated.env POSTGRES_PASSWORD, MIGRATION_DB_PASSWORD,
+#                                APP_DB_PASSWORD, BACKUP_DB_PASSWORD; generated
+#                                once and reused (the database keeps them)
 #
-# The assembled file exists only in this process's memory and on the server;
+# Assembled files exist only in this process's memory and on the server;
 # it is never written to the laptop's disk, and only setting NAMES are
 # printed (AGENTS §9).
 set -euo pipefail
@@ -52,7 +54,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --owner-ids) [ $# -ge 2 ] || die "--owner-ids needs a value"; owner_ids="$2"; shift 2 ;;
     --check) check_only=1; shift ;;
-    # Test hook: write the result to a file under var/cloud instead of SSH.
+    # Test hook: output-prefix for service files under var/cloud, no SSH.
     --write-to) write_to="${2:-}"; shift 2 ;;
     -*) die "unknown option $1" ;;
     *) ip="$1"; shift ;;
@@ -103,7 +105,7 @@ has_env() {
 [ -r "$PROD_ENV" ] || die "var/prod.env is missing (owner step A6 in runbooks/provision.md)"
 [ -r "$B2_ENV" ] || die "var/cloud/b2.env is missing (owner step A4)"
 # After A8 the identity is off the laptop: the recipient (a public key) is then
-# read back from the server's current .env, which needs the server ip.
+# read back from the server's backup settings, which needs the server ip.
 if [ ! -r "$AGE_IDENTITY" ] && [ -z "$ip" ]; then
   die "var/cloud/age-identity.txt is missing: pass the server ip to reuse its AGE_RECIPIENT (or run: just prod-age-key)"
 fi
@@ -114,16 +116,23 @@ fi
   die "OWNER_TELEGRAM_IDS (the main account) is missing: run just dev-bot-switch, or pass --owner-ids"
 
 # --- generated values ------------------------------------------------------------
-if [ -z "$(read_env "$GENERATED_ENV" POSTGRES_PASSWORD)" ]; then
-  (
-    umask 077
-    # Hex: URL-safe, so it can sit inside DATABASE_URL unescaped.
-    printf 'POSTGRES_PASSWORD=%s\n' "$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
-      >> "$GENERATED_ENV"
-  )
-  own_like_checkout "$GENERATED_ENV"
-  log "generated POSTGRES_PASSWORD into var/cloud/prod-generated.env"
-fi
+for key in POSTGRES_PASSWORD MIGRATION_DB_PASSWORD APP_DB_PASSWORD BACKUP_DB_PASSWORD; do
+  if [ -z "$(read_env "$GENERATED_ENV" "$key")" ]; then
+    # Capture separately: printf would otherwise mask a failed generator and
+    # persist an empty password, leaving only a later validation error.
+    password="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" ||
+      die "could not generate $key (python3 is required)"
+    [[ "$password" =~ ^[0-9a-f]{64}$ ]] || die "invalid generated $key"
+    (
+      umask 077
+      # Hex: URL-safe, so it can sit inside DATABASE_URL unescaped.
+      printf '%s=%s\n' "$key" "$password" >> "$GENERATED_ENV"
+    )
+    own_like_checkout "$GENERATED_ENV"
+    log "generated $key into var/cloud/prod-generated.env"
+  fi
+done
+chmod 600 "$GENERATED_ENV"
 
 declare -A v
 v[APP_ENV]=prod
@@ -146,14 +155,18 @@ done
 v[POSTGRES_USER]=assistant
 v[POSTGRES_DB]=assistant
 v[POSTGRES_PASSWORD]="$(read_env "$GENERATED_ENV" POSTGRES_PASSWORD)"
-v[DATABASE_URL]="postgresql+psycopg://${v[POSTGRES_USER]}:${v[POSTGRES_PASSWORD]}@db:5432/${v[POSTGRES_DB]}"
+for key in MIGRATION_DB_PASSWORD APP_DB_PASSWORD BACKUP_DB_PASSWORD; do
+  v[$key]="$(read_env "$GENERATED_ENV" "$key")"
+done
+v[PGHOST]=db
+v[PGDATABASE]="${v[POSTGRES_DB]}"
 v[DATA_DIR]=/mnt/data
 v[BACKUP_STATUS_PATH]=/backups/last_success
 if [ -r "$AGE_IDENTITY" ]; then
   v[AGE_RECIPIENT]="$(awk '/^# public key: age1/ { print $4; exit }' "$AGE_IDENTITY")"
 else
   prepare_ssh
-  v[AGE_RECIPIENT]="$(remote "$ip" "sed -n 's/^AGE_RECIPIENT=//p' $PROD_DIR/.env" | head -n 1)"
+  v[AGE_RECIPIENT]="$(remote "$ip" "sed -n 's/^AGE_RECIPIENT=//p' $PROD_DIR/.env.backup 2>/dev/null || sed -n 's/^AGE_RECIPIENT=//p' $PROD_DIR/.env" | head -n 1)"
 fi
 bucket="$(read_env "$B2_ENV" B2_BUCKET)"
 v[BACKUP_REMOTE]="offsite:$bucket"
@@ -181,6 +194,9 @@ need OPENAI_API_KEY '^sk-[A-Za-z0-9_-]{20,}$' "an OpenAI API key"
 need HEARTBEAT_URL '^https://[^[:space:]]+$' "an https ping URL"
 need OWNER_TELEGRAM_IDS '^[0-9]+(,[0-9]+)*$' "Telegram user ids"
 need POSTGRES_PASSWORD '^[0-9a-f]{64}$' "the generated hex password"
+for key in MIGRATION_DB_PASSWORD APP_DB_PASSWORD BACKUP_DB_PASSWORD; do
+  need "$key" '^[0-9a-f]{64}$' "the generated hex password"
+done
 need AGE_RECIPIENT '^age1[0-9a-z]{58}$' "an age public key"
 need RCLONE_CONFIG_OFFSITE_ACCOUNT '^[0-9A-Za-z]{12,}$' "a B2 application key id"
 need RCLONE_CONFIG_OFFSITE_KEY '^[0-9A-Za-z/+]{20,}$' "a B2 application key"
@@ -188,40 +204,80 @@ need BACKUP_REMOTE '^offsite:[A-Za-z0-9-]{6,63}$' "offsite:<B2 bucket name>"
 need PRIVACY_POLICY_URL '^https://[^[:space:]]+$' "an https URL"
 if [ "${#problems[@]}" -gt 0 ]; then
   for p in "${problems[@]}"; do log "invalid: $p"; done
-  die "server .env not pushed"
+  die "server environment files not pushed"
 fi
 
-order=(APP_ENV LOG_FORMAT DATABASE_URL BOT_TOKEN OWNER_TELEGRAM_IDS
-  OPENAI_API_KEY "${OPTIONAL_KEYS[@]}" HEARTBEAT_URL BACKUP_STATUS_PATH DATA_DIR
-  AGE_RECIPIENT BACKUP_REMOTE RCLONE_CONFIG_OFFSITE_TYPE
-  RCLONE_CONFIG_OFFSITE_ACCOUNT RCLONE_CONFIG_OFFSITE_KEY
-  RCLONE_CONFIG_OFFSITE_HARD_DELETE POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB)
+# Exact service inventories: never pass the combined settings into a service.
+app_keys=(APP_ENV LOG_FORMAT DATABASE_URL BOT_TOKEN OWNER_TELEGRAM_IDS OPENAI_API_KEY)
+for key in "${OPTIONAL_KEYS[@]}"; do
+  [ "$key" = BACKUP_HOUR_UTC ] || app_keys+=("$key")
+done
+app_keys+=(HEARTBEAT_URL BACKUP_STATUS_PATH BACKUP_REMOTE)
+stack_keys=(POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATA_DIR)
+migrate_keys=(DATABASE_URL)
+backup_keys=(PGHOST PGUSER PGPASSWORD PGDATABASE AGE_RECIPIENT BACKUP_HOUR_UTC
+  BACKUP_REMOTE RCLONE_CONFIG_OFFSITE_TYPE RCLONE_CONFIG_OFFSITE_ACCOUNT
+  RCLONE_CONFIG_OFFSITE_KEY RCLONE_CONFIG_OFFSITE_HARD_DELETE)
+roles_keys=(DATABASE_URL MIGRATION_DB_PASSWORD APP_DB_PASSWORD BACKUP_DB_PASSWORD)
+restore_keys=(PGHOST PGUSER PGPASSWORD PGDATABASE)
+select_keys() {
+  case "$1" in
+    stack) order=("${stack_keys[@]}") ;;
+    app) order=("${app_keys[@]}") ;;
+    migrate) order=("${migrate_keys[@]}") ;;
+    backup) order=("${backup_keys[@]}") ;;
+    roles) order=("${roles_keys[@]}") ;;
+    restore) order=("${restore_keys[@]}") ;;
+  esac
+}
 render() {
+  local service="$1" key value
+  local -a order
+  select_keys "$service"
   printf '# Production settings, written by deploy/oci/push-env.sh. Mode 600.\n'
   printf '# Edit through push-env (var/prod.env, var/cloud/*), not by hand.\n'
-  local key
   for key in "${order[@]}"; do
-    if [ -n "${v[$key]+set}" ]; then printf '%s=%s\n' "$key" "${v[$key]}"; fi
+    value="${v[$key]-}"
+    case "$service:$key" in
+      app:DATABASE_URL) value="postgresql+psycopg://assistant_app:${v[APP_DB_PASSWORD]}@db:5432/${v[POSTGRES_DB]}" ;;
+      migrate:DATABASE_URL) value="postgresql+psycopg://assistant_migrate:${v[MIGRATION_DB_PASSWORD]}@db:5432/${v[POSTGRES_DB]}" ;;
+      roles:DATABASE_URL) value="postgresql+psycopg://${v[POSTGRES_USER]}:${v[POSTGRES_PASSWORD]}@db:5432/${v[POSTGRES_DB]}" ;;
+      backup:PGUSER) value=assistant_backup ;;
+      backup:PGPASSWORD) value="${v[BACKUP_DB_PASSWORD]}" ;;
+      restore:PGUSER) value=assistant_migrate ;;
+      restore:PGPASSWORD) value="${v[MIGRATION_DB_PASSWORD]}" ;;
+      app:BACKUP_REMOTE) value=enabled ;;
+      *) [ -n "${v[$key]+set}" ] || continue ;;
+    esac
+    printf '%s=%s\n' "$key" "$value"
   done
 }
-present=()
-for key in "${order[@]}"; do
-  if [ -n "${v[$key]+set}" ]; then present+=("$key"); fi
+for service in stack app migrate backup roles restore; do
+  select_keys "$service"
+  log "valid $service keys: ${order[*]}"
 done
-log "valid; will write: ${present[*]}"
 
 if [ "$check_only" -eq 1 ]; then
   log "check only: nothing pushed"
   exit 0
 fi
 if [ -n "$write_to" ]; then
-  (umask 077 && render > "$write_to")
-  log "written to $(basename "$write_to") (test hook)"
+  for service in stack app migrate backup roles restore; do
+    target="$write_to.$service"
+    (umask 077 && render "$service" > "$target")
+    chmod 600 "$target"
+  done
+  log "written service files (test hook)"
   exit 0
 fi
 
 [ -n "$SSH_KEY_COPY" ] || prepare_ssh
-# Stream over SSH stdin into a 600 file, then atomically replace .env.
-render | remote "$ip" "set -e; umask 077; test -d $PROD_DIR; cat > $PROD_DIR/.env.new; chmod 600 $PROD_DIR/.env.new; mv $PROD_DIR/.env.new $PROD_DIR/.env"
-remote "$ip" "stat -c '%n %a %U' $PROD_DIR/.env" | sed 's/^/server: /' >&2
+# Stage every file before publishing any. Do not restart services during push.
+remote "$ip" "set -e; umask 077; test -d $PROD_DIR; touch $PROD_DIR/.env.pending; chmod 600 $PROD_DIR/.env.pending"
+for service in stack app migrate backup roles restore; do
+  filename=".env.$service"
+  [ "$service" != stack ] || filename=.env
+  render "$service" | remote "$ip" "set -e; umask 077; test -d $PROD_DIR; cat > $PROD_DIR/$filename.new; chmod 600 $PROD_DIR/$filename.new"
+done
+remote "$ip" "set -e; cd $PROD_DIR; for name in .env .env.app .env.migrate .env.backup .env.roles .env.restore; do mv \"\$name.new\" \"\$name\"; done; rm .env.pending"
 log "pushed; restart to apply: just deploy $ip"

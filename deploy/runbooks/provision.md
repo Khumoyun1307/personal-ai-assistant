@@ -146,9 +146,16 @@ adds it with `gh repo deploy-key add` (read-only is gh's default; "already
 in use" on a re-run is fine), and clones `main` into `/opt/assistant`.
 Any `ERROR:` line → stop and report it.
 
-**B5. Server `.env`.** `just prod-env-push <ip>` (the owner id comes from
+**B5. Server service environment files.** `just prod-env-push <ip>` (the owner id comes from
 `OWNER_TELEGRAM_IDS` in `var/prod.env`, written by `just dev-bot-switch`) →
-`valid: …` (names only) and `server: /opt/assistant/.env 600 deploy`.
+`valid <service> keys: …` (names only). All six generated server files have
+mode 600: root `.env` (Compose/db admin), `.env.app` (app settings and app DB
+URL), `.env.migrate` (migration DB URL only), `.env.backup` (read/dump DB,
+age recipient, schedule and B2 credentials), `.env.roles` (explicit admin
+setup only), `.env.restore` (one-off restore with migration DB credentials).
+Telegram/OpenAI/heartbeat secrets appear only in app settings; the app never
+receives B2 or administrative credentials. Generated passwords persist in
+`var/cloud/prod-generated.env` and must be retained with the database.
 `invalid: <NAME> …` → hand back to the owner to fix that value in
 `var/prod.env` or `var/cloud/b2.env`. `PRIVACY_POLICY_URL` defaults to the
 published policy page.
@@ -173,7 +180,11 @@ ensure the running app has been restarted after the push.
 
 **B6. First start.** Before this, confirm with the owner that nothing else
 polls Alviro (the laptop's `.env` holds the dev bot's token). Then
-`just deploy <ip>` → `compose ps`: `db` healthy, `migrate` exited 0, `app`
+follow [deploy.md — I24 role upgrade](deploy.md#i24-role-upgrade-fresh-installs-and-existing-production)
+to initialize the restricted roles before the first migration. This same
+idempotent step upgrades an existing volume; missing roles fail the deploy
+preflight before stopping a running app. After setup, `just deploy <ip>` →
+`compose ps`: `db` healthy, `migrate` exited 0, `app`
 healthy, `backup` up. Then `just prod-status <ip>`: healthcheck OK,
 `data dir: /dev/sdX /mnt/data (sentinel present)`.
 

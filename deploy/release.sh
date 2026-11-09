@@ -89,11 +89,17 @@ release_heads() {
 release_up() {
   local sha="$1" heads
   release_sha "$sha"
+  [ ! -e .env.pending ] || release_error "incomplete settings push; repeat prod-env-push before deploying"
   [ "$(git rev-parse HEAD)" = "$sha" ] || release_error "checkout is not the selected release"
   export ASSISTANT_IMAGE="assistant:${sha:0:12}" BACKUP_IMAGE="assistant-backup:${sha:0:12}"
   release_build "$sha" "$ASSISTANT_IMAGE" app
   release_build "$sha" "$BACKUP_IMAGE" backup
   heads="$(release_heads "$ASSISTANT_IMAGE")"
+  # Authenticate the restricted roles before stopping the old poller. Setup
+  # is an explicit operator step; a deploy never silently changes passwords.
+  compose up -d --wait --no-build db
+  compose run --rm --no-deps -T --no-build db-roles \
+    || release_error "database roles missing/outdated; follow runbooks/deploy.md I24 role upgrade"
   # Persist before any possible migration. Failed/interrupted transitions
   # cannot use an older, apparently compatible pair to authorize rollback.
   printf '%s\n' "$sha" > deploy/release-in-progress
@@ -114,6 +120,7 @@ release_up() {
 }
 release_rollback() {
   local sha image revision old_current=()
+  [ ! -e .env.pending ] || release_error "incomplete settings push; repeat prod-env-push before rollback"
   [ ! -e deploy/release-in-progress ] || release_error "incomplete transition; forward-fix required (runbooks/deploy.md)"
   [ "${#previous[@]}" != 0 ] || release_error "no recorded previous release; forward-fix required"
   [ "${current[3]}" = "${previous[3]}" ] || release_error "migration heads differ; forward-fix required (runbooks/deploy.md; I23)"
@@ -124,6 +131,8 @@ release_rollback() {
     [ "$revision" = "$sha" ] || release_error "previous release image missing or replaced; forward-fix required"
   done
   [ "$(release_heads "${previous[1]}")" = "${previous[3]}" ] || release_error "previous image heads changed; forward-fix required"
+  git show "$sha:deploy/compose.prod.yml" | grep -F 'env_file: ../.env.app' > /dev/null \
+    || release_error "previous release predates service environment separation; forward-fix required"
   if ! git diff --quiet || ! git diff --cached --quiet; then
     release_error "tracked server files were modified"
   fi

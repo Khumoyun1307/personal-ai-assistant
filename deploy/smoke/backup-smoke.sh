@@ -84,6 +84,13 @@ POSTGRES_USER=assistant
 POSTGRES_PASSWORD=$password
 POSTGRES_DB=assistant
 DATABASE_URL=postgresql+psycopg://assistant:$password@db:5432/assistant
+MIGRATION_DB_PASSWORD=$(printf 'a%.0s' {1..64})
+APP_DB_PASSWORD=$(printf 'b%.0s' {1..64})
+BACKUP_DB_PASSWORD=$(printf 'c%.0s' {1..64})
+PGHOST=db
+PGUSER=assistant_backup
+PGPASSWORD=$(printf 'c%.0s' {1..64})
+PGDATABASE=assistant
 DATA_DIR=/smoke-unused
 AGE_RECIPIENT=$recipient
 BACKUP_STATUS_PATH=/backups/last_success
@@ -121,6 +128,12 @@ services:
   backup:
     env_file: !override
       - /guard/smoke.env
+  db-roles:
+    env_file: !override
+      - /guard/smoke.env
+  restore:
+    env_file: !override
+      - /guard/smoke.env
 EOF
 daemon_sh "mkdir -p $dgdir"
 # An unmounted volume: DATA_DIR is an empty directory on the boot disk.
@@ -139,7 +152,9 @@ ok "compose creates no db container (and no directory) without the volume's post
 
 step "database and migrations"
 dc up -d --wait db > /dev/null
-dc run --rm -T migrate > /dev/null
+dc run --rm --no-deps -T db-roles python -m assistant.db.production_roles setup
+dc run --rm -T -e "DATABASE_URL=postgresql+psycopg://assistant_migrate:$(printf 'a%.0s' {1..64})@db:5432/assistant" migrate > /dev/null
+dc run --rm --no-deps -T db-roles
 tables_sql="SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')"
 source_tables="$(psql_db assistant "$tables_sql")"
 [ "$source_tables" -gt 10 ] || fail "only $source_tables tables after migrate"
@@ -157,8 +172,9 @@ bk "head -c 22 /backups/daily/$dump" | grep -q '^age-encryption.org/v1' || fail 
 ok "encrypted dump $dump in a postgres-owned volume; last_success written, no upload marker"
 
 step "decrypt + pg_restore into a scratch database"
-dc exec -T db createdb -U assistant restore_smoke
-dc run --rm -T --no-deps --entrypoint restore.sh backup "/backups/daily/$dump" restore_smoke < "$tmp/identity.txt"
+dc exec -T db createdb -U assistant -O assistant_migrate restore_smoke
+dc run --rm -T --no-deps -e PGUSER=assistant_migrate \
+  -e "PGPASSWORD=$(printf 'a%.0s' {1..64})" restore "/backups/daily/$dump" restore_smoke < "$tmp/identity.txt"
 restored_tables="$(psql_db restore_smoke "$tables_sql")"
 [ "$restored_tables" = "$source_tables" ] || fail "restored $restored_tables tables, expected $source_tables"
 [ "$(psql_db restore_smoke "SELECT count(*) FROM app.system_state WHERE key = 'restore_pending'")" = "1" ] \
