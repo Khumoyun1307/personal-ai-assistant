@@ -70,6 +70,7 @@ MEMORY_FLAGS = frozenset(
         "tool.remember",
         "tool.forget",
         "tool.list_memories",
+        "tool.get_preferences",
         "tool.update_preferences",
         "tool.set_conversation_mode",
         "tool.set_contact_priority",
