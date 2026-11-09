@@ -21,7 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import connections
 from assistant.accounts.models import Account
-from assistant.accounts.service import CONSENT_AI_CONTROL, CONSENT_AI_MANAGED, active_consent
+from assistant.accounts.service import (
+    CONSENT_AI_CONTROL,
+    CONSENT_AI_MANAGED,
+    active_consent,
+    restore_consent_pending,
+)
 from assistant.actions.models import Action
 from assistant.conversations.coverage import (
     older_gap_filter,
@@ -30,6 +35,7 @@ from assistant.conversations.coverage import (
 )
 from assistant.conversations.models import Conversation, CoverageGap
 from assistant.conversations.service import PAUSE_INGEST_ERROR
+from assistant.db.models import KEY_RESTORE_PENDING, SystemState
 from assistant.inbox.notifications import NotificationCounts, notification_counts
 from assistant.inbox.processor import inbox_backlog_for
 from assistant.inbox.watchdog import poller_heartbeat_at
@@ -71,6 +77,8 @@ class ConsentStatus:
     control_chat: bool
     managed_chats: bool
     policy_version: str | None
+    restore_pending: bool = False
+    restore_consent_pending: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +282,8 @@ async def build_status(
         control_chat=control.granted,
         managed_chats=managed.granted,
         policy_version=managed.policy_version or control.policy_version,
+        restore_pending=await session.get(SystemState, KEY_RESTORE_PENDING) is not None,
+        restore_consent_pending=restore_consent_pending(account),
     )
 
     backlog = await inbox_backlog_for(session, account_id)

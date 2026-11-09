@@ -247,7 +247,10 @@ async def ask_consent(
     message answers it only once it has arrived (C4): consent is never
     given to a question the owner did not see (SEC-02)."""
     locale = supported_locale(account.locale_pref)
-    result = await gateway.send_text(target, texts.consent_prompt(locale, AI_PROCESSORS))
+    prompt = texts.consent_prompt(locale, AI_PROCESSORS)
+    if service.restore_consent_pending(account):
+        prompt = texts.RESTORE_PRIVACY_WARNING + "\n\n" + prompt
+    result = await gateway.send_text(target, prompt)
     if result.ok:
         await arm_consent_question(session, clock, account.id, result.message_id)
     return result
@@ -385,9 +388,12 @@ async def handle_managed_consent_request(
         ttl=service.MANAGED_CONSENT_TTL,
     )
     assert card.token is not None
+    prompt = MANAGED_CONSENT_TEXT.format(processors=", ".join(AI_PROCESSORS))
+    if service.restore_consent_pending(account):
+        prompt = texts.RESTORE_PRIVACY_WARNING + "\n\n" + prompt
     result = await gateway.send_text(
         target,
-        MANAGED_CONSENT_TEXT.format(processors=", ".join(AI_PROCESSORS)),
+        prompt,
         keyboard=card_keyboard(
             service.MANAGED_CONSENT_CARD,
             card.token,
@@ -1058,6 +1064,11 @@ def render_status(report: StatusReport, *, visibility: str) -> str:
         f"  This chat: {'granted' if consent.control_chat else 'not granted'}",
         f"  Included chats: {'granted' if consent.managed_chats else 'not granted'}",
     ]
+    if consent.restore_pending:
+        lines.append("  restore_pending: recovery incomplete; AI processing blocked")
+    if consent.restore_consent_pending:
+        scopes = ", ".join(consent.restore_consent_pending)
+        lines.append(f"  restore_consent_pending: {scopes}; renew with /start or /privacy managed")
     if report.autonomy.conversations_paused:
         detail = ", ".join(
             f"{count} {reason}"

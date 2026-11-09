@@ -254,6 +254,8 @@ async def test_the_status_tool_reports_the_same_facts_as_the_command(env: Env) -
         "control_chat": True,
         "managed_chats": False,
         "policy_version": "v5",
+        "restore_pending": False,
+        "restore_consent_pending": [],
     }
 
 

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts import callbacks, preferences
 from assistant.accounts.models import Account, AuditLogEntry, Consent, ControlTurn, PendingInput
 from assistant.core.clock import Clock
+from assistant.db.models import KEY_RESTORE_PENDING, SystemState
 
 #: How long the control chat waits for an answer before giving up on it.
 PENDING_INPUT_TTL = timedelta(minutes=30)
@@ -23,6 +24,10 @@ PENDING_INPUT_TTL = timedelta(minutes=30)
 #: Consent kinds (ARCHITECTURE §10.3).
 CONSENT_AI_CONTROL = "ai_control"
 CONSENT_AI_MANAGED = "ai_managed"
+
+#: Additive, content-free account setting. Each scope is removed only by a
+#: fresh grant; restoring old consent rows must never authorize processing.
+RESTORE_CONSENT_PENDING = "restore_consent_pending"
 
 #: The privacy-policy version consents are recorded against. v2 adds managed
 #: conversations, v3 deletion and "stop observing", v4 hosting and encrypted
@@ -63,6 +68,14 @@ class ConsentState:
     granted: bool
     policy_version: str | None
     processors: tuple[str, ...]
+
+
+def restore_consent_pending(account: Account) -> tuple[str, ...]:
+    value = (account.settings or {}).get(RESTORE_CONSENT_PENDING, [])
+    if not isinstance(value, list):
+        # Malformed quarantine state is never interpreted as permission.
+        return (CONSENT_AI_CONTROL, CONSENT_AI_MANAGED)
+    return tuple(kind for kind in (CONSENT_AI_CONTROL, CONSENT_AI_MANAGED) if kind in value)
 
 
 async def get_or_create_account(
@@ -121,6 +134,13 @@ async def grant_consent(
         processors=processors,
     )
     session.add(consent)
+    if kind in restore_consent_pending(account):
+        account.settings = {
+            **(account.settings or {}),
+            RESTORE_CONSENT_PENDING: [
+                pending for pending in restore_consent_pending(account) if pending != kind
+            ],
+        }
     await session.flush()
     return consent
 
@@ -143,7 +163,18 @@ async def revoke_consent(
 
 
 async def active_consent(session: AsyncSession, account_id: int, *, kind: str) -> ConsentState:
-    """The current consent of a kind: the latest row that is not revoked."""
+    """Current consent, fail closed during restore and per-scope quarantine.
+
+    DbConsentReader supplies this state to the LLMClient wrapper on every
+    call, including queued work and subsequent calls within a run.
+    """
+    account = await session.get(Account, account_id, populate_existing=True)
+    if (
+        await session.get(SystemState, KEY_RESTORE_PENDING, populate_existing=True) is not None
+        or account is None
+        or kind in restore_consent_pending(account)
+    ):
+        return ConsentState(kind=kind, granted=False, policy_version=None, processors=())
     result = await session.execute(
         select(Consent)
         .where(Consent.account_id == account_id)
