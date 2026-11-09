@@ -1055,20 +1055,10 @@ class ApprovalCards:
         result = await self._gateway.edit_control_text(
             target, view.card_message_id, card.text, keyboard=card.keyboard
         )
-        # A refusal Telegram answered (e.g. "message is not modified", or a
-        # card the owner deleted) cannot succeed by repeating it: settled.
-        if result.ok or result.error_class is ErrorClass.BAD_REQUEST:
-            if not result.ok:
-                # Usually "not modified"; anything else (a parse error) leaves
-                # the card showing an older state, so it is traced. Telegram
-                # gives both the same code today (open item: errors.py).
-                logger.info(
-                    "approval_card_edit_refused",
-                    action_id=view.action_id,
-                    state=view.state.value,
-                    error=result.error_class,
-                    code=result.error_code,
-                )
+        # The gateway treats only "message is not modified" as an already
+        # successful edit. Other refusals leave the recorded presentation
+        # untouched so the bounded sync can recover it.
+        if result.ok:
             self._failures.pop(view.action_id, None)
             await self._record(view, message_id=view.card_message_id)
             return result
