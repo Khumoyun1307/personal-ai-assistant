@@ -21,6 +21,19 @@ Docker. On the server every compose command is
 directory is `deploy/`, so without `--env-file .env` the root `.env` would
 not be used for `${...}` interpolation.
 
+The backup sidecar checks at startup and every five minutes. It dumps
+immediately if `last_success` is missing/invalid, at least 24 hours old, or
+older than today's scheduled `BACKUP_HOUR_UTC` once that time has passed.
+A successful catch-up persists `last_success`, so a restart does not repeat
+it. Failed dumps retry on the next check. Off-site uploads remain pending
+when the newest completed dump or `last_success` is newer than
+`last_upload_success`. `last_upload_attempt` persists the hourly retry
+interval across restarts; a failed upload keeps the local dump. All three
+markers live in the backups volume. `BACKUP_TEST_NOW` is a smoke-test clock
+override; leave it unset in production. A rebuilt host needs the recovery
+order in [restore.md §C](restore.md#c-rebuilding-a-lost-host) before starting
+the sidecar, because an empty volume now causes an immediate backup.
+
 Rules:
 
 - Deploy only what is on `main` with CI green (AGENTS §15). Never edit files

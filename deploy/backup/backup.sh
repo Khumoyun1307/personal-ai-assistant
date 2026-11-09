@@ -3,7 +3,7 @@
 #
 #   backup.sh once     — one dump now (then the off-site sync, if configured)
 #   backup.sh upload   — only the off-site sync (retry after a failed upload)
-#   backup.sh loop     — one dump per day at BACKUP_HOUR_UTC, forever
+#   backup.sh loop     — daily at BACKUP_HOUR_UTC, catch up after downtime
 #
 # pg_dump (custom format) | age -r AGE_RECIPIENT  →  /backups/daily/<ts>.dump.age
 # Rotation: 14 daily + 4 weekly (Sunday) copies locally. When BACKUP_REMOTE is
@@ -15,10 +15,11 @@
 # The private age key never exists on this host: only the recipient (public
 # key) is here, so a stolen backup is useless without the owner's offline key.
 #
-# Markers (UTC ISO-8601 timestamps), read by the app's backup_check job:
+# Markers (UTC ISO-8601 timestamps); backup_check reads the success markers:
 #   /backups/last_success         — the last dump that completed and verified
 #   /backups/last_upload_success  — the last complete off-site sync
-# A marker is only ever written after the step it records succeeded.
+#   /backups/last_upload_attempt  — the last off-site attempt (retry throttle)
+# Success markers are only written after the recorded step succeeded.
 #
 # Exit codes of `once`: 0 dump (and sync) ok; 1 dump failed; 3 dump ok but the
 # off-site sync failed (the local copy is kept; `loop` retries hourly).
@@ -35,12 +36,22 @@ UPLOAD_RETRY_SECONDS="${UPLOAD_RETRY_SECONDS:-3600}"
 MAX_REMOTE_DELETE="${BACKUP_MAX_REMOTE_DELETE:-7}"
 EXIT_UPLOAD_FAILED=3
 
-log() { printf '%s backup: %s\n' "$(date -u +%FT%TZ)" "$*"; }
+# Test clock only; production leaves BACKUP_TEST_NOW unset. GNU date comes
+# from the postgres base image. All scheduler and marker times use this clock.
+now() {
+  if [ -n "${BACKUP_TEST_NOW:-}" ]; then
+    date -u -d "$BACKUP_TEST_NOW" "$@"
+  else
+    date -u "$@"
+  fi
+}
+
+log() { printf '%s backup: %s\n' "$(now +%FT%TZ)" "$*"; }
 
 write_marker() {
   # Atomic: a reader never sees a half-written timestamp.
   local name="$1"
-  date -u +%FT%TZ > "$BACKUP_DIR/$name.part"
+  now +%FT%TZ > "$BACKUP_DIR/$name.part"
   mv "$BACKUP_DIR/$name.part" "$BACKUP_DIR/$name"
 }
 
@@ -64,7 +75,7 @@ dump() {
   find "$DAILY" -maxdepth 1 -name '*.part' -delete
 
   local stamp file tmp size
-  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  stamp="$(now +%Y%m%dT%H%M%SZ)"
   file="$DAILY/$stamp.dump.age"
   tmp="$file.part"
   # `if !` because this function may run where errexit is suspended; the
@@ -85,7 +96,7 @@ dump() {
   mv -- "$tmp" "$file"
   log "wrote $(basename "$file") ($size bytes)"
   # Sunday's dump is also the weekly copy.
-  if [ "$(date -u +%u)" = "7" ]; then
+  if [ "$(now +%u)" = "7" ]; then
     cp -- "$file" "$WEEKLY/"
   fi
   rotate "$DAILY" "$KEEP_DAILY"
@@ -99,6 +110,9 @@ upload() {
   if [ -z "${BACKUP_REMOTE:-}" ]; then
     return 0
   fi
+  # Persist before I/O: a restart after any failure retains the hourly
+  # throttle. This is an attempt marker, never evidence of upload success.
+  write_marker last_upload_attempt || return 1
   local sub local_files remote_files stale
   for sub in daily weekly; do
     mkdir -p "$BACKUP_DIR/$sub"
@@ -136,33 +150,70 @@ once() {
   fi
 }
 
+# Missing or invalid markers are unknown, so catch up rather than skip work.
+marker_epoch() {
+  local value
+  if [ -f "$BACKUP_DIR/$1" ]; then
+    value="$(cat "$BACKUP_DIR/$1")"
+    if [ -z "$value" ]; then
+      printf '0\n'
+      return
+    fi
+    date -u -d "$value" +%s 2> /dev/null || printf '0\n'
+  else
+    printf '0\n'
+  fi
+}
+
+newest_dump_epoch() {
+  local stamp
+  if [ ! -d "$DAILY" ]; then
+    printf '0\n'
+    return
+  fi
+  stamp="$(find "$DAILY" -maxdepth 1 -type f -name '*.dump.age' -printf '%f\n' | sort | tail -n 1)"
+  if [ -z "$stamp" ]; then
+    printf '0\n'
+    return
+  fi
+  # Names, not mtimes: copying a dump during recovery must not make it new.
+  date -u -d "${stamp:0:4}-${stamp:4:2}-${stamp:6:2}T${stamp:9:2}:${stamp:11:2}:${stamp:13:2}Z" +%s \
+    2> /dev/null || printf '0\n'
+}
+
 loop() {
-  local hour today rc next_retry=0 upload_pending=0
+  local hour current scheduled last_dump last_upload newest last_attempt rc
   # Fail at start-up (visible in `ps`/logs), not at the first 02:00 run.
   : "${AGE_RECIPIENT:?AGE_RECIPIENT (age public key) is required}"
   hour="${BACKUP_HOUR_UTC:-02}"
+  if [[ ! "$hour" =~ ^([01][0-9]|2[0-3])$ ]]; then
+    log "invalid BACKUP_HOUR_UTC (expected 00-23)"
+    return 1
+  fi
   log "scheduled daily at ${hour}:00 UTC"
   while true; do
-    today="$(date -u +%F)"
-    if [ "$(date -u +%H)" = "$hour" ] && [ ! -f "$BACKUP_DIR/.done-$today" ]; then
+    current="$(now +%s)"
+    scheduled="$(date -u -d "$(now +%F) ${hour}:00:00Z" +%s)"
+    last_dump="$(marker_epoch last_success)"
+    if [ "$last_dump" -eq 0 ] || [ "$((current - last_dump))" -ge 86400 ] \
+       || { [ "$current" -ge "$scheduled" ] && [ "$last_dump" -lt "$scheduled" ]; }; then
       # A separate process, so errexit applies inside it as written.
       rc=0
       "$0" once || rc=$?
-      if [ "$rc" -eq 0 ] || [ "$rc" -eq "$EXIT_UPLOAD_FAILED" ]; then
-        touch "$BACKUP_DIR/.done-$today"
-        find "$BACKUP_DIR" -maxdepth 1 -name '.done-*' -mtime +2 -delete
+      if [ "$rc" -ne 0 ] && [ "$rc" -ne "$EXIT_UPLOAD_FAILED" ]; then
+        log "scheduled dump failed; retry on next check"
       fi
-      if [ "$rc" -eq "$EXIT_UPLOAD_FAILED" ]; then
-        upload_pending=1
-        next_retry=$(($(date +%s) + UPLOAD_RETRY_SECONDS))
-      else
-        upload_pending=0
-      fi
-    elif [ "$upload_pending" -eq 1 ] && [ "$(date +%s)" -ge "$next_retry" ]; then
-      if "$0" upload; then
-        upload_pending=0
-      else
-        next_retry=$(($(date +%s) + UPLOAD_RETRY_SECONDS))
+    fi
+    if [ -n "${BACKUP_REMOTE:-}" ]; then
+      last_upload="$(marker_epoch last_upload_success)"
+      last_dump="$(marker_epoch last_success)"
+      newest="$(newest_dump_epoch)"
+      last_attempt="$(marker_epoch last_upload_attempt)"
+      # Check the file as well as the marker: a crash after the atomic dump
+      # rename but before last_success must not lose an off-site retry.
+      if { [ "$newest" -gt "$last_upload" ] || [ "$last_dump" -gt "$last_upload" ]; } \
+         && { [ "$last_attempt" -eq 0 ] || [ "$((current - last_attempt))" -ge "$UPLOAD_RETRY_SECONDS" ]; }; then
+        "$0" upload || true
       fi
     fi
     sleep 300
