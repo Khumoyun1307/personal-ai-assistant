@@ -300,6 +300,7 @@ dc run --rm --no-deps -T "${journal_env[@]}" \
   -e PATH=/backups/journal-smoke/bin:/usr/local/bin:/usr/bin:/bin \
   --entrypoint privacy-journal.sh backup ship force > /dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "head failure reported success"
+# shellcheck disable=SC2016  # expanded by the container's shell
 bk 'test -s /backups/journal-smoke/privacy-journal/last_attempt &&
     test "$(cat /backups/journal-smoke/journal_status)" = head_upload_failed &&
     test ! -e /backups/journal-smoke/last_journal_upload_success &&
@@ -390,6 +391,7 @@ dc run --rm --no-deps -T "${journal_env[@]}" \
   > "$tmp/journal-output" 2> /dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "late authentication failure reported success"
 [ ! -s "$tmp/journal-output" ] || fail "late authentication failure released partial plaintext"
+# shellcheck disable=SC2016  # expanded by the container's shell
 bk 'for file in /backups/remote/privacy-journal/segments/*.age; do printf corrupt >> "$file"; done'
 rc=0
 dc run --rm --no-deps -T "${journal_env[@]}" --entrypoint privacy-journal.sh backup fetch \
