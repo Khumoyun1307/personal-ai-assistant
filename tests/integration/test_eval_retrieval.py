@@ -71,6 +71,9 @@ MESSAGES = {m.id: m for c in CONVERSATIONS for m in c.messages}
 #: this number).
 DETERMINISTIC_FLOOR = 0.8
 
+# A flag leaves this set only when it is enabled in production.
+CANDIDATE_FLAGS = frozenset({"tool.propose_owner_message"})
+
 
 @pytest.fixture
 async def factory(migrated_url: str) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
@@ -725,11 +728,19 @@ async def test_agent_mode_runs_the_owner_request_runtime_with_the_shipped_prompt
     first = oracle.requests[0]
     assert first.purpose == "owner_request"
     assert first.instructions.startswith(shipped.text)
-    registry_tools = {
-        tool.name for tool in default_registry().all() if tool.release_flag not in TASK_FLAGS
+    registered_tools = default_registry().all()
+    expected_tools = {
+        tool.name for tool in registered_tools if tool.release_flag in PRODUCTION_FLAGS
     }
-    assert {tool.name for tool in first.tools} == registry_tools
-    assert {tool.release_flag for tool in default_registry().all()} - TASK_FLAGS <= PRODUCTION_FLAGS
+    offered_tools = {tool.name for tool in first.tools}
+    assert offered_tools == expected_tools
+    assert {tool.release_flag for tool in registered_tools} <= (
+        PRODUCTION_FLAGS | TASK_FLAGS | CANDIDATE_FLAGS
+    )
+    assert CANDIDATE_FLAGS.isdisjoint(PRODUCTION_FLAGS)
+    assert offered_tools.isdisjoint(
+        tool.name for tool in registered_tools if tool.release_flag in CANDIDATE_FLAGS
+    )
     assert result.prompts == (shipped.label,)
     [record] = result.details
     assert record["hit_top5"] is True

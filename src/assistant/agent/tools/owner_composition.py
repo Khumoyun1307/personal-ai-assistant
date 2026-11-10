@@ -37,6 +37,7 @@ from assistant.actions.source_copy import CopyUnavailable, copy_request_body
 from assistant.actions.states import ActionKind, ActionOrigin
 from assistant.agent.draft_owner_schemas import word_count
 from assistant.agent.persistence import args_digest
+from assistant.agent.tools.common import OptionalId
 from assistant.agent.tools.effects import find_effect, record_effect
 from assistant.agent.tools.registry import (
     CapabilityClass,
@@ -46,7 +47,7 @@ from assistant.agent.tools.registry import (
     ToolRefs,
 )
 from assistant.agent.tools.replies import EFFECT_KEY_CHARS, REQUEST_DIGEST, source_failure
-from assistant.conversations.models import Conversation, Message
+from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.delivery import MAX_TEXT_LENGTH
 from assistant.db.uow import transaction
 
@@ -58,7 +59,11 @@ class ProposeOwnerMessageArgs(BaseModel):
 
     request_id: PositiveId
     request_version: PositiveId
-    conversation_id: PositiveId
+    conversation_id: OptionalId = Field(
+        description=(
+            "Bound request recipient, or null to use that binding. A different id is rejected."
+        )
+    )
     mode: Literal["reply", "new_message"]
     answered_message_id: PositiveId | None
     text: str = Field(strict=True)
@@ -357,6 +362,25 @@ async def propose_owner_message_tool(
         request = await _request(session, ctx, args.request_id)
         if request is None:
             return source_failure("not_available", "not_found")
+        if request.conversation_id is None:
+            return source_failure("needs_input", "recipient", request)
+        if args.conversation_id is not None and args.conversation_id != request.conversation_id:
+            return source_failure("not_available", "not_found", request)
+        args = args.model_copy(update={"conversation_id": request.conversation_id})
+        assert args.conversation_id is not None
+        recipient = await session.scalar(
+            select(Conversation.contact_id)
+            .join(Contact, Contact.id == Conversation.contact_id)
+            .where(
+                Conversation.account_id == ctx.account_id,
+                Contact.account_id == ctx.account_id,
+                Contact.is_bot.is_(False),
+                Conversation.id == args.conversation_id,
+                Contact.id == request.contact_id,
+            )
+        )
+        if recipient is None:
+            return source_failure("not_available", "not_found", request)
         if (prior := await _prior(session, ctx, request, args)) is not None:
             return prior
         existing: Action | None = None
@@ -378,14 +402,6 @@ async def propose_owner_message_tool(
             )
         ) is not None:
             return failure
-        recipient = await session.scalar(
-            select(Conversation.contact_id).where(
-                Conversation.account_id == ctx.account_id,
-                Conversation.id == args.conversation_id,
-            )
-        )
-        if request.conversation_id != args.conversation_id or recipient != request.contact_id:
-            return source_failure("not_available", "not_found", request)
         if (failure := _body_error(request, args.text)) is not None:
             return failure
         if args.mode == "new_message" and args.answered_message_id is not None:
@@ -688,6 +704,7 @@ PROPOSE_OWNER_MESSAGE = ToolDefinition(
         "standalone composition without a content brief ask what to write. A reply needs "
         "its selected retained/read target, without a separate brief. An action=null result "
         "created no card. Conflicts applied nothing; use an explicit version-bound revision. "
+        "Use the request's bound recipient (conversation_id=null); a different id is rejected. "
         "Stored text still needs "
         "the owner's approval tap; presentation is a separate fact. Never claim sent."
     ),

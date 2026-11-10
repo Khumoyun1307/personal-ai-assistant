@@ -18,6 +18,8 @@ from sqlalchemy import select, text
 
 from assistant.accounts.models import ControlTurn, PendingInput
 from assistant.accounts.service import AI_PROCESSORS
+from assistant.actions.request_models import OwnerRequest
+from assistant.actions.requests import open_request
 from assistant.agent import owner_texts
 from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.agent.models import AgentRun, AgentRunStep, ToolConfirmation
@@ -69,6 +71,7 @@ from tests.integration.business_env import (
     onboard,
     private_message,
 )
+from tests.integration.test_owner_requests import source
 
 pytestmark = pytest.mark.integration
 
@@ -407,7 +410,7 @@ async def test_another_accounts_ids_are_not_found(migrated_url: str) -> None:
         [candidate] = resolved["candidates"]
         assert candidate["conversation_id"] == ours
         assert candidate["contact_id"] != their_contact
-        assert "note" not in resolved
+        assert "without asking" in resolved["note"]
 
 
 @pytest.mark.parametrize("length", [1200, 1800])
@@ -987,7 +990,7 @@ async def test_pf03_a_real_match_is_not_marked_weak(env: Env) -> None:
 
     [candidate] = found["candidates"]
     assert (candidate["match"], candidate["confidence"]) == ("exact", "match")
-    assert "note" not in found
+    assert "without asking" in found["note"]
 
 
 async def test_unique_whole_token_match_excludes_unrelated_weak_guess(env: Env) -> None:
@@ -1024,7 +1027,7 @@ async def test_unique_whole_token_match_excludes_unrelated_weak_guess(env: Env) 
     [candidate] = found["candidates"]
     assert "Ziyo Kamola" in candidate["name"]
     assert candidate["confidence"] == "match"
-    assert "note" not in found
+    assert "without asking" in found["note"]
     assert (await run_row(env)).tainted is True
 
 
@@ -1063,6 +1066,57 @@ async def test_typo_only_is_a_weak_suggestion_to_confirm(env: Env) -> None:
     assert candidate["match"] == "fuzzy"
     assert candidate["confidence"] == "weak"
     assert "Ask the owner" in found["note"]
+
+
+@pytest.mark.parametrize(
+    ("query", "verdict", "selected"),
+    [
+        ("Kamola", "unique_strong", True),
+        ("Kamloa", "weak_only", False),
+        ("Zebiniso Olimova", "none", False),
+    ],
+)
+async def test_h5_resolution_binds_only_a_unique_real_match(
+    env: Env, query: str, verdict: str, selected: bool
+) -> None:
+    conversation = await seed(env)
+    original = await ask(env, "Synthetic message for Kamola")
+    async with env.factory() as session, session.begin():
+        turn = await session.get(ControlTurn, original)
+        assert turn is not None
+        request = await open_request(
+            session,
+            account_id=turn.account_id,
+            turn_id=turn.id,
+            operation="compose",
+            sources=(source(turn.id, turn.text or "", purpose="instruction"),),
+            now=env.clock.now(),
+        )
+    fake = FakeLLM(
+        tool_response(("resolve", "resolve_contact", args(name=query, limit=None))),
+        text_response("Synthetic resolution receipt."),
+    )
+    await runtime(env, fake, FakeChannel()).run(await ask(env, "Choose the recipient"))
+    [found] = results(fake.requests[1])
+    assert found["verdict"] == verdict
+    assert found["request_binding"]["status"] == "applied"
+    async with env.factory() as session:
+        row = await session.get(OwnerRequest, request.request_id)
+        assert row is not None
+        assert row.conversation_id == (conversation if selected else None)
+        assert row.selection_basis == ("unique_strong" if selected else None)
+        if verdict == "weak_only":
+            assert row.resolution_candidates is not None
+            assert row.resolution_candidates["candidates"][0]["conversation_id"] == conversation
+        else:
+            assert row.resolution_candidates is None
+    assert (
+        await one_id(
+            env, "SELECT count(*) FROM app.contacts WHERE account_id = :a", a=turn.account_id
+        )
+        == 1
+    )
+    assert (await run_row(env)).tainted is True
 
 
 # ------------------------------------------------------------ B1 widening, B3 citations

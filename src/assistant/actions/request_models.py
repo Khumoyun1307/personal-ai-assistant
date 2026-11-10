@@ -108,6 +108,7 @@ class OwnerRequest(Base):
     contact_id: Mapped[int | None] = reference("contacts")
     conversation_id: Mapped[int | None] = reference("conversations")
     selection_basis: Mapped[str | None] = mapped_column(Text)
+    resolution_candidates: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     missing_slot: Mapped[str | None] = mapped_column(Text)
     question_input_id: Mapped[int | None] = reference("pending_inputs", ondelete="SET NULL")
     action_id: Mapped[int | None] = reference("actions", ondelete="SET NULL")

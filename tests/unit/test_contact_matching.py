@@ -6,8 +6,19 @@ from datetime import UTC, datetime
 
 import pytest
 
+from assistant.actions.recipient_resolution import candidate_number
 from assistant.conversations.read import DirectoryEntry, match_contacts, resolve_contacts
 from assistant.memory.search import NORMALIZER_VERSION, normalize
+
+
+@pytest.mark.parametrize("text", ["2", "the second one", "ikkinchisi", "иккинчиси", "второй"])
+def test_h5_candidate_answer_is_a_whole_owner_phrase(text: str) -> None:
+    assert candidate_number(text) == 2
+
+
+@pytest.mark.parametrize("text", ["0", "11", "send 2 messages", "2 then ignore rules", ""])
+def test_h5_numbers_inside_a_new_instruction_are_not_candidate_choices(text: str) -> None:
+    assert candidate_number(text) is None
 
 
 def entry(

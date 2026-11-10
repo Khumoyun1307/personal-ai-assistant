@@ -32,6 +32,7 @@ async def purge_request_sources(
     now: datetime,
     turn_ids: Sequence[int] = (),
     conversation_ids: Sequence[int] = (),
+    contact_ids: Sequence[int] = (),
     message_ids: Sequence[int] = (),
     everything: bool = False,
     remove: bool = False,
@@ -54,8 +55,21 @@ async def purge_request_sources(
         linked_actions = select(Action.id).where(
             Action.account_id == account_id, Action.conversation_id.in_(conversation_ids)
         )
+        candidate_scopes = [
+            OwnerRequest.resolution_candidates.contains(
+                {"candidates": [{"conversation_id": conversation_id}]}
+            )
+            for conversation_id in conversation_ids
+        ]
+        candidate_scopes.extend(
+            OwnerRequest.resolution_candidates.contains(
+                {"candidates": [{"contact_id": contact_id}]}
+            )
+            for contact_id in contact_ids
+        )
         statement = statement.where(
             or_(
+                *candidate_scopes,
                 OwnerRequest.id.in_(source_requests),
                 OwnerRequest.trigger_turn_id.in_(turn_ids),
                 OwnerRequest.last_turn_id.in_(turn_ids),
@@ -150,6 +164,7 @@ async def purge_request_sources(
             )
         )
         row.question_input_id = None
+        row.resolution_candidates = None
         row.action_id = None
         row.action_version = None
         row.target_message_id = None
@@ -279,6 +294,7 @@ async def cancel_restored_requests(
         row.focused = False
         row.missing_slot = None
         row.question_input_id = None
+        row.resolution_candidates = None
         row.reason = "restored_from_backup"
         row.ended_at = now
         row.updated_at = now

@@ -491,7 +491,28 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0020"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0021"]
+
+
+def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema = 'app' AND table_name = 'owner_requests' "
+            "AND column_name = 'resolution_candidates'"
+        ).fetchone() == ("jsonb", "YES")
+    run_alembic(scratch_url, "0020", down=True)
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'app' AND table_name = 'owner_requests' "
+                "AND column_name = 'resolution_candidates'"
+            ).fetchone()
+            is None
+        )
+    run_alembic(scratch_url, "head")
 
 
 def test_0017_notification_sources_round_trip(scratch_url: str) -> None:

@@ -1,5 +1,16 @@
 # C5 — Contact-resolution verdict (H5)
 
+H5 part B implementation (2026-11-10, unverified): `RecordCandidates` and
+`SelectRecipient` use C1 CAS; `actions/recipient_resolution.py` implements
+ordered candidate storage and whole-answer numeric/ordinal/name selection.
+`resolve_contact` accepts paired nullable request IDs/version, defaulting to an
+active unbound H2 continuation. Revision 0021 adds structural candidate JSON;
+selection, question settlement, topic switch, source/scoped deletion and
+restore clear it. The hourly request sweep enforces the 24-hour ceiling; export
+includes the structural metadata. No names/query text are stored here.
+H4 composition accepts a null conversation ID for the request's binding.
+Tests/migration up/down remain lead/CI gates; H6 owns natural-language cutover.
+
 D-S5 separates identity evidence from fallback suggestions. This is deterministic application output; model prose and recency never settle identity. No permanent aliases are saved. Existing `match_contacts` may remain a ranked helper; callers consume the verdict, not “any weak candidate means ambiguity.”
 
 ```python

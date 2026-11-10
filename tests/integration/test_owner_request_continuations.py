@@ -9,8 +9,10 @@ from sqlalchemy import delete, select
 
 from assistant.accounts.models import AuditLogEntry, ControlTurn, PendingInput
 from assistant.actions.models import Action
+from assistant.actions.recipient_resolution import remember_candidates
 from assistant.actions.request_models import OwnerRequest
 from assistant.actions.requests import (
+    CandidatePair,
     LinkAction,
     SetState,
     SourceUnavailable,
@@ -29,6 +31,214 @@ from tests.integration.business_env import Env
 from tests.integration.test_owner_requests import seed_request, source
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.parametrize(
+    "text", ["2", "the second one", "ikkinchisi", "иккинчиси", "вторая", "Kamola Ziyo"]
+)
+async def test_h5_numeric_choice_survives_restart(env: Env, text: str) -> None:
+    account, conversation, _, request_id = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        chat = await session.get(Conversation, conversation)
+        assert chat is not None
+        contact = await session.get(Contact, chat.contact_id)
+        assert contact is not None
+        contact.display_name = "Kamola Ziyo"
+        other = Contact(account_id=account, telegram_user_id=990001, display_name="Kamola Safo")
+        session.add(other)
+        await session.flush()
+        other_chat = Conversation(
+            account_id=account, contact_id=other.id, business_chat_id=other.telegram_user_id
+        )
+        session.add(other_chat)
+        await session.flush()
+        result = await remember_candidates(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=1,
+            candidates=(
+                CandidatePair(contact_id=other.id, conversation_id=other_chat.id),
+                CandidatePair(contact_id=chat.contact_id, conversation_id=chat.id),
+            ),
+            now=env.clock.now(),
+        )
+        assert result.status == "applied"
+    turn_id = await answer(env, account)
+    async with env.factory() as session, session.begin():
+        turn = await session.get(ControlTurn, turn_id)
+        assert turn is not None
+        turn.text = text
+        loaded = await load_owner_continuation(
+            session,
+            account_id=account,
+            turn=turn,
+            now=env.clock.now(),
+            managed_allowed=True,
+        )
+        assert loaded.request is not None
+        assert loaded.request.conversation_id == conversation
+    async with env.factory() as session:
+        row = await session.get(OwnerRequest, request_id)
+        assert row is not None
+        assert row.selection_basis == "owner_choice"
+        assert row.resolution_candidates is None
+    later_id = await answer(env, account)
+    async with env.factory() as session, session.begin():
+        later = await session.get(ControlTurn, later_id)
+        assert later is not None
+        later.text = "Keep it short"
+        loaded = await load_owner_continuation(
+            session,
+            account_id=account,
+            turn=later,
+            now=env.clock.now(),
+            managed_allowed=True,
+        )
+        assert loaded.request is not None
+        assert loaded.request.conversation_id == conversation
+        assert loaded.sources[0].text == "Synthetic X1 — Oʻzbek 🙂"
+
+
+async def test_h5_candidate_ids_are_scoped_and_cas_bound(env: Env) -> None:
+    account, conversation, _, request_id = await seed_request(env)
+    _, foreign_chat, _, _ = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        chat = await session.get(Conversation, conversation)
+        foreign = await session.get(Conversation, foreign_chat)
+        assert chat is not None
+        assert foreign is not None
+        for candidate in (
+            CandidatePair(contact_id=foreign.contact_id, conversation_id=foreign.id),
+            CandidatePair(contact_id=chat.contact_id, conversation_id=foreign.id),
+        ):
+            result = await remember_candidates(
+                session,
+                account_id=account,
+                request_id=request_id,
+                expected_version=1,
+                candidates=(candidate,),
+                now=env.clock.now(),
+            )
+            assert result.status == "unavailable"
+        result = await remember_candidates(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=99,
+            candidates=(CandidatePair(contact_id=chat.contact_id, conversation_id=chat.id),),
+            now=env.clock.now(),
+        )
+        assert result.status == "stale"
+        row = await session.get(OwnerRequest, request_id)
+        assert row is not None
+        assert row.resolution_candidates is None
+        assert row.contact_id is None
+
+
+@pytest.mark.parametrize("guard", ["forwarded", "managed_off", "out_of_range"])
+async def test_h5_candidate_answer_needs_owner_and_managed_access(env: Env, guard: str) -> None:
+    account, conversation, _, request_id = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        chat = await session.get(Conversation, conversation)
+        assert chat is not None
+        result = await remember_candidates(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=1,
+            candidates=(CandidatePair(contact_id=chat.contact_id, conversation_id=chat.id),),
+            now=env.clock.now(),
+        )
+        assert result.status == "applied"
+    turn_id = await answer(env, account)
+    async with env.factory() as session, session.begin():
+        turn = await session.get(ControlTurn, turn_id)
+        assert turn is not None
+        turn.text = "2" if guard == "out_of_range" else "1"
+        turn.third_party = guard == "forwarded"
+        loaded = await load_owner_continuation(
+            session,
+            account_id=account,
+            turn=turn,
+            now=env.clock.now(),
+            managed_allowed=guard != "managed_off",
+        )
+        assert loaded.request is not None
+        assert loaded.request.contact_id is None
+
+
+async def test_h5_scoped_deletion_erases_unselected_candidate_metadata(env: Env) -> None:
+    account, conversation, _, request_id = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        chat = await session.get(Conversation, conversation)
+        assert chat is not None
+        result = await remember_candidates(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=1,
+            candidates=(CandidatePair(contact_id=chat.contact_id, conversation_id=chat.id),),
+            now=env.clock.now(),
+        )
+        assert result.status == "applied"
+    async with env.factory() as session, session.begin():
+        await delete_conversation_data(
+            session,
+            account_id=account,
+            conversation_id=conversation,
+            actor="owner",
+            clock=env.clock,
+        )
+    async with env.factory() as session:
+        assert await session.get(OwnerRequest, request_id) is None
+
+
+async def test_h5_unrelated_request_does_not_inherit_candidates(env: Env) -> None:
+    account, conversation, _, request_id = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        chat = await session.get(Conversation, conversation)
+        assert chat is not None
+        saved = await remember_candidates(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=1,
+            candidates=(CandidatePair(contact_id=chat.contact_id, conversation_id=chat.id),),
+            now=env.clock.now(),
+        )
+        assert saved.status == "applied"
+    new_turn = await answer(env, account)
+    async with env.factory() as session, session.begin():
+        turn = await session.get(ControlTurn, new_turn)
+        assert turn is not None
+        new = await open_request(
+            session,
+            account_id=account,
+            turn_id=turn.id,
+            operation="compose",
+            sources=(source(turn.id, turn.text or "", purpose="instruction"),),
+            now=env.clock.now(),
+        )
+        assert new.contact_id is None
+        old = await session.get(OwnerRequest, request_id)
+        assert old is not None
+        assert old.resolution_candidates is None
+    answer_id = await answer(env, account)
+    async with env.factory() as session, session.begin():
+        turn = await session.get(ControlTurn, answer_id)
+        assert turn is not None
+        turn.text = "1"
+        loaded = await load_owner_continuation(
+            session,
+            account_id=account,
+            turn=turn,
+            now=env.clock.now(),
+            managed_allowed=True,
+        )
+        assert loaded.request is not None
+        assert loaded.request.request_id == new.request_id
+        assert loaded.request.contact_id is None
 
 
 async def answer(env: Env, account_id: int, *, reply: int | None = None) -> int:
