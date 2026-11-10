@@ -33,7 +33,7 @@ from assistant.agent.ports import ControlChannel
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime
 from assistant.agent.summarize import SummarizeConfig, Summarizer
 from assistant.agent.tools.registry import ToolServices, default_registry
-from assistant.agent.triage import TriageConfig, Triager
+from assistant.agent.triage import RESOLUTION_EVIDENCE_FLAG, TriageConfig, Triager
 from assistant.automation.monitor_trigger import MonitorIngestionListener
 from assistant.automation.monitors import MON_CARD, MonitorMatchRenderer
 from assistant.automation.schedules import DIGEST_FLAG
@@ -492,6 +492,7 @@ def _wire_m05(
                 config=TriageConfig(
                     model=settings.model_routes.model_for("triage"),
                     effort=settings.llm_triage_effort,
+                    resolution_evidence=RESOLUTION_EVIDENCE_FLAG in settings.feature_flags,
                     monthly_budget_usd=settings.llm_monthly_budget_usd,
                 ),
                 store=store,

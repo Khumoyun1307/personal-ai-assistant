@@ -14,6 +14,7 @@ Every statement is scoped by account; audit rows carry ids and codes only.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,6 +25,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry
+from assistant.conversations.models import Message
 from assistant.core.clock import Clock
 from assistant.inbox.models import Task
 
@@ -47,6 +49,116 @@ _CLOSED_STATUS = {
 
 EVENT_TASK_CREATED = "task_created"
 EVENT_TASK_CLOSED = "task_closed"
+_RESOLUTION_DETAILS = "task_resolution_evidence_v1"
+
+
+@dataclass(frozen=True, slots=True)
+class ResolutionEvidence:
+    task_id: int
+    evidence_message_ids: tuple[int, ...]
+
+
+def resolution_ids(details: str | None) -> tuple[int, ...]:
+    """Read references from the text envelope; legacy details remain readable.
+
+    Content-free references survive message content retention as tombstone ids.
+    Plain text and owner-governance snapshots do not represent resolutions.
+    """
+    if not details:
+        return ()
+    try:
+        saved = json.loads(details)
+    except ValueError:
+        return ()
+    if not isinstance(saved, dict) or saved.get("type") != _RESOLUTION_DETAILS:
+        return ()
+    values = saved.get("resolution_evidence_message_ids", [])
+    if not isinstance(values, list):
+        return ()
+    return tuple(value for value in values if type(value) is int and value > 0)
+
+
+async def close_with_evidence(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    conversation_id: int,
+    resolution: ResolutionEvidence,
+    shown_new_ids: Collection[int],
+    suspicious: bool,
+    clock: Clock,
+) -> bool:
+    """Re-check references under the caller's conversation lock, before closing.
+
+    A source-backed task starts at its newest source's sent time/id; a task
+    without sources starts at creation. Receipt time is not message chronology.
+    No content is copied and retention is never extended.
+    """
+    evidence_ids = set(resolution.evidence_message_ids)
+    if suspicious or not evidence_ids or not evidence_ids.issubset(shown_new_ids):
+        return False
+    task = await session.scalar(
+        select(Task).where(
+            Task.account_id == account_id,
+            Task.conversation_id == conversation_id,
+            Task.id == resolution.task_id,
+            Task.status == "open",
+        )
+    )
+    if task is None:
+        return False
+    sources = set(task.source_message_ids or ())
+    rows = list(
+        (
+            await session.scalars(
+                select(Message)
+                .where(
+                    Message.account_id == account_id,
+                    Message.conversation_id == conversation_id,
+                    Message.id.in_(sources | evidence_ids),
+                )
+                .order_by(Message.id)
+                .with_for_update()
+            )
+        ).all()
+    )
+    by_id = {row.id: row for row in rows}
+    if not (sources | evidence_ids).issubset(by_id):
+        return False
+    source_times = [by_id[source].sent_at for source in sources]
+    if any(moment is None for moment in source_times):
+        return False
+    start = task.created_at
+    if sources:
+        start = max(moment for moment in source_times if moment is not None)
+    for evidence_id in evidence_ids:
+        message = by_id[evidence_id]
+        if (
+            message.deleted_at is not None
+            or message.purged_at is not None
+            or message.sent_at is None
+            or message.sent_at <= start
+            or evidence_id <= max(sources, default=0)
+            or message.direction not in {"contact", "owner_manual"}
+            or (message.text is None and message.media is None)
+        ):
+            return False
+    closed = await close(
+        session,
+        account_id=account_id,
+        task_id=task.id,
+        reason=RESOLVED_BY_TRIAGE,
+        clock=clock,
+    )
+    if closed:
+        task.details = json.dumps(
+            {
+                "type": _RESOLUTION_DETAILS,
+                "resolution_evidence_message_ids": sorted(evidence_ids),
+                "original_details": task.details,
+            }
+        )
+    return closed
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +178,7 @@ class TaskView:
     closed_reason: str | None = None
     #: Postgres row revision, captured with the triage read, never sent to the model.
     revision: str | None = None
+    resolution_evidence_message_ids: tuple[int, ...] = ()
 
 
 def _view(row: Task, *, revision: str | None = None) -> TaskView:
@@ -81,6 +194,7 @@ def _view(row: Task, *, revision: str | None = None) -> TaskView:
         closed_at=row.closed_at,
         closed_reason=row.closed_reason,
         revision=revision,
+        resolution_evidence_message_ids=resolution_ids(row.details),
     )
 
 

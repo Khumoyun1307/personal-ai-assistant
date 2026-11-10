@@ -66,6 +66,8 @@ ALL_FLAGS = READ_FLAGS | {NOTE_FLAG} | PROPOSE_FLAGS | AUTONOMY_FLAGS | MONITOR_
 DRAFT_TOOL_FLAGS = frozenset({"tool.revise_draft", "tool.get_draft"})
 #: I11 is registered but defaults off, pending the stabilization rollout.
 TASK_FLAGS = frozenset({"tool.list_tasks", "tool.update_task"})
+#: Independent background release gate; never enabled by the tool catalogues.
+TRIAGE_RESOLUTION_FLAGS = frozenset({"triage.resolution_evidence"})
 #: The S03.3 memory, preference and mode tools (not in ALL_FLAGS, so the
 #: S03.1/S03.2 tests keep the tool offer they were written against).
 MEMORY_FLAGS = frozenset(

@@ -88,7 +88,9 @@ ACTIVE: dict[str, str] = {
     # commitments and questions citing their source message, resolved open
     # tasks, escalation category, short reasons; contact text is data, an
     # instruction to the assistant is `suspicious`; no tools.
-    "triage": "v1",
+    # v2 (I1, D-S9): evidence-backed resolutions. Runtime keeps v1 unless
+    # triage.resolution_evidence is enabled after the owner-approved eval.
+    "triage": "v2",
     # v1 (S05.4): one chat's new contact messages against the owner's
     # semantic monitors (semantic, decision_requested, urgent) → one verdict
     # per listed monitor citing the matching new messages; unsure is no

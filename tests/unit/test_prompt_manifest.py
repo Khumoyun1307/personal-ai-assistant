@@ -13,7 +13,7 @@ from assistant.agent.draft_owner_schemas import OwnerDraftResult, OwnerRevisionR
 from assistant.agent.draft_schemas import DraftResult
 from assistant.agent.monitor_schemas import MonitorVerdicts
 from assistant.agent.schemas import output_model_for
-from assistant.agent.triage_schemas import TriageResult
+from assistant.agent.triage_schemas import TriageResultV2
 
 ROOT = Path(__file__).resolve().parents[2]
 # Retain the initial inventory even when a version loses its last static caller.
@@ -103,7 +103,7 @@ def test_manifest_schema_pairings_match_runtime_models() -> None:
     expected = {
         "draft_reply": [DraftResult],
         "draft_owner": [OwnerDraftResult, OwnerRevisionResult],
-        "triage": [TriageResult],
+        "triage": [TriageResultV2],
         "evaluate_monitor": [MonitorVerdicts],
     }
     for name, models in expected.items():

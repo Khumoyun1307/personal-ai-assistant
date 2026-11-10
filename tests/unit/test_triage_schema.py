@@ -13,6 +13,7 @@ from assistant.agent.triage_schemas import (
     MAX_REASONS,
     MAX_TEXT,
     TriageResult,
+    TriageResultV2,
     parse_owner_local,
     sanitize_triage,
 )
@@ -82,6 +83,23 @@ def test_the_triage_schema_is_plain_strict_with_language_first() -> None:
         "is_decision",
     ]
     assert schema["properties"]["urgency"]["enum"] == ["low", "normal", "high", "urgent"]
+
+
+def test_v2_requires_resolution_evidence_without_changing_v1() -> None:
+    schema = TriageResultV2.model_json_schema()
+    assert "resolved_task_ids" not in schema["properties"]
+    assert "resolutions" in schema["required"]
+    assert not _schema_keys(schema) & {"format", "minLength", "maxLength", "pattern", "default"}
+    for node in [schema, *schema.get("$defs", {}).values()]:
+        assert node["additionalProperties"] is False
+        assert sorted(node["required"]) == sorted(node["properties"])
+    values = result().model_dump()
+    values.pop("resolved_task_ids")
+    values["resolutions"] = [{"task_id": 7, "evidence_message_ids": [12, 12, 13]}]
+    cleaned = sanitize_triage(TriageResultV2.model_validate(values), timezone="UTC")
+    assert cleaned.resolved_task_ids == (7,)
+    assert cleaned.resolutions[0].evidence_message_ids == (12, 13)
+    assert "resolved_task_ids" in TriageResult.model_json_schema()["properties"]
 
 
 def test_due_and_deadline_parse_in_the_owner_timezone_or_become_null() -> None:

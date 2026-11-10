@@ -155,11 +155,17 @@ def build_triage(
             )
         )
     if open_tasks:
+        resolution_field = "resolutions.task_id" if prompt.version == "v2" else "resolved_task_ids"
         lines = [
-            "Open tasks of this chat (the only ids `resolved_task_ids` and "
+            f"Open tasks of this chat (the only ids `{resolution_field}` and "
             "`existing_task_id` may use):"
         ]
-        lines += [task_line(task, zone) for task in open_tasks]
+        for task in open_tasks:
+            line = task_line(task, zone)
+            if prompt.version == "v2":
+                sources = ", ".join(str(value) for value in task.source_message_ids) or "none"
+                line += f" (source message ids: {sources}; created {_local(task.created_at, zone)})"
+            lines.append(line)
         items.append(TextItem("user", "\n".join(lines), Provenance.MANAGED))
     else:
         items.append(TextItem("user", "Open tasks of this chat: none.", Provenance.OWNER_CONTROL))

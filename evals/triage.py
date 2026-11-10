@@ -766,7 +766,9 @@ class TriageTarget:
                 session_factory=self._database,
                 llm=context.llm,
                 clock=clock,
-                config=TriageConfig(model=context.model, effort=context.effort),
+                config=TriageConfig(
+                    model=context.model, effort=context.effort, resolution_evidence=True
+                ),
                 store=TriageRepository(clock=clock, scheduler=None),
             )
             outcome = await triager.triage(loaded.conversation_id)

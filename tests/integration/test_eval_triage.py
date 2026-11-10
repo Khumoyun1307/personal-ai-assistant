@@ -155,7 +155,13 @@ class TriageOracle(FakeLLM):
                 for by, source in answer.commitments
             ],
             "open_questions": [],
-            "resolved_task_ids": [task_ids[task] for task in answer.close],
+            "resolutions": [
+                {
+                    "task_id": task_ids[task],
+                    "evidence_message_ids": [message_ids[current.burst[-1].id]],
+                }
+                for task in answer.close
+            ],
             "escalation_category": "suspicious" if answer.suspicious else "needs_owner",
             "reasons": ["The contact asks for a decision about the contract today"],
             "script": "latin",

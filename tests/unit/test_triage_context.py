@@ -113,6 +113,19 @@ def test_empty_blocks_are_left_out_but_open_tasks_say_none() -> None:
     assert texts[1] == "Open tasks of this chat: none."
 
 
+def test_evidence_context_exposes_sources_only_for_v2() -> None:
+    (current,) = [text for text in build() if text.startswith("Open tasks of this chat")]
+    assert "resolutions.task_id" in current
+    assert "source message ids: 1" in current
+    (legacy,) = [
+        text
+        for text in build(prompt=prompt_registry.load("triage", "v1"))
+        if text.startswith("Open tasks of this chat")
+    ]
+    assert "resolved_task_ids" in legacy
+    assert "source message ids:" not in legacy
+
+
 def test_omitted_new_messages_are_counted_in_the_burst_header() -> None:
     (burst,) = [t for t in build(omitted=7) if t.startswith("New messages to triage:")]
     assert burst.splitlines()[0] == (
