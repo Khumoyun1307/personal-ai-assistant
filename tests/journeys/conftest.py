@@ -44,9 +44,16 @@ def isolated_journey_ids(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-async def journey(migrated_url: str, request: pytest.FixtureRequest) -> AsyncIterator[Journey]:
-    async with m04_environment(migrated_url, flags=JOURNEY_FLAGS) as scenario:
-        driver = Journey(scenario, case_id=request.node.nodeid)
+def journey_flags() -> frozenset[str]:
+    return JOURNEY_FLAGS
+
+
+@pytest.fixture
+async def journey(
+    migrated_url: str, request: pytest.FixtureRequest, journey_flags: frozenset[str]
+) -> AsyncIterator[Journey]:
+    async with m04_environment(migrated_url, flags=journey_flags) as scenario:
+        driver = Journey(scenario, case_id=request.node.nodeid, flags=journey_flags)
         scenario.env.sender.on_business_call = driver.observe_business_call
         await driver.directory("k", "Kamola Ziyo")
         yield driver
@@ -71,7 +78,7 @@ async def background(
             scenario.account_id,
             scenario.conversation_id,
         )
-        journey = Journey(driver, case_id=request.node.nodeid)
+        journey = Journey(driver, case_id=request.node.nodeid, flags=M05_FLAGS | JOURNEY_FLAGS)
         scenario.env.sender.on_business_call = journey.observe_business_call
         await journey.directory("k", "Kamola Ziyo")
         yield scenario, journey

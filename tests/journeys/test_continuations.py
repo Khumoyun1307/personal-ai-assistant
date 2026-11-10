@@ -116,7 +116,6 @@ async def test_j25_advice_and_list_edit_do_not_create_message_artifacts(
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-@pytest.mark.xfail(strict=True, reason="needs H6", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 async def test_h6_chat_cutover_offers_main_writer_and_retires_nested_writer(
     journey: Journey, locale: Locale
@@ -128,4 +127,8 @@ async def test_h6_chat_cutover_offers_main_writer_and_retires_nested_writer(
     offered = {tool.name for tool in request.tools}
     assert "propose_owner_message" in offered
     assert "propose_reply" not in offered
+    revision = next(tool for tool in request.tools if tool.name == "revise_draft")
+    assert "expected_version" in revision.parameters["properties"]
+    assert "literal" not in revision.parameters["properties"]
+    await j.check(CountCheck(artifact="nested_writers", count=0))
     await j.check(CountCheck(artifact="business_attempts", count=0))
