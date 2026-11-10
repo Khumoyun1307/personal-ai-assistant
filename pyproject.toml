@@ -94,6 +94,9 @@ allowed-confusables = ["ʻ", "ʼ", "‘", "’"]
 "tests/integration/test_eval_retrieval.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/integration/test_message_search.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/integration/test_conversation_tools.py" = ["RUF001", "RUF002", "RUF003"]
+# Stabilization journey transcripts deliberately mix Uzbek/Russian scripts
+# with source codes such as X1. These are synthetic language fixtures.
+"tests/journeys/*.py" = ["RUF001", "RUF002", "RUF003"]
 # Untrusted delimiting lists the bracket lookalikes it neutralises.
 "src/assistant/agent/untrusted.py" = ["RUF001"]
 "tests/unit/test_untrusted.py" = ["RUF001"]
@@ -160,5 +163,6 @@ asyncio_mode = "auto"
 addopts = "-q --strict-markers --strict-config"
 markers = [
     "integration: requires a real PostgreSQL (TEST_DATABASE_URL)",
+    "journey: deterministic multi-turn stabilization acceptance with fake external transports",
 ]
 filterwarnings = ["error"]

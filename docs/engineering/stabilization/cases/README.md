@@ -2,6 +2,8 @@
 
 All names, text, codes and events here are newly authored synthetic data. These cases model the **reported patterns**, not recovered private incident transcripts or proven production trajectories. Execute actual successive owner turns against persistent synthetic state; seeded history plus one final turn does not satisfy the core gate.
 
+The deterministic A1 implementation is in [tests/journeys](../../../../tests/journeys/README.md). It runs with normal pytest/CI sharding, using the existing production-wired scenario fixtures. Pending contracts carry strict expected-failure markers; the README maps case families and dependencies and distinguishes fixture/runtime restart from operational A4 recovery. Tests, lint and formatting remain unrun in the restricted implementation worktree; this link records implementation, not acceptance or model-quality evidence.
+
 | File | Use |
 |---|---|
 | [core-incidents.md](core-incidents.md) | Four incident-pattern families × uz-Latn, uz-Cyrl, ru, en; ≥3 repeated behavioral trials per locale/family |

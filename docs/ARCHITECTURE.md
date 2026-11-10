@@ -188,7 +188,7 @@ src/assistant/
   privacy/                 # DOMAIN: retention sweeper, deletion, export
   observability/           # logging setup, redaction, heartbeat, status aggregation
 tests/
-  unit/  integration/  contract/  scenarios/  fakes/  fixtures/
+  unit/  integration/  contract/  scenarios/  journeys/  fakes/  fixtures/
 evals/                     # synthetic datasets + runners (not part of CI by default)
 tools/probe/               # throwaway M00 probe (not packaged; never imported by src/)
 spikes/                    # throwaway M00 stack spikes (not packaged; never imported by src/)
@@ -1376,6 +1376,8 @@ A restore rewinds the database by up to 24 h. Actions sent after the dump come b
 | **Manual live tests** | Real Telegram behaviour per milestone checklists | Owner + second account (+ friends) | Per milestone |
 
 Mandatory regression tests: see IMPLEMENTATION_PLAN §10 (single list).
+
+**Stabilization A1 (2026-11-09):** [synthetic conversation journeys](../tests/journeys/README.md) reuse the real inbox/runtime/tools/proposal/card/policy/job wiring with PostgreSQL and fake external transports. They execute successive owner turns and explicit event barriers, and check exact recipient/body/version/state, source/request linkage, approval and send attempts. Current-behavior regressions are unmarked; pending H/I contracts use strict expected failures so an unexpected pass requires removing the marker. The `journey` marker is included by default and its files receive database weight in CI shards. JUnit properties carry synthetic manifest hashes and structural linkage. Scripted fakes establish deterministic plumbing only; behavioral quality, owner language review and operational A4 evidence remain separate. No product schema, prompt, route or stored data class is added by A1. Validation is unrun in the restricted worktree.
 
 **I24 privilege coverage:** `tests/unit/test_production_privileges.py` checks exact Compose service env-file mapping and guards against runtime schema installation; `test_release_deploy.py` checks missing-role refusal before app stop and pre-I24 rollback refusal. `tests/integration/test_production_privileges.py` uses a disposable dev/CI PostgreSQL database to check idempotent ownership upgrade, non-superuser migration access, app DML/identity sequences and CREATE/DROP/role-escalation denial, backup reads/write denial, default grants and a real procrastinate defer/worker cycle with the app role. It covers primary-key/unique indexes alongside identity/serial sequences, including missing sequence grants; sequence privilege calls use a `CASE` guard because PostgreSQL may reorder `WHERE` predicates. `deploy/smoke/push-env-smoke.sh` checks every service file's exact key inventory, mode, password generation/reuse and names-only logs from synthetic inputs, using a deterministic shell stub for the password generator without requiring host Python. On failure it prints the renderer log before cleaning up temporary inputs. The backup Compose smoke test exercises a fresh role setup, migrations as the migration role, an actual PostgreSQL 18 dump as the backup role and restore as the migration role. No live APIs or real content are used. These checks require the lead's container/CI run; no successful execution is claimed by implementation alone.
 
