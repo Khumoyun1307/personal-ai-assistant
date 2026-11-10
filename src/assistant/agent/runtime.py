@@ -49,7 +49,12 @@ from assistant.actions.request_models import OwnerRequest
 from assistant.actions.requests import OwnerContinuation
 from assistant.agent import owner_texts, prompt_registry
 from assistant.agent.citations import apply_citations
-from assistant.agent.context import OWNER_HISTORY_TURNS, build_owner_request
+from assistant.agent.context import (
+    OWNER_HISTORY_TURNS,
+    ContextPart,
+    build_owner_request,
+    carries_third_party,
+)
 from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.agent.models import AgentRun
 from assistant.agent.persistence import (
@@ -194,9 +199,8 @@ class _RunState:
     used_managed: bool = False
     #: Third-party text is in the context (§7.1); persisted on `agent_runs`.
     tainted: bool = False
-    #: ...through this run's OWN inputs (the current turn or a tool result),
-    #: not only inherited from history: only then does the reply pass the
-    #: taint on to later runs (D56).
+    #: Diagnostic only: the current turn or a tool result carried such text.
+    #: from_tainted_run remains authoritative for derived prose (D-S3).
     directly_tainted: bool = False
     #: Conversations/contacts the tool results drew on; written to the reply turn.
     refs: ToolRefs = field(default_factory=ToolRefs)
@@ -215,12 +219,12 @@ class _RunState:
     continuation: OwnerContinuation | None = None
 
 
-def _managed_refs(turns: list[ControlTurn]) -> ToolRefs:
-    """The conversations/contacts the managed turns in the context came from."""
+def _managed_refs(parts: tuple[ContextPart, ...]) -> ToolRefs:
+    """Deletion refs from supplied managed parts, never omitted history."""
     refs = ToolRefs()
-    for turn in turns:
-        if turn.contains_managed:
-            refs = refs | ToolRefs.from_json(turn.refs)
+    for part in parts:
+        if part.managed:
+            refs = refs | ToolRefs(frozenset(part.conversation_ids), frozenset(part.contact_ids))
     return refs
 
 
@@ -416,11 +420,6 @@ class OwnerRequestRuntime:
                 now=self._clock.now(),
                 managed_allowed=managed_ok,
             )
-            source_turns: list[ControlTurn] = []
-            for source in continuation.sources:
-                source_turn = await ControlTurnRepository(session, account_id).get(source.turn_id)
-                if source_turn is not None:
-                    source_turns.append(source_turn)
             context = build_owner_request(
                 prompt=prompt,
                 account=account,
@@ -452,10 +451,10 @@ class OwnerRequestRuntime:
                 used_managed=any(item.provenance is Provenance.MANAGED for item in context.items),
                 tainted=context.tainted,
                 directly_tainted=context.directly_tainted,
-                # The reply may restate a managed forward or quote in the
-                # current turn or the included history, so it carries their
-                # refs and a purge of that chat redacts it too (§10.4).
-                refs=_managed_refs([*history, turn, *source_turns]) | ToolRefs.from_json(turn.refs),
+                # The reply may restate supplied managed parts; carrying their
+                # refs lets a chat purge redact that reply too (§10.4). H2's
+                # structural request/card linkage survives independently.
+                refs=_managed_refs(context.parts) | ToolRefs.from_json(turn.refs),
                 received_at=turn.created_at,
                 locale=supported_locale(account.locale_pref),
                 timezone=account.timezone,
@@ -471,9 +470,14 @@ class OwnerRequestRuntime:
                 owner_turn=OwnerTurn(
                     id=turn.id,
                     text=turn.text,
-                    third_party=bool(turn.third_party),
+                    third_party=carries_third_party(turn),
                     contains_managed=bool(turn.contains_managed),
-                    quoted=turn.quoted_text is not None,
+                    quoted=(
+                        turn.third_party is True
+                        and turn.owner_text_verified is True
+                        and turn.quoted_text is not None
+                        and turn.from_tainted_run is False
+                    ),
                     owner_text_verified=bool(turn.owner_text_verified),
                 ),
             )
@@ -677,11 +681,9 @@ class OwnerRequestRuntime:
                     # A reply built from managed content is itself managed
                     # content: excluded later if `ai_managed` is revoked.
                     contains_managed=state.used_managed,
-                    # A reply from a tainted run may restate third-party text
-                    # (an injection paraphrased by the model): it is always
-                    # shown as untrusted later, and it taints later runs only
-                    # when this run's own inputs carried such text, so taint
-                    # decays once its source leaves the window (§7.1, D56).
+                    # Historical flags remain evidence. D-S3 drops derived
+                    # prose from default cross-run context; if selected again,
+                    # from_tainted_run taints regardless of third_party.
                     third_party=state.directly_tainted,
                     from_tainted_run=state.tainted,
                     run_id=state.run_id,

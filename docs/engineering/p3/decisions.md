@@ -327,7 +327,7 @@ Rn = P3-T(n+36) for R79…R101; each row cites its ruling number. Where a spec o
 | P3-T129 | **Describers stay without services** (R93; see P3-T94) | No new wiring for text | M6-DELEG and the M07 describers |
 | P3-T130 | **FUP-1 becomes owner question OD-33** (R94): P3 follow-ups match deterministically (files or media received; a keyword description through the monitor matcher); semantic matching through `evaluate_monitor` is deferred. Default: deterministic only | IMPLEMENTATION_PLAN S07.2 says "matching description", so the owner decides | M7-FUP, PR-OR10, QA-S7 |
 | P3-T131 | **`FirePostponed`** (R95): F0-R adds a `FirePostponed` outcome that `plan_fire` handles quietly (re-defer within `max_lateness`, no failed job); M7-FUP raises it while the deadline cannot settle yet | A deadline not yet settled must not end a fire job as failed | F0-R, M7-FUP |
-| P3-T132 | **Tainted follow-ups** (R96): P3-T101 (R68) has a consequence the TL accepts for P3: card-confirmed follow-ups are tainted, so nudge guidance is `None` in production (generic or "not needed" nudges). Open item to revisit after the trial | Invariant 3 wins over nudge quality | M7-FUP, M7-NUDGE |
+| P3-T132 | **Rebaseline required under D-S3 (owner, 2026-11-09), stabilization H12.** Taint follows supplied untrusted text; exact validated owner sources may survive omitted contact/derived prose. Confirmation never launders model-authored guidance, and `ctx.held` must never be cleared to bypass a gate. Historical R96 baseline: card-confirmed follow-ups had nudge guidance `None` (generic or "not needed" nudges) | P3 is on hold; rebaseline from stabilized C1/C4/C8 before implementation. Invariant 3 remains binding | M7-FUP, M7-NUDGE |
 | P3-T133 | **Tool status `scheduled`** (R97) is a NOT_RUN status (it has not run yet), never a success status; `create_reminder`, `create_follow_up` and `create_automation` return it when armed. The contract and F0-S must not list it under success statuses; verify against `agent/tools/executor.py` | Invariant 11 | F0-S, M7-REM, M7-FUP, M7-AUTO |
 | P3-T134 | **ICR-P3-1 seam shape** (R98): `P3WireContext.executor_factory` and `P3Wiring.executor` are accepted | Closes the detail of P3-T82 | F0-R, M6-TXA |
 | P3-T135 | **Pause button** (R99): there is no `telegram/control/pause_button.py::pause_button` wrapper; that file holds only M6-PAUSE's `pz` press handler; every caller uses `core/autonomy_texts.py::pause_button()` (P3-T84) | One button builder | M6-PAUSE, every renderer |
@@ -468,7 +468,7 @@ Items 7–16, 21–27, 30 and 31 are **done in F0-C part 2** (the docs PR after 
 
 ### F1. Follow-ups and monitors (Edvard's units)
 
-- Tainted follow-ups (P3-T132): nudge guidance is `None` in P3 production (generic or "not needed" nudges). Revisit a narrower baseline after the trial, never by clearing `ctx.held`. TL; at DOCS-EXIT.
+- Tainted follow-ups (P3-T132): historical nudge-guidance `None` baseline needs D-S3/C1/C4/C8 rebaseline from stabilized main before P3 resumes. Preserve validated owner sources without promoting contact-derived prose or clearing `ctx.held`. TL; at DOCS-EXIT.
 - Reminder Undo cancels the reminder and keeps its rows per retention (P3-T100). Confirm, or ask for a hard delete. Owner; before M7-REM merges.
 
 ### F2. Data and datasets (David's units)

@@ -10,8 +10,9 @@ summary, never another chat's (§6 invariant 4), all wrapped as untrusted.
 `owner_request` sees the owner's profile and recent control-chat turns. Turns
 flagged `contains_managed` are excluded unless `ai_managed` is active
 (ARCHITECTURE §14.3) — defence in depth behind the consent wrapper.
-Forwarded and quoted third-party text is wrapped as untrusted, and a context
-that carries any of it, or managed content, starts the run tainted (§7.1).
+Forwarded and quoted third-party text is wrapped as untrusted. Default history
+omits stale contact text and derived replies; every supplied untrusted part
+starts the run tainted (§7.1, D-S3).
 With `ai_managed`, it also sees its working context (PF-15, Q3): live and
 recent terminal cards (fixed facts, never text or names) and the ids each earlier turn
 concerned, both written by the application and both content-free.
@@ -22,21 +23,21 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from assistant.accounts.models import Account, ControlTurn
 from assistant.actions.activity import LiveCardFact
 from assistant.actions.card_facts import state_reason_fact
-from assistant.actions.requests import OwnerContinuation
+from assistant.actions.requests import OwnerContinuation, OwnerRequestView, ValidatedSource
 from assistant.agent.attribution import FALLBACK_NAMES, clean_name, you_word
 from assistant.agent.draft_owner_schemas import OWNER_DRAFT_MODES
 from assistant.agent.locales import supported_locale
 from assistant.agent.prompt_registry import Prompt
 from assistant.agent.untrusted import Source, wrap
-from assistant.llm.port import Provenance, TextItem
+from assistant.llm.port import InputItem, Provenance, TextItem
 from assistant.memory.items import MemoryView
 from assistant.memory.summaries import SourceMessage
 
@@ -45,14 +46,196 @@ OWNER_HISTORY_TURNS = 20
 
 
 @dataclass(frozen=True, slots=True)
+class ContextPart:
+    """Application-selected content and its independent trust/consent axes.
+
+    Source loaders must validate account, retention and source authority before
+    constructing a part. These values are never model-provided request facts.
+    """
+
+    item: InputItem
+    untrusted: bool
+    managed: bool
+    source_turn_ids: tuple[int, ...]
+    conversation_ids: tuple[int, ...]
+    contact_ids: tuple[int, ...]
+
+
+DropReason = Literal["stale_contact", "derived_reply", "no_consent", "source_unavailable"]
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedOwnerContext:
+    parts: tuple[ContextPart, ...]
+    tainted: bool
+    dropped: tuple[DropReason, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class OwnerRequestContext:
     instructions: str
-    items: tuple[TextItem, ...]
+    items: tuple[InputItem, ...]
     #: The context already carries third-party text or managed content.
     tainted: bool = False
-    #: ...and it is in the current turn itself (not only inherited from
-    #: history): the reply will taint later runs (D56).
+    #: Retained diagnostic: untrusted text supplied by the current turn.
+    #: It never exempts inherited untrusted prose from the gate (D-S3).
     directly_tainted: bool = False
+    parts: tuple[ContextPart, ...] = ()
+    dropped: tuple[DropReason, ...] = ()
+
+
+def _turn_part(turn: ControlTurn, text: str, *, untrusted: bool, managed: bool) -> ContextPart:
+    refs = turn.refs if managed else None
+    return ContextPart(
+        item=TextItem(
+            "user" if turn.role == "owner" else "assistant",
+            text,
+            Provenance.MANAGED if managed else Provenance.OWNER_CONTROL,
+        ),
+        untrusted=untrusted,
+        managed=managed,
+        source_turn_ids=(turn.id,) if turn.id is not None else (),
+        conversation_ids=tuple(_ids(refs.get("conversation_ids"))) if refs else (),
+        contact_ids=tuple(_ids(refs.get("contact_ids"))) if refs else (),
+    )
+
+
+def _classified_quote(turn: ControlTurn) -> bool:
+    # Ingress discards a forward's inner quote. Only this classified shape
+    # proves text is the owner's component and quoted_text is someone else's.
+    return (
+        turn.role == "owner"
+        and turn.third_party is True
+        and turn.owner_text_verified is True
+        and turn.quoted_text is not None
+        and turn.from_tainted_run is False
+    )
+
+
+def select_owner_context(
+    *,
+    history: Sequence[ControlTurn],
+    turn: ControlTurn,
+    request: OwnerRequestView | None = None,
+    validated_sources: Sequence[ValidatedSource] = (),
+    selected_artifacts: Sequence[ContextPart] = (),
+    managed_allowed: bool,
+) -> SelectedOwnerContext:
+    """D-S3: omit stale prose across runs, never clear taint while showing it.
+
+    Explicit artifact/source selection is independent of the history window.
+    Within a running loop this function must never be used to remove items.
+    """
+    parts: list[ContextPart] = []
+    dropped: list[DropReason] = []
+    source_turn_ids = (
+        {source.span.turn_id for source in request.sources}
+        if request is not None
+        else {source.turn_id for source in validated_sources}
+    )
+    for past in history:
+        # A request selects spans, not entire messages. Do not broaden its
+        # exact reloaded sources by also replaying their whole history turns.
+        if past.id in source_turn_ids:
+            continue
+        if not past.text and past.quoted_text is None:
+            continue
+        if _classified_quote(past):
+            if past.text:
+                parts.append(_turn_part(past, past.text, untrusted=False, managed=False))
+            dropped.append("stale_contact")
+        elif carries_third_party(past):
+            dropped.append("stale_contact" if past.role == "owner" else "derived_reply")
+        elif past.text:
+            text = render_history_turn(past) if managed_allowed else render_turn(past)
+            parts.append(_turn_part(past, text, untrusted=False, managed=False))
+            continue
+        # Structural refs survive omission, but never the assistant's prose.
+        if managed_allowed and (note := render_refs(past.refs)) is not None:
+            parts.append(_turn_part(past, note, untrusted=False, managed=False))
+
+    # H2 reloads these exact spans from retained account-local sources, using
+    # their whole-field hashes and component authority, outside history limits.
+    source_parts = [
+        ContextPart(
+            item=TextItem(
+                "user",
+                (wrap(source.text, Source.QUOTED) or "")
+                if source.untrusted or source.managed
+                else source.text,
+                Provenance.MANAGED if source.managed else Provenance.OWNER_CONTROL,
+            ),
+            untrusted=source.untrusted or source.managed,
+            managed=source.managed,
+            source_turn_ids=(source.turn_id,),
+            conversation_ids=source.conversation_ids,
+            contact_ids=source.contact_ids,
+        )
+        for source in validated_sources
+        if not source.managed or managed_allowed
+    ]
+    parts.extend(source_parts)
+    if any(source.managed and not managed_allowed for source in validated_sources):
+        dropped.append("no_consent")
+
+    for part in selected_artifacts:
+        # Cross-run artifacts are rebuilt text, never replayed provider output
+        # or an opaque cached tool result whose source cannot be revalidated.
+        if not isinstance(part.item, TextItem):
+            dropped.append("source_unavailable")
+            continue
+        managed = part.managed or part.item.provenance is Provenance.MANAGED
+        if managed and not managed_allowed:
+            dropped.append("no_consent")
+            continue
+        # Consent metadata cannot downgrade a managed item; likewise a managed
+        # artifact never becomes an owner instruction by choosing a provenance.
+        item = part.item
+        if managed and item.provenance is not Provenance.MANAGED:
+            item = replace(item, provenance=Provenance.MANAGED)
+        if part.untrusted or managed:
+            item = TextItem(
+                item.role, wrap(item.text, Source.TAINTED_RUN_REPLY) or "", item.provenance
+            )
+        parts.append(
+            ContextPart(
+                item=item,
+                untrusted=part.untrusted or managed,
+                managed=managed,
+                source_turn_ids=part.source_turn_ids,
+                conversation_ids=part.conversation_ids,
+                contact_ids=part.contact_ids,
+            )
+        )
+
+    if _classified_quote(turn):
+        if turn.text:
+            parts.append(_turn_part(turn, turn.text, untrusted=False, managed=False))
+        if turn.contains_managed is not False and not managed_allowed:
+            dropped.append("no_consent")
+            parts.append(_turn_part(turn, WITHHELD_QUOTE, untrusted=False, managed=False))
+        else:
+            parts.append(
+                _turn_part(
+                    turn,
+                    wrap(turn.quoted_text, Source.QUOTED) or "",
+                    untrusted=True,
+                    managed=turn.contains_managed is not False,
+                )
+            )
+    elif turn.contains_managed is not False and not managed_allowed:
+        dropped.append("no_consent")
+        parts.append(_turn_part(turn, WITHHELD_FORWARD, untrusted=False, managed=False))
+    else:
+        parts.append(
+            _turn_part(
+                turn,
+                render_turn(turn),
+                untrusted=carries_third_party(turn),
+                managed=turn.contains_managed is not False,
+            )
+        )
+    return SelectedOwnerContext(tuple(parts), any(part.untrusted for part in parts), tuple(dropped))
 
 
 def build_owner_request(
@@ -66,6 +249,7 @@ def build_owner_request(
     memory: Sequence[MemoryView] = (),
     live_cards: Sequence[LiveCardFact] | None = None,
     continuation: OwnerContinuation | None = None,
+    selected_artifacts: Sequence[ContextPart] = (),
 ) -> OwnerRequestContext:
     # The tag spelled out with its script, as the summarize context does: a
     # bare `uz-Latn` lost to the script of the chats (S03.6; S03.7 fix round).
@@ -81,7 +265,7 @@ def build_owner_request(
     sections = [prompt.text, "\n".join(profile), f"Current time (UTC): {now:%Y-%m-%d %H:%M}"]
     instructions = "\n\n".join(sections)
 
-    items: list[TextItem] = []
+    items: list[InputItem] = []
     if memory:
         # The owner's saved items travel as an input item with provenance, so
         # the consent wrapper sees them (safety review V2/N3). Only the
@@ -90,35 +274,26 @@ def build_owner_request(
         items.append(
             TextItem("user", render_owner_memory(memory, managed_allowed), Provenance.OWNER_CONTROL)
         )
-    items += [
-        TextItem(
-            role="user" if past.role == "owner" else "assistant",
-            # The ids note only with `ai_managed`, as the live-cards block.
-            text=render_history_turn(past) if managed_allowed else render_turn(past),
-            provenance=Provenance.MANAGED if past.contains_managed else Provenance.OWNER_CONTROL,
+    selected = select_owner_context(
+        history=history,
+        turn=turn,
+        request=continuation.request if continuation is not None else None,
+        validated_sources=continuation.sources if continuation is not None else (),
+        selected_artifacts=selected_artifacts,
+        managed_allowed=managed_allowed,
+    )
+    # Selection ends with the current turn's components; card facts remain
+    # immediately before those components for prompt caching.
+    current_count = 2 if _classified_quote(turn) and turn.text else 1
+    items.extend(part.item for part in selected.parts[:-current_count])
+    if continuation is not None and continuation.selection.status != "none":
+        items.append(
+            TextItem(
+                "user",
+                render_continuation(continuation, managed_allowed=managed_allowed),
+                Provenance.OWNER_CONTROL,
+            )
         )
-        for past in history
-        if past.text
-    ]
-    if continuation is not None:
-        for source in continuation.sources:
-            if source.managed and not managed_allowed:
-                continue
-            items.append(
-                TextItem(
-                    "user",
-                    (wrap(source.text, Source.QUOTED) or "") if source.untrusted else source.text,
-                    Provenance.MANAGED if source.managed else Provenance.OWNER_CONTROL,
-                )
-            )
-        if continuation.selection.status != "none":
-            items.append(
-                TextItem(
-                    "user",
-                    render_continuation(continuation, managed_allowed=managed_allowed),
-                    Provenance.OWNER_CONTROL,
-                )
-            )
     if live_cards is not None and managed_allowed:
         # Volatile, so after the history (prompt caching): current card facts.
         # Fixed facts only, so it carries no managed text and is
@@ -128,28 +303,15 @@ def build_owner_request(
                 "user", render_live_cards(live_cards, account.timezone), Provenance.OWNER_CONTROL
             )
         )
-    if turn.contains_managed and not managed_allowed:
-        # The owner forwarded or quoted a message from one of their managed
-        # chats, without `ai_managed`: its text must not reach the model
-        # (§6 invariant 9). The model is told, so it can say so honestly.
-        current = TextItem("user", withheld_turn(turn), Provenance.OWNER_CONTROL)
-    else:
-        current = TextItem(
-            role="user",
-            text=render_turn(turn) or "",
-            provenance=Provenance.MANAGED if turn.contains_managed else Provenance.OWNER_CONTROL,
-        )
-    items.append(current)
-    direct = carries_third_party(turn)
-    if continuation is not None:
-        direct = direct or any(
-            source.untrusted
-            for source in continuation.sources
-            if managed_allowed or not source.managed
-        )
-    tainted = direct or any(carries_third_party(t) for t in history)
+    items.extend(part.item for part in selected.parts[-current_count:])
+    direct = any(part.untrusted for part in selected.parts[-current_count:])
     return OwnerRequestContext(
-        instructions=instructions, items=tuple(items), tainted=tainted, directly_tainted=direct
+        instructions=instructions,
+        items=tuple(items),
+        tainted=selected.tainted,
+        directly_tainted=direct,
+        parts=selected.parts,
+        dropped=selected.dropped,
     )
 
 
@@ -284,7 +446,7 @@ def render_history_turn(turn: ControlTurn) -> str:
 def note_text(item: MemoryView) -> str:
     """A note's words as a contact-facing run sees them: wrapped as
     untrusted when they may be someone else's (M03 D70)."""
-    if item.tainted:
+    if item.tainted or item.managed:
         return wrap(item.content, Source.MEMORY_FROM_TAINTED_RUN) or ""
     return item.content
 
@@ -329,22 +491,24 @@ WITHHELD_QUOTE = (
 
 
 def withheld_turn(turn: ControlTurn) -> str:
-    if turn.quoted_text is not None:
+    if _classified_quote(turn):
         return f"{turn.text or ''}\n\n{WITHHELD_QUOTE}"
     return WITHHELD_FORWARD
 
 
 def carries_third_party(turn: ControlTurn) -> bool:
-    """Whether a turn taints a run that includes it (§7.1, M03 D45, D56).
+    """Whether this turn would taint a run if supplied (D-S3, 2026-11-09).
 
-    An owner turn: it carries forwarded/quoted text or managed content. An
-    assistant reply: only when the run that wrote it was tainted by its OWN
-    inputs (`third_party`); a reply tainted only by inherited history does
-    not pass the taint on, so taint decays once its source leaves the window.
+    Consent provenance is independent of trust. Missing legacy flags fail
+    closed; from_tainted_run prose never becomes trusted with history age.
     """
-    if turn.role != "owner":
-        return bool(turn.third_party)
-    return bool(turn.third_party or turn.quoted_text is not None or turn.contains_managed)
+    return (
+        turn.role not in {"owner", "assistant"}
+        or turn.third_party is not False
+        or turn.from_tainted_run is not False
+        or turn.contains_managed is not False
+        or turn.quoted_text is not None
+    )
 
 
 #: Sender labels for a summarize run, from classification — never from text.
@@ -549,16 +713,16 @@ def render_turn(turn: ControlTurn) -> str:
     """A control turn as the model sees it. Third-party text is wrapped as
     untrusted: a forwarded message entirely, a quote next to the owner's own
     words (§7.3), and every reply written by a tainted run (it may restate
-    such text; D56(a))."""
+    such text; D-S3). Default cross-run selection omits that prose."""
     text = turn.text or ""
     if turn.role != "owner":
-        if turn.from_tainted_run or turn.third_party:
+        if carries_third_party(turn):
             return wrap(text, Source.TAINTED_RUN_REPLY) or ""
         return text
-    if turn.quoted_text is not None:
+    if _classified_quote(turn):
         quote = wrap(turn.quoted_text, Source.QUOTED)
         return f"{text}\n\n(The owner is quoting this from another chat:)\n{quote}"
-    if turn.third_party:
+    if carries_third_party(turn):
         forwarded = wrap(text, Source.FORWARDED)
         return f"(The owner forwarded this message from someone else:)\n{forwarded}"
     return text

@@ -213,8 +213,9 @@ class ControlTurn(Base):
     #: (§6 invariant 3b, §7.1).
     third_party: Mapped[bool] = mapped_column(nullable=False, server_default=sql_text("false"))
     #: An assistant reply written by a tainted run, for whatever reason (own
-    #: or inherited taint). Always shown to the model as untrusted; it taints
-    #: later runs only if `third_party` is set too, so taint decays (D56).
+    #: or inherited taint). D-S3 supersedes D56: omitted from default history;
+    #: if explicitly selected again, its prose is untrusted and taints the run
+    #: regardless of third_party. Historical flags are never rewritten.
     from_tainted_run: Mapped[bool] = mapped_column(nullable=False, server_default=sql_text("false"))
     #: The quoted or replied-to third-party text, so the agent understands
     #: what the owner refers to. CONTENT-BEARING.
