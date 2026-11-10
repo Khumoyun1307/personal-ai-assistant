@@ -179,6 +179,33 @@ async def test_flag_off_keeps_legacy_resolution(tenv: Env) -> None:
     assert (await triage_runs(tenv))[-1].prompt_version == "triage.v1"
 
 
+async def test_later_same_second_evidence_resolves_task(tenv: Env) -> None:
+    a, _ = await seed(tenv)
+    first, _ = await message_ids(tenv, a)
+    fake = FakeLLM()
+    fake.parsed = [verdict(commitments=[commitment_item("contact", first)])]
+    await stored_triager(tenv, fake).triage(a)
+    (task,) = await task_rows(tenv)
+    await add_message(tenv, 13, "SYNTH: promised documents delivered")
+    evidence = (await message_ids(tenv, a))[-1]
+    async with tenv.factory() as session, session.begin():
+        source = await session.get(Message, first)
+        completion = await session.get(Message, evidence)
+        assert source is not None
+        assert completion is not None
+        assert source.sent_at is not None
+        assert completion.id > source.id
+        completion.sent_at = source.sent_at
+    output = verdict()
+    output.pop("resolved_task_ids")
+    output["resolutions"] = [{"task_id": task.id, "evidence_message_ids": [evidence]}]
+    fake.parsed = [output]
+    assert (await evidence_triager(tenv, fake).triage(a)).status is TriageStatus.TRIAGED
+    (result,) = await task_rows(tenv)
+    assert result.status == "done"
+    assert resolution_ids(result.details) == (evidence,)
+
+
 @pytest.mark.parametrize(
     "case", ["foreign_account", "missing_row", "mixed", "backdated", "automatic", "unsourced"]
 )

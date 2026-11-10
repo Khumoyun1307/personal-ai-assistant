@@ -128,16 +128,24 @@ async def close_with_evidence(
     source_times = [by_id[source].sent_at for source in sources]
     if any(moment is None for moment in source_times):
         return False
-    start = task.created_at
-    if sources:
-        start = max(moment for moment in source_times if moment is not None)
+    # Match conversation reads: internal message ids break whole-second sent
+    # time ties, without treating a backdated message as newer evidence.
+    start = max(
+        (
+            (message.sent_at, message.id)
+            for message in rows
+            if message.id in sources and message.sent_at is not None
+        ),
+        default=(task.created_at, 0),
+    )
     for evidence_id in evidence_ids:
         message = by_id[evidence_id]
         if (
             message.deleted_at is not None
             or message.purged_at is not None
             or message.sent_at is None
-            or message.sent_at <= start
+            or (message.sent_at, message.id) <= start
+            or (not sources and message.sent_at <= task.created_at)
             or evidence_id <= max(sources, default=0)
             or message.direction not in {"contact", "owner_manual"}
             or (message.text is None and message.media is None)
