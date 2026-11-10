@@ -1,12 +1,21 @@
 """J15/J16/J17: explicit alerts, backlog coverage and hostile task text."""
 
 import pytest
+from sqlalchemy import select
 
+from assistant.accounts.models import PendingInput
 from assistant.automation.models import Automation
 from assistant.inbox.models import ConversationTriage, Digest, Notification, Task
 from tests.fakes.llm import text_response
 from tests.fakes.sender import network_error
-from tests.integration.business_env import callback, deliver, live_card
+from tests.integration.business_env import (
+    OWNER,
+    callback,
+    deliver,
+    live_card,
+    press,
+    private_message,
+)
 from tests.journeys.harness import Journey, call
 from tests.journeys.locales import TEXT
 from tests.journeys.matrix import owner_input
@@ -14,6 +23,110 @@ from tests.journeys.models import LOCALES, Locale
 from tests.scenarios.m05_drive import M05Scenario, advance, run_queued, triage, triage_result
 
 pytestmark = [pytest.mark.integration, pytest.mark.journey]
+
+
+@pytest.mark.parametrize("urgency", ["low", "normal", "high", "urgent"])
+async def test_i9_triage_urgency_reaches_delivery_without_downgrade(
+    background: tuple[M05Scenario, Journey], urgency: str
+) -> None:
+    s, j = background
+    await s.preferences(digest_time="off", quiet_hours="00:00-23:59")
+    await s.message(102, "CANARY-SYNTH please answer by Friday.")
+    await triage(s, triage_result(needs_reply=True, urgency=urgency))
+    await run_queued(s, "notify.deliver")
+    [alert] = await s.rows(Notification)
+    assert alert.priority == urgency
+    if urgency in {"high", "urgent"}:
+        assert alert.status == "queued"
+        assert alert.deliver_after is not None
+        await j.restart()
+        s.env.clock.set(alert.deliver_after)
+        await run_queued(s, "notify.deliver")
+        [released] = await s.rows(Notification)
+        assert released.status == "sent"
+    else:
+        assert alert.status == "batched"
+    assert j.s.business_sends() == []
+
+
+async def test_i9_feedback_mute_can_be_inspected_and_reset_from_settings(
+    background: tuple[M05Scenario, Journey],
+) -> None:
+    s, j = background
+    await s.preferences(digest_time="off", quiet_hours="off")
+    tokens = []
+    ids = []
+    for index in range(2):
+        notification_id = await s.alert(key=f"i9-feedback-{index}")
+        ids.append(notification_id)
+        await run_queued(s, "notify.deliver")
+        async with s.env.factory() as session:
+            card = await session.scalar(
+                select(PendingInput).where(
+                    PendingInput.account_id == s.account_id,
+                    PendingInput.kind == "ntf",
+                    PendingInput.ref_id == notification_id,
+                )
+            )
+            assert card is not None
+            tokens.append(card.token)
+        await deliver(s.env, callback(f"ntf:{tokens[-1]}:nu"))
+    assert "Muted this alert scope" in s.env.sender.answered_callbacks[-1]["text"]
+    await s.alert(key="i9-muted")
+    await run_queued(s, "notify.deliver")
+    assert (await s.rows(Notification))[-1].status == "batched"
+    await deliver(s.env, private_message(OWNER, "/settings"))
+    await press(s.env, "settings", "alerts")
+    await press(s.env, "set_alerts", "mutes")
+    assert "triage decision" in s.env.sender.edits[-1]["text"]
+    assert "Not useful feedback" in s.env.sender.edits[-1]["text"]
+    await press(s.env, "set_mutes", f"r{ids[0]}")
+    assert "No current derived mutes" in s.env.sender.edits[-1]["text"]
+    await s.alert(key="i9-restored")
+    await run_queued(s, "notify.deliver")
+    assert (await s.rows(Notification))[-1].status == "sent"
+    for token in tokens:
+        await deliver(s.env, callback(f"ntf:{token}:nu"))
+    await press(s.env, "set_mutes", "all")
+    assert all(row.feedback is None for row in await s.rows(Notification))
+    assert j.s.business_sends() == []
+
+
+async def test_i9_new_monitor_does_not_inherit_feedback_on_another_monitor(
+    background: tuple[M05Scenario, Journey],
+) -> None:
+    s, j = background
+    await s.preferences(digest_time="off", quiet_hours="off")
+    old = await s.monitor("keywords", terms=["synthetic parcel"])
+    for number in (102, 103):
+        await s.message(number, "The synthetic parcel arrived.")
+        await run_queued(s, "notify.deliver")
+        alerts = [row for row in await s.rows(Notification) if row.kind == "monitor_match"]
+        latest = alerts[-1]
+        assert latest.status == "sent"
+        async with s.env.factory() as session:
+            card = await session.scalar(
+                select(PendingInput).where(
+                    PendingInput.account_id == s.account_id,
+                    PendingInput.kind == "ntf",
+                    PendingInput.ref_id == latest.id,
+                )
+            )
+            assert card is not None
+            token = card.token
+        await deliver(s.env, callback(f"ntf:{token}:nu"))
+    await s.message(104, "Another synthetic parcel arrived.")
+    await run_queued(s, "notify.deliver")
+    old_alerts = [row for row in await s.rows(Notification) if row.kind == "monitor_match"]
+    assert old_alerts[-1].status == "batched"
+    assert old_alerts[-1].refs["automation_ids"] == [old.id]
+    new = await s.monitor("keywords", terms=["synthetic courier"])
+    await s.message(105, "The synthetic courier arrived.")
+    await run_queued(s, "notify.deliver")
+    alerts = [row for row in await s.rows(Notification) if row.kind == "monitor_match"]
+    assert alerts[-1].refs["automation_ids"] == [new.id]
+    assert alerts[-1].status == "sent"
+    assert j.s.business_sends() == []
 
 
 async def create_monitor(

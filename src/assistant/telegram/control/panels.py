@@ -62,6 +62,7 @@ from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
 from assistant.core.jobs import JobScheduler
 from assistant.db.uow import after_commit, transaction
+from assistant.inbox.notification_feedback import list_mutes, reset_mutes
 from assistant.privacy import deletion, retention_policy
 from assistant.privacy.consent_prompts import render_consent_prompt
 from assistant.telegram.control import onboarding_texts as texts
@@ -76,6 +77,7 @@ from assistant.telegram.control.handlers import (
     HandlerResult,
     IncomingMessage,
     arm_consent_question,
+    local_time,
     queue_deletion,
     render_panel,
 )
@@ -97,6 +99,7 @@ DELETE_ALL_CARD = "del_all"
 LANGUAGE_CARD = "set_lang"
 #: S05.2P: /settings → Alerts & digest…
 ALERTS_CARD = "set_alerts"
+MUTES_CARD = "set_mutes"
 #: The card kinds this module answers.
 KINDS = frozenset(
     {
@@ -111,6 +114,7 @@ KINDS = frozenset(
         DELETE_ALL_CARD,
         LANGUAGE_CARD,
         ALERTS_CARD,
+        MUTES_CARD,
         ONBOARDING_LANGUAGE_CARD,
         ONBOARDING_TIMEZONE_CARD,
     }
@@ -919,6 +923,7 @@ async def alerts_screen(session: AsyncSession, clock: Clock, account: Account) -
         [(_ticked(label, value == now[field]), op) for label, op, value in choices]
         for field, choices in ALERT_ROWS
     ]
+    rows.append([("Derived mutes…", "mutes")])
     rows.append([("◀ Back", OP_BACK)])
     return await _screen(session, clock, account.id, ALERTS_CARD, text, rows)
 
@@ -931,6 +936,10 @@ async def _press_alerts(
     press: CardPress,
 ) -> HandlerResult:
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
+    if press.op == "mutes":
+        screen = await mutes_screen(session, clock, account)
+        _after_press(session, gateway, press, target, answer="Derived mutes", edit=screen)
+        return HandlerResult(True, "card", None, note="mutes")
     if press.op == OP_BACK:
         screen = await settings_screen(session, clock, account)
         _after_press(session, gateway, press, target, answer="Settings", edit=screen)
@@ -943,6 +952,72 @@ async def _press_alerts(
     screen = await alerts_screen(session, clock, account)
     _after_press(session, gateway, press, target, answer="Saved", edit=screen)
     return HandlerResult(True, "card", None, note="alerts" if saved.audit_id else "unchanged")
+
+
+async def mutes_screen(
+    session: AsyncSession, clock: Clock, account: Account, page: int = 0
+) -> Screen:
+    mutes = await list_mutes(session, account_id=account.id, now=clock.now())
+    page = min(max(page, 0), max((len(mutes) - 1) // PAGE_SIZE, 0))
+    lines = [
+        "<b>Derived mutes</b>",
+        "Two Not useful marks mute non-urgent alerts in the same scope for up to 30 days. "
+        "They remain available in /digest. Reset restores future delivery policy; "
+        "it does not replay old alerts.",
+    ]
+    rows: Rows = []
+    for mute in mutes[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]:
+        label = mute.kind.replace("_", " ")
+        scope = f"contact #{mute.contact_id}" if mute.contact_id is not None else "no contact"
+        if mute.monitor_id is not None:
+            scope += f", monitor #{mute.monitor_id}"
+        lines.append(
+            f"\n{escape(label)} ({scope})\n"
+            f"Why: Not useful feedback. Since: {local_time(mute.since, account.timezone)}."
+        )
+        rows.append([(f"Reset {label} ({scope})", f"r{mute.notification_id}")])
+    if not mutes:
+        lines.append("\nNo current derived mutes.")
+    if page > 0:
+        rows.append([("Previous", f"p{page - 1}")])
+    if (page + 1) * PAGE_SIZE < len(mutes):
+        rows.append([("Next", f"p{page + 1}")])
+    rows.append([("Reset all feedback mutes", "all")])
+    rows.append([("◀ Back", OP_BACK)])
+    return await _screen(session, clock, account.id, MUTES_CARD, "\n".join(lines), rows)
+
+
+async def _press_mutes(
+    session: AsyncSession,
+    gateway: OutboundGateway,
+    clock: Clock,
+    account: Account,
+    press: CardPress,
+) -> HandlerResult:
+    target = ControlChat(account_id=account.id, chat_id=press.chat_id)
+    if press.op == OP_BACK:
+        screen = await alerts_screen(session, clock, account)
+        answer = "Alerts & digest"
+    elif press.op == "all":
+        await reset_mutes(session, account_id=account.id)
+        screen = await mutes_screen(session, clock, account)
+        answer = "All feedback mutes reset"
+    elif press.op[:1] in {"r", "p"} and press.op[1:].isdigit() and len(press.op[1:]) <= 18:
+        value = int(press.op[1:])
+        if press.op.startswith("r"):
+            if not await reset_mutes(session, account_id=account.id, notification_id=value):
+                _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+                return HandlerResult(False, "card", None, note="unknown_mute")
+            answer = "Feedback mute reset"
+            value = 0
+        else:
+            answer = "Derived mutes"
+        screen = await mutes_screen(session, clock, account, value)
+    else:
+        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        return HandlerResult(False, "card", None, note="unknown_op")
+    _after_press(session, gateway, press, target, answer=answer, edit=screen)
+    return HandlerResult(True, "card", None, note="mutes")
 
 
 # ------------------------------------------------------------ retention (S03.5)
@@ -1275,6 +1350,8 @@ async def handle_press(
         return await _press_language(session, gateway, clock, account, press)
     if card.kind == ALERTS_CARD:
         return await _press_alerts(session, gateway, clock, account, press)
+    if card.kind == MUTES_CARD:
+        return await _press_mutes(session, gateway, clock, account, press)
     if card.kind == ONBOARDING_LANGUAGE_CARD:
         return await _press_onboarding_language(session, gateway, clock, account, press)
     if card.kind == ONBOARDING_TIMEZONE_CARD:

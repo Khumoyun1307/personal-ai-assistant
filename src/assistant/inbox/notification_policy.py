@@ -56,6 +56,7 @@ class NotificationFacts:
     #: qualified for direct delivery. A rolling priority boost may expire
     #: while it waits; current muting, quiet hours and the cap still apply.
     previously_important: bool = False
+    monitor_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +67,8 @@ class OwnerAlertSettings:
     quiet_hours: tuple[time, time] | None
     urgent_bypass: bool
     cap_per_hour: int
-    #: `(kind, contact_id)` pairs (`None`: alerts that name no contact).
+    #: `(scope, contact_id)` pairs (`None`: alerts that name no contact).
+    #: Monitor scopes include their automation id; other scopes are kinds.
     #: Derived from feedback by `muted_pairs`, never stored.
     muted: frozenset[tuple[str, int | None]]
 
@@ -98,6 +100,7 @@ class FeedbackMark:
     contact_id: int | None
     feedback: str
     marked_at: datetime
+    monitor_id: int | None = None
 
 
 def decide_delivery(
@@ -143,11 +146,12 @@ def effective_priority(facts: NotificationFacts, load: RecentLoad) -> Priority:
 
 
 def muted_pairs(marks: Iterable[FeedbackMark], now: datetime) -> frozenset[tuple[str, int | None]]:
-    """The `(kind, contact_id)` pairs the owner's feedback has muted.
+    """The `(scope, contact_id)` pairs the owner's feedback has muted.
 
     Muted: at least `MUTE_THRESHOLD` "not useful" marks within `MUTE_WINDOW`,
     and no "useful" mark newer than the newest of them. Each mark is one
-    notification, so the count is of notifications.
+    notification, so the count is of notifications. A monitor's scope names
+    its automation id. Legacy monitor feedback without that id is ignored.
     """
     since = now - MUTE_WINDOW
     not_useful: defaultdict[tuple[str, int | None], list[datetime]] = defaultdict(list)
@@ -155,7 +159,10 @@ def muted_pairs(marks: Iterable[FeedbackMark], now: datetime) -> frozenset[tuple
     for mark in marks:
         if mark.marked_at < since:
             continue
-        pair = (mark.kind, mark.contact_id)
+        if mark.kind == NotificationKind.MONITOR_MATCH and mark.monitor_id is None:
+            # Legacy feedback cannot identify which explicit request it judged.
+            continue
+        pair = feedback_scope(mark.kind, mark.contact_id, mark.monitor_id)
         if mark.feedback == FEEDBACK_NOT_USEFUL:
             not_useful[pair].append(mark.marked_at)
         elif mark.feedback == FEEDBACK_USEFUL:
@@ -176,7 +183,15 @@ def _is_muted(facts: NotificationFacts, muted: frozenset[tuple[str, int | None]]
     """The exact pair only: `(kind, None)` is derived from feedback on alerts
     that name no contact, so it mutes those alerts, never the kind for every
     contact."""
-    return (facts.kind.value, facts.contact_id) in muted
+    return feedback_scope(facts.kind.value, facts.contact_id, facts.monitor_id) in muted
+
+
+def feedback_scope(
+    kind: str, contact_id: int | None, monitor_id: int | None = None
+) -> tuple[str, int | None]:
+    """An in-memory key; monitor feedback never spreads to a different request."""
+    scoped_kind = f"{kind}:{monitor_id}" if kind == NotificationKind.MONITOR_MATCH else kind
+    return scoped_kind, contact_id
 
 
 def _bypasses_quiet_hours(
