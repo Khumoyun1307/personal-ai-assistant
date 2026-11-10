@@ -53,12 +53,27 @@ the current and previous release tags: **never run a broad image prune**.
 Any later manual cleanup must preserve both recorded releases. This remains
 a single-VM build, with no registry or new external service.
 
-After building, deploy starts/checks db and authenticates all three restricted
-roles through the maintenance container. Missing roles or stale passwords
-refuse deployment **before the running app is stopped**; follow the I24 upgrade
-below. After this preflight, deploy records a content-free `deploy/release-in-progress`
-marker, stops the app with its existing grace period, waits for a healthy db,
-and runs the migration container once. Only successful migration completion
+Before stopping the app, deploy builds and inspects both selected images,
+computes the app image's migration heads, starts/checks db and authenticates
+all three restricted roles through the maintenance container. Missing roles or
+stale passwords refuse deployment **before the running app is stopped**; follow
+the I24 upgrade below. Compose `run` has no `--no-build` option: the explicit
+image inspection guards against an implicit build if a selected image is
+missing. Only `up` uses `--no-build`.
+
+After this preflight, deploy stops the app with its existing grace period,
+records a content-free `deploy/release-in-progress` marker and runs the
+migration container once. A failure after stopping but before invoking migration
+automatically starts the existing app container on its original image and
+restores the shell's recorded image selection, clearing the new marker if
+recovery succeeds. Release arrays and image exports remain in the calling
+shell after a successful deploy. Recovery flags remain in shell scope so the
+EXIT handler can read them under `set -u` even after function locals unwind.
+Recovery failures are reported;
+the deploy still fails. An already-present incomplete marker disables this
+automatic recovery, because an earlier attempt may have changed the database.
+Once migration is invoked, any failure keeps the marker and requires a forward
+fix; no old app is automatically restarted. Only successful migration completion
 permits app startup. Backup starts first to initialize shared-volume ownership.
 After Compose accepts startup, an atomic rename writes `deploy/release-state`:
 one tab-separated row for current, then an optional row for previous, each
@@ -90,9 +105,21 @@ failure evidence in the approved operations window, create a reviewed fix on
 `just deploy <ip> <fixed-sha>`. Do not delete the incomplete marker to bypass
 the gate, run a downgrade, or start an old image against a changed schema.
 I22 compares recorded image heads only; compatibility/drain design, actual
-database-head reconciliation, app health waits, automatic recovery and a
+database-head reconciliation, app health waits, recovery after migration and a
 schema-changing failure rehearsal remain **I23**. No schema rollback or live
 recovery verification is claimed here.
+
+### 2026-11-09 Compose run incident
+
+At 23:31 UTC, the first deploy through I22 stopped the app, then failed with
+`unknown flag: --no-build` on Compose `run`. Migration never ran and the database
+was unchanged. The lead restored the previous recorded app image with
+`just prod <ip> app-start`. This recovery is appropriate only when migration did
+not run and database compatibility with that image is known; otherwise follow
+the forward-fix procedure above. The incomplete-release marker remains after
+manual recovery and continues to block rollback. The next successful deploy
+(including a retry of the same selected SHA) writes the release state and clears
+the marker automatically; do not delete it manually to bypass the gate.
 
 ## I24 role upgrade (fresh installs and existing production)
 
@@ -128,7 +155,7 @@ Alembic alone installs procrastinate's schema; workers never install it.
    ```bash
    dc() { docker compose --env-file .env -f deploy/compose.prod.yml "$@"; }
    dc stop app backup
-   ASSISTANT_IMAGE=assistant:<candidate-12> dc run --rm --no-deps -T --no-build db-roles \
+   ASSISTANT_IMAGE=assistant:<candidate-12> dc run --rm --no-deps -T db-roles \
      python -m assistant.db.production_roles setup
    ```
 

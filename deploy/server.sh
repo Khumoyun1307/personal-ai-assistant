@@ -109,7 +109,7 @@ case "$action" in
     fi
     # Explicitly authorized maintenance; passwords stay in .env.roles.
     compose up -d --wait --no-build db
-    compose run --rm --no-deps -T --no-build db-roles \
+    compose run --rm --no-deps -T db-roles \
       python -m assistant.db.production_roles setup
     ;;
   status)
@@ -161,9 +161,9 @@ case "$action" in
     # Also remove the scratch database if decrypt, post-restore or a gate fails.
     trap 'db_client dropdb --if-exists restore_test; echo "restore_test dropped"' EXIT
     db_client createdb -O assistant_migrate restore_test
-    printf '%s\n' "$identity" | compose run --rm --no-deps -T --no-build restore "$dump" restore_test
+    printf '%s\n' "$identity" | compose run --rm --no-deps -T restore "$dump" restore_test
     unset identity
-    compose run --rm --no-deps -T --no-build db-roles \
+    compose run --rm --no-deps -T db-roles \
       python -m assistant.db.production_roles setup --database restore_test
     # Select the scratch database structurally inside the container, preserving
     # driver/query/credentials privately. Shell suffix slicing is unsafe when
@@ -219,10 +219,10 @@ case "$action" in
       'dropdb -U "$POSTGRES_USER" --if-exists --force "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" -O assistant_migrate "$POSTGRES_DB"'
     # shellcheck disable=SC2016  # expanded inside the restore container
     printf '%s\n' "$identity" \
-      | compose run --rm --no-deps -T --no-build --entrypoint sh restore \
+      | compose run --rm --no-deps -T --entrypoint sh restore \
         -c 'exec restore.sh "$1" "$PGDATABASE"' sh "/backups/daily/$file"
     unset identity
-    compose run --rm --no-deps -T --no-build db-roles \
+    compose run --rm --no-deps -T db-roles \
       python -m assistant.db.production_roles setup
     stamp="${file%.dump.age}"
     echo "next: post-restore --backup-taken-at ${stamp:0:4}-${stamp:4:2}-${stamp:6:2}T${stamp:9:2}:${stamp:11:2}:${stamp:13:2}Z"
