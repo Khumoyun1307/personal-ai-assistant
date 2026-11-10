@@ -46,6 +46,8 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("owner_requests", "operation"),
         ("owner_requests", "state"),
         ("owner_requests", "selection_basis"),
+        # H5 ordered contact/conversation ids and request version; no names or prose.
+        ("owner_requests", "resolution_candidates"),
         ("owner_requests", "missing_slot"),
         ("owner_requests", "constraints"),
         ("owner_requests", "reason"),
