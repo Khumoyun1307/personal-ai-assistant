@@ -875,6 +875,10 @@ Successful transitions record structural authorship metadata in lifecycle
 audit details; no old-body archive is created. Failed/cancelled edits keep
 body/proof/version/expiry and rotate only the approval token. Execution and
 managed-consent cancellation classify the current proof, never original origin.
+Literal Edit replacements retain structural `draft_flags.mode` and
+`draft_flags.target` while clearing AI warning flags. Subsequent rewrites keep
+the standalone-message mode or explicitly selected reply target even when the
+action originally came from an assistant proposal.
 
 **CP4 system-notification locks (ICR #132).** Synchronous `OwnerAlerts` claims take account `FOR KEY SHARE`, then a two-int4 transaction advisory lock (`0x53595341`, SYSA; signed first four SHA-256 bytes of compact UTF-8 JSON `[account_id,dedupe_key]`, literal Unicode), then notification/audit. Standard hourly-cap claims take account `FOR NO KEY UPDATE` and never acquire this namespace; KEY SHARE is compatible with them. Advisory hash collisions only serialize short transactions; full account/key predicates determine dedupe. Locks commit before channel I/O. Resolution uses the same order and appends one outcome per immutable claim. This namespace is separate from the existing singleton bigint advisory locks. [PostgreSQL 18](https://www.postgresql.org/docs/18/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS).
 

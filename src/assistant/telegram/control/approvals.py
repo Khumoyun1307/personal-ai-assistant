@@ -1874,16 +1874,15 @@ class RevisionJob:
             if not await self._still_revising(session, before, action_id, turn_id):
                 logger.info("revision_stale", action_id=action_id)
                 return RevisionResult("stale")
-            flags: dict[str, Any] | None = None
-            # A dictated card answers the message the owner named, or none.
-            base_message_id: int | None = before.base_message_id if before.keeps_target else None
+            # Message structure survives a literal replacement independently
+            # of AI warning flags, so a later rewrite keeps the owner's target.
+            target = before.target if before.keeps_target else outcome.target
+            flags: dict[str, Any] = {"mode": before.message_mode, FLAG_TARGET: target}
+            base_message_id = (
+                before.base_message_id if before.keeps_target else outcome.base_message_id
+            )
             if generated:
-                # The owner chose what this answers (PF-12): a revision keeps it.
-                target = before.target if before.keeps_target else outcome.target
                 flags = owner_draft_flags(owner, mode=before.message_mode, target=target)
-                base_message_id = (
-                    before.base_message_id if before.keeps_target else outcome.base_message_id
-                )
             applied = await lifecycle.apply_new_version(
                 session,
                 account_id=before.account_id,

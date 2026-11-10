@@ -443,6 +443,57 @@ async def test_a_revision_keeps_an_explicit_target_and_re_anchors_the_default(
     assert revised.draft_flags["target"] == target
 
 
+@pytest.mark.parametrize(("target", "mode"), [("none", "new_message"), ("answered", "reply")])
+async def test_literal_edit_then_rewrite_keeps_generated_cards_mode_and_explicit_target(
+    s: Scenario, target: str, mode: str
+) -> None:
+    await deliver(
+        s.env, business_message(message_id=4403, message_text="SYNTH-LATER", date=s.date + 1)
+    )
+    earlier, *_, newest = await contact_ids(s)
+    base = earlier if target == "answered" else None
+    row = await s.seed(
+        origin="agent_proposal",
+        authorship=VersionAuthorship(
+            version=1,
+            kind="assistant_written",
+            source_ids=[],
+            parent_version=None,
+            retains_generated_text=True,
+        ).model_dump(mode="json"),
+        base_message_id=base,
+        shown_through_message_id=newest,
+        draft_flags=owner_flags(target, mode),
+        trigger_turn_id=None,
+    )
+    s.fake.parsed.append(revision_result(revision_kind="replacement"))
+    await start_edit(s, row, "Synthetic exact owner replacement.")
+    assert await run_queued(s, "replies.revise") == 1
+    literal = await s.action(row.id)
+    assert literal.version == 2
+    assert literal.text == "Synthetic exact owner replacement."
+    assert not is_ai_generated(literal.authorship, version=literal.version)
+    assert literal.base_message_id == base
+    assert literal.draft_flags == {"mode": mode, "target": target}
+
+    s.fake.parsed.append(revision_result(text="Synthetic rewritten message."))
+    await start_edit(s, literal, "Synthetic: shorter please.")
+    assert await run_queued(s, "replies.revise") == 1
+    rewritten = await s.action(row.id)
+    assert rewritten.version == 3
+    assert rewritten.text == "Synthetic rewritten message."
+    assert is_ai_generated(rewritten.authorship, version=rewritten.version)
+    assert rewritten.base_message_id == base
+    assert rewritten.draft_flags is not None
+    assert rewritten.draft_flags["mode"] == mode
+    assert rewritten.draft_flags["target"] == target
+    if base is not None:
+        drafts = [r for r in s.fake.requests if r.purpose == "draft_reply"]
+        assert len(drafts) == 2
+        shown = "\n".join(getattr(item, "text", "") for item in drafts[-1].items)
+        assert f"[msg:{earlier}]." in shown
+
+
 @pytest.mark.parametrize(("base", "kept"), [("earlier", "earlier"), (None, None)])
 async def test_a_dictated_card_keeps_the_message_it_answers_through_a_revision(
     s: Scenario, base: str | None, kept: str | None
