@@ -477,6 +477,9 @@ def _bare_refs(node: Any, definitions: dict[str, Any]) -> None:
 
 def _make_strict(node: dict[str, Any]) -> None:
     node.pop("title", None)
+    # Local defaults keep older callers compatible; the provider schema
+    # still requires every nullable field explicitly (strict mode).
+    node.pop("default", None)
     if node.get("type") == "object":
         properties = node.setdefault("properties", {})
         node["additionalProperties"] = False

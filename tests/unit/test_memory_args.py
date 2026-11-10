@@ -16,7 +16,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from assistant.agent.tools.common import ArgumentRuleError
-from assistant.agent.tools.memory import ForgetArgs, ListMemoriesArgs, RememberArgs
+from assistant.agent.tools.memory import LIST_MEMORIES, ForgetArgs, ListMemoriesArgs, RememberArgs
 from assistant.agent.tools.modes import SetConversationModeArgs, UpdatePreferencesArgs
 
 #: `update_preferences`' S03.5 fields: required (null = unchanged; D52).
@@ -47,6 +47,57 @@ REMEMBER: dict[str, Any] = {
 
 def _with(base: dict[str, Any], **changes: Any) -> dict[str, Any]:
     return {**base, **changes}
+
+
+def test_memory_lookup_defaults_preserve_existing_calls() -> None:
+    parsed = ListMemoriesArgs(contact_id=None, conversation_id=None, scope=None, limit=None)
+    assert parsed.offset is None
+    assert parsed.kind is None
+    assert parsed.query is None
+
+
+def test_memory_lookup_provider_schema_requires_nullable_filters_without_defaults() -> None:
+    schema = LIST_MEMORIES.spec().parameters
+    assert schema["additionalProperties"] is False
+    assert sorted(schema["required"]) == sorted(schema["properties"])
+    for name in ("offset", "kind", "query"):
+        field = schema["properties"][name]
+        assert "default" not in field
+        assert {"type": "null"} in field["anyOf"]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"offset": -1},
+        {"offset": 2**63},
+        {"offset": True},
+        {"offset": "50"},
+        {"kind": "shareable"},
+        {"query": "   "},
+        {"query": "x" * 401},
+        {"unknown_filter": "SYNTH"},
+    ],
+)
+def test_memory_lookup_rejects_invalid_arguments(extra: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        ListMemoriesArgs.model_validate(
+            {"contact_id": None, "conversation_id": None, "scope": None, "limit": None, **extra}
+        )
+
+
+def test_memory_lookup_trims_literal_text() -> None:
+    parsed = ListMemoriesArgs(
+        contact_id=None,
+        conversation_id=None,
+        scope=None,
+        limit=None,
+        offset=50,
+        kind="fact",
+        query="  SYNTH 50%_done  ",
+    )
+    assert parsed.query == "SYNTH 50%_done"
+    assert parsed.offset == 50
 
 
 @pytest.mark.parametrize(
