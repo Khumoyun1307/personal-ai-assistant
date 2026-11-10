@@ -434,7 +434,7 @@ class TriageRepository:
                     conversation_ids=(conversation_id,),
                     contact_ids=(contact_id,),
                     message_ids=verdict.burst_message_ids,
-                    task_ids=(*created, *closed),
+                    task_ids=tuple(created),
                 ),
                 clock=self._clock,
                 conversation_id=conversation_id,

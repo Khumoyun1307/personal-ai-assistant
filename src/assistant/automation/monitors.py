@@ -48,9 +48,9 @@ from assistant.core.channel import Button
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
 from assistant.core.jobs import JobScheduler
-from assistant.inbox import triage_store
 from assistant.inbox.alert_texts import RenderedAlert
 from assistant.inbox.models import Notification
+from assistant.inbox.notification_sources import explanation
 from assistant.inbox.notification_types import NotificationKind, NotificationRefs, Priority
 from assistant.inbox.notifications import enqueue
 from assistant.memory.summaries import preferred_name
@@ -734,8 +734,8 @@ async def stop_button(
 class MonitorMatchRenderer:
     """`MONITOR_MATCH` (S05.4 §3.7): "Monitor: <interpretation> — <contact>
     wrote at <local time>", never message text. `alert_with_summary` adds
-    the chat's latest triage reasons when that verdict covers the matched
-    message (no model call). A standing monitor that is still on gets a Stop
+    the triggering verdict's frozen reasons, if available at match creation
+    and covering exactly that source (no model call). A standing monitor gets a Stop
     button after S05.2's own (ICR-4): its `mon` card is created here, inside
     the delivery's claim transaction. None — the alert is suppressed — when
     the monitor or the chat is gone (their data was deleted), and when the
@@ -778,6 +778,7 @@ class MonitorMatchRenderer:
                 .where(Message.account_id == account.id)
                 .where(Message.conversation_id == conversation_id)
                 .where(Message.id == max(message_ids))
+                .where(Message.deleted_at.is_(None), Message.purged_at.is_(None))
             )
         when = f" at {local_moment(sent_at, account.timezone)}" if sent_at is not None else ""
         lines = [
@@ -785,16 +786,26 @@ class MonitorMatchRenderer:
             f"<b>{html.escape(name)}</b> wrote{when}."
         ]
         if rule.action == "alert_with_summary" and message_ids:
-            verdict = (
-                await triage_store.latest(
-                    session, account_id=account.id, conversation_ids=[conversation_id]
-                )
-            ).get(conversation_id)
-            if verdict is not None and verdict.covers_through_message_id >= max(message_ids):
-                reasons = [r for r in verdict.reasons if r.strip()]
-                lines += [f"• {html.escape(reason)}" for reason in reasons]
-        extra: tuple[Button, ...] = ()
+            event = await explanation(
+                session,
+                account_id=account.id,
+                notification_id=notification.id,
+                conversation_id=conversation_id,
+                refs=notification.refs,
+            )
+            lines += [f"• {html.escape(reason)}" for reason in event.reasons if reason.strip()]
+            if event.note:
+                lines.append(event.note)
+        if sent_at is None:
+            lines.append("The matched source is no longer available (retention or deletion).")
         now = self._clock.now()
+        if row.status in ("paused", "expired") or (
+            row.expires_at is not None and row.expires_at <= now
+        ):
+            lines.append("Historical match: this monitor is no longer active.")
+        elif row.status == "completed":
+            lines.append("Historical match: the one-shot monitor completed with this event.")
+        extra: tuple[Button, ...] = ()
         if (
             rule.lifecycle == "standing"
             and row.status == "active"

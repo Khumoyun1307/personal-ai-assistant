@@ -50,7 +50,7 @@ from assistant.inbox.digest import (
     DigestResult,
     build_digest,
 )
-from assistant.inbox.models import Digest, Notification
+from assistant.inbox.models import ConversationTriage, Digest, Notification
 from assistant.privacy.deletion import delete_conversation_data, delete_everything
 from assistant.privacy.retention import sweep_all
 from assistant.telegram.control.agent_channel import GatewayControlChannel
@@ -380,6 +380,40 @@ async def test_with_no_chosen_time_the_digest_is_off_and_a_running_one_pauses(
 
 
 # ============================================================ content
+@pytest.mark.parametrize("old_kind", ["triage_urgent", "triage_needs_reply"])
+async def test_digest_supersession_keeps_the_old_reason_out_of_needs_you(
+    env: Env, old_kind: str
+) -> None:
+    account_id = await owner(env)
+    where = await chat(env, account_id, "Synthetic contact", reasons=["Synthetic original request"])
+    old = await batched(env, where, old_kind)
+    async with env.factory() as session, session.begin():
+        verdict = await session.scalar(
+            select(ConversationTriage).where(
+                ConversationTriage.conversation_id == where.conversation_id
+            )
+        )
+        assert verdict is not None
+        verdict.covers_through_message_id += 1
+        verdict.reasons = ["Synthetic newer decision"]
+    new = await batched(env, where, "triage_decision")
+    async with env.factory() as session:
+        content = await build_digest(
+            session,
+            account_id=account_id,
+            period_start=EVENING - timedelta(days=1),
+            period_end=EVENING,
+        )
+    assert len(content.needs_you) == 1
+    assert content.needs_you[0].reason == "Synthetic newer decision"
+    assert len(content.historical) == 1
+    assert "Synthetic original request" in (content.historical[0].reason or "")
+    assert "superseded or resolved" in (content.historical[0].reason or "")
+    assert content.covered_notification_ids == {old, new}
+    rendered = "\n".join(render_digest(content))
+    assert "Earlier alerts (historical)" in rendered
+
+
 async def test_the_digest_lists_batched_alerts_due_commitments_and_closed_tasks(
     env: Env,
 ) -> None:

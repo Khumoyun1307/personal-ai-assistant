@@ -61,10 +61,10 @@ SET_UP_FIRST_TEXT = "Send /start to finish setting me up first."
 OPENING_TEXT = "Opening the chat"
 UNNAMED = "A contact"
 _ALERT_LABELS = {
-    "triage_needs_reply": "chat(s) waiting for a reply",
+    "triage_needs_reply": "chat(s) waiting for a reply (at alert creation)",
     "triage_suspicious": "message burst(s) that looked like instructions to the assistant",
     "task_closed": "task(s) closed automatically",
-    "commitment_due": "commitment(s) due",
+    "commitment_due": "commitment(s) due (at alert creation)",
     "monitor_match": "monitor match(es)",
 }
 _SCOPES = {
@@ -177,6 +177,13 @@ def _lines(content: DigestContent) -> list[str]:
     if content.closed_more:
         closed.append(f"• …and {content.closed_more} more")
     section("Closed automatically", closed)
+    section(
+        "Earlier alerts (historical)",
+        [
+            f"• {_name(line.name)}" + (f" — {html.escape(line.reason)}" if line.reason else "")
+            for line in content.historical
+        ],
+    )
     section(
         "Other alerts",
         [

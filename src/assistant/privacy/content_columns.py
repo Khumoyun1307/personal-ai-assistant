@@ -34,6 +34,7 @@ CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("tasks", "title"),
         ("tasks", "details"),
         ("conversation_triage", "reasons"),
+        ("notification_sources", "reasons"),
         ("automations", "spec"),
     }
 )
@@ -77,6 +78,7 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("conversation_triage", "script"),
         ("conversation_triage", "prompt_version"),
         ("conversation_triage", "model"),
+        ("notification_sources", "verdict_state"),
         ("automations", "kind"),
         ("automations", "refs"),
         ("automations", "status"),

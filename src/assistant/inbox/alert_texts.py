@@ -1,10 +1,9 @@
 """Owner-facing alert texts, rendered at delivery from ids (S05.2 §3.3, P2-T12).
 
 `notifications` rows hold no content: a renderer reads the rows its `refs`
-name — the contact's name, the chat's latest triage verdict, a task — inside
-the delivery transaction, and returns None when one of them is gone (the
-chat's data was deleted), so the alert is suppressed rather than sent about
-something that no longer exists.
+name — the contact's name, the triggering verdict snapshot, a task — inside
+the delivery transaction. A vanished chat suppresses the alert; expired
+source content produces an explicit content-free availability notice.
 
 Each alert says what happened, why (the verdict's reasons, as triage wrote
 them) and what the owner can do next (PRD §14). Never message text: only
@@ -25,7 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts.models import Account
 from assistant.conversations.models import Contact, Conversation
 from assistant.core.channel import Button
-from assistant.inbox.models import ConversationTriage, Notification, Task
+from assistant.inbox.models import Notification, Task
+from assistant.inbox.notification_sources import explanation
 from assistant.inbox.notification_types import NotificationKind
 from assistant.memory.summaries import preferred_name
 
@@ -61,6 +61,12 @@ _NEXT_STEPS: Mapping[NotificationKind, str] = {
     NotificationKind.TRIAGE_SUSPICIOUS: (
         "Nothing was changed. You may want to look at the chat yourself."
     ),
+}
+_EVENT_LABELS: Mapping[NotificationKind, str] = {
+    NotificationKind.TRIAGE_URGENT: "urgent request",
+    NotificationKind.TRIAGE_DECISION: "decision request",
+    NotificationKind.TRIAGE_NEEDS_REPLY: "reply request",
+    NotificationKind.TRIAGE_SUSPICIOUS: "suspicious instructions",
 }
 
 
@@ -107,16 +113,29 @@ async def render_triage(
     if conversation_id is None:
         return None
     name = await _contact_name(session, account.id, conversation_id)
-    verdict = (
-        await session.execute(
-            select(ConversationTriage.reasons)
-            .where(ConversationTriage.account_id == account.id)
-            .where(ConversationTriage.conversation_id == conversation_id)
-        )
-    ).scalar_one_or_none()
-    if name is None or verdict is None:
+    if name is None:
         return None
-    lines = [_HEADLINES[kind].format(name=name), *_reasons(verdict), "", _NEXT_STEPS[kind]]
+    event = await explanation(
+        session,
+        account_id=account.id,
+        notification_id=notification.id,
+        conversation_id=conversation_id,
+        refs=notification.refs,
+    )
+    if event.current:
+        lines = [
+            _HEADLINES[kind].format(name=name),
+            *_reasons(event.reasons),
+            "",
+            _NEXT_STEPS[kind],
+        ]
+    else:
+        lines = [
+            f"<b>Earlier alert: {name} ({_EVENT_LABELS[kind]}).</b>",
+            *_reasons(event.reasons),
+            "",
+            event.note or "",
+        ]
     return RenderedAlert("\n".join(lines), conversation_id)
 
 
@@ -129,14 +148,14 @@ async def render_task(
         return None
     task = (
         await session.execute(
-            select(Task.title, Task.conversation_id)
+            select(Task.title, Task.conversation_id, Task.status)
             .where(Task.account_id == account.id)
             .where(Task.id == task_ids[0])
         )
     ).first()
     if task is None:
         return None
-    title, conversation_id = task
+    title, conversation_id, status = task
     name = (
         await _contact_name(session, account.id, conversation_id)
         if conversation_id is not None
@@ -148,6 +167,8 @@ async def render_task(
             f"✅ Closed automatically: {html.escape(title)}{who}\n\n"
             "A later message in the chat showed it done or answered."
         )
+    elif status != "open":
+        text = f"Earlier due alert ({html.escape(status)}): {html.escape(title)}{who}"
     else:
         text = f"⏰ Due: {html.escape(title)}{who}"
     return RenderedAlert(text, conversation_id)

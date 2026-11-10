@@ -19,6 +19,7 @@ from assistant.automation.models import Automation
 from assistant.conversations.models import Contact, Conversation
 from assistant.core.errors import NotInAccountError
 from assistant.inbox.models import ConversationTriage, Notification, Task
+from assistant.inbox.notification_sources import bind_source
 
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
 _ids = count(8_100_000_000)
@@ -221,4 +222,12 @@ async def seed_notification(
     )
     session.add(row)
     await session.flush()
+    if conversation_id is not None and row.kind.startswith("triage_"):
+        await bind_source(
+            session,
+            account_id=account_id,
+            notification_id=row.id,
+            conversation_id=conversation_id,
+        )
+        await session.flush()
     return row

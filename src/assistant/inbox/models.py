@@ -177,6 +177,28 @@ class ConversationTriage(Base):
     updated_at: Mapped[CreatedAt]
 
 
+class NotificationSource(Base):
+    """Immutable triggering verdict; content expires with its alert or sooner."""
+
+    __tablename__ = "notification_sources"
+
+    notification_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app.notifications.id", ondelete="CASCADE"), primary_key=True
+    )
+    account_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app.accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    conversation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app.conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    verdict_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    covers_through_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    verdict_state: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[CreatedAt]
+
+
 class Digest(Base):
     """Content-free delivery ledger for one account's digest period."""
 

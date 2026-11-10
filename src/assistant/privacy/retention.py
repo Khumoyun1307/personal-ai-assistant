@@ -57,7 +57,14 @@ from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.jobs import JobScheduler
 from assistant.db.uow import transaction
-from assistant.inbox.models import ConversationTriage, Digest, InboundUpdate, Notification, Task
+from assistant.inbox.models import (
+    ConversationTriage,
+    Digest,
+    InboundUpdate,
+    Notification,
+    NotificationSource,
+    Task,
+)
 from assistant.memory.items import sweep_forgotten
 from assistant.memory.summaries import (
     covered_through,
@@ -393,6 +400,12 @@ async def sweep_p2_content(
                         ConversationTriage.account_id.in_(account_ids),
                         ConversationTriage.updated_at < cutoff,
                     )
+                )
+            )
+            await uow.session.execute(
+                delete(NotificationSource).where(
+                    NotificationSource.account_id.in_(account_ids),
+                    NotificationSource.created_at < cutoff,
                 )
             )
     return action_texts, triage_verdicts
