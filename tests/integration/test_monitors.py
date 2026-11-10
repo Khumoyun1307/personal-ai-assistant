@@ -540,14 +540,11 @@ async def test_a_low_priority_contacts_monitor_alert_is_not_demoted(env: Env) ->
     assert alert.conversation_id == a
 
 
-async def test_alert_with_summary_adds_the_reasons_of_a_covering_verdict(env: Env) -> None:
-    """S05.4 §3.7: `alert_with_summary` adds the chat's latest triage
-    reasons only when that verdict covers the matched message (no model
-    call); a stale verdict adds nothing. Reasons are escaped; the alert
-    never carries message text."""
+async def test_monitor_never_borrows_an_explanation_created_after_its_match(env: Env) -> None:
+    """A later covering verdict is not the verdict that triggered the event."""
     a, _ = await setup(env)
     kamola = await contact_id(env)
-    await monitor(
+    monitor_id = await monitor(
         env,
         "contact_replied",
         contact_ids=[kamola],
@@ -574,16 +571,44 @@ async def test_alert_with_summary_adds_the_reasons_of_a_covering_verdict(env: En
                 model="gpt-6-luna",
             )
         )
+    async with transaction(env.factory) as uow:
+        captured = await enqueue(
+            uow.session,
+            account_id=await account_id(env),
+            kind=NotificationKind.MONITOR_MATCH,
+            priority=Priority.HIGH,
+            dedupe_key="synthetic:captured-monitor-verdict",
+            refs=NotificationRefs(
+                conversation_ids=(a,),
+                message_ids=(matched,),
+                automation_ids=(monitor_id,),
+            ),
+            clock=env.clock,
+            conversation_id=a,
+        )
+    assert captured is not None
     await say(env, 3, "SYNTH-A yana")
-    first, second = await alerts(env)
+    first, _, second = await alerts(env)
+    async with env.factory() as session, session.begin():
+        verdict = await session.scalar(
+            select(ConversationTriage).where(ConversationTriage.conversation_id == a)
+        )
+        assert verdict is not None
+        verdict.covers_through_message_id = await message_id_of(env, 3)
+        verdict.reasons = ["SYNTH-LATER settled"]
     channel = FakeChannel()
     service = delivery(env, channel)
     assert (await service.deliver(first.id)).status == "sent"
     assert (await service.deliver(second.id)).status == "sent"
-    covered, stale = channel.sends
-    assert "• SYNTH-REASON &lt;b&gt;a decision&lt;/b&gt;" in covered
+    assert (await service.deliver(captured)).status == "sent"
+    covered, stale, original = channel.sends
+    assert "SYNTH-REASON" not in covered
+    assert "original explanation is no longer available" in covered
     assert "SYNTH-REASON" not in stale  # the verdict predates message 3
-    for sent in (covered, stale):
+    assert "• SYNTH-REASON &lt;b&gt;a decision&lt;/b&gt;" in original
+    assert "SYNTH-LATER" not in original
+    assert "superseded or resolved" in original
+    for sent in (covered, stale, original):
         assert "javob" not in sent
         assert "yana" not in sent
 

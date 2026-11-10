@@ -41,6 +41,7 @@ from assistant.agent.models import ToolConfirmation
 from assistant.agent.summarize import SummaryStatus
 from assistant.automation.models import Automation
 from assistant.inbox.models import ConversationTriage, Notification, Task
+from assistant.inbox.notification_sources import bind_source
 from assistant.memory import items
 from assistant.privacy import deletion
 from assistant.privacy.content_columns import CONTENT_COLUMNS
@@ -374,6 +375,15 @@ async def seed(env: Env) -> Seeded:
                     contact_id=person,
                 )
             )
+        await session.flush()
+        for alert in await session.scalars(select(Notification)):
+            if alert.conversation_id is not None:
+                await bind_source(
+                    session,
+                    account_id=alert.account_id,
+                    notification_id=alert.id,
+                    conversation_id=alert.conversation_id,
+                )
     return Seeded(account_id, kamola_chat, kamola, bobur_chat, bobur, other_id)
 
 
@@ -395,6 +405,7 @@ async def assert_seeded(env: Env) -> dict[str, set[str]]:
         "tasks.title",
         "tasks.details",
         "conversation_triage.reasons",
+        "notification_sources.reasons",
         "automations.spec",
     } <= before["CHATK"]
     assert {"memory_items.content", "tool_confirmations.args"} <= before["NOTEK"]

@@ -25,7 +25,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.callbacks import encode, parse
@@ -34,8 +34,9 @@ from assistant.accounts.service import create_card
 from assistant.conversations.models import Conversation, Message
 from assistant.core.jobs import NOTIFY_TASK
 from assistant.db.uow import transaction
-from assistant.inbox.models import ConversationTriage, Notification
+from assistant.inbox.models import ConversationTriage, Notification, NotificationSource
 from assistant.inbox.notification_policy import RecentLoad
+from assistant.inbox.notification_sources import UNAVAILABLE, explanation
 from assistant.inbox.notification_types import NotificationKind, NotificationRefs, Priority
 from assistant.inbox.notifications import (
     NTF_CARD,
@@ -48,6 +49,7 @@ from assistant.inbox.notifications import (
 )
 from assistant.jobs.reconcile_inbox import notification_reconciler
 from assistant.observability.status import build_status
+from assistant.privacy.retention import sweep_all
 from assistant.telegram.control.alerts import handle_ntf_press
 from assistant.telegram.control.routes import ControlRoutes
 from tests.fakes.channel import FakeChannel
@@ -65,6 +67,7 @@ from tests.integration.p2_factories import (
     seed_account,
     seed_conversation,
     seed_notification,
+    seed_task,
     seed_triage,
 )
 
@@ -394,15 +397,149 @@ async def test_a_deleted_source_suppresses_the_alert(env: Env) -> None:
     assert notification is not None
     async with env.factory() as session, session.begin():
         await session.execute(
-            ConversationTriage.__table__.delete().where(
-                ConversationTriage.conversation_id == where.conversation_id
-            )
+            Conversation.__table__.delete().where(Conversation.id == where.conversation_id)
         )
     channel = FakeChannel()
     assert (await delivery(env, channel).deliver(notification)).status == "suppressed"
     stored = await row(env, notification)
     assert (stored.status, stored.reason_code) == ("suppressed", "source_deleted")
     assert channel.sends == []
+
+
+async def test_a_resolved_held_alert_keeps_its_original_explanation(env: Env) -> None:
+    env.clock.set(NIGHT)
+    where = await chat(env, reasons=["Synthetic original urgent reason"])
+    notification = await add(env, where)
+    assert notification is not None
+    channel = FakeChannel()
+    service = delivery(env, channel)
+    assert (await service.deliver(notification)).status == "deferred"
+    async with env.factory() as session, session.begin():
+        verdict = await session.scalar(
+            select(ConversationTriage).where(
+                ConversationTriage.conversation_id == where.conversation_id
+            )
+        )
+        assert verdict is not None
+        verdict.covers_through_message_id += 1
+        verdict.requests_decision = False
+        verdict.urgency = "normal"
+        verdict.escalation_category = "none"
+        verdict.reasons = ["Synthetic later settled reason"]
+    env.clock.set(QUIET_END)
+    assert (await service.deliver(notification)).status == "sent"
+    (sent,) = channel.sends
+    assert "Earlier alert" in sent
+    assert "superseded or resolved" in sent
+    assert "Synthetic original urgent reason" in sent
+    assert "Synthetic later settled reason" not in sent
+    assert "Open the chat to reply" not in sent
+    assert (await service.deliver(notification)).status == "not_queued"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "owner_reply",
+        "takeover",
+        "task_resolved",
+        "verdict_resolved",
+        "purged_explanation",
+        "purged_message",
+        "purged_verdict",
+    ],
+)
+async def test_delayed_alerts_do_not_claim_a_stale_request_is_current(
+    env: Env, change: str
+) -> None:
+    env.clock.set(DAY)
+    where = await chat(env, reasons=["Synthetic original reason"])
+    notification = await add(env, where)
+    assert notification is not None
+    async with env.factory() as session, session.begin():
+        conversation = await session.get(Conversation, where.conversation_id)
+        assert conversation is not None
+        if change == "owner_reply":
+            source = await session.get(NotificationSource, notification)
+            assert source is not None
+            conversation.last_owner_msg_at = source.created_at + timedelta(minutes=1)
+        elif change == "takeover":
+            conversation.autonomy_paused_reason = "takeover"
+        elif change == "verdict_resolved":
+            verdict = await session.scalar(
+                select(ConversationTriage).where(
+                    ConversationTriage.conversation_id == where.conversation_id
+                )
+            )
+            assert verdict is not None
+            verdict.requests_decision = False
+            verdict.urgency = "normal"
+            verdict.escalation_category = "none"
+        elif change == "task_resolved":
+            task = await seed_task(
+                session,
+                account_id=where.account_id,
+                conversation_id=where.conversation_id,
+                status="done",
+            )
+            stored = await session.get(Notification, notification)
+            assert stored is not None
+            stored.refs = {**stored.refs, "task_ids": [task.id]}
+        elif change == "purged_explanation":
+            await session.execute(
+                delete(NotificationSource).where(NotificationSource.notification_id == notification)
+            )
+        elif change == "purged_verdict":
+            await session.execute(
+                delete(ConversationTriage).where(
+                    ConversationTriage.conversation_id == where.conversation_id
+                )
+            )
+        else:
+            message = await session.scalar(
+                select(Message).where(Message.conversation_id == where.conversation_id)
+            )
+            assert message is not None
+            message.text = None
+            message.purged_at = DAY
+            stored = await session.get(Notification, notification)
+            assert stored is not None
+            stored.refs = {**stored.refs, "message_ids": [message.id]}
+    channel = FakeChannel()
+    assert (await delivery(env, channel).deliver(notification)).status == "sent"
+    (sent,) = channel.sends
+    assert "Earlier alert" in sent
+    assert "Open the chat to reply" not in sent
+    if change.startswith("purged_"):
+        assert "no longer available" in sent
+        assert "Synthetic original reason" not in sent
+    else:
+        assert "Synthetic original reason" in sent
+
+
+async def test_notification_explanations_obey_message_retention_and_alert_cascade(env: Env) -> None:
+    env.clock.set(DAY)
+    where = await chat(env)
+    notification = await add(env, where)
+    assert notification is not None
+    async with env.factory() as session, session.begin():
+        account = await session.get(Account, where.account_id)
+        source = await session.get(NotificationSource, notification)
+        assert account is not None
+        assert source is not None
+        account.settings = {"retention_days": {"messages": 14}}
+        source.created_at = DAY - timedelta(days=15)
+    await sweep_all(env.factory, env.clock)
+    async with env.factory() as session:
+        assert await session.get(NotificationSource, notification) is None
+        assert await session.get(Notification, notification) is not None
+    second = await add(env, where, key="synthetic:second")
+    assert second is not None
+    async with env.factory() as session, session.begin():
+        assert await session.get(NotificationSource, second) is not None
+        await session.execute(delete(Notification).where(Notification.id == second))
+    async with env.factory() as session:
+        assert await session.get(NotificationSource, second) is None
 
 
 @pytest.mark.parametrize("retry_after_failure", [False, True])
@@ -779,9 +916,22 @@ async def test_notifications_never_cross_accounts(env: Env) -> None:
     """RG-21: dedupe keys, the cap's load and the batched list are per
     account."""
     env.clock.set(DAY)
-    mine, theirs = await chat(env), await chat(env, name="Bobur")
+    mine = await chat(env)
+    theirs = await chat(env, name="Bobur", reasons=["SYNTH-FOREIGN explanation"])
     assert await add(env, mine) is not None
-    assert await add(env, theirs) is not None  # the same key in another account
+    foreign_notification = await add(env, theirs)  # the same key in another account
+    assert foreign_notification is not None
+    async with env.factory() as session:
+        foreign_source = await explanation(
+            session,
+            account_id=mine.account_id,
+            notification_id=foreign_notification,
+            conversation_id=theirs.conversation_id,
+            refs={},
+        )
+    assert foreign_source.reasons == ()
+    assert foreign_source.current is False
+    assert foreign_source.note == UNAVAILABLE
     async with env.factory() as session, session.begin():
         for i in range(10):  # the other account is far over its cap
             session.add(
@@ -808,6 +958,7 @@ async def test_notifications_never_cross_accounts(env: Env) -> None:
     channel = FakeChannel()
     assert (await delivery(env, channel).deliver(mine_id)).status == "sent"
     assert "Bobur" not in channel.sends[0]
+    assert "SYNTH-FOREIGN" not in channel.sends[0]
     assert channel.recipients == [mine.account_id]
     async with env.factory() as session:
         assert (

@@ -22,6 +22,7 @@ pytestmark = pytest.mark.integration
 SCRATCH = "assistant_migration_test"
 
 EXPECTED_TABLES = {
+    "notification_sources",
     "actions",
     "accounts",
     "agent_run_steps",
@@ -488,7 +489,19 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0016"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0017"]
+
+
+def test_0017_notification_sources_round_trip(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    assert "notification_sources" in tables_in(scratch_url, "app")
+    assert {"notification_id", "account_id", "conversation_id", "reasons"} <= _columns(
+        scratch_url, "notification_sources"
+    )
+    run_alembic(scratch_url, "0016", down=True)
+    assert "notification_sources" not in tables_in(scratch_url, "app")
+    run_alembic(scratch_url, "head")
+    assert "notification_sources" in tables_in(scratch_url, "app")
 
 
 def test_0016_control_reply_metadata_round_trip(scratch_url: str) -> None:

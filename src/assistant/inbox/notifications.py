@@ -51,6 +51,7 @@ from assistant.inbox.notification_policy import (
     decide_delivery,
     muted_pairs,
 )
+from assistant.inbox.notification_sources import bind_source
 from assistant.inbox.notification_types import (
     AlertClass,
     NotificationKind,
@@ -154,6 +155,22 @@ async def enqueue(
         .returning(Notification.id)
     )
     notification_id = (await session.execute(statement)).scalar_one_or_none()
+    if (
+        notification_id is not None
+        and conversation_id is not None
+        and (kind.value.startswith("triage_") or kind == NotificationKind.MONITOR_MATCH)
+    ):
+        await bind_source(
+            session,
+            account_id=account_id,
+            notification_id=notification_id,
+            conversation_id=conversation_id,
+            expected_through=(
+                max(refs.message_ids)
+                if kind == NotificationKind.MONITOR_MATCH and refs.message_ids
+                else None
+            ),
+        )
     if notification_id is not None and scheduler is not None:
         _defer_after_commit(session, scheduler, notification_id, None)
     return notification_id

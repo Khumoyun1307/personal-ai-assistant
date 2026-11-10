@@ -56,8 +56,9 @@ from assistant.core.channel import Button, ControlChannel, Delivery
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
-from assistant.inbox import tasks, triage_store
+from assistant.inbox import tasks
 from assistant.inbox.models import Digest, Notification
+from assistant.inbox.notification_sources import explanation
 from assistant.inbox.notification_types import AlertClass, NotificationKind
 from assistant.inbox.notifications import (
     NotificationView,
@@ -176,12 +177,19 @@ class DigestContent:
     #: Set when a scheduled digest goes out late: the time it was due
     #: (FR-FUP-08 — late, with a note; set by `DigestDelivery`).
     due_late_at: datetime | None = None
+    #: Earlier conditions, never presented as current requests.
+    historical: tuple[ChatLine, ...] = ()
 
     @property
     def quiet(self) -> bool:
         """Nothing in items 1-5 (S05.3b §3.4 item 7)."""
         return not (
-            self.needs_you or self.waiting or self.commitments or self.closed or self.other_alerts
+            self.needs_you
+            or self.waiting
+            or self.commitments
+            or self.closed
+            or self.other_alerts
+            or self.historical
         )
 
     def open_chat_targets(self) -> tuple[ChatLine, ...]:
@@ -225,37 +233,52 @@ async def build_digest(
     # within the unchanged 30-day alert retention limit.
     batched = await notifications_batched_since(session, account_id=account_id, before=period_end)
     held = await _held_needs_you(session, account_id, period_start, period_end)
-    needs_you_alerts = [
-        n for n in (*batched, *held) if n.kind in NEEDS_YOU_KINDS and n.conversation_id is not None
+    triage_alerts = [
+        n
+        for n in (*batched, *held)
+        if n.kind.startswith("triage_") and n.conversation_id is not None
     ]
     others = Counter(n.kind for n in batched if n.kind not in NEEDS_YOU_KINDS)
 
     candidates = await catch_up.unanswered(
         session, account_id, since=period_end - WAITING_WINDOW, limit=WAITING_CANDIDATES
     )
-    alert_chats = list(
-        dict.fromkeys(n.conversation_id for n in needs_you_alerts if n.conversation_id)
-    )
-    # S05.1's read models: the stored verdict of each alerted chat, and the
-    # verdicts that have read a waiting chat's newest contact message
-    # (attention list v2).
-    verdicts = await triage_store.latest(
-        session, account_id=account_id, conversation_ids=alert_chats
-    )
+    alert_chats = list(dict.fromkeys(n.conversation_id for n in triage_alerts if n.conversation_id))
+    # Waiting chats use verdicts covering their newest contact message.
+    # Alert explanations instead belong to the immutable triggering event.
     covering = await catch_up.covering_triage(
         session, account_id, [c.conversation_id for c in candidates]
     )
     names = await _names(session, account_id, alert_chats)
 
-    needs_you = tuple(
-        ChatLine(
-            conversation_id,
-            names[conversation_id],
-            _first_reason(verdicts[conversation_id].reasons if conversation_id in verdicts else ()),
+    current_alerts: dict[int, ChatLine] = {}
+    historical: list[ChatLine] = []
+    for alert in triage_alerts:
+        conversation_id = alert.conversation_id
+        if conversation_id is None or conversation_id not in names:
+            continue
+        event = await explanation(
+            session,
+            account_id=account_id,
+            notification_id=alert.notification_id,
+            conversation_id=conversation_id,
+            refs=alert.refs,
         )
-        for conversation_id in alert_chats
-        if conversation_id in names  # a chat whose data is gone is not listed
-    )
+        reason = _first_reason(event.reasons)
+        if event.current:
+            if alert.kind in NEEDS_YOU_KINDS:
+                current_alerts[conversation_id] = ChatLine(
+                    conversation_id, names[conversation_id], reason
+                )
+        else:
+            historical.append(
+                ChatLine(
+                    conversation_id,
+                    names[conversation_id],
+                    " ".join(part for part in (*event.reasons, event.note) if part),
+                )
+            )
+    needs_you = tuple(current_alerts.values())
     listed = {line.conversation_id for line in needs_you}
     waiting: list[tuple[int, ChatLine]] = []
     for candidate in candidates:
@@ -287,6 +310,7 @@ async def build_digest(
         period_end=period_end,
         timezone=timezone,
         needs_you=needs_you,
+        historical=tuple(historical),
         waiting=tuple(line for _, line in waiting[:MAX_WAITING]),
         commitments=commitments,
         commitments_more=commitments_more,
