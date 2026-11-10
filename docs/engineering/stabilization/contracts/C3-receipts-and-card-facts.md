@@ -87,6 +87,8 @@ Q5 distinguishes successful edit / narrow not-modified equivalence from parse/mi
 
 H2/H7 extend existing **structural audit details** (no new table) with a `card_presented` event: `action_id: int`, `version: int`, `state: ActionState`, `control_message_id: int`, `claim_id: int|None`. Record successful current-version presentations/edits, not refusals; each message ID/version association remains resolvable account-locally. When edited in place, resolve a reply to that message to its latest successfully presented version; when replaced, keep the old association for stale detection. Pre-contract historical cards resolve only through the current action pointer; unavailable older mappings yield unavailable, not a guessed card. Full-text companion messages may carry the same association with `part: full_text|controls`.
 
+H2 implements the controls-message mapping in `ApprovalCards._record` and account-local selection in `actions/continuations.py`. Refused edits and unsuccessful/in-flight presentations add no mapping. Reply/component metadata and mappings participate in the structural export seam, scope erasure and retention cleanup. Full-text companion mappings and H7's broader fresh-receipt narration are not activated by H2. Fixture regressions are authored; container validation and manual Telegram checks remain unrun in the restricted worktree.
+
 | Storage | Type / nullability | Retention / deletion / consent |
 |---|---|---|
 | Audit keys above | Required ints/enums, nullable claim_id; strict allow-list JSON | Existing audit row 1 year; account scoped. Scope/everything purge removes mapping references as required; no retained source content. ai_control; managed read gates apply when resolving related artifacts. |

@@ -11,11 +11,20 @@ here is synthetic.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
+
+import pytest
 
 from assistant.accounts.models import Account, ControlTurn
 from assistant.actions.activity import LiveCardFact
+from assistant.actions.requests import (
+    Continuation,
+    MissingSlot,
+    OwnerContinuation,
+    OwnerRequestView,
+    ValidatedSource,
+)
 from assistant.agent import prompt_registry
 from assistant.agent.context import (
     LIVE_CARDS_SHOWN,
@@ -292,3 +301,95 @@ def test_provenance_of_every_other_item_is_unchanged() -> None:
     shown = [item for item in with_cards.items if "Live approval cards" not in item.text]
     assert [item.provenance for item in shown] == [item.provenance for item in without.items]
     assert [item.role for item in shown] == [item.role for item in without.items]
+
+
+@pytest.mark.parametrize(
+    ("reply", "slot"),
+    [
+        ("Kamola Ziyo", "recipient"),
+        ("20", "constraints"),
+        ("shorter", "constraints"),
+        ("that card", "target"),
+    ],
+)
+def test_continuation_facts_are_separate_from_exact_source_words(
+    reply: str, slot: MissingSlot
+) -> None:
+    request = OwnerRequestView(
+        request_id=51,
+        version=1,
+        operation="dictate",
+        state="collecting",
+        contact_id=None,
+        conversation_id=None,
+        missing_slot=slot,
+        action_id=None,
+        action_version=None,
+        target_message_id=None,
+        sources=(),
+        requested_at=NOW,
+        expires_at=NOW + timedelta(hours=24),
+    )
+    continuation = OwnerContinuation(
+        selection=Continuation("selected", request_id=51, version=1),
+        request=request,
+        sources=(ValidatedSource(SECRET_DRAFT, False, False, 31),),
+        question_input_id=61,
+    )
+    context = build(continuation=continuation, turn=turn(text=reply))
+    [facts] = [item for item in context.items if item.text.startswith("Owner request continuation")]
+    assert '"request_id": 51' in facts.text
+    assert f'"missing_slot": "{slot}"' in facts.text
+    assert '"question_input_id": 61' in facts.text
+    assert SECRET_DRAFT not in facts.text
+    assert SECRET_NAME not in facts.text
+    assert context.items[0].text == SECRET_DRAFT
+    assert context.items[-1].text == reply
+    assert context.tainted is False
+
+
+def test_selected_quoted_source_stays_wrapped_and_taints() -> None:
+    selected = OwnerContinuation(
+        Continuation("selected", request_id=51, version=1),
+        sources=(ValidatedSource("Synthetic third-party quote", True, True, 31),),
+    )
+    context = build(continuation=selected)
+    assert 'trust="untrusted"' in context.items[0].text
+    assert context.items[0].provenance is Provenance.MANAGED
+    assert context.tainted is True
+    withheld = build(continuation=selected, managed_allowed=False)
+    assert not any("Synthetic third-party quote" in item.text for item in withheld.items)
+    assert withheld.tainted is False
+
+
+def test_unavailable_explicit_reply_is_a_fact_without_focused_body() -> None:
+    context = build(continuation=OwnerContinuation(Continuation("unavailable", code="stale")))
+    [facts] = [item for item in context.items if item.text.startswith("Owner request continuation")]
+    assert '"status": "unavailable"' in facts.text
+    assert '"code": "stale"' in facts.text
+    assert '"request_id": null' in facts.text
+
+
+def test_reply_parser_keeps_only_same_control_chat_positive_ids() -> None:
+    from assistant.telegram.control.inbox_handlers import control_reply_id
+
+    payload = {
+        "chat": {"id": 101, "type": "private"},
+        "reply_to_message": {"chat": {"id": 101}, "message_id": 900, "text": SECRET_DRAFT},
+    }
+    assert control_reply_id(payload) == 900
+    assert control_reply_id({**payload, "reply_to_message": {"message_id": 900}}) is None
+    for invalid in (True, 0, -1, "900", 2**63):
+        assert (
+            control_reply_id(
+                {
+                    **payload,
+                    "reply_to_message": {"chat": {"id": 101}, "message_id": invalid},
+                }
+            )
+            is None
+        )
+    assert (
+        control_reply_id({**payload, "reply_to_message": {"chat": {"id": 102}, "message_id": 900}})
+        is None
+    )

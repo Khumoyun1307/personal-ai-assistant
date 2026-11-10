@@ -1142,6 +1142,42 @@ async def test_expiry_clears_only_the_expired_actions_own_edit_question(s: Scena
     assert left == [other_id]
 
 
+async def test_successful_presentation_maps_only_structural_version_facts(s: Scenario) -> None:
+    row = await s.seed()
+    async with s.env.factory() as session:
+        mapping = await session.scalar(
+            select(AuditLogEntry).where(
+                AuditLogEntry.account_id == s.account_id,
+                AuditLogEntry.event == "card_presented",
+                AuditLogEntry.subject_id == row.id,
+            )
+        )
+        assert mapping is not None
+        assert mapping.details == {
+            "action_id": row.id,
+            "version": row.version,
+            "state": row.state,
+            "control_message_id": row.card_message_id,
+            "claim_id": mapping.details["claim_id"],
+        }
+        assert isinstance(mapping.details["claim_id"], int)
+        mapping_id = mapping.id
+    s.env.sender.fail_with = telegram_error("Bad Request: synthetic parse refusal", status_code=400)
+    await fresh_cards(s).sync(row.id)
+    s.env.sender.fail_with = None
+    async with s.env.factory() as session:
+        mappings = list(
+            await session.scalars(
+                select(AuditLogEntry.id).where(
+                    AuditLogEntry.account_id == s.account_id,
+                    AuditLogEntry.event == "card_presented",
+                    AuditLogEntry.subject_id == row.id,
+                )
+            )
+        )
+        assert mappings == [mapping_id]
+
+
 # ------------------------------------------------------------ discipline
 async def test_state_changes_go_through_s04_1_transitions_only(s: Scenario) -> None:
     row = await s.seed()
@@ -1151,7 +1187,8 @@ async def test_state_changes_go_through_s04_1_transitions_only(s: Scenario) -> N
     await press_action(s, row.id, "ed")
     await press(s, button_token(s, await s.action(row.id), "cx"), "cx")
     await press_action(s, row.id, "rj")
-    assert await s.events(row.id) == [
+    # H2 adds presentation evidence separately from lifecycle transitions.
+    assert [event for event in await s.events(row.id) if event != "card_presented"] == [
         "approval_card_presentation_claimed",
         "approval_card_presentation_resolved",
         "action_revision_requested",
@@ -1162,7 +1199,7 @@ async def test_state_changes_go_through_s04_1_transitions_only(s: Scenario) -> N
     ]
     second = await s.seed()
     await press_action(s, second.id, "ok")
-    assert await s.events(second.id) == [
+    assert [event for event in await s.events(second.id) if event != "card_presented"] == [
         "approval_card_presentation_claimed",
         "approval_card_presentation_resolved",
         "action_approved",

@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import ColumnElement, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts.models import ControlTurn, PendingInput
+from assistant.accounts.models import AuditLogEntry, ControlTurn, PendingInput
 from assistant.actions.models import Action
 from assistant.actions.request_models import (
     TERMINAL_REQUEST_STATES,
@@ -65,6 +65,54 @@ async def purge_request_sources(
             .execution_options(populate_existing=True)
         )
     )
+    # Presentation history contains no prose, but scoped erasure must also
+    # remove its control-message associations, including pre-C1 cards.
+    action_scope = select(Action.id).where(Action.account_id == account_id)
+    if not everything:
+        action_scope = action_scope.where(
+            or_(
+                Action.conversation_id.in_(conversation_ids),
+                Action.id.in_([row.action_id for row in rows if row.action_id is not None]),
+            )
+        )
+    action_scope = action_scope.correlate(None)
+    reply_scope = update(ControlTurn).where(ControlTurn.account_id == account_id)
+    if not everything:
+        card_messages = select(Action.card_message_id).where(
+            Action.account_id == account_id, Action.id.in_(action_scope)
+        )
+        presented_messages = select(AuditLogEntry.details["control_message_id"].as_integer()).where(
+            AuditLogEntry.account_id == account_id,
+            AuditLogEntry.event == "card_presented",
+            AuditLogEntry.subject_type == "action",
+            AuditLogEntry.subject_id.in_(action_scope),
+        )
+        source_messages = (
+            select(ControlTurn.telegram_message_id)
+            .where(ControlTurn.account_id == account_id, ControlTurn.id.in_(turn_ids))
+            .correlate(None)
+        )
+        refers: list[ColumnElement[bool]] = [
+            ControlTurn.id.in_(turn_ids),
+            ControlTurn.reply_to_telegram_message_id.in_(card_messages),
+            ControlTurn.reply_to_telegram_message_id.in_(presented_messages),
+            ControlTurn.reply_to_telegram_message_id.in_(source_messages),
+        ]
+        refers.extend(
+            ControlTurn.refs.contains({"conversation_ids": [conversation_id]})
+            for conversation_id in conversation_ids
+        )
+        refers.extend(ControlTurn.refs.contains({"owner_request_ids": [row.id]}) for row in rows)
+        reply_scope = reply_scope.where(or_(*refers))
+    await session.execute(reply_scope.values(reply_to_telegram_message_id=None))
+    await session.execute(
+        delete(AuditLogEntry).where(
+            AuditLogEntry.account_id == account_id,
+            AuditLogEntry.event == "card_presented",
+            AuditLogEntry.subject_type == "action",
+            AuditLogEntry.subject_id.in_(action_scope),
+        )
+    )
     for row in rows:
         await cancel_linked_action(session, row, now=now, clear_text=True)
         await session.execute(
@@ -119,6 +167,14 @@ async def unlink_request_actions(
         update(OwnerRequest)
         .where(OwnerRequest.account_id == account_id, OwnerRequest.action_id.in_(action_ids))
         .values(action_id=None, action_version=None, version=OwnerRequest.version + 1)
+    )
+    await session.execute(
+        delete(AuditLogEntry).where(
+            AuditLogEntry.account_id == account_id,
+            AuditLogEntry.event == "card_presented",
+            AuditLogEntry.subject_type == "action",
+            AuditLogEntry.subject_id.in_(action_ids),
+        )
     )
 
 

@@ -34,6 +34,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import Account, ControlTurn
@@ -44,6 +45,8 @@ from assistant.accounts.service import (
     active_consent,
 )
 from assistant.actions.activity import live_cards
+from assistant.actions.request_models import OwnerRequest
+from assistant.actions.requests import OwnerContinuation
 from assistant.agent import owner_texts, prompt_registry
 from assistant.agent.citations import apply_citations
 from assistant.agent.context import OWNER_HISTORY_TURNS, build_owner_request
@@ -54,6 +57,7 @@ from assistant.agent.persistence import (
     ControlTurnRepository,
     LlmCallRepository,
     account_of_turn,
+    load_owner_continuation,
     month_start,
 )
 from assistant.agent.ports import ControlChannel
@@ -181,6 +185,7 @@ class _RunState:
     account_id: int
     chat_id: int
     run_id: int
+    turn_id: int
     items: list[InputItem]
     instructions: str
     iterations: int = 0
@@ -207,6 +212,7 @@ class _RunState:
     may_ask_managed: bool = False
     cited_ids: tuple[int, ...] = ()
     unverified_citations: int = 0
+    continuation: OwnerContinuation | None = None
 
 
 def _managed_refs(turns: list[ControlTurn]) -> ToolRefs:
@@ -306,6 +312,7 @@ class OwnerRequestRuntime:
                 run_type=RUN_TYPE,
                 turn_id=turn_id,
                 owner_turn=started.owner_turn,
+                continuation=state.continuation,
                 tainted=state.tainted,
                 managed_ok=started.managed_consent,
                 services=ToolServices(
@@ -402,6 +409,18 @@ class OwnerRequestRuntime:
             history = await ControlTurnRepository(session, account_id).recent_before(
                 turn_id, limit=OWNER_HISTORY_TURNS, include_managed=managed_ok
             )
+            continuation = await load_owner_continuation(
+                session,
+                account_id=account_id,
+                turn=turn,
+                now=self._clock.now(),
+                managed_allowed=managed_ok,
+            )
+            source_turns: list[ControlTurn] = []
+            for source in continuation.sources:
+                source_turn = await ControlTurnRepository(session, account_id).get(source.turn_id)
+                if source_turn is not None:
+                    source_turns.append(source_turn)
             context = build_owner_request(
                 prompt=prompt,
                 account=account,
@@ -409,6 +428,7 @@ class OwnerRequestRuntime:
                 turn=turn,
                 now=self._clock.now(),
                 managed_allowed=managed_ok,
+                continuation=continuation,
                 # The owner's own saved items (owner scope; S03.3, FR-CTL-01).
                 memory=await items.owner_items(
                     session, account_id, limit=OWNER_MEMORY_ITEMS, include_managed=managed_ok
@@ -426,6 +446,7 @@ class OwnerRequestRuntime:
                 account_id=account_id,
                 chat_id=chat_id,
                 run_id=run.id,
+                turn_id=turn.id,
                 items=list(context.items),
                 instructions=context.instructions,
                 used_managed=any(item.provenance is Provenance.MANAGED for item in context.items),
@@ -434,11 +455,12 @@ class OwnerRequestRuntime:
                 # The reply may restate a managed forward or quote in the
                 # current turn or the included history, so it carries their
                 # refs and a purge of that chat redacts it too (§10.4).
-                refs=_managed_refs([*history, turn]),
+                refs=_managed_refs([*history, turn, *source_turns]) | ToolRefs.from_json(turn.refs),
                 received_at=turn.created_at,
                 locale=supported_locale(account.locale_pref),
                 timezone=account.timezone,
                 may_ask_managed=not managed_state.granted,
+                continuation=continuation,
             )
             return _Started(
                 account_id,
@@ -452,6 +474,7 @@ class OwnerRequestRuntime:
                     third_party=bool(turn.third_party),
                     contains_managed=bool(turn.contains_managed),
                     quoted=turn.quoted_text is not None,
+                    owner_text_verified=bool(turn.owner_text_verified),
                 ),
             )
 
@@ -625,6 +648,27 @@ class OwnerRequestRuntime:
                 run.iterations = state.iterations
                 run.finished_at = self._clock.now()
                 run.error_class = error_class or (None if delivery.ok else "reply_not_delivered")
+            # A request may have been opened by this run's future H3/H4
+            # tools after _start. Link the delivered answer to those facts,
+            # without storing a model summary or adding delivery state.
+            request_ids = list(
+                await uow.session.scalars(
+                    select(OwnerRequest.id)
+                    .where(
+                        OwnerRequest.account_id == state.account_id,
+                        or_(
+                            OwnerRequest.trigger_turn_id == state.turn_id,
+                            OwnerRequest.last_turn_id == state.turn_id,
+                        ),
+                    )
+                    .order_by(OwnerRequest.id)
+                )
+            )
+            continuation_refs = (
+                state.continuation.as_refs() if state.continuation is not None else {}
+            )
+            if request_ids:
+                continuation_refs = {"owner_request_ids": request_ids}
             ControlTurnRepository(uow.session, state.account_id).add(
                 ControlTurn(
                     role="assistant",
@@ -643,7 +687,10 @@ class OwnerRequestRuntime:
                     run_id=state.run_id,
                     # Which conversations/contacts the reply drew on, so a
                     # deletion of one of them can find this turn (§10.4).
-                    refs=state.refs.as_json(),
+                    refs={
+                        **state.refs.as_json(),
+                        **continuation_refs,
+                    },
                 )
             )
         if (

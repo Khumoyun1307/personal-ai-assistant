@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from assistant.accounts.models import Account, ControlTurn
 from assistant.actions.activity import LiveCardFact
 from assistant.actions.card_facts import state_reason_fact
+from assistant.actions.requests import OwnerContinuation
 from assistant.agent.attribution import FALLBACK_NAMES, clean_name, you_word
 from assistant.agent.draft_owner_schemas import OWNER_DRAFT_MODES
 from assistant.agent.locales import supported_locale
@@ -64,6 +65,7 @@ def build_owner_request(
     managed_allowed: bool = False,
     memory: Sequence[MemoryView] = (),
     live_cards: Sequence[LiveCardFact] | None = None,
+    continuation: OwnerContinuation | None = None,
 ) -> OwnerRequestContext:
     # The tag spelled out with its script, as the summarize context does: a
     # bare `uz-Latn` lost to the script of the chats (S03.6; S03.7 fix round).
@@ -98,6 +100,25 @@ def build_owner_request(
         for past in history
         if past.text
     ]
+    if continuation is not None:
+        for source in continuation.sources:
+            if source.managed and not managed_allowed:
+                continue
+            items.append(
+                TextItem(
+                    "user",
+                    (wrap(source.text, Source.QUOTED) or "") if source.untrusted else source.text,
+                    Provenance.MANAGED if source.managed else Provenance.OWNER_CONTROL,
+                )
+            )
+        if continuation.selection.status != "none":
+            items.append(
+                TextItem(
+                    "user",
+                    render_continuation(continuation, managed_allowed=managed_allowed),
+                    Provenance.OWNER_CONTROL,
+                )
+            )
     if live_cards is not None and managed_allowed:
         # Volatile, so after the history (prompt caching): current card facts.
         # Fixed facts only, so it carries no managed text and is
@@ -120,9 +141,50 @@ def build_owner_request(
         )
     items.append(current)
     direct = carries_third_party(turn)
+    if continuation is not None:
+        direct = direct or any(
+            source.untrusted
+            for source in continuation.sources
+            if managed_allowed or not source.managed
+        )
     tainted = direct or any(carries_third_party(t) for t in history)
     return OwnerRequestContext(
         instructions=instructions, items=tuple(items), tainted=tainted, directly_tainted=direct
+    )
+
+
+def render_continuation(continuation: OwnerContinuation, *, managed_allowed: bool) -> str:
+    """Content-free selection facts; source words travel as separate items."""
+    selected = continuation.selection
+    request = continuation.request
+    if not managed_allowed and (
+        selected.action_id is not None
+        or (request is not None and request.conversation_id is not None)
+    ):
+        return "Owner request continuation (application data): managed_access_off."
+    facts: dict[str, Any] = {
+        "status": selected.status,
+        "code": selected.code,
+        "basis": selected.basis,
+        "request_id": selected.request_id,
+        "request_version": selected.version,
+        "action_id": selected.action_id,
+        "action_version": selected.action_version,
+        "request_ids": selected.request_ids,
+    }
+    if request is not None:
+        facts.update(
+            operation=request.operation,
+            state=request.state,
+            missing_slot=request.missing_slot,
+            contact_id=request.contact_id,
+            conversation_id=request.conversation_id,
+            target_message_id=request.target_message_id,
+            question_input_id=continuation.question_input_id,
+            sources=[source.model_dump(mode="json") for source in request.sources],
+        )
+    return "Owner request continuation (application data; no execution authority):\n" + json.dumps(
+        facts, sort_keys=True
     )
 
 

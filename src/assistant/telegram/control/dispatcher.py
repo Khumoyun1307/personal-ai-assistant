@@ -7,9 +7,10 @@ Routing precedence, which is the whole subtlety of this module:
    have `/status` swallowed as the answer.
 2. **A stop word is treated as `/pause`** before any model is involved, so the
    kill switch works when the provider is down, out of budget, or wrong.
-3. **A pending input consumes the next plain message** — that is what makes
-   multi-step flows possible without aiogram FSM state (which would not
-   survive a restart).
+3. **A pending input consumes the next unaddressed plain message**, or a
+   direct reply to that question. A reply to a different artifact continues
+   to the owner runtime. Multi-step flows use durable UI state, not aiogram
+   FSM state (which would not survive a restart).
 4. Anything else becomes a control turn for the agent (S01.4).
 
 The handlers are plain functions; this module decides which one runs.
@@ -40,6 +41,7 @@ from assistant.memory.undo import UNDO_CARD
 from assistant.observability.logging import get_logger
 from assistant.observability.status import build_status
 from assistant.telegram.control import deeplinks, handlers, panels
+from assistant.telegram.control.approvals import DRAFT_EDIT
 from assistant.telegram.control.handlers import HandlerResult, IncomingMessage
 from assistant.telegram.control.routes import ControlRoutes
 from assistant.telegram.gateway import ControlChat, OutboundGateway
@@ -146,9 +148,16 @@ class ControlDispatcher:
             if message.third_party
             else await service.get_pending_input(session, account_id=account.id, clock=self._clock)
         )
+        pending_targeted = message.reply_to_telegram_message_id is None or (
+            pending is not None
+            # Edit points at the card itself, not a separate question. A
+            # Telegram reply to that card must reach artifact selection.
+            and pending.kind != DRAFT_EDIT
+            and message.reply_to_telegram_message_id == pending.prompt_message_id
+        )
         # The consent question is armed only once it was delivered, after the
         # language card (C4), so this answers a question the owner saw.
-        if pending is not None and pending.kind == handlers.ONBOARDING_CONSENT:
+        if pending is not None and pending.kind == handlers.ONBOARDING_CONSENT and pending_targeted:
             result = await handlers.handle_consent_reply(
                 session, self._gateway, self._clock, message, account
             )
@@ -157,7 +166,11 @@ class ControlDispatcher:
             return DispatchOutcome(result, account.id)
         # The managed-conversation consent is a card (Agree / Decline), never
         # a text question: a plain message is never read as that answer.
-        if pending is not None and (handler := self._routes.pending_inputs.get(pending.kind)):
+        if (
+            pending is not None
+            and pending_targeted
+            and (handler := self._routes.pending_inputs.get(pending.kind))
+        ):
             return DispatchOutcome(
                 await handler(
                     session, self._gateway, self._clock, self._scheduler, account, message, pending
@@ -189,6 +202,8 @@ class ControlDispatcher:
             created_at=message.received_at,
             third_party=message.third_party,
             quoted_text=message.quoted_text,
+            reply_to_telegram_message_id=message.reply_to_telegram_message_id,
+            owner_text_verified=not message.forwarded,
             # Forwarded/quoted text from one of the owner's managed chats is
             # managed content: it needs `ai_managed` to reach a model, and is
             # cleared by managed-data deletion and by purging that chat, which

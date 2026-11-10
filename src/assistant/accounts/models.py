@@ -219,6 +219,13 @@ class ControlTurn(Base):
     #: The quoted or replied-to third-party text, so the agent understands
     #: what the owner refers to. CONTENT-BEARING.
     quoted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Ingress classified the outer text separately from a third-party quote.
+    #: False for legacy rows and forwards; never inferred from a model answer.
+    owner_text_verified: Mapped[bool] = mapped_column(
+        nullable=False, server_default=sql_text("false")
+    )
+    #: Account's control-chat namespace only; never a business message id.
+    reply_to_telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     #: Conversation/contact ids this turn drew on, so deletion can purge it.
     refs: Mapped[JsonDict] = mapped_column(JSONB, nullable=False, server_default=sql_text("'{}'"))
     run_id: Mapped[int | None] = mapped_column(

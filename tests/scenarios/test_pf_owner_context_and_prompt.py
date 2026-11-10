@@ -16,13 +16,23 @@ from collections.abc import AsyncIterator
 import pytest
 from sqlalchemy import select
 
-from assistant.accounts.models import ControlTurn
+from assistant.accounts.models import ControlTurn, PendingInput
+from assistant.actions.requests import open_request
 from assistant.agent.context import carries_third_party
 from assistant.agent.models import AgentRun
 from assistant.llm.port import LLMRequest, Provenance, TextItem
 from tests.fakes.llm import text_response
 from tests.integration.agent_env import ask
-from tests.scenarios.p2_drive import DRAFT, FLAGS, Scenario, m04_environment, run_queued
+from tests.integration.business_env import OWNER
+from tests.integration.test_owner_requests import source
+from tests.scenarios.p2_drive import (
+    DRAFT,
+    FLAGS,
+    Scenario,
+    m04_environment,
+    press_action,
+    run_queued,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -88,6 +98,115 @@ async def test_a_later_run_sees_the_live_card_without_its_text(s: Scenario) -> N
     earlier = texts[-3]
     assert earlier.role == "assistant"
     assert f"chats {s.conversation_id}" in earlier.text
+
+
+async def test_telegram_reply_selects_that_card_in_runtime_context(s: Scenario) -> None:
+    row = await s.seed()
+    assert row.card_message_id is not None
+    # A pending Edit question must not consume the direct card
+    # reply. It remains open, rather than scheduling a revision implicitly.
+    await press_action(s, row.id, "ed")
+    async with s.env.factory() as session:
+        question = await session.scalar(
+            select(PendingInput).where(
+                PendingInput.account_id == s.account_id, PendingInput.kind == "draft_edit"
+            )
+        )
+        assert question is not None
+        # The Edit prompt shares the card's message id. Explicit card selection
+        # must still beat the pending-input handler in this collision.
+        assert question.prompt_message_id == row.card_message_id
+    s.fake.queue(text_response("Synthetic reply to selected card."))
+    await ask(
+        s.env,
+        "shorter",
+        reply_to_message={
+            "message_id": row.card_message_id,
+            "chat": {"id": OWNER, "type": "private"},
+        },
+    )
+    assert await run_queued(s, "agent.owner_request") == 1
+    request = owner_requests(s)[-1]
+    [facts] = [
+        item
+        for item in request.items
+        if isinstance(item, TextItem) and item.text.startswith("Owner request continuation")
+    ]
+    assert f'"action_id": {row.id}' in facts.text
+    assert f'"action_version": {row.version}' in facts.text
+    assert DRAFT not in facts.text
+    async with s.env.factory() as session:
+        owner = await session.scalar(
+            select(ControlTurn).where(
+                ControlTurn.account_id == s.account_id,
+                ControlTurn.role == "owner",
+                ControlTurn.text == "shorter",
+            )
+        )
+        assert owner is not None
+        assert owner.reply_to_telegram_message_id == row.card_message_id
+        assert owner.owner_text_verified is True
+        pending = await session.scalar(
+            select(PendingInput).where(
+                PendingInput.account_id == s.account_id, PendingInput.kind == "draft_edit"
+            )
+        )
+        assert pending is not None
+    after = await s.action(row.id)
+    assert after.revision_turn_id is None
+    assert after.version == row.version
+    assert after.text == row.text
+
+
+async def test_i01_runtime_keeps_dictation_across_clarification_and_restart(s: Scenario) -> None:
+    said = "Write to Kamola: Synthetic exact dictated body — Oʻzbek 🙂"
+    original = await ask(s.env, said)
+    async with s.env.factory() as session, session.begin():
+        body = source(original, said)
+        body = body.model_copy(
+            update={"span": body.span.model_copy(update={"start": said.index("Synthetic")})}
+        )
+        request = await open_request(
+            session,
+            account_id=s.account_id,
+            turn_id=original,
+            operation="dictate",
+            sources=(source(original, said, purpose="instruction"), body),
+            now=s.env.clock.now(),
+        )
+        request_id = request.request_id
+    s.fake.queue(text_response("Which synthetic contact did you mean?"))
+    assert await run_queued(s, "agent.owner_request") == 1
+    async with s.env.factory() as session, session.begin():
+        # Required owner sources must be loaded even after the recent-turn
+        # window no longer includes the original request or the question.
+        session.add_all(
+            [
+                ControlTurn(
+                    account_id=s.account_id,
+                    role="owner",
+                    text=f"Synthetic unrelated history {i}",
+                    created_at=s.env.clock.now(),
+                )
+                for i in range(22)
+            ]
+        )
+    s.fake.queue(text_response("Synthetic request continued; no send attempted."))
+    await ask(s.env, "Kamola Ziyo")
+    assert await run_queued(s, "agent.owner_request") == 1
+    latest = owner_requests(s)[-1]
+    [facts] = [
+        item
+        for item in latest.items
+        if isinstance(item, TextItem) and item.text.startswith("Owner request continuation")
+    ]
+    assert f'"request_id": {request_id}' in facts.text
+    assert '"missing_slot": "recipient"' in facts.text
+    assert '"basis": "pending_question"' in facts.text
+    assert any(
+        isinstance(item, TextItem) and item.text == "Synthetic exact dictated body — Oʻzbek 🙂"
+        for item in latest.items
+    )
 
 
 async def test_the_block_keeps_recent_terminal_card_facts(s: Scenario) -> None:

@@ -2,6 +2,8 @@
 
 D-S3 replaces D56 age-based decay. **Taint follows text actually supplied to the model.** Removing stale untrusted text, rather than reclassifying it, permits a later clean run. Within one append-only run, taint is monotonic. A new owner turn never clears taint on its own.
 
+H2 component seam (revision `0016`): `control_turns.owner_text_verified` is set only by control ingress for non-forwarded outer text; its default is false for legacy rows. `load_source` accepts a mixed turn's owner `text` span only with that classification, while `quoted_text` remains untrusted and keeps its managed consent class. This does not clear historical taint or relax confirmation within an existing run. H12 consumes the flag when selecting current/history components; `OwnerTurn.instruction` and used prompts remain unchanged in H2.
+
 ```python
 @dataclass(frozen=True)
 class ContextPart:

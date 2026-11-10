@@ -110,7 +110,13 @@ async def test_a_retention_change_takes_effect_at_the_next_sweep(env: Env) -> No
     owner = await account(env)
     async with env.factory() as session, session.begin():
         await record_control_turn(
-            session, account_id=owner.id, role="owner", text="SYNTH turn", created_at=NOW
+            session,
+            account_id=owner.id,
+            role="owner",
+            text="SYNTH turn",
+            created_at=NOW,
+            reply_to_telegram_message_id=901,
+            owner_text_verified=True,
         )
     env.clock.set(NOW + timedelta(days=40))
 
@@ -128,8 +134,13 @@ async def test_a_retention_change_takes_effect_at_the_next_sweep(env: Env) -> No
     assert await texts_of(env) == [None]
     async with env.factory() as session:
         assert (
-            await session.execute(text("SELECT text FROM app.control_turns"))
-        ).scalar_one() is None
+            await session.execute(
+                text(
+                    "SELECT text, reply_to_telegram_message_id, owner_text_verified "
+                    "FROM app.control_turns"
+                )
+            )
+        ).one() == (None, None, False)
 
 
 async def test_a_shorter_raw_update_retention_clears_payloads_sooner(env: Env) -> None:

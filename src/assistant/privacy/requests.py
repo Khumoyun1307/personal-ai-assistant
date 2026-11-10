@@ -47,7 +47,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import callbacks, service
-from assistant.accounts.models import Account, AuditLogEntry, PendingInput
+from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, PendingInput
 from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
 from assistant.core.channel import Button, ControlChannel, Delivery
 from assistant.core.clock import Clock
@@ -77,6 +77,46 @@ async def export_owner_requests(
                 values[column.name] = value.isoformat() if isinstance(value, datetime) else value
             exported.append(values)
         result[model.__tablename__] = exported
+    turns = await session.scalars(
+        select(ControlTurn)
+        .where(
+            ControlTurn.account_id == account_id,
+            (ControlTurn.reply_to_telegram_message_id.is_not(None))
+            | (ControlTurn.owner_text_verified.is_(True)),
+        )
+        .order_by(ControlTurn.id)
+    )
+    result["control_reply_metadata"] = [
+        {
+            "account_id": account_id,
+            "turn_id": turn.id,
+            "reply_to_telegram_message_id": turn.reply_to_telegram_message_id,
+            "owner_text_verified": turn.owner_text_verified,
+        }
+        for turn in turns
+    ]
+    presentations = await session.scalars(
+        select(AuditLogEntry)
+        .where(
+            AuditLogEntry.account_id == account_id,
+            AuditLogEntry.event == "card_presented",
+            AuditLogEntry.subject_type == "action",
+        )
+        .order_by(AuditLogEntry.id)
+    )
+    result["card_presentations"] = [
+        {
+            "id": row.id,
+            "account_id": account_id,
+            "at": row.at.isoformat(),
+            "action_id": row.subject_id,
+            "version": row.details.get("version"),
+            "state": row.details.get("state"),
+            "control_message_id": row.details.get("control_message_id"),
+            "claim_id": row.details.get("claim_id"),
+        }
+        for row in presentations
+    ]
     return result
 
 

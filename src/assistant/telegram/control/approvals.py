@@ -1082,6 +1082,23 @@ class ApprovalCards:
                 .execution_options(synchronize_session=False)
             )
             if getattr(result, "rowcount", 0):
+                uow.session.add(
+                    AuditLogEntry(
+                        account_id=view.account_id,
+                        at=self._clock.now(),
+                        actor="system",
+                        event="card_presented",
+                        subject_type="action",
+                        subject_id=view.action_id,
+                        details={
+                            "action_id": view.action_id,
+                            "version": view.version,
+                            "state": view.state.value,
+                            "control_message_id": message_id,
+                            "claim_id": claim_id,
+                        },
+                    )
+                )
                 if claim_id is not None:
                     uow.session.add(self._presentation_resolution(view, claim_id, "shown"))
                 return True
