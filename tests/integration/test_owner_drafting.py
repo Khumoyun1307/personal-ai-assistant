@@ -69,7 +69,15 @@ pytestmark = pytest.mark.integration
 
 @pytest.mark.parametrize(
     "scenario",
-    ["ready", "no_sources", "invalid_source", "deleted_target", "foreign_fence", "no_fence"],
+    [
+        "ready",
+        "no_sources",
+        "invalid_source",
+        "deleted_target",
+        "foreign_fence",
+        "no_fence",
+        "recipient_mismatch",
+    ],
 )
 async def test_main_reply_needs_selected_target_but_no_separate_composition_brief(
     denv: DraftEnv, scenario: str
@@ -114,6 +122,8 @@ async def test_main_reply_needs_selected_target_but_no_separate_composition_brie
         "text": "SYNTH thank you for the update!",
         "context_fence_id": 999_999 if scenario == "foreign_fence" else 1,
     }
+    if scenario == "recipient_mismatch":
+        proposal["conversation_id"] = 999_999
     run_id, turn_id = await run_and_turn(denv, account_id)
     result = await call(
         context(
@@ -148,14 +158,17 @@ async def test_main_reply_needs_selected_target_but_no_separate_composition_brie
 
 
 @pytest.mark.parametrize("quoted", [False, True])
+@pytest.mark.parametrize("use_binding", [False, True])
 async def test_main_model_preserves_composition_instruction_without_nested_writer(
-    denv: DraftEnv, quoted: bool
+    denv: DraftEnv, quoted: bool, use_binding: bool
 ) -> None:
     from tests.fakes.owner_fence import FakeOwnerFence
 
     account_id, conversation = await seed_chat(denv)
     brief = "SYNTH compare three study plans, explain each, then ask which one they prefer"
     proposal = await generated_message_args(denv, account_id, conversation, brief=brief)
+    if use_binding:
+        proposal["conversation_id"] = None
     await ask(denv.env, "SYNTH keep the comparison and the final question")
     turn_id = await ask(denv.env, "SYNTH write it now")
     if quoted:

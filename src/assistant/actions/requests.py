@@ -119,6 +119,22 @@ class SelectRecipient(StrictValue):
     basis: Literal["unique_strong", "owner_choice", "explicit_reply"]
 
 
+class CandidatePair(StrictValue):
+    contact_id: PositiveId
+    conversation_id: PositiveId | None
+
+
+class ResolutionCandidates(StrictValue):
+    request_version: PositiveId
+    candidates: Annotated[tuple[CandidatePair, ...], Field(min_length=1, max_length=10)]
+
+
+class RecordCandidates(StrictValue):
+    kind: Literal["record_candidates"] = "record_candidates"
+    candidates: Annotated[tuple[CandidatePair, ...], Field(max_length=10)]
+    turn_id: PositiveId | None = None
+
+
 class SelectSuggestion(StrictValue):
     """Bind a classified owner selection to exact retained artifact sources."""
 
@@ -164,6 +180,7 @@ class SetState(StrictValue):
 RequestUpdate = Annotated[
     AddSources
     | SelectRecipient
+    | RecordCandidates
     | SelectSuggestion
     | SetQuestion
     | SetTarget
@@ -190,6 +207,7 @@ class OwnerRequestView:
     requested_at: datetime
     expires_at: datetime
     source_ids: tuple[int, ...] = ()
+    selection_basis: str | None = None
 
 
 @dataclass(frozen=True)
@@ -419,6 +437,7 @@ async def _view(session: AsyncSession, row: OwnerRequest) -> OwnerRequestView:
         requested_at=row.requested_at,
         expires_at=row.expires_at,
         source_ids=tuple(source.id for source in sources),
+        selection_basis=row.selection_basis,
     )
 
 
@@ -710,7 +729,53 @@ async def update_request(
             )
         )
         row.last_turn_id = max(row.last_turn_id, instruction.span.turn_id)
+    elif isinstance(update, RecordCandidates):
+        if row.contact_id is not None or row.state not in ("collecting", "suspended"):
+            return RequestUnavailable("invalid_state")
+        if update.turn_id is not None:
+            candidate_turn = await session.scalar(
+                select(ControlTurn.id).where(
+                    ControlTurn.account_id == account_id,
+                    ControlTurn.id == update.turn_id,
+                    ControlTurn.role == "owner",
+                    ControlTurn.id >= row.last_turn_id,
+                )
+            )
+            if candidate_turn is None:
+                return RequestUnavailable("invalid_reference")
+        for candidate in update.candidates:
+            contact = await session.scalar(
+                select(Contact.id).where(
+                    Contact.account_id == account_id,
+                    Contact.id == candidate.contact_id,
+                    Contact.is_bot.is_(False),
+                )
+            )
+            if contact is None:
+                return RequestUnavailable("invalid_reference")
+            if candidate.conversation_id is not None:
+                conversation_id = await session.scalar(
+                    select(Conversation.id).where(
+                        Conversation.account_id == account_id,
+                        Conversation.contact_id == candidate.contact_id,
+                        Conversation.id == candidate.conversation_id,
+                    )
+                )
+                if conversation_id is None:
+                    return RequestUnavailable("invalid_reference")
+        row.missing_slot = "recipient"
+        if update.turn_id is not None:
+            row.last_turn_id = update.turn_id
+        row.resolution_candidates = (
+            ResolutionCandidates(
+                request_version=row.version + 1, candidates=update.candidates
+            ).model_dump(mode="json")
+            if update.candidates
+            else None
+        )
     elif isinstance(update, SelectRecipient):
+        # Binding records identity; proposal eligibility is checked downstream
+        # so ignored and bot chats retain their specific refusal reasons.
         conversation = await session.scalar(
             select(Conversation)
             .join(Contact, Contact.id == Conversation.contact_id)
@@ -736,7 +801,8 @@ async def update_request(
                 return RequestUnavailable("invalid_reference")
         row.contact_id = update.contact_id
         row.conversation_id = update.conversation_id
-        row.selection_basis = update.basis
+        row.selection_basis = row.selection_basis or update.basis
+        row.resolution_candidates = None
         if row.state in ("collecting", "suspended"):
             row.missing_slot = "content"
     elif isinstance(update, SetQuestion):
@@ -831,12 +897,21 @@ async def update_request(
         if row.state in (*TERMINAL_REQUEST_STATES, "suspended"):
             await _clear_question(session, row)
     row.version += 1
+    if row.resolution_candidates is not None:
+        if row.missing_slot != "recipient" or row.state not in ("collecting", "suspended"):
+            row.resolution_candidates = None
+        else:
+            row.resolution_candidates = {
+                **row.resolution_candidates,
+                "request_version": row.version,
+            }
     row.updated_at = now
     await session.flush()
     return RequestApplied(await _view(session, row))
 
 
 async def _clear_question(session: AsyncSession, row: OwnerRequest) -> None:
+    row.resolution_candidates = None
     row.question_input_id = None
     await session.execute(
         delete(PendingInput).where(

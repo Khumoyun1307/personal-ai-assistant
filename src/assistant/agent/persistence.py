@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from assistant.accounts.models import ControlTurn, PendingInput
 from assistant.accounts.service import ConsentState, active_consent
 from assistant.actions.models import Action
+from assistant.actions.recipient_resolution import select_candidate_answer
 from assistant.actions.request_models import OwnerRequest
 from assistant.actions.requests import (
     Continuation,
@@ -170,6 +171,20 @@ async def load_owner_continuation(
             basis="explicit_reply",
         )
     question_id = None
+    if managed_allowed:
+        answered = await select_candidate_answer(
+            session, account_id=account_id, request_id=request.request_id, turn=turn, now=now
+        )
+        if answered is not None and answered.status == "applied":
+            request = answered.view
+            selection = Continuation(
+                "selected",
+                request_id=request.request_id,
+                version=request.version,
+                action_id=request.action_id,
+                action_version=request.action_version,
+                basis=selection.basis,
+            )
     if row is not None and row.missing_slot is not None and row.state == "collecting":
         question = await session.scalar(
             select(PendingInput).where(

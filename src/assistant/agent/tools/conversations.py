@@ -20,6 +20,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
+from assistant.actions.requests import (
+    CandidatePair,
+    RecordCandidates,
+    SelectRecipient,
+    update_request,
+)
 from assistant.agent.citations import CitableMessage
 from assistant.agent.locales import supported_locale
 from assistant.agent.tools.common import (
@@ -358,7 +364,8 @@ NO_CONTACT_NOTE = (
 WEAK_MATCH_NOTE = (
     "These are guesses, not matches: the name did not match any chat partner for sure. Ask "
     "the owner which chat they mean, naming the candidates, and use none of them (no "
-    "proposal, no note, no setting) until the owner confirms."
+    "proposal, no note, no setting) until the owner confirms. Present numbered candidates "
+    "in returned order so the owner's number refers to the saved candidate."
 )
 
 
@@ -371,6 +378,20 @@ class ResolveContactArgs(BaseModel):
     limit: Annotated[int | None, _bounded(1, 10)] = Field(
         description="How many candidates, 1-10 (default 5), or null."
     )
+    request_id: OptionalId = Field(
+        default_factory=lambda: None,
+        description="Active owner request to bind or associate candidates with, or null.",
+    )
+    request_version: OptionalId = Field(
+        default_factory=lambda: None,
+        description="Current request CAS version; provide together with request_id, or null.",
+    )
+
+    @model_validator(mode="after")
+    def paired_request(self) -> Self:
+        if (self.request_id is None) != (self.request_version is None):
+            raise ArgumentRuleError("request_id and request_version must be supplied together")
+        return self
 
 
 async def resolve_contact_tool(ctx: ToolContext, args: ResolveContactArgs) -> ToolOutcome:
@@ -378,10 +399,62 @@ async def resolve_contact_tool(ctx: ToolContext, args: ResolveContactArgs) -> To
     async with transaction(services.session_factory) as uow:
         account = await _account(ctx, uow.session)
         directory = await read.contact_directory(uow.session, ctx.account_id)
-    resolution = read.resolve_contacts(directory, args.name, limit=args.limit or 5)
+        resolution = read.resolve_contacts(directory, args.name, limit=args.limit or 5)
+        request_id, request_version = args.request_id, args.request_version
+        continuation = ctx.continuation
+        if continuation is not None and continuation.request is not None:
+            active = continuation.request
+            if request_id is not None and request_id != active.request_id:
+                return ToolOutcome("not_found", {"reason": "request_mismatch"})
+            if request_id is None and active.contact_id is None:
+                request_id, request_version = active.request_id, active.version
+        binding: dict[str, object] | None = None
+        if request_id is not None and request_version is not None:
+            matches = resolution.strong or resolution.suggestions
+            update: SelectRecipient | RecordCandidates
+            if (
+                resolution.verdict == "unique_strong"
+                and matches[0].entry.conversation_id is not None
+            ):
+                entry = matches[0].entry
+                assert entry.conversation_id is not None
+                update = SelectRecipient(
+                    contact_id=entry.contact_id,
+                    conversation_id=entry.conversation_id,
+                    basis="unique_strong",
+                )
+            else:
+                update = RecordCandidates(
+                    turn_id=ctx.turn_id,
+                    candidates=tuple(
+                        CandidatePair(
+                            contact_id=m.entry.contact_id, conversation_id=m.entry.conversation_id
+                        )
+                        for m in matches
+                        if resolution.verdict != "unique_strong"
+                    ),
+                )
+            result = await update_request(
+                uow.session,
+                account_id=ctx.account_id,
+                request_id=request_id,
+                expected_version=request_version,
+                update=update,
+                now=services.clock.now(),
+            )
+            binding = {"status": result.status, "request_id": request_id}
+            if result.status == "applied":
+                binding.update(
+                    request_version=result.view.version,
+                    contact_id=result.view.contact_id,
+                    conversation_id=result.view.conversation_id,
+                )
+                if resolution.verdict == "unique_strong" and result.view.contact_id is None:
+                    binding.update(status="unavailable", reason="recipient_unavailable")
     matches = resolution.strong or resolution.suggestions
     candidates = [
         {
+            "number": number,
             "contact_id": m.entry.contact_id,
             "conversation_id": m.entry.conversation_id,
             "name": name(m.entry.display_name),
@@ -390,17 +463,30 @@ async def resolve_contact_tool(ctx: ToolContext, args: ResolveContactArgs) -> To
             "confidence": "weak" if m.is_weak else "match",
             "last_activity": local_time(m.entry.last_activity_at, account.timezone),
         }
-        for m in matches
+        for number, m in enumerate(matches, 1)
     ]
     data: dict[str, object] = {
         "candidates": candidates,
         "count": len(candidates),
         "verdict": resolution.verdict,
+        "total_strong": resolution.total_strong,
+        "omitted": resolution.omitted,
+        "reason": resolution.reason,
     }
+    if binding is not None:
+        data["request_binding"] = binding
+    if resolution.verdict == "unique_strong":
+        data["note"] = (
+            "One real contact matches. Use this recipient without asking who the owner means; "
+            "weaker guesses are not alternatives. A proposal still needs the owner's card tap."
+        )
     if resolution.verdict == "weak_only":
         data["note"] = WEAK_MATCH_NOTE
     elif resolution.verdict == "ambiguous_strong":
-        data["note"] = "Several real contacts match: ask the owner which one they mean."
+        data["note"] = (
+            "Several real contacts match: ask the owner which one they mean. "
+            "Present numbered candidates in returned order; never reorder the saved choices."
+        )
     elif resolution.verdict == "none":
         data["note"] = NO_CONTACT_NOTE
     return ToolOutcome(
@@ -420,9 +506,14 @@ RESOLVE_CONTACT = ToolDefinition(
     name="resolve_contact",
     description=(
         "Find which of the owner's chat partners a name refers to (any script, typos and "
-        "nickname-style short forms allowed). Returns ranked candidates with contact_id and "
-        "conversation_id; when several match equally, or a candidate has confidence "
-        '"weak" (a guess), ask the owner instead of guessing.'
+        "nickname-style short forms allowed). Follow verdict computed before pagination: "
+        "unique_strong uses the real match without a recipient question; ambiguous_strong "
+        "asks only between real matches; weak_only asks confirmation; none explains observed "
+        "coverage and searches mentions without inventing a recipient. Candidate refs alone "
+        "are never a selection. Supply request_id and request_version together to bind a "
+        "unique match or persist displayed candidate order for a later numeric/name answer. "
+        "The active unbound continuation is used when both are null. Names remain untrusted; "
+        "no alias, directory entry or global memory is written."
     ),
     args_model=ResolveContactArgs,
     capability=CapabilityClass.READ,

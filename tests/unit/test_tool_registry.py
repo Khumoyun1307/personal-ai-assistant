@@ -9,10 +9,11 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from assistant.agent import prompt_registry
 from assistant.agent.models import RUN_TYPES
+from assistant.agent.tools.conversations import RESOLVE_CONTACT, ResolveContactArgs
 from assistant.agent.tools.registry import (
     CHAT_ACCESS_OFF,
     CHAT_ACCESS_OFF_REASON,
@@ -30,6 +31,33 @@ from assistant.agent.tools.registry import (
     strict_schema,
 )
 from tests.fakes.clock import FakeClock
+
+
+def test_h5_contact_resolution_schema_and_guidance() -> None:
+    schema = strict_schema(ResolveContactArgs)
+    encoded = str(schema)
+    for keyword in ("minItems", "maxItems", "minLength", "maxLength", "minimum", "maximum"):
+        assert keyword not in encoded
+    assert "request_id" in schema["properties"]
+    assert "request_version" in schema["properties"]
+    assert "unique_strong" in RESOLVE_CONTACT.description
+    assert "without a recipient question" in RESOLVE_CONTACT.description
+    assert "Candidate refs alone" in RESOLVE_CONTACT.description
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"name": "Kamola", "limit": 11},
+        {"name": "K" * 101, "limit": None},
+        {"name": "Kamola", "limit": None, "request_id": 1},
+        {"name": "Kamola", "limit": None, "request_version": 1},
+    ],
+)
+def test_h5_resolution_limits_and_paired_cas_are_validated(values: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        ResolveContactArgs.model_validate(values)
+
 
 CONTACT_TRIGGERED = ("triage", "draft_reply", "summarize", "extract_memory", "evaluate_monitor")
 

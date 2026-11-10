@@ -213,6 +213,9 @@ async def delete_managed_data(
         now=clock.now(),
         remove=True,
         locked=True,
+        contact_ids=tuple(
+            await session.scalars(select(Contact.id).where(Contact.account_id == account_id))
+        ),
         conversation_ids=tuple(
             await session.scalars(
                 select(Conversation.id).where(Conversation.account_id == account_id)
@@ -796,6 +799,7 @@ async def _purge_chats(
         now=clock.now(),
         locked=True,
         conversation_ids=conversation_ids,
+        contact_ids=contact_ids,
         remove=True,
     )
     payloads = await _clear_chat_payloads(session, account_id, chats)

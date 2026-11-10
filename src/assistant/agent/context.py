@@ -340,6 +340,7 @@ def render_continuation(continuation: OwnerContinuation, *, managed_allowed: boo
             state=request.state,
             missing_slot=request.missing_slot,
             contact_id=request.contact_id,
+            selection_basis=request.selection_basis,
             conversation_id=request.conversation_id,
             target_message_id=request.target_message_id,
             question_input_id=continuation.question_input_id,
