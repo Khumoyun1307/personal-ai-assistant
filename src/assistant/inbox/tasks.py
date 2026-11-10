@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, Row, func, literal_column, select, text, update
+from sqlalchemy import Boolean, Row, String, func, literal_column, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,9 +64,11 @@ class TaskView:
     created_at: datetime
     closed_at: datetime | None = None
     closed_reason: str | None = None
+    #: Postgres row revision, captured with the triage read, never sent to the model.
+    revision: str | None = None
 
 
-def _view(row: Task) -> TaskView:
+def _view(row: Task, *, revision: str | None = None) -> TaskView:
     return TaskView(
         task_id=row.id,
         conversation_id=row.conversation_id,
@@ -78,6 +80,7 @@ def _view(row: Task) -> TaskView:
         created_at=row.created_at,
         closed_at=row.closed_at,
         closed_reason=row.closed_reason,
+        revision=revision,
     )
 
 
@@ -230,13 +233,14 @@ async def open_for_conversation(
 ) -> list[TaskView]:
     """This conversation's open tasks, due ones first."""
     rows = await session.execute(
-        select(Task)
+        # xmin changes even when two writes use the same injected clock.
+        select(Task, literal_column("xmin::text", type_=String))
         .where(Task.account_id == account_id)
         .where(Task.conversation_id == conversation_id)
         .where(Task.status == "open")
         .order_by(Task.due_at.asc().nulls_last(), Task.created_at, Task.id)
     )
-    return [_view(row) for row in rows.scalars()]
+    return [_view(row, revision=revision) for row, revision in rows]
 
 
 async def open_by_conversation(

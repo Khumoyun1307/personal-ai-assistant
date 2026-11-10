@@ -397,6 +397,7 @@ class Triager:
                 prompt_version=prompt.label,
                 model=config.model,
                 source=source.hashes(),
+                task_revisions={task.task_id: task.revision for task in state.open_tasks},
                 covers_through_message_id=through,
                 burst_message_ids=tuple(m.message_id for m in source.burst),
                 needs_reply=checked.needs_reply,
