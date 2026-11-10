@@ -180,13 +180,23 @@ class ProposeReplyArgs(_OneChat):
         return WordBounds(self.min_words, self.max_words)
 
 
+def _source_ids(value: list[int]) -> list[int]:
+    if not 1 <= len(value) <= 64:
+        raise ArgumentRuleError("source_ids must contain 1 to 64 ids")
+    return value
+
+
+# Keep length constraints out of the provider's strict-mode schema.
+LiteralSourceIds = Annotated[list[PositiveId], AfterValidator(_source_ids)]
+
+
 class ProposeMessageArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: PositiveId
     request_version: PositiveId
     conversation_id: PositiveId
-    source_ids: Annotated[list[PositiveId], Field(min_length=1, max_length=64)]
+    source_ids: LiteralSourceIds
     answered_message_id: PositiveId | None = Field(
         description=(
             "The contact's message this text answers, a [msg:<id>] a chat tool showed you, "

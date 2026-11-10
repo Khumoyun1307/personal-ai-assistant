@@ -28,6 +28,7 @@ from assistant.agent.tools.drafts import (
     ONE_CARD_RULE,
     REVISE_DRAFT_FLAG,
     GetDraftArgs,
+    LiteralEdit,
     ReviseDraftArgs,
 )
 from assistant.agent.tools.registry import (
@@ -126,6 +127,32 @@ def literal_args() -> dict[str, Any]:
         "edit": "literal_append",
         "source_ids": [1],
     }
+
+
+@pytest.mark.parametrize("model", [ProposeMessageArgs, LiteralEdit])
+@pytest.mark.parametrize("count", [0, 1, 64, 65])
+def test_literal_source_limits_are_local_validation(
+    model: type[ProposeMessageArgs] | type[LiteralEdit], count: int
+) -> None:
+    source_schema = strict_schema(model)["properties"]["source_ids"]
+    assert "minItems" not in source_schema
+    assert "maxItems" not in source_schema
+    values: dict[str, Any] = (
+        literal_args()
+        if model is LiteralEdit
+        else {
+            "request_id": 1,
+            "request_version": 1,
+            "conversation_id": 1,
+            "answered_message_id": None,
+        }
+    )
+    values["source_ids"] = list(range(1, count + 1))
+    if count in (1, 64):
+        assert model.model_validate(values).source_ids == values["source_ids"]
+    else:
+        with pytest.raises(ValidationError):
+            model.model_validate(values)
 
 
 def revise(**values: Any) -> ReviseDraftArgs:

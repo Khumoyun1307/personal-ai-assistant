@@ -58,6 +58,7 @@ from assistant.agent.tools.replies import (
     MAX_WORDS,
     WORDS_ORDER_RULE,
     WORDS_RULE,
+    LiteralSourceIds,
     source_failure,
 )
 from assistant.agent.untrusted import Source, wrap
@@ -116,7 +117,7 @@ class LiteralEdit(BaseModel):
     request_version: PositiveId
     expected_version: PositiveId
     edit: Literal["literal_append", "literal_replace"]
-    source_ids: Annotated[list[PositiveId], Field(min_length=1, max_length=64)]
+    source_ids: LiteralSourceIds
 
 
 class ReviseDraftArgs(_OneCard):
