@@ -190,6 +190,7 @@ async def test_the_blocked_stub_returns_no_message_data_and_makes_no_db_read_of_
         # PF-13: a draft written from the chat (its text, or facts about it).
         "revise_draft",
         "get_draft",
+        "list_tasks",  # I11: task titles derive from managed conversations.
     }
     assert managed <= set(stubs)
     for name in managed:
@@ -449,12 +450,11 @@ def test_schemas_satisfy_openai_strict_mode() -> None:
 
 
 def test_the_production_flags_line_is_every_registered_tool_plus_the_refresh() -> None:
-    """The tests that mirror production (M03 fix round C2) use the verbatim
-    production flags line: it must offer every tool the product has, and it
-    must agree with the agent-mode eval's copy."""
+    """The production line agrees with the eval copy. I11 task tools stay
+    registered but off until the stabilization rollout enables them."""
     from evals.agent_mode import PRODUCTION_FLAGS as EVAL_FLAGS
 
-    from tests.integration.agent_env import PRODUCTION_FLAGS
+    from tests.integration.agent_env import PRODUCTION_FLAGS, TASK_FLAGS
 
-    assert every_flag(default_registry()) | {"summary.refresh"} == PRODUCTION_FLAGS
+    assert (every_flag(default_registry()) - TASK_FLAGS) | {"summary.refresh"} == PRODUCTION_FLAGS
     assert PRODUCTION_FLAGS == EVAL_FLAGS

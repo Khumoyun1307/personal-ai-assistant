@@ -27,10 +27,12 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.accounts.models import AuditLogEntry
 from assistant.agent import prompt_registry
 from assistant.agent.models import AgentRun
 from assistant.agent.tools.registry import CapabilityTier, default_registry
 from assistant.agent.triage import TriageConfig, Triager, TriageStatus
+from assistant.inbox import task_controls
 from assistant.inbox.models import ConversationTriage, Notification, Task
 from assistant.inbox.tasks import TaskView
 from assistant.inbox.triage_store import (
@@ -839,6 +841,71 @@ async def test_a_reminder_naming_the_open_task_updates_it_and_merges_sources(ten
     (updated,) = await task_rows(tenv)
     assert (updated.id, updated.status, updated.first_source_message_id) == (task.id, "open", first)
     assert updated.source_message_ids == [first, reminder]
+
+
+@pytest.mark.parametrize("effect", ["update", "dedupe", "resolve"])
+async def test_in_flight_triage_cannot_overwrite_owner_task_correction(
+    tenv: Env, effect: str
+) -> None:
+    a, _ = await seed(tenv)
+    first, _ = await message_ids(tenv, a)
+    fake = FakeLLM()
+    fake.parsed = [verdict(commitments=[commitment_item("contact", first)])]
+    await stored_triager(tenv, fake).triage(a)
+    (task,) = await task_rows(tenv)
+    await add_message(tenv, 13, "SYNTH-A Reminder about the synthetic promise")
+    reminder = max(await message_ids(tenv, a))
+    corrected_due = tenv.clock.now() + timedelta(days=3)
+    change_id: int | None = None
+
+    async def correct_then_answer(request: LLMRequest) -> dict[str, Any]:
+        nonlocal change_id
+        assert f"[task:{task.id}]" in everything(request)
+        # Commit the correction while triage is waiting for its model result.
+        # Keep the clock unchanged: timestamps alone cannot detect this race.
+        async with tenv.factory() as session, session.begin():
+            status, change_id = await task_controls.change(
+                session,
+                account_id=task.account_id,
+                task_id=task.id,
+                operation="correct",
+                title="SYNTH-A Owner corrected title",
+                due_at=corrected_due,
+                change_due=True,
+                run_id=7,
+                call_id="correction-during-triage",
+                clock=tenv.clock,
+            )
+            assert status == "changed"
+        if effect == "resolve":
+            return verdict(resolved_task_ids=[task.id])
+        source = first if effect == "dedupe" else reminder
+        existing = task.id if effect == "update" else None
+        return verdict(commitments=[commitment_item("contact", source, existing=existing)])
+
+    fake.parsed = [correct_then_answer]
+    outcome = await stored_triager(tenv, fake).triage(a)
+    assert outcome.status is TriageStatus.DISCARDED
+    assert outcome.discard_reason is ApplyResult.CHANGED
+    (corrected,) = await task_rows(tenv)
+    assert corrected.title == "SYNTH-A Owner corrected title"
+    assert corrected.due_at == corrected_due
+    assert corrected.status == "open"
+    assert corrected.source_message_ids == task.source_message_ids
+    assert corrected.updated_at == task.updated_at
+    stored = await verdict_row(tenv, a)
+    assert stored is not None
+    assert stored.covers_through_message_id < reminder
+    assert change_id is not None
+    async with tenv.factory() as session, session.begin():
+        entry = await session.get(AuditLogEntry, change_id)
+        assert entry is not None
+        assert await task_controls.undo(
+            session, account_id=task.account_id, entry=entry, clock=tenv.clock
+        )
+    (restored,) = await task_rows(tenv)
+    assert restored.title == task.title
+    assert restored.due_at == task.due_at
 
 
 async def test_the_owners_manual_answer_closes_the_open_question(tenv: Env) -> None:

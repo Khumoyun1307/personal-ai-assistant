@@ -106,6 +106,8 @@ class TriageVerdict:
     model: str
     #: Every message the model read → its content hash (the store re-check).
     source: Mapping[int, str | None]
+    #: Open task ids and row revisions captured before the model call.
+    task_revisions: Mapping[int, str | None]
     covers_through_message_id: int
     burst_message_ids: tuple[int, ...]
     needs_reply: bool
@@ -128,7 +130,7 @@ class ApplyResult(StrEnum):
     RACED = "raced"
     """A newer verdict covers as far or further: it stands."""
     CHANGED = "changed"
-    """A message the model read was deleted or edited meanwhile."""
+    """A message or the open task snapshot changed meanwhile."""
     EXPIRED = "expired"
     """A message the model read expired under the retention setting."""
     IGNORED = "ignored"
@@ -363,6 +365,14 @@ class TriageRepository:
             and current.covers_through_message_id >= verdict.covers_through_message_id
         ):
             return ApplyResult.RACED
+        # Owner task changes take the same conversation lock. Re-read after
+        # acquiring it so a verdict cannot overwrite a correction or its Undo,
+        # including through the implicit first-source-message dedupe path.
+        open_tasks = await tasks.open_for_conversation(
+            session, account_id=account_id, conversation_id=conversation_id
+        )
+        if {task.task_id: task.revision for task in open_tasks} != verdict.task_revisions:
+            return ApplyResult.CHANGED
         self._store_verdict(session, current, verdict, now)
 
         created: list[int] = []

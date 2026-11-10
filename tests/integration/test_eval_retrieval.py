@@ -58,6 +58,7 @@ from assistant.llm.port import (
     Usage,
 )
 from tests.fakes.llm import FakeLLM
+from tests.integration.agent_env import TASK_FLAGS
 from tests.integration.conftest import admin_url
 
 pytestmark = pytest.mark.integration
@@ -724,9 +725,11 @@ async def test_agent_mode_runs_the_owner_request_runtime_with_the_shipped_prompt
     first = oracle.requests[0]
     assert first.purpose == "owner_request"
     assert first.instructions.startswith(shipped.text)
-    registry_tools = {tool.name for tool in default_registry().all()}
+    registry_tools = {
+        tool.name for tool in default_registry().all() if tool.release_flag not in TASK_FLAGS
+    }
     assert {tool.name for tool in first.tools} == registry_tools
-    assert {tool.release_flag for tool in default_registry().all()} <= PRODUCTION_FLAGS
+    assert {tool.release_flag for tool in default_registry().all()} - TASK_FLAGS <= PRODUCTION_FLAGS
     assert result.prompts == (shipped.label,)
     [record] = result.details
     assert record["hit_top5"] is True
