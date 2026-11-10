@@ -173,7 +173,7 @@ src/assistant/
     prompt_registry.py     #   active prompt version per run type
     tools/                 #   registry.py (definitions, invariants), executor.py, one module per tool
     schemas.py             #   structured-output models (Pydantic) — from M03
-    prompts/               #   versioned prompt templates (name.vN.md)
+    prompts/               #   active templates, manifest.json and archive/name.vN.md
   process.py               #   roles (poller, inbox, workers) + liveness; run by core/supervisor.py
   llm/                     # LLM port and adapter (the fake lives in tests/fakes/llm.py)
     port.py                #   LLMClient Protocol + provider-neutral types (agent imports only this)
@@ -597,6 +597,21 @@ class AutomationSpec(BaseModel):
 ### 7.6 Prompts
 
 Prompts are versioned text templates in `agent/prompts/` (e.g., `triage.v1.md`), loaded by name+version; the version is stored on every `agent_runs` row so evaluations and behaviour changes are traceable. Prompts state rules (isolation, honesty about coverage, disclosure, never claim to be human), not wording rules.
+
+**Stabilization I31 — immutable inventory and archive.** `agent/prompts/manifest.json`
+lists every prompt label, SHA-256 of the exact bytes, active flag, structured-output
+schema family with historical revision notes, and repository-relative eval-record
+links where available (including trials and failures; a link is not gate approval).
+Active assets stay at the top level; inactive assets live in `prompts/archive/`.
+`prompt_registry.load_bytes` resolves either location from the manifest and checks
+the hash; `load` preserves the existing UTF-8 decoding and whitespace stripping.
+Stored labels and all prompt bytes are unchanged. This preserves lookup, not
+historical schema replay. Unit checks cover the inventory, hashes, active registry,
+schema pairing and static references across code/tests/evals. Used entries and
+files remain while retained runs reference them. Static scans cannot prove a
+database has no references; the content-free, account-scoped operator SQL in
+[`prompts/README.md`](../src/assistant/agent/prompts/README.md) reports retained-run
+labels and counts without reading run content. No new stored data or migration.
 
 **`owner_request.v10` (PF-14, owner decisions D1-D4 and D7 of 2026-10-30).** v9 word for word except: an identity paragraph (the assistant's own name is Alviro, the owner's AI assistant; never ChatGPT, another product or a person; asked about the model, an AI model from OpenAI) and an act-on-intent paragraph after the unchanged opening line; rule 3 gains one sentence (a draft still on its card is changed with `revise_draft`); rule 18 routes by intent — an explicit request to reply or write always drafts (never "no reply needed"), a named earlier message → `answered_message_id`, "a new message about …" → mode `new_message`, dictated words or a picked suggestion → `propose_message` with exactly that text, advice → plain text and no card, listing contacts proposes nothing, changes to a live draft → `revise_draft` (literal additions as `append_text`), questions about a draft → `get_draft`, resolve the chat first, and the card's Edit button when the draft tools are off; rule 19 relays statuses specifically, claims no draft property a tool did not report, never says "ask again in a new message", and treats the card as the live status; rules 26-28: the working context (PF-15) is application data, "chat partners the assistant observes" with weak candidates confirmed, and list edits are not messaging. v1-v9 stay. The retrieval agent-mode re-run and the new owner-drafting eval are run after merge (owner-approved spend); P3's PR-OR10 bump becomes `owner_request.v11` (P3-T152).
 

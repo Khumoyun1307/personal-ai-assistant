@@ -80,8 +80,8 @@ def test_draft_owner_is_its_own_key_and_draft_reply_v1_is_byte_identical() -> No
     # v2 (PF-13) adds `revision_kind` for revisions; v3 (PF-F) adds
     # `answers_message_id`. Used versions stay on disk.
     assert prompt_registry.active("draft_owner").label == "draft_owner.v3"
-    assert (prompt_registry.PROMPT_DIR / "draft_owner.v1.md").is_file()
-    assert (prompt_registry.PROMPT_DIR / "draft_owner.v2.md").is_file()
+    assert prompt_registry.asset_path("draft_owner", "v1").is_file()
+    assert prompt_registry.asset_path("draft_owner", "v2").is_file()
     assert prompt_registry.active("draft_reply").label == "draft_reply.v1"
     raw = (prompt_registry.PROMPT_DIR / "draft_reply.v1.md").read_bytes()
     assert hashlib.sha256(raw).hexdigest() == DRAFT_REPLY_V1_SHA256
