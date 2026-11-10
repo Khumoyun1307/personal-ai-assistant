@@ -183,8 +183,7 @@ class OutboundGateway:
         return SendResult(ErrorClass.RATE_LIMITED, error_code=DISPATCH_NOT_STARTED)
 
     async def _throttle(self, chat_id: int, *, deadline: datetime | None = None) -> bool:
-        """One message per second per chat, serialised per chat, and any two
-        sends at least `MIN_SECONDS_BETWEEN_ANY_SENDS` apart.
+        """Chat-targeted requests share the per-chat and global send spacing.
 
         Reservation is synchronous, so no task can interleave or wait on a
         lock here. Reject an over-budget slot without extending the tail.
@@ -298,6 +297,11 @@ class OutboundGateway:
         """Edit a control-chat card in place (approval cards, confirmations)."""
         chunks = render_control_message(text)
         body = chunks[0] if chunks else ""
+        deadline = self._dispatch_deadline()
+        if not await self._throttle(target.chat_id, deadline=deadline):
+            return self._not_started()
+        if not self._start_dispatch(target.chat_id, deadline=deadline):
+            return self._not_started()
         try:
             await self._sender.edit_message_text(
                 chat_id=target.chat_id,
@@ -319,6 +323,11 @@ class OutboundGateway:
     async def clear_control_keyboard(self, target: ControlChat, message_id: int) -> SendResult:
         """Remove a control-chat card's buttons and keep its text — for a
         card whose body says more than its question (the connection notice)."""
+        deadline = self._dispatch_deadline()
+        if not await self._throttle(target.chat_id, deadline=deadline):
+            return self._not_started()
+        if not self._start_dispatch(target.chat_id, deadline=deadline):
+            return self._not_started()
         try:
             await self._sender.edit_message_reply_markup(
                 chat_id=target.chat_id,
@@ -330,17 +339,24 @@ class OutboundGateway:
             return self._classify_failure(error, account_id=target.account_id)
         return SendResult(ErrorClass.OK, message_id=message_id)
 
-    async def chat_action(self, target: ControlChat, action: str = "typing") -> None:
+    async def chat_action(self, target: ControlChat, action: str = "typing") -> SendResult:
         """Typing indicator. Control chat only.
 
         A typing indicator in a business chat is an owner-voice action and
         needs a PRD requirement and a policy rule first (AGENTS §7), so the
         signature does not accept a business target at all.
         """
+        deadline = self._dispatch_deadline()
+        if not await self._throttle(target.chat_id, deadline=deadline):
+            return self._not_started()
+        if not self._start_dispatch(target.chat_id, deadline=deadline):
+            return self._not_started()
         try:
             await self._sender.send_chat_action(chat_id=target.chat_id, action=action)
         except Exception as error:
             logger.warning("chat_action_failed", exc_type=type(error).__name__)
+            return self._classify_failure(error, account_id=target.account_id)
+        return SendResult(ErrorClass.OK)
 
     async def answer_callback(
         self, callback_query_id: str, text: str | None = None, *, show_alert: bool = False
@@ -488,7 +504,10 @@ class OutboundGateway:
         )
         if target is None or telegram_ids is None:
             return self._refused("edit", account_id=account_id, conversation_id=conversation_id)
-        if not await self._throttle(target.chat_id):
+        deadline = self._dispatch_deadline()
+        if not await self._throttle(target.chat_id, deadline=deadline):
+            return self._not_started()
+        if not self._start_dispatch(target.chat_id, deadline=deadline):
             return self._not_started()
         try:
             await self._sender.edit_plain_message_text(
@@ -520,7 +539,10 @@ class OutboundGateway:
         )
         if target is None or telegram_ids is None:
             return self._refused("delete", account_id=account_id, conversation_id=conversation_id)
-        if not await self._throttle(target.chat_id):
+        deadline = self._dispatch_deadline()
+        if not await self._throttle(target.chat_id, deadline=deadline):
+            return self._not_started()
+        if not self._start_dispatch(target.chat_id, deadline=deadline):
             return self._not_started()
         try:
             await self._sender.delete_business_messages(
