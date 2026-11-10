@@ -51,6 +51,7 @@ def test_current_version_authorship_matrix(kind: str, residue: bool, generated: 
         proof(retains_generated_text="false"),
         proof(parent_version=None),
         proof(kind="assistant_written"),
+        proof(kind="CANARY-provenance-must-not-contain-text"),
         proof(text="Synthetic text must never be stored here"),
     ],
 )
