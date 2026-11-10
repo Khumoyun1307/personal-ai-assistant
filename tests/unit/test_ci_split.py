@@ -7,6 +7,7 @@ cover every collected test file exactly once, the same way on every run.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 from pathlib import Path
@@ -55,7 +56,12 @@ def test_journeys_are_collected_and_weighted_as_database_tests() -> None:
     journey = split_tests.TESTS / "journeys" / "test_runner.py"
     assert journey in split_tests.collected_files()
     assert "journeys" in split_tests.DB_DIRS
-    assert split_tests.weight(journey) == split_tests.DB_TEST_WEIGHT
+    test_count = sum(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_")
+        for node in ast.walk(ast.parse(journey.read_text(encoding="utf-8")))
+    )
+    assert test_count > 0
+    assert split_tests.weight(journey) == test_count * split_tests.DB_TEST_WEIGHT
 
 
 def test_the_command_prints_one_shard_and_refuses_a_bad_index(

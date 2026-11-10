@@ -11,9 +11,24 @@ from tests.journeys.models import LOCALES, CountCheck, Locale, RequestCheck, Res
 pytestmark = [pytest.mark.integration, pytest.mark.journey]
 
 
-@pytest.mark.xfail(strict=True, reason="needs H2", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
-@pytest.mark.parametrize("case_id", ["J01", "J03", "J06", "J19"])
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        pytest.param(
+            "J01", marks=pytest.mark.xfail(strict=True, reason="needs H3", raises=AssertionError)
+        ),
+        pytest.param(
+            "J03", marks=pytest.mark.xfail(strict=True, reason="needs H4", raises=AssertionError)
+        ),
+        pytest.param(
+            "J06", marks=pytest.mark.xfail(strict=True, reason="needs H4", raises=AssertionError)
+        ),
+        pytest.param(
+            "J19", marks=pytest.mark.xfail(strict=True, reason="needs H4", raises=AssertionError)
+        ),
+    ],
+)
 async def test_matrix_pending_answer_precedes_search_and_new_topic_does_not_reuse_body(
     journey: Journey, locale: Locale, case_id: str
 ) -> None:

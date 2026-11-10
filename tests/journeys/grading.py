@@ -16,14 +16,18 @@ class CardArtifact:
     reason: str | None
 
 
+def assert_equal(actual: object, expected: object, *, field: str) -> None:
+    assert actual == expected, f"{field}: expected {expected!r}, actual {actual!r}"
+
+
 def assert_card(actual: CardArtifact, expected: CardArtifact) -> None:
-    assert actual.account_id == expected.account_id
-    assert actual.conversation_id == expected.conversation_id
-    assert actual.text == expected.text
-    assert actual.version == expected.version
-    assert actual.state == expected.state
-    assert actual.origin == expected.origin
-    assert actual.reason == expected.reason
+    assert_equal(actual.account_id, expected.account_id, field="card account_id")
+    assert_equal(actual.conversation_id, expected.conversation_id, field="card conversation_id")
+    assert_equal(actual.text, expected.text, field="card text")
+    assert_equal(actual.version, expected.version, field="card version")
+    assert_equal(actual.state, expected.state, field="card state")
+    assert_equal(actual.origin, expected.origin, field="card origin")
+    assert_equal(actual.reason, expected.reason, field="card reason")
 
 
 Claim = Literal["awaiting_approval", "sending", "sent", "not_sent", "uncertain"]
@@ -49,8 +53,18 @@ def assert_claim(
     claimed_status: Claim,
     claimed_text_hash: str | None = None,
 ) -> None:
-    assert actual.version == claimed_version
-    assert _CLAIMS.get(actual.state) == claimed_status
+    assert_equal(actual.version, claimed_version, field="claimed card version")
+    assert_equal(
+        _CLAIMS.get(actual.state),
+        claimed_status,
+        field=f"claimed status for state {actual.state!r}",
+    )
     if claimed_text_hash is not None:
-        assert actual.text is not None, "purged text cannot support a content claim"
-        assert hashlib.sha256(actual.text.encode()).hexdigest() == claimed_text_hash
+        assert actual.text is not None, (
+            f"card text for content claim: expected retained text, actual {actual.text!r}"
+        )
+        assert_equal(
+            hashlib.sha256(actual.text.encode()).hexdigest(),
+            claimed_text_hash,
+            field="claimed card text SHA-256",
+        )

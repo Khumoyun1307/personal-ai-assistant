@@ -18,10 +18,19 @@ final owner reply and subsequent recovery transport healthy. J23 retains
 not the deliberately injected (and gateway-classified) network failure. Recovery
 evidence must be a successfully delivered card, never an attempted send.
 
-Round 2 isolation changes were reviewed statically only; tests were not run at
-the owner's request. The other marked journeys use the same fresh environments
-and counter reset; interleaving tasks release and join in `finally`, and monitor
-transport failure injection is restored in `finally` as well.
+Round 2 isolation and round 3 rebase changes were reviewed statically only;
+tests were not run at the owner's request. The other marked journeys use the same
+fresh environments and counter reset; interleaving tasks release and join in
+`finally`, and monitor transport failure injection is restored in `finally` as well.
+
+After I17, restarted control gateways use `FakeGatewayClock`, matching the initial
+scenario wiring: waits advance gateway time while business/job time remains
+unchanged. A record-only sleep leaves dispatch time frozen and makes the gateway
+refuse replies after typing. The runner checks both delivered owner replies and
+the explicit five-second business-clock advance. The ambiguous-send journey keeps
+the committed-claim/uncertain/no-retry oracle and also checks that replay retains
+the same attempt ID and state. Every harness assertion reports expected and
+actual values, including artifact graders and visible-reply checks.
 
 `models.py` defines a closed data format for owner/tool turns, contact arrival,
 edit/delete, taps, clock, consent revocation, failure and runtime restart, plus
@@ -66,24 +75,28 @@ To add a journey:
 
 The current-schema adapter in `dictate` exists only for baseline regressions.
 Contract journeys explicitly use the C2 source/main-writer APIs and do not fall
-back. H2 has not exposed runtime request/source bookkeeping tools yet; its owner
-must keep the adaptive scripting seam aligned with the final offered API. The
+back. H2 now loads continuations and explicit reply/card associations. The runner
+has an unmarked two-card, reply-after-restart journey for that seam. H2 leaves
+proposal tools unchanged: source-based core cases still need H3, and generated
+proposal/revision cases still need H4. Their strict xfail reasons now name those
+remaining dependencies; no existing H2-marked full trajectory is yet satisfiable
+by the offered tools. The adaptive scripts must follow their final APIs. The
 baseline revision adapter selects C2 arguments when that schema lands. I27's
 recovery command needs its final spelling wired into its marked case; `/current` is a test assumption,
 not an implemented or approved product command.
 
 | Cases | Family / coverage | Pending dependencies |
 |---|---|---|
-| I01 / J01 | `test_dictation`, `test_continuations`: real question, restart, source Unicode, double tap | H2/H3/H9 |
-| I02 / J03–J05 | `test_missing_content`: missing substance, standalone topic, mixed quote | H2/H4/H6/H10/H12 |
-| I03 / J02 | `test_contact_resolution`: real/weak/ambiguous/capped verdict; cross-turn binding | Verdict unmarked; binding H2/H3 |
-| I04 / J06/J11/J12 | `test_card_facts`: two actual cards, reply, version/token, terminal read, rewrite/revoke | Reads unmarked; H2/H4/H7/H9 |
+| I01 / J01 | `test_dictation`, `test_continuations`: real question, restart, source Unicode, double tap | H3/H9 |
+| I02 / J03–J05 | `test_missing_content`: missing substance, standalone topic, mixed quote | H4/H6/H10/H12 |
+| I03 / J02 | `test_contact_resolution`: real/weak/ambiguous/capped verdict; cross-turn binding | Verdict unmarked; binding H3 |
+| I04 / J06/J11/J12 | `test_card_facts`: two actual cards, reply, version/token, terminal read, rewrite/revoke | Reads and H2 reply selection in `test_runner` unmarked; H4/H7/H9 |
 | J07–J10 | `test_interleavings`: older target; arrival/base/non-base edit/delete; same-second takeover; late Assist | H4/H10/H11 |
 | J13/J14 | `test_interleavings`: queued selection; two interruptions/restarts | I13/I14 + request/proposal foundations |
 | J15 | `test_alerts_and_tasks`: digest off, quiet/cap holds, one-shot identity, uncertain no replay | Unmarked current behavior |
 | J16/J17 | `test_alerts_and_tasks`: triage/semantic backlog and long tails; hostile task closure | I2/I4/I5 |
 | J18 | `test_privacy_and_taint`: restore cancels approval/revokes authority; lost withdrawal + unknown continuity | Basic gate unmarked; I20 recovery |
-| J19/J25 | `test_continuations`: topic cancellation vs source reuse; advice/list edit | H2; advice unmarked |
+| J19/J25 | `test_continuations`: topic cancellation vs source reuse; advice/list edit | H4; advice unmarked |
 | J20/J27 | `test_privacy_and_taint`: exact owner preference, stale derived taint, configure confirmation | Same-run gate unmarked; H12/C8 |
 | J21–J23 | `test_card_facts`: redraft/restart; read/final race and purge; uncertain card recovery | H8/H7/I27 |
 | J24 | `test_budgets`: nested-call token admission/partial result, unpriced route | I15/I16 |

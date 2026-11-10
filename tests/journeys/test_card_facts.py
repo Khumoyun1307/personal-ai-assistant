@@ -8,6 +8,7 @@ from sqlalchemy import select
 from assistant.db.uow import transaction
 from assistant.llm.port import LLMRequest
 from tests.fakes.llm import text_response
+from tests.journeys.grading import assert_equal
 from tests.journeys.harness import Journey, call
 from tests.journeys.locales import OUTDATED, OWNER_LABEL, SENT, TEXT, UNAVAILABLE, UNCERTAIN
 from tests.journeys.models import (
@@ -80,7 +81,7 @@ async def test_q2_q3_j11_terminal_facts_do_not_depend_on_live_card(
     await j.check(CountCheck(artifact="business_attempts", count=int(transition == "approve")))
 
 
-@pytest.mark.xfail(strict=True, reason="needs H2", raises=AssertionError)
+@pytest.mark.xfail(strict=True, reason="needs H4", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("trial", range(3), ids=lambda trial: f"trial-{trial + 1}")
 async def test_i04_j06_reply_selects_k_revision_and_rejected_v2_content(
@@ -333,10 +334,10 @@ async def test_ambiguous_business_send_has_committed_claim_and_is_never_retried(
         # Independent session at the transport boundary: a flush in an
         # uncommitted execution transaction would not be visible here.
         claimed = await j.action("k")
-        assert claimed.state == "executing"
-        assert claimed.attempt_id is not None
-        assert claimed.approved_text_hash == j.text_hash(body)
-        assert await j.audit("k", "action_claimed") == 1
+        assert_equal(claimed.state, "executing", field="state at transport boundary")
+        assert claimed.attempt_id is not None, "committed attempt_id: expected value, actual None"
+        assert_equal(claimed.approved_text_hash, j.text_hash(body), field="approved text hash")
+        assert_equal(await j.audit("k", "action_claimed"), 1, field="committed claim count")
 
     j.s.env.sender.on_call = observe_claim
     await j.event(Fail(stage="send", outcome="uncertain"))
@@ -344,15 +345,23 @@ async def test_ambiguous_business_send_has_committed_claim_and_is_never_retried(
         await run_queued(j.s, "actions.execute")
     finally:
         j.s.env.sender.on_call = None
-    assert observed
-    assert (await j.action("k")).state == "delivery_uncertain"
+    assert_equal(observed, True, field="transport boundary observed")
+    uncertain = await j.action("k")
+    assert_equal(uncertain.state, "delivery_uncertain", field="ambiguous send state")
+    assert_equal(uncertain.state_reason, "ambiguous", field="ambiguous send reason")
     await j.event(Restart())
     await j.s.handlers.reconcile_pending()
     await j.s.execute(j.cards["k"])
+    await j.check(CountCheck(artifact="business_attempts", count=1))
     [attempt] = j.s.business_sends()
-    assert attempt["text"] == body
-    assert attempt["business_connection_id"] is not None
-    assert await j.audit("k", "action_claimed") == 1
+    assert_equal(attempt["text"], body, field="business attempt text")
+    assert attempt["business_connection_id"] is not None, (
+        "business attempt connection_id: expected value, actual None"
+    )
+    assert_equal(await j.audit("k", "action_claimed"), 1, field="claim count after replay")
+    replayed = await j.action("k")
+    assert_equal(replayed.state, uncertain.state, field="state after replay")
+    assert_equal(replayed.attempt_id, uncertain.attempt_id, field="attempt_id after replay")
     await j.owner(
         TEXT[locale].outcome,
         call("get_draft", conversation_id=None, action_id=j.cards["k"]),

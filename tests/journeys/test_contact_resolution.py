@@ -51,7 +51,7 @@ async def test_h5_real_match_verdict_precedes_page_cap(
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-@pytest.mark.xfail(strict=True, reason="needs H2", raises=AssertionError)
+@pytest.mark.xfail(strict=True, reason="needs H3", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("trial", range(3), ids=lambda trial: f"trial-{trial + 1}")
 async def test_i03_unique_contact_bound_across_next_owner_turn(

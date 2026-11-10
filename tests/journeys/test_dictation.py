@@ -11,7 +11,7 @@ from tests.scenarios.p2_drive import run_queued
 pytestmark = [pytest.mark.integration, pytest.mark.journey]
 
 
-@pytest.mark.xfail(strict=True, reason="needs H2", raises=AssertionError)
+@pytest.mark.xfail(strict=True, reason="needs H3", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("trial", range(3), ids=lambda trial: f"trial-{trial + 1}")
 async def test_i01_j01_dictation_survives_recipient_answer_and_restart(

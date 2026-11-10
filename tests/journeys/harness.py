@@ -31,7 +31,7 @@ from assistant.db.uow import transaction
 from assistant.llm.port import LLMRequest, LLMResponse, ToolResultItem
 from assistant.telegram.control.agent_channel import GatewayControlChannel
 from assistant.telegram.gateway import OutboundGateway
-from tests.fakes.clock import FakeSleep
+from tests.fakes.clock import FakeGatewayClock
 from tests.fakes.llm import Script, text_response, tool_response
 from tests.fakes.sender import network_error, telegram_error
 from tests.integration.agent_env import PRODUCTION_FLAGS, args, ask, gated
@@ -44,7 +44,7 @@ from tests.integration.business_env import (
     deliver,
     private_message,
 )
-from tests.journeys.grading import CardArtifact, assert_card, assert_claim
+from tests.journeys.grading import CardArtifact, assert_card, assert_claim, assert_equal
 from tests.journeys.models import (
     AdvanceClock,
     ArtifactCheck,
@@ -133,7 +133,9 @@ class Journey:
                     Action.account_id == self.s.account_id, Action.id == self.cards[alias]
                 )
             )
-        assert row is not None, "selected artifact is unavailable"
+        assert row is not None, (
+            f"card {alias!r} (action {self.cards[alias]}): expected available action, actual None"
+        )
         return row
 
     async def directory(self, alias: str, name: str) -> int:
@@ -141,9 +143,13 @@ class Journey:
         if alias == "k":
             async with transaction(self.s.env.factory) as uow:
                 chat = await uow.session.get(Conversation, self.chats[alias])
-                assert chat is not None
+                assert chat is not None, (
+                    f"directory {alias!r}: expected conversation {self.chats[alias]}, actual None"
+                )
                 contact = await uow.session.get(ContactRow, chat.contact_id)
-                assert contact is not None
+                assert contact is not None, (
+                    f"directory {alias!r}: expected contact {chat.contact_id}, actual None"
+                )
                 contact.display_name = name
             return self.chats[alias]
         telegram_id = CONTACT + 100 + len(self.chats)
@@ -164,7 +170,10 @@ class Journey:
                     Conversation.business_chat_id == telegram_id,
                 )
             )
-            assert chat is not None
+            assert chat is not None, (
+                f"directory {alias!r}: expected conversation for Telegram id {telegram_id}, "
+                "actual None"
+            )
             self.chats[alias] = chat.id
         return chat.id
 
@@ -172,7 +181,9 @@ class Journey:
         self.locale = locale
         async with transaction(self.s.env.factory) as uow:
             account = await uow.session.get(Account, self.s.account_id)
-            assert account is not None
+            assert account is not None, (
+                f"language: expected account {self.s.account_id}, actual None"
+            )
             account.locale_pref = locale
 
     async def owner(
@@ -186,7 +197,9 @@ class Journey:
         extra: dict[str, Any] = {}
         if reply_to is not None:
             row = await self.action(reply_to)
-            assert row.card_message_id is not None
+            assert row.card_message_id is not None, (
+                f"reply target {reply_to!r}: expected card message id, actual None"
+            )
             extra["reply_to_message"] = {
                 "message_id": row.card_message_id,
                 "date": self.s.date,
@@ -200,7 +213,8 @@ class Journey:
         self.turns.append(turn_id)
         self.record("owner", turn_id=turn_id, text_sha256=self.text_hash(text))
         if run:
-            assert await run_queued(self.s, "agent.owner_request", limit=1) == 1
+            jobs = await run_queued(self.s, "agent.owner_request", limit=1)
+            assert_equal(jobs, 1, field=f"owner turn {turn_id} jobs run")
             self.last_reply = "\n".join(
                 item["text"] for item in self.s.env.sender.delivered_control_sends[start:]
             )
@@ -216,7 +230,9 @@ class Journey:
 
     async def bind_card(self, alias: str, chat: str = "k") -> Action:
         candidates = [row for row in await self.rows() if row.conversation_id == self.chats[chat]]
-        assert candidates, "proposal did not create an artifact"
+        assert candidates, (
+            f"bind card {alias!r}: expected at least one action for chat {chat!r}, actual 0"
+        )
         row = candidates[-1]
         self.cards[alias] = row.id
         if row.approval_token:
@@ -232,9 +248,11 @@ class Journey:
                     .order_by(OwnerRequest.focused.desc(), OwnerRequest.id.desc())
                     .limit(1)
                 )
-            assert request_id is not None, "runtime did not persist the owner request (H2)"
+            assert request_id is not None, (
+                "owner request: expected persisted request id, actual None"
+            )
             view = await load_request(session, account_id=self.s.account_id, request_id=request_id)
-        assert view is not None, "request is unavailable"
+        assert view is not None, f"request {request_id}: expected available request, actual None"
         return view
 
     async def source_ids(
@@ -260,10 +278,10 @@ class Journey:
             if "expected_version" in tool.args_model.model_fields:
                 request = await self.request()
                 fences = [o["context_fence_id"] for o in self.outputs() if "context_fence_id" in o]
-                assert fences, "rewrite read did not issue a context fence"
+                assert fences, "rewrite read: expected at least one context fence, actual 0"
                 sources = await self.source_ids(turn_id=self.turns[-1]) if append else []
                 if append:
-                    assert sources, "append has no exact owner source"
+                    assert sources, "append: expected at least one exact owner source, actual 0"
                 return call(
                     "revise_draft",
                     request_id=request.request_id,
@@ -294,7 +312,7 @@ class Journey:
         async def proposal(_request: LLMRequest) -> LLMResponse:
             request = await self.request()
             sources = await self.source_ids()
-            assert sources, "dictation has no retained literal source"
+            assert sources, "dictation: expected at least one retained literal source, actual 0"
             return call(
                 "propose_message",
                 request_id=request.request_id,
@@ -310,7 +328,7 @@ class Journey:
         async def proposal(_request: LLMRequest) -> LLMResponse:
             request = await self.request()
             sources = await self.source_ids(suggestion=True)
-            assert sources, "selection has no exact retained assistant suggestion"
+            assert sources, "selection: expected at least one retained suggestion source, actual 0"
             return call(
                 "propose_message",
                 request_id=request.request_id,
@@ -328,7 +346,7 @@ class Journey:
         async def proposal(_request: LLMRequest) -> LLMResponse:
             request = await self.request()
             fences = [o["context_fence_id"] for o in self.outputs() if "context_fence_id" in o]
-            assert fences, "managed read did not issue a context fence (H10)"
+            assert fences, "managed read: expected at least one context fence (H10), actual 0"
             return call(
                 "propose_owner_message",
                 request_id=request.request_id,
@@ -413,7 +431,9 @@ class Journey:
             self._message_number += 1
             async with self.s.env.factory() as session:
                 chat = await session.get(Conversation, self.chats[step.chat])
-                assert chat is not None
+                assert chat is not None, (
+                    f"contact event: expected conversation {self.chats[step.chat]}, actual None"
+                )
                 telegram_chat = chat.business_chat_id
             await deliver(
                 self.s.env,
@@ -430,7 +450,10 @@ class Journey:
             chat_alias, telegram_message = self.messages[step.alias]
             async with self.s.env.factory() as session:
                 chat = await session.get(Conversation, self.chats[chat_alias])
-                assert chat is not None
+                assert chat is not None, (
+                    f"{step.kind} event: expected conversation {self.chats[chat_alias]}, "
+                    "actual None"
+                )
                 telegram_chat = chat.business_chat_id
                 original = await session.scalar(
                     select(Message).where(
@@ -439,8 +462,12 @@ class Journey:
                         Message.telegram_message_id == telegram_message,
                     )
                 )
-                assert original is not None
-                assert original.sent_at is not None
+                assert original is not None, (
+                    f"{step.kind} event: expected message {step.alias!r}, actual None"
+                )
+                assert original.sent_at is not None, (
+                    f"{step.kind} event: expected sent_at for message {step.alias!r}, actual None"
+                )
                 original_date = int(original.sent_at.timestamp())
             if isinstance(step, EditMessage):
                 payload = business_message(
@@ -507,8 +534,11 @@ class Journey:
             owner_telegram_ids=(OWNER,),
             feature_flags=JOURNEY_FLAGS,
         )
+        # I17 checks actual dispatch time after a throttle wait. Keep gateway
+        # time advancing locally, as in m04_environment, without moving job time.
+        gateway_clock = FakeGatewayClock(self.s.env.clock)
         channel = GatewayControlChannel(
-            OutboundGateway(self.s.env.sender, self.s.env.clock, sleep=FakeSleep())
+            OutboundGateway(self.s.env.sender, gateway_clock, sleep=gateway_clock.sleep)
         )
         client = gated(self.s.env, self.s.fake)
         summaries = build_summarizer(settings, self.s.env.factory, self.s.env.clock, client)
@@ -553,19 +583,26 @@ class Journey:
             )
             if check.authorship is not None:
                 proof = getattr(row, "authorship", None)
-                assert proof is not None, "version authorship is unavailable"
-                assert proof["version"] == check.version
-                assert proof["kind"] == check.authorship
+                assert proof is not None, (
+                    f"card {check.alias!r} authorship: expected version proof, actual None"
+                )
+                assert_equal(proof["version"], check.version, field="card authorship version")
+                assert_equal(proof["kind"], check.authorship, field="card authorship kind")
             if check.presented:
-                assert row.card_message_id is not None
-                assert row.card_state == row.state
+                assert row.card_message_id is not None, (
+                    f"card {check.alias!r} presentation: expected control message id, actual None"
+                )
+                assert_equal(row.card_state, row.state, field="presented card state")
                 async with self.s.env.factory() as session:
                     facts = await presentation_facts(
                         session, account_id=self.s.account_id, action_ids=[row.id]
                     )
-                assert row.id in facts
-                assert facts[row.id].outcome == "shown"
-                assert facts[row.id].version == row.version
+                assert row.id in facts, (
+                    f"card presentation: expected action {row.id} in facts, "
+                    f"actual {sorted(facts)!r}"
+                )
+                assert_equal(facts[row.id].outcome, "shown", field="card presentation outcome")
+                assert_equal(facts[row.id].version, row.version, field="card presentation version")
                 rendered = "\n".join(
                     call["text"]
                     for call in [
@@ -573,13 +610,20 @@ class Journey:
                         *self.s.env.sender.delivered_control_edits,
                     ]
                 )
-                assert check.text in html.unescape(rendered)
+                rendered = html.unescape(rendered)
+                assert check.text in rendered, (
+                    f"presented text: expected to contain {check.text!r}, actual {rendered!r}"
+                )
         elif isinstance(check, RequestCheck):
             request = await self.request()
-            assert request.state == check.state
-            assert request.missing_slot == check.slot
+            assert_equal(request.state, check.state, field="request state")
+            assert_equal(request.missing_slot, check.slot, field="request missing_slot")
             if check.chat is not None:
-                assert request.conversation_id == self.chats[check.chat]
+                assert_equal(
+                    request.conversation_id,
+                    self.chats[check.chat],
+                    field=f"request conversation_id for {check.chat!r}",
+                )
         elif isinstance(check, CountCheck):
             counts = {
                 "actions": len(await self.rows()),
@@ -588,14 +632,21 @@ class Journey:
                     [r for r in self.s.fake.requests if r.purpose == "draft_reply"]
                 ),
             }
-            assert counts[check.artifact] == check.count
+            assert_equal(counts[check.artifact], check.count, field=f"{check.artifact} count")
         elif isinstance(check, ReplyCheck):
             for text in check.contains:
-                assert text in self.last_reply
+                assert text in self.last_reply, (
+                    f"owner reply: expected to contain {text!r}, actual {self.last_reply!r}"
+                )
             for text in check.excludes:
-                assert text not in self.last_reply
+                assert text not in self.last_reply, (
+                    f"owner reply: expected to exclude {text!r}, actual {self.last_reply!r}"
+                )
         elif isinstance(check, FactualReplyCheck):
-            assert check.wording in self.last_reply
+            assert check.wording in self.last_reply, (
+                f"factual reply for card {check.card!r}: "
+                f"expected to contain {check.wording!r}, actual {self.last_reply!r}"
+            )
             row = await self.action(check.card)
             assert_claim(
                 CardArtifact(
@@ -637,7 +688,10 @@ class Journey:
                 await load_source(session, account_id=self.s.account_id, source=source)
                 for source in request.sources
             ]
-        assert all(value.status == "validated" for value in values)
+        statuses = [value.status for value in values]
+        assert all(status == "validated" for status in statuses), (
+            f"request source statuses: expected all 'validated', actual {statuses!r}"
+        )
         return tuple(value.text for value in values if value.status == "validated")
 
     async def message_id(self, alias: str) -> int:
@@ -650,7 +704,7 @@ class Journey:
                     Message.telegram_message_id == telegram_id,
                 )
             )
-        assert value is not None
+        assert value is not None, f"message {alias!r}: expected persisted message id, actual None"
         return value
 
     async def runs(self) -> list[AgentRun]:
@@ -784,9 +838,18 @@ class Journey:
                 if telegram_chat == attempt.get("chat_id")
                 and row.approved_text_hash == self.text_hash(str(attempt.get("text", "")))
             ]
-            assert matches, "business attempt has no exact owner-approved artifact"
-            assert any(row.attempt_id is not None for row in matches)
+            assert matches, (
+                "business attempt: expected at least one exact owner-approved artifact, "
+                f"actual 0 for chat {attempt.get('chat_id')!r} "
+                f"and text SHA-256 {self.text_hash(str(attempt.get('text', '')))!r}"
+            )
+            assert any(row.attempt_id is not None for row in matches), (
+                "business attempt: expected a committed attempt_id, "
+                f"actual {[row.attempt_id for row in matches]!r}"
+            )
         claims = 0
         for alias in self.cards:
             claims += await self.audit(alias, "action_claimed")
-        assert len(attempts) <= claims, "business attempts exceed committed claims"
+        assert len(attempts) <= claims, (
+            f"business attempts: expected at most {claims} committed claims, actual {len(attempts)}"
+        )

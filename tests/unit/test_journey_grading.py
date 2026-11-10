@@ -30,15 +30,20 @@ EXPECTED = CardArtifact(11, 22, "CANARY-SYNTH X1 — Oʻzbek!", 2, "rejected", "
 def test_wrong_recipient_exact_text_version_or_state_fails_grading(
     changes: dict[str, object],
 ) -> None:
-    with pytest.raises(AssertionError):
-        assert_card(replace(EXPECTED, **changes), EXPECTED)
+    actual = replace(EXPECTED, **changes)
+    [field] = changes
+    with pytest.raises(AssertionError, match=f"card {field}: expected") as caught:
+        assert_card(actual, EXPECTED)
+    assert str(caught.value) == (
+        f"card {field}: expected {getattr(EXPECTED, field)!r}, actual {getattr(actual, field)!r}"
+    )
 
 
 @pytest.mark.parametrize(
     "state", ["awaiting_approval", "approved", "rejected", "delivery_uncertain"]
 )
 def test_absence_from_live_cards_does_not_prove_sent(state: str) -> None:
-    with pytest.raises(AssertionError):
+    with pytest.raises(AssertionError, match=f"claimed status for state {state!r}: expected"):
         assert_claim(replace(EXPECTED, state=state), claimed_version=2, claimed_status="sent")
 
 
@@ -47,14 +52,14 @@ def test_purged_or_changed_version_never_proves_content() -> None:
     assert_claim(
         EXPECTED, claimed_version=2, claimed_status="not_sent", claimed_text_hash=body_hash
     )
-    with pytest.raises(AssertionError):
+    with pytest.raises(AssertionError, match="card text for content claim: expected"):
         assert_claim(
             replace(EXPECTED, text=None),
             claimed_version=2,
             claimed_status="not_sent",
             claimed_text_hash=body_hash,
         )
-    with pytest.raises(AssertionError):
+    with pytest.raises(AssertionError, match="claimed card version: expected 1, actual 2"):
         assert_claim(EXPECTED, claimed_version=1, claimed_status="not_sent")
 
 
