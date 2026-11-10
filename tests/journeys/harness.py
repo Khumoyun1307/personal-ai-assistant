@@ -10,11 +10,13 @@ import asyncio
 import hashlib
 import html
 import json
+import re
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from itertools import count
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from assistant.accounts.models import Account, AuditLogEntry, Consent
 from assistant.actions.card_facts import presentation_facts
@@ -30,6 +32,7 @@ from assistant.conversations.models import Conversation, Message
 from assistant.db.uow import transaction
 from assistant.llm.port import LLMRequest, LLMResponse, ToolResultItem
 from assistant.telegram.control.agent_channel import GatewayControlChannel
+from assistant.telegram.control.approvals import shown
 from assistant.telegram.gateway import OutboundGateway
 from tests.fakes.clock import FakeGatewayClock
 from tests.fakes.llm import Script, text_response, tool_response
@@ -45,6 +48,7 @@ from tests.integration.business_env import (
     private_message,
 )
 from tests.journeys.grading import CardArtifact, assert_card, assert_claim, assert_equal
+from tests.journeys.locales import ASSISTANT_LABEL, OWNER_LABEL
 from tests.journeys.models import (
     AdvanceClock,
     ArtifactCheck,
@@ -74,6 +78,21 @@ JOURNEY_FLAGS = PRODUCTION_FLAGS | {
     "tool.propose_owner_message",
 }
 _CALL_IDS = count(1)
+EXECUTING_ACTION: ContextVar[int | None] = ContextVar("journey_executing_action", default=None)
+
+
+@dataclass(frozen=True)
+class BusinessDispatch:
+    """Committed facts read at one actual fake transport call, never pooled."""
+
+    call: dict[str, Any]
+    action_id: int | None
+    attempt_id: str | None = None
+    version: int | None = None
+    state: str | None = None
+    approved_text_hash: str | None = None
+    telegram_chat_id: int | None = None
+    claims: int = 0
 
 
 def call(name: str, /, **values: Any) -> LLMResponse:
@@ -110,6 +129,7 @@ class Journey:
     turns: list[int] = field(default_factory=list)
     last_reply: str = ""
     events: list[dict[str, Any]] = field(default_factory=list)
+    dispatches: list[BusinessDispatch] = field(default_factory=list)
     _message_number: int = 10000
 
     def __post_init__(self) -> None:
@@ -117,6 +137,47 @@ class Journey:
 
     def record(self, kind: str, **facts: Any) -> None:
         self.events.append({"sequence": len(self.events) + 1, "kind": kind, **facts})
+
+    async def observe_business_call(self, call: dict[str, Any]) -> None:
+        action_id = EXECUTING_ACTION.get()
+        async with self.s.env.factory() as session:
+            result = (
+                await session.execute(
+                    select(Action, Conversation.business_chat_id)
+                    .join(Conversation, Conversation.id == Action.conversation_id)
+                    .where(
+                        Action.account_id == self.s.account_id,
+                        Action.id == action_id,
+                        Conversation.account_id == self.s.account_id,
+                    )
+                )
+            ).one_or_none()
+            if result is None:
+                self.dispatches.append(BusinessDispatch(call, action_id))
+                return
+            row, telegram_chat = result
+            claims = await session.scalar(
+                select(func.count(AuditLogEntry.id)).where(
+                    AuditLogEntry.account_id == self.s.account_id,
+                    AuditLogEntry.subject_type == "action",
+                    AuditLogEntry.subject_id == row.id,
+                    AuditLogEntry.event == "action_claimed",
+                    AuditLogEntry.details["attempt_id"].astext == row.attempt_id,
+                    AuditLogEntry.details["version"].as_integer() == row.version,
+                )
+            )
+            self.dispatches.append(
+                BusinessDispatch(
+                    call=call,
+                    action_id=row.id,
+                    attempt_id=row.attempt_id,
+                    version=row.version,
+                    state=row.state,
+                    approved_text_hash=row.approved_text_hash,
+                    telegram_chat_id=telegram_chat,
+                    claims=claims or 0,
+                )
+            )
 
     async def rows(self) -> list[Action]:
         async with self.s.env.factory() as session:
@@ -597,23 +658,35 @@ class Journey:
                     facts = await presentation_facts(
                         session, account_id=self.s.account_id, action_ids=[row.id]
                     )
+                    presentation = await session.scalar(
+                        select(AuditLogEntry)
+                        .where(
+                            AuditLogEntry.account_id == self.s.account_id,
+                            AuditLogEntry.subject_type == "action",
+                            AuditLogEntry.subject_id == row.id,
+                            AuditLogEntry.event == "card_presented",
+                        )
+                        .order_by(AuditLogEntry.id.desc())
+                        .limit(1)
+                    )
                 assert row.id in facts, (
                     f"card presentation: expected action {row.id} in facts, "
                     f"actual {sorted(facts)!r}"
                 )
                 assert_equal(facts[row.id].outcome, "shown", field="card presentation outcome")
                 assert_equal(facts[row.id].version, row.version, field="card presentation version")
-                rendered = "\n".join(
-                    call["text"]
-                    for call in [
-                        *self.s.env.sender.delivered_control_sends,
-                        *self.s.env.sender.delivered_control_edits,
-                    ]
+                assert presentation is not None, (
+                    "card presentation: expected a recorded card_presented event, actual None"
                 )
-                rendered = html.unescape(rendered)
-                assert check.text in rendered, (
-                    f"presented text: expected to contain {check.text!r}, actual {rendered!r}"
-                )
+                for key, expected in (
+                    ("control_message_id", row.card_message_id),
+                    ("version", check.version),
+                    ("state", check.state),
+                ):
+                    assert_equal(
+                        presentation.details.get(key), expected, field=f"card presentation {key}"
+                    )
+                self.assert_card_delivery(row, check)
         elif isinstance(check, RequestCheck):
             request = await self.request()
             assert_equal(request.state, check.state, field="request state")
@@ -661,6 +734,70 @@ class Journey:
                 claimed_version=check.version,
                 claimed_status=check.status,
                 claimed_text_hash=check.text_sha256,
+            )
+
+    def assert_card_delivery(self, row: Action, check: CardCheck) -> None:
+        # A Telegram message is sent once and then edited in place. Only its
+        # latest successful edit (or initial send) is its current presentation.
+        sender = self.s.env.sender
+        deliveries = [
+            item
+            for item in [*sender.delivered_control_sends, *sender.delivered_control_edits]
+            if item.get("message_id") == row.card_message_id
+        ]
+        assert deliveries, (
+            f"card {check.alias!r}: expected delivery of message {row.card_message_id}, actual []"
+        )
+        delivery = deliveries[-1]
+        assert_equal(delivery["chat_id"], OWNER, field="presented card control recipient")
+        rendered = delivery["text"]
+        recipients = re.findall(r"^(?:To|Kimga|Кимга|Кому): <b>(.*?)</b>$", rendered, re.MULTILINE)
+        assert_equal(
+            [html.unescape(name) for name in recipients],
+            [html.unescape(shown(self.names[check.chat], one_line=True))],
+            field="presented card recipient",
+        )
+        bodies = re.findall(r"<blockquote>(.*?)</blockquote>", rendered, re.DOTALL)
+        assert_equal(
+            [html.unescape(body) for body in bodies],
+            [html.unescape(shown(check.text))],
+            field="presented card body",
+        )
+        proof = getattr(row, "authorship", None)
+        generated = row.origin != "owner_dictated"
+        if proof is not None:
+            generated = proof.get("retains_generated_text", False) or proof["kind"] in (
+                "assistant_written",
+                "agent_proposal_selected",
+            )
+        labels = (
+            (
+                ASSISTANT_LABEL[self.locale],
+                "Draft reply",
+                "New message",
+                "Assist draft",
+                "Message the assistant suggested",
+            )
+            if generated
+            else (OWNER_LABEL[self.locale], "Message you dictated")
+        )
+        # The body/quoted contact text cannot supply the authorship label.
+        header = html.unescape(rendered.split("\n", 1)[0])
+        assert any(label in header for label in labels), (
+            f"presented card authorship: expected one of {labels!r}, actual {header!r}"
+        )
+        if row.state == "awaiting_approval":
+            markup = delivery["reply_markup"]
+            if hasattr(markup, "model_dump"):
+                markup = markup.model_dump()
+            callbacks = [
+                button.get("callback_data")
+                for line in (markup or {}).get("inline_keyboard", [])
+                for button in line
+            ]
+            assert f"act:{row.approval_token}:ok" in callbacks, (
+                f"presented card version: expected current approval token for v{row.version}, "
+                f"actual {callbacks!r}"
             )
 
     async def run(self, case: JourneyCase) -> None:
@@ -819,37 +956,32 @@ class Journey:
     async def assert_approved_attempts(self) -> None:
         """Teardown safety guard: xfail must not excuse an unauthorized send."""
         attempts = self.s.business_sends()
-        if not attempts:
-            return
-        async with self.s.env.factory() as session:
-            rows = list(
-                (
-                    await session.execute(
-                        select(Action, Conversation.business_chat_id)
-                        .join(Conversation, Conversation.id == Action.conversation_id)
-                        .where(Action.account_id == self.s.account_id)
-                    )
-                ).all()
-            )
+        dispatched: set[tuple[int, str]] = set()
         for attempt in attempts:
-            matches = [
-                row
-                for row, telegram_chat in rows
-                if telegram_chat == attempt.get("chat_id")
-                and row.approved_text_hash == self.text_hash(str(attempt.get("text", "")))
-            ]
-            assert matches, (
-                "business attempt: expected at least one exact owner-approved artifact, "
-                f"actual 0 for chat {attempt.get('chat_id')!r} "
-                f"and text SHA-256 {self.text_hash(str(attempt.get('text', '')))!r}"
+            observations = [item for item in self.dispatches if item.call is attempt]
+            assert_equal(len(observations), 1, field="business call dispatch observations")
+            [evidence] = observations
+            assert evidence.action_id is not None, (
+                "business call: expected executing action identity, actual None"
             )
-            assert any(row.attempt_id is not None for row in matches), (
-                "business attempt: expected a committed attempt_id, "
-                f"actual {[row.attempt_id for row in matches]!r}"
+            assert evidence.attempt_id is not None, (
+                f"business call action {evidence.action_id}: expected committed attempt_id, "
+                "actual None"
             )
-        claims = 0
-        for alias in self.cards:
-            claims += await self.audit(alias, "action_claimed")
-        assert len(attempts) <= claims, (
-            f"business attempts: expected at most {claims} committed claims, actual {len(attempts)}"
-        )
+            assert_equal(
+                evidence.state, "executing", field="business call action state at dispatch"
+            )
+            assert_equal(evidence.claims, 1, field="business call committed claims for attempt")
+            key = (evidence.action_id, evidence.attempt_id)
+            assert key not in dispatched, (
+                f"calls per action attempt: expected at most 1 for {key!r}, actual at least 2"
+            )
+            dispatched.add(key)
+            assert_equal(
+                attempt.get("chat_id"), evidence.telegram_chat_id, field="business call recipient"
+            )
+            assert_equal(
+                self.text_hash(str(attempt.get("text", ""))),
+                evidence.approved_text_hash,
+                field="business call approved text SHA-256",
+            )

@@ -137,6 +137,13 @@ OWNER_LABEL: dict[Locale, str] = {
     "en": "Your words",
 }
 
+ASSISTANT_LABEL: dict[Locale, str] = {
+    "uz-Latn": "Yordamchi yozgan",
+    "uz-Cyrl": "Ёрдамчи ёзган",
+    "ru": "Написано помощником",
+    "en": "Written by the assistant",
+}
+
 BOOK_QUESTION: dict[Locale, str] = {
     "uz-Latn": "Kitob keldimi?",
     "uz-Cyrl": "Китоб келдими?",

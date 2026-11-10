@@ -10,6 +10,7 @@ from assistant.accounts import service
 from assistant.accounts.models import Account, Consent
 from assistant.actions.models import Action
 from assistant.db.uow import transaction
+from assistant.llm.port import LLMRequest, LLMResponse
 from assistant.memory.models import MemoryItem
 from assistant.privacy.post_restore import post_restore
 from tests.fakes.llm import text_response
@@ -272,8 +273,15 @@ async def test_j26_lost_source_never_reconstructs_from_assistant_memory(
     await j.language(locale)
     first = await j.owner(owner_input("J26", locale)[0], text_response(TEXT[locale].choice))
     original = await j.request()
+    original_source_ids = await j.source_ids(turn_id=first)
+    assert original_source_ids, "expected real retained literal sources before losing them"
+    # Validate the source while it still exists. Rejection of a fabricated ID
+    # says nothing about whether privacy/expiry invalidated a once-valid source.
+    assert await j.source_texts()
     if loss == "expired":
-        j.s.env.clock.advance(hours=24)
+        j.s.env.clock.advance(
+            seconds=int((original.expires_at - j.s.env.clock.now()).total_seconds()) + 1
+        )
     else:
         async with transaction(j.s.env.factory) as uow:
             if loss == "deleted":
@@ -293,23 +301,45 @@ async def test_j26_lost_source_never_reconstructs_from_assistant_memory(
                 row = await uow.session.get(ControlTurn, first)
                 assert row is not None
                 row.text = None
-    # An old source ID, supplied by the model, cannot authorize retained prose.
-    await j.owner(
-        TEXT[locale].choice,
-        call(
+
+    async def replay_source(_request: LLMRequest) -> LLMResponse:
+        from assistant.actions.requests import load_request
+
+        async with j.s.env.factory() as session:
+            retained = await load_request(
+                session, account_id=j.s.account_id, request_id=original.request_id
+            )
+        # Avoid a vacuous old-version rejection when clearing bumped the
+        # request version. A physical deletion may also remove the request.
+        version = original.version if retained is None else retained.version
+        return call(
             "propose_message",
             request_id=original.request_id,
-            request_version=original.version,
+            request_version=version,
             conversation_id=j.chats["k"],
             answered_message_id=None,
-            source_ids=[999_999_999],
-        ),
+            source_ids=original_source_ids,
+        )
+
+    # The actual once-valid IDs cannot authorize assistant-retained prose.
+    await j.owner(
+        TEXT[locale].choice,
+        replay_source,
         text_response(TEXT[locale].outcome),
     )
     await j.check(CountCheck(artifact="actions", count=0))
+    await j.check(CountCheck(artifact="business_attempts", count=0))
     output = j.outputs()[-1]
-    assert "action" in output
+    assert output["status"] in {"not_available", "invalid_arguments", "stale"}
+    assert output["reason"] in {
+        "source_unavailable",
+        "not_available",
+        "request_expired",
+        "max_age",
+    }
     assert output["action"] is None
+    assert output["effect_version"] is None
+    assert output["requested_change_applied"] is False
 
 
 @pytest.mark.xfail(strict=True, reason="needs H4", raises=AssertionError)
@@ -346,7 +376,6 @@ async def test_j26_foreign_proposal_references_are_rejected_one_at_a_time(
     from assistant.actions.request_models import OwnerRequestSource
     from assistant.actions.requests import RequestSource, SourceSpan, open_request
     from assistant.agent.models import AgentRun
-    from assistant.llm.port import LLMRequest
 
     j = journey
     await j.language(locale)

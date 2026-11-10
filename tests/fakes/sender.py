@@ -49,6 +49,9 @@ class FakeTelegramSender:
         #: Awaited at the start of every call, to observe the world "while
         #: Telegram is being called" (e.g. which rows are locked).
         self.on_call: Callable[[], Awaitable[None]] | None = None
+        #: Journey-only observation at the transport boundary, after on_call.
+        #: Receives the actual recorded object, including calls that fail.
+        self.on_business_call: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._next_message_id = 1000
         #: Plain-text business calls (S04.4): `sendMessage` and
         #: `editMessageText` as the owner, with every argument.
@@ -66,6 +69,10 @@ class FakeTelegramSender:
         if self.on_call is not None:
             await self.on_call()
 
+    async def _observe_business(self, call: dict[str, Any]) -> None:
+        if call.get("business_connection_id") is not None and self.on_business_call is not None:
+            await self.on_business_call(call)
+
     async def send_plain_message(
         self, *, chat_id: int, text: str, business_connection_id: str
     ) -> dict[str, Any]:
@@ -73,6 +80,7 @@ class FakeTelegramSender:
         self.plain_sends.append(
             {"chat_id": chat_id, "text": text, "business_connection_id": business_connection_id}
         )
+        await self._observe_business(self.plain_sends[-1])
         if self.plain_script:
             scripted = self.plain_script.pop(0)
             if isinstance(scripted, Exception):
@@ -95,6 +103,7 @@ class FakeTelegramSender:
                 "business_connection_id": business_connection_id,
             }
         )
+        await self._observe_business(self.plain_edits[-1])
         if self.fail_with is not None:
             raise self.fail_with
         return {"message_id": message_id}
@@ -120,6 +129,7 @@ class FakeTelegramSender:
             "business_connection_id": business_connection_id,
         }
         self.sends.append(call)
+        await self._observe_business(call)
         if business_connection_id is None and self.control_script:
             raise self.control_script.pop(0)
         if self.fail_with is not None:
@@ -148,6 +158,7 @@ class FakeTelegramSender:
                 "business_connection_id": business_connection_id,
             }
         )
+        await self._observe_business(self.edits[-1])
         if self.fail_with is not None:
             raise self.fail_with
         if business_connection_id is None:
@@ -185,6 +196,7 @@ class FakeTelegramSender:
         self.deletes.append(
             {"business_connection_id": business_connection_id, "message_ids": list(message_ids)}
         )
+        await self._observe_business(self.deletes[-1])
         if self.fail_with is not None:
             raise self.fail_with
         return True

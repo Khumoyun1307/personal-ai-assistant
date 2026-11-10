@@ -32,6 +32,32 @@ the committed-claim/uncertain/no-retry oracle and also checks that replay retain
 the same attempt ID and state. Every harness assertion reports expected and
 actual values, including artifact graders and visible-reply checks.
 
+`CardCheck` binds delivery evidence to the selected action's current control
+message ID and latest successful edit, checks the version/state/message linkage
+in `card_presented`, and compares the recipient, entire displayed body and header
+authorship label. Awaiting-approval cards must carry the current version's token.
+An older card or unrelated final reply cannot supply missing presentation text.
+The inline-body check is exact (including suffixes and Unicode), rather than a
+substring search across the transcript.
+
+The fixture wraps the real executor with a task-local action identity and uses
+the fake sender's optional `on_business_call` observer. Each actual transport
+call, including a failed call, is linked by object identity to its action and
+committed attempt/version/approval facts read at dispatch. Teardown requires one
+committed claim for that exact attempt and at most one call per action/attempt;
+another action's unused claim cannot cover a duplicate. No product files change;
+the test-only method wrapper delegates to the real executor.
+`test_harness_guards.py` deliberately corrupts card evidence and injects duplicate
+dispatch, asserting that the harness rejects them. It also checks that distinct
+actions may legitimately send identical text.
+
+J26 captures and validates the original source IDs before clearing, physical
+deletion or request expiry, then replays those same IDs with the retained
+request's current version when available. It requires explicit unavailability,
+no applied effect and zero actions/business calls. Rejecting an invented source
+ID or merely an old request version does not satisfy this regression. These
+review fixes remain unexecuted in the restricted worktree at the owner's request.
+
 `models.py` defines a closed data format for owner/tool turns, contact arrival,
 edit/delete, taps, clock, consent revocation, failure and runtime restart, plus
 artifact checks and directory/locale setup. `test_runner.py` demonstrates a
@@ -110,6 +136,7 @@ Run relevant families inside the dev container, for example:
 
 ```powershell
 docker compose -f compose.dev.yml run --rm app uv run pytest tests/journeys/test_runner.py tests/unit/test_journey_grading.py tests/unit/test_ci_split.py tests/scenarios/test_m04_j4_draft_approve.py
+docker compose -f compose.dev.yml run --rm app uv run pytest tests/journeys/test_harness_guards.py tests/journeys/test_privacy_and_taint.py
 docker compose -f compose.dev.yml run --rm app uv run pytest tests/journeys/test_contact_resolution.py tests/journeys/test_card_facts.py
 docker compose -f compose.dev.yml run --rm app uv run pytest tests/journeys/test_alerts_and_tasks.py tests/journeys/test_privacy_and_taint.py
 docker compose -f compose.dev.yml run --rm app uv run pytest tests/journeys/test_dictation.py tests/journeys/test_missing_content.py tests/journeys/test_continuations.py tests/journeys/test_interleavings.py tests/journeys/test_budgets.py
