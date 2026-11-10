@@ -1050,6 +1050,82 @@ erDiagram
 
 ### 10.4 Retention (defaults; owner-configurable — PRD R-07)
 
+**I20 privacy enforcement metadata (D-S15/C9; migration 0019, not yet deployed).**
+Accounts, conversations, contacts, messages, memory_items and notification_sources have unique,
+non-null, server-generated UUID `recovery_id` columns. They follow their row's
+retention; replay never relies on a reusable integer PK. No content column was
+added. The retained tables below have non-null internal `account_id` but
+deliberately no account FK: erasing the tenant retains only opaque tombstones
+needed to prevent resurrection from older snapshots. No Telegram IDs, names,
+text, credentials or model prose appear in them. Account erasure clears linked
+raw payloads and records a distinct `account` scope; `everything` deletes
+content while keeping the usable account, as before.
+
+Migration 0019 follows H3's 0018 tool-effect identity migration, after I8's 0017 snapshot table. A snapshot's independent expiry
+or notification cascade records a `notification_source` tombstone keyed by its
+recovery UUID; replay removes that account's matching copy without touching a
+different notification. Conversation/account deletion and complete restore
+purge also remove snapshots through the existing foreign-key cascades.
+`notification_sources.reasons` remains content; `verdict_state` remains structural,
+and the added UUID is structural metadata retained only with its row.
+
+Complete restore purge additionally removes even the digest automation's
+content-classified spec (normal content deletion keeps that fixed schedule),
+clears every raw payload and checks that **every** registered content column
+is empty before reporting the purge complete. The preference reconciler can
+subsequently rebuild a fresh digest schedule. A failed emptiness check or sweep
+leaves startup closed.
+
+| I20 structural record | Types / nullability | Retention / export / deletion |
+|---|---|---|
+| `privacy_journal_heads` | account_recovery_id UUID PK, indexed account_id bigint, sequence bigint ≥0, digest checked hex text; all non-null | UUID-scoped sequence lock and snapshot anchor; no external call under its lock. Retained after account erasure; a reused integer account_id never aliases another UUID's head or export |
+| `privacy_journal` | identity bigint PK; non-null account_id/sequence bigint, decision_id/account_recovery_id UUID, scope/operation checked text, decided_at timestamptz, previous_digest/digest checked hex text; subject_recovery_id UUID and processor_id checked text nullable | Transactional outbox. Subject required for conversation/contact/message/memory/notification_source; processor required for withdrawals (currently OpenAI), never for deletion. UUIDs, sequence, enums, UTC time and integrity metadata only. `privacy.requests.export_owner_requests` includes only that account's records |
+| Encrypted cumulative segments + head in existing B2 | age ciphertext using the existing recipient/offline identity; head contains only wire version, opaque object token and SHA-256 ciphertext checksum | Outside the restored snapshot/host boundary. Head advances only after successful segment upload. Never mirrored/pruned by daily/weekly sync. Local and off-site copies are inventoried together |
+| `audit_log.privacy_reconciled` / `privacy_journal_pruned` | Existing account FK and JSON audit seam: restore/receipt UUID, fixed mechanism, UTC cutoffs, completion flags only | Existing 1-year audit ceiling; account cascade. No copied content or sensitive subject links |
+
+Journal tombstones do **not** expire on the nominal 35-day backup schedule.
+Ordinary dumps exclude `privacy_journal` table data while retaining the exact
+heads as backup anchors; decisions have their own independent continuity and
+retention lifecycle. Replay imports the full independent
+chain into the recovered local outbox before any future journal ship.
+Operators inventory daily/weekly copies, off-site objects, offline copies and
+provider snapshots weekly. Unknown inventory blocks pruning. Within 7 days of
+verified destruction of the last restorable copy of the old journal epoch,
+remove its local/off-site segments and head and use `privacy-journal-reset`
+with an inventory receipt UUID and explicit last-copy attestation. This
+conservative whole-epoch implementation requires retiring all old restore
+points before reset; it does not guess at per-record expiry. The action deletes
+outbox rows, removes erased-account heads and resets surviving heads only after
+that attestation. Final account erasure includes this cleanup. See
+[restore runbook §D](../deploy/runbooks/restore.md#d-journal-retention-and-final-erasure).
+An Undo-window archive is reversible, not erasure: memory tombstones are
+recorded on actual row deletion. Local receipts distinguish applied deletion
+from still-pending independent durability; no acknowledgement is inferred from
+a daily backup. Journal segments upload normally once written, independently
+of policy versions, publication and owner-notice markers (owner decision,
+2026-11-10). The owner handles the privacy policy personally; publication is
+not an operational dependency. Restore/copy-inventory quarantine still blocks
+shipping a rewound chain. No AI consent is needed to enforce privacy.
+
+Retention-setting changes are privacy decisions too: an account-scoped
+`retention_review` deletion marker records that `settings.retention_days`
+changed, with no copied values. A restore whose required suffix includes that
+marker stays closed for explicit review/reissue of the latest retention policy
+or complete purge; a continuous chain alone does not prove snapshot settings
+are current. `privacy-retention` validates the existing permitted day ranges
+and changes only that account's retention metadata under the current restore
+UUID. It does not open quarantine or grant consent.
+
+During restore replay an explicit message-deletion tombstone also invalidates
+covering summaries when retention has already emptied that message's payload.
+Ordinary message expiry instead records a distinct `purge` operation, constrained
+to message scope with no processor. Replay uses the same retention effects as
+the sweep: clear content and derived request proof, preserve covering rolling
+summaries, and record a gap only for uncovered content. An explicit `delete`,
+including a deletion after expiry, removes covering summaries before opening
+quarantine and records the expired coverage gap. This does not change ordinary
+duplicate Telegram deletion handling.
+
 | Data | Default | Mechanism |
 |---|---|---|
 | `owner_requests` (structural only; H1) | Unfinished collecting/ready/preparing/suspended: 24 h from original persisted turn arrival; awaiting approval follows its linked action's expiry. Metadata at most 1 year from `requested_at` | Hourly sweep reconciles linked outcomes, expires unfinished work, and deletes old metadata. Returning from approval to collecting/ready/preparing restores the original 24 h deadline and is rejected if that deadline has passed. Continuations never move `requested_at` or extend source/action retention. `preparing` records an attempt only. Cancel affects only unclaimed pending actions; executing/succeeded/uncertain action states survive |
@@ -1262,8 +1338,11 @@ Custom retry strategy: bounded attempts (default 5), small exponential base (pro
 - `consents` gates processing. Every LLM call requires `ai_control`. Every LLM call that includes managed-conversation content requires an active `ai_managed` consent whose `processors` include the adapter's processor id. Since S03.1 the processor is resolved from the request's (route's) model (`core/model_routes.py`, §7.4): an unknown model, or a model of a processor the adapter does not serve or the consent does not name, is refused. Enforcement has one choke point, the `LLMClient` wrapper. Each request carries the provenance of every content part (context-builder sections, tool results, control turns flagged `contains_managed`), and the wrapper raises before calling the provider if a required consent is missing. When `ai_managed` is not active, the tool registry omits the tools that return managed content, including contact names (`get_conversation`, `search_messages`, `summarize_period`, `get_attention_list`, `list_tasks`, `get_activity`, `list_conversations`, `resolve_contact`) — since S03.7 the `owner_request` runtime offers them instead as blocked stubs that read nothing and return only `chat_access_off` (§8.2, D104) — and the `owner_request` builder excludes control turns flagged `contains_managed`. Context builders also check, as defence in depth; tested.
 - Before `ai_managed` is granted, and after revocation, business messages from an active connection are stored normally in the owner's encrypted database (content, subject to retention) for coverage. No LLM call may include them, and LLM-dependent jobs (triage, drafts, summaries, semantic monitors) do not run; flagged conversations are processed once consent is granted. If the owner declines or revokes, they are offered deletion of the stored managed data, plus a choice between a non-AI mode (coverage and visibility only) and disconnection (J1, FR-ONB-06). The privacy policy and consent text state this.
 - Revocation stops new work immediately; queued jobs re-check consent when they run.
-- **Restore quarantine (I19, owner D-S11, 2026-11-09):** the database consent reader returns no active consent while `system_state.restore_pending` exists, even if the snapshot still contains active grants. The LLMClient consent wrapper therefore rejects both `complete` and `parse` before any provider call. Post-restore revokes both AI consent scopes for every restored account, including inactive accounts, invalidates restored pending text questions and cards, and sets the structural `accounts.settings.restore_consent_pending` list (`ai_control`, `ai_managed`). A fresh grant removes only its scope, in the same transaction as the new consent row; another account and the other scope remain blocked. Missing settings default to no quarantine for existing installations; a malformed non-list value fails closed. Recovery completion never renews consent. The owner renews control consent via `/start` and optionally managed consent via `/privacy managed`, using deterministic prompts that warn about undone deletions/revocations and explain how to redo them, without a model call. Automatic reconciliation from a privacy-decision journal outside the snapshot is deferred to I20.
+- **Restore quarantine (I19 + I20, D-S11/D-S15, 2026-11-09):** the consent reader denies every scope while `system_state.restore_pending` exists; the deterministic grant service also refuses grants, so fresh consent cannot certify reconciliation. Post-restore revokes both scopes for every account, clears old questions/cards, cancels restored requests/actions/jobs and completes retention, then keeps the gate closed. Replay validates the independently encrypted head, ciphertext checksum, complete per-account sequence/digest chain, exact backup anchor and an independently established cutoff before applying any tombstone. Missing, stale, incomplete, corrupt, unknown-key or pre-journal evidence fails closed with a fixed reason. Alternatively the owner reissues every known deletion and explicitly attests the current restore/account set, or selects complete content purge; unknown selective history requires purge. Only completed reconciliation publishes the notice and opens startup. It never grants consent: `accounts.settings.restore_consent_pending` still requires fresh processor-specific grants, separately per account/scope. Restored queued raw updates are discarded before startup so they cannot recreate erased data or replay consent replies. The journal and recovery commands never call an AI provider or Telegram. Shipping remains blocked after fallback until the old-copy inventory is retired; only verified journal replay can automatically continue the independent chain.
 - `restore_consent_pending` is an additive structural settings key (§10.3), retained with the account's settings and requiring no content retention/cascade change or migration. `restore_pending.recovery_notice` stages only the same structural timestamps, counts and account/action ids as the existing restore notice; it is removed with the gate after successful recovery.
+- **Blocked recovery grants (I20 fix, 2026-11-10):** `grant_consent` returns `None` while `restore_pending` exists, without inserting a consent or changing per-scope quarantine. Control-chat consent replies and managed-consent approval cards handle this expected outcome with fixed, content-free refusal text in the owner's locale and reason `privacy_reconciliation_required`; they never announce a grant, activate onboarding or resume observing. The LLM consent choke point still raises before provider access. Fresh consent cannot replace journal replay or manual/purge reconciliation.
+
+- **Expired-message replay (I20 review fix, 2026-11-10):** the journal distinguishes routine message `purge` from explicit `delete`. Purge replay preserves covering rolling summaries; delete replay invalidates them even if post-restore retention already cleared the payload. Summary deletion executes immediately because sessions disable autoflush; subsequent reads within the same transaction cannot reuse it. Fresh consent after reconciliation cannot expose explicitly deleted information in a surviving rolling summary. A snapshot taken before the source commit barrier completes cannot certify recovery: evidence must cover the full-precision database cutoff captured after that barrier, or fail closed with `journal_stale_tail`.
 - **Fresh recovery consent (I19 review fix):** while `ai_control` is quarantined, a text consent reply must have a Telegram message id strictly greater than the newly delivered question's `pending_inputs.prompt_message_id`. A missing prompt id fails closed. A stale reply leaves both quarantine and the pending question intact; restored inbox replay of `/start` followed by an old `yes` cannot renew consent. The shared `privacy/consent_prompts.py` renderer repeats the recovery warning at every consent entry point: `/start`, the onboarding language-picker follow-up, `/privacy managed`, connection notices and managed-consent cards offered during owner requests. These paths remain deterministic even when delivery of the separate restore notice fails.
 - Consent text names processors (OpenAI; any future embedding/transcription/observability vendor counts — SEC-02).
 
@@ -1375,19 +1454,45 @@ app and starting it with mismatched files.
 
 ### 15.6 Restore from backup
 
+**I20 source/cutoff protocol:** before replacing a stopped source database,
+`server.sh restore` waits for in-flight journal commits with a short database
+barrier, then captures `clock_timestamp()` in the same transaction, in UTC with
+all six fractional digits. It releases the barrier before requesting the final
+independent journal upload, then stops the backup sidecar. An intervening
+scheduled snapshot predating this boundary cannot certify recovery if final
+shipping fails, including snapshots from the same second. Without a supplied
+source cutoff, `restore.sh` uses the full-precision database clock when writing
+the restore marker; it never rounds a loss interval down to a whole second.
+The source app is stopped and an old/replaced host must be fenced;
+no database lock spans B2 I/O. The restored dump's heads are
+the backup anchors; restoration never publishes them over the independent
+head. `privacy-replay` fetches head/segment from the existing B2 remote,
+checks the ciphertext SHA-256 and authenticates both with the offline age
+identity. Decrypted metadata is held in memory until age exits successfully,
+then piped to the offline application recovery command. The segment must cover
+the cutoff, not merely contain a self-consistent prefix. Full validation and
+idempotent, UUID-scoped cascades precede a single replay commit. A host-loss
+restore whose last head predates the loss interval cannot establish continuity:
+use documented manual reconciliation or complete purge. A failed recovery
+never silently downgrades to snapshot consent. Reconciliation evidence is bound
+to the restore UUID, backup time, cutoff and each account's audit row. Repeating
+completed replay is a no-op; each new restore has a new UUID. A4 must measure
+successful replay and human fallback separately; this is not evidence of an
+unattended production recovery.
+
 **I24 database roles:** `pg_dump` runs as the read-only `assistant_backup` role. Restores run in the one-off `restore` service as `assistant_migrate`, with `--no-owner --no-acl`; the init/admin role creates each target owned by that migration role. Both production restore and scratch rehearsal then reapply service grants with the explicit `db-roles` task before post-restore. The backup sidecar never receives restore/admin credentials. Password sources must survive host recovery independently of the dump. These privilege changes do not open or bypass the restore/privacy gate below.
 
 **As built (F0):** post-restore now implements the action step: pending states become `cancelled` with reason `restored_from_backup` and cleared tokens, and `executing` becomes `delivery_uncertain`. The notice includes counts plus action ids and local creation times for the affected account, without text. **As built (S05.3b), step 4:** in the same transaction, every `claimed` occurrence (its job is about to be deleted, and it may have fired after the dump) and every missed occurrence of an `active` automation with `next_run_at < now` (at most ten per automation) is recorded `skipped` with note `skipped_restore`, and `next_run_at` is recomputed from now (an exhausted schedule completes); nothing from the rewound backup fires by itself. The notice gains "N scheduled items were skipped because of the restore." (counts only).
 
-**As built (OPS-RT tooling):** `deploy/server.sh restore-test` runs the P2 release/action views and `tools.acceptance.restore_verify` against `restore_test` only, in one-off `--no-deps` containers with the acceptance tools mounted read-only. The gate requires zero pending/executing actions and zero todo/doing jobs, plus a present, structurally valid restore notice; it prints fixed reason codes, per-account cancelled/uncertain counts and numeric action ids only. Notice counts are derived from the stored action-id lists (creation timestamps are stored in UTC and rendered locally by the owner notice). An EXIT trap drops scratch even when a verification fails. Offline tests cover these gates; the owner-approved production restore rehearsal remains a separate acceptance step.
+**As built (OPS-RT tooling):** `deploy/server.sh restore-test` runs the P2 release/action views and `tools.acceptance.restore_verify` against `restore_test` only, after an explicit scratch-only complete purge reconciles privacy, in one-off `--no-deps` containers with the acceptance tools mounted read-only. The gate requires zero pending/executing actions and zero todo/doing jobs, plus a present, structurally valid restore notice; it prints fixed reason codes, per-account cancelled/uncertain counts and numeric action ids only. Notice counts are derived from the stored action-id lists (creation timestamps are stored in UTC and rendered locally by the owner notice). An EXIT trap drops scratch even when a verification fails. Offline tests cover these gates; the owner-approved production restore rehearsal remains a separate acceptance step.
 
-All four scratch commands, including the mutating post-restore step, run through `tools.acceptance.scratch_restore`. It uses SQLAlchemy URL parsing to replace only the database component, privately preserving driver, credentials and query options (including slash-bearing values). Alternate `dbname`/`database` query selectors and unsupported URL shapes fail before child execution; URL values never cross the operator shell or appear in launcher diagnostics.
+All scratch commands, including the mutating post-restore and explicit scratch-purge steps, run through `tools.acceptance.scratch_restore`. It uses SQLAlchemy URL parsing to replace only the database component, privately preserving driver, credentials and query options (including slash-bearing values). Alternate `dbname`/`database` query selectors and unsupported URL shapes fail before child execution; URL values never cross the operator shell or appear in launcher diagnostics.
 
 A restore rewinds the database by up to 24 h. Actions sent after the dump come back as executable, the messages that would make `not_stale`/`no_takeover_since` fail are gone (Telegram already confirmed those updates and will not redeliver them), schedules move back in time, and /pause, consent revocations, deletions and settings changes made after the dump are undone. Therefore:
 
 - The restore script sets `system_state.restore_pending`. While it is set, `assistant run` refuses to start any role and the consent reader blocks every LLM call (§14.3). Healthcheck exits nonzero and reports `restore_pending` by name only; `/status` also reports this gate and the current account's `restore_consent_pending` scopes without contents from the marker.
-- The operator then runs `python -m assistant post-restore --backup-taken-at <ts>`. It first commits the restore gate (also when invoked without the restore script). In the recovery transaction it revokes both restored AI consents for every account, sets per-scope quarantine (§14.3), deletes all restored pending questions/cards, and: (1) pauses autonomy for active accounts; (2) moves every action in `proposed`/`awaiting_approval`/`revising`/`approved`/`scheduled` to `cancelled` (reason `restored_from_backup`), and every action in `executing` to `delivery_uncertain`; (3) deletes procrastinate jobs in `todo`/`doing`, since reconcilers re-create valid work from domain state; (4) recomputes `automations.next_run_at` from now, skipping past occurrences with a note (FR-FUP-08); (5) inserts a `coverage_gaps` row (`kind = restore`, `certainty = possible`) for [backup_taken_at, now]. Its content-free notice receipt is staged inside the restore marker so a retry after sweep failure preserves the original action ids/counts. (6) Retention then runs outside that transaction, with each data class committing separately. (7) Only once all mandatory work succeeds does a final transaction publish the owner notice and clear `restore_pending`. A failed recovery or sweep leaves the gate closed; fix the cause and retry the command with the same backup timestamp. Partial retention commits do not open processing.
-- It then sends the owner a notice (class `system`, §17) listing the cancelled actions and gap. It explains that AI remains blocked until fresh consent, that deletions/revocations after the backup time may have been undone, and that the owner should redo deletions via `/settings` → Delete data (or `/privacy delete` for everything) and revocations via `/privacy revoke` before renewing consent. `/pause` and settings changes also need review. The warning is repeated at every consent entry point even if the restore notice was missed, including the language picker and connection-triggered cards. Pending inbound updates are preserved, but text replies predating the newly delivered recovery question cannot renew control consent (§14.3). This is quarantine and owner reconciliation, not automatic recovery of post-backup privacy decisions (I20).
+- The operator then runs `python -m assistant post-restore --backup-taken-at <ts>`. It first commits the restore gate (also when invoked without the restore script). In the recovery transaction it revokes both restored AI consents for every account, sets per-scope quarantine (§14.3), deletes all restored pending questions/cards, and: (1) pauses autonomy for active accounts; (2) moves every action in `proposed`/`awaiting_approval`/`revising`/`approved`/`scheduled` to `cancelled` (reason `restored_from_backup`), and every action in `executing` to `delivery_uncertain`; (3) deletes procrastinate jobs in `todo`/`doing`, since reconcilers re-create valid work from domain state; (4) recomputes `automations.next_run_at` from now, skipping past occurrences with a note (FR-FUP-08); (5) inserts a `coverage_gaps` row (`kind = restore`, `certainty = possible`) for [backup_taken_at, now]. Its content-free notice receipt is staged inside the restore marker so a retry after sweep failure preserves the original action ids/counts. (6) Retention then runs outside that transaction, with each data class committing separately. (7) Maintenance completion is recorded while `restore_pending` remains set; I20 replay or explicit manual/purge reconciliation is additionally required before a final transaction publishes the notice and clears the gate. A failed recovery or sweep leaves the gate closed; fix the cause and retry the command with the same backup timestamp. Partial retention commits do not open processing.
+- It then sends the owner a notice (class `system`, §17) listing the cancelled actions and gap. It explains that AI remains blocked until fresh consent, that deletions/revocations after the backup time may have been undone, and that the owner should redo deletions via `/settings` → Delete data (or `/privacy delete` for everything) and revocations via `/privacy revoke` before renewing consent. `/pause` and settings changes also need review. The warning is repeated at every consent entry point even if the restore notice was missed, including the language picker and connection-triggered cards. At I20 reconciliation, restored pending/failed inbound payloads are discarded so old updates cannot recreate deleted content or renew consent. The independent journal recovers covered post-backup privacy decisions; unverifiable intervals require the manual/purge fallback before any fresh consent.
 - Restore tests run against an isolated scratch database, and the scratch restore runs **no poller and no worker** (no role that could call Telegram or run jobs against the restored state). The restored data stays on the server or another environment under the same protections; it is never loaded into the dev environment.
 - The offline age identity is streamed over SSH into `restore.sh` on stdin (`age -i -`; `just prod-restore-test <ip>` / `just prod-restore <ip> <file>`), so it is never written to the server's disk or into a container (S02.6).
 

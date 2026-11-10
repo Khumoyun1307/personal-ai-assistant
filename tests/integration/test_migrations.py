@@ -23,6 +23,8 @@ SCRATCH = "assistant_migration_test"
 
 EXPECTED_TABLES = {
     "notification_sources",
+    "privacy_journal",
+    "privacy_journal_heads",
     "actions",
     "accounts",
     "agent_run_steps",
@@ -489,19 +491,52 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0018"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0019"]
 
 
 def test_0017_notification_sources_round_trip(scratch_url: str) -> None:
     run_alembic(scratch_url, "head")
+    run_alembic(scratch_url, "0017", down=True)
     assert "notification_sources" in tables_in(scratch_url, "app")
     assert {"notification_id", "account_id", "conversation_id", "reasons"} <= _columns(
         scratch_url, "notification_sources"
     )
     run_alembic(scratch_url, "0016", down=True)
     assert "notification_sources" not in tables_in(scratch_url, "app")
-    run_alembic(scratch_url, "head")
+    run_alembic(scratch_url, "0017")
     assert "notification_sources" in tables_in(scratch_url, "app")
+    run_alembic(scratch_url, "head")
+
+
+def test_0019_privacy_journal_round_trip(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url)) as conn:
+        columns = conn.execute(
+            "SELECT table_name, is_nullable, data_type, column_default "
+            "FROM information_schema.columns "
+            "WHERE table_schema = 'app' AND column_name = 'recovery_id'"
+        ).fetchall()
+        assert {table for table, _, _, _ in columns} == {
+            "accounts",
+            "contacts",
+            "conversations",
+            "messages",
+            "memory_items",
+            "notification_sources",
+        }
+        assert {nullable for _, nullable, _, _ in columns} == {"NO"}
+        assert {kind for _, _, kind, _ in columns} == {"uuid"}
+        # Legacy inserts can omit these ids; the existing-table triggers, not
+        # the defaulted columns, require 0019's breaking classification.
+        assert {default for _, _, _, default in columns} == {"gen_random_uuid()"}
+    run_alembic(scratch_url, "0018", down=True)
+    assert "privacy_journal" not in tables_in(scratch_url, "app")
+    assert "privacy_journal_heads" not in tables_in(scratch_url, "app")
+    assert "notification_sources" in tables_in(scratch_url, "app")
+    assert "recovery_id" not in _columns(scratch_url, "notification_sources")
+    run_alembic(scratch_url, "head")
+    assert "privacy_journal" in tables_in(scratch_url, "app")
+    assert "privacy_journal_heads" in tables_in(scratch_url, "app")
 
 
 def test_0016_control_reply_metadata_round_trip(scratch_url: str) -> None:

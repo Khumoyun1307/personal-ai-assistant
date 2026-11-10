@@ -82,7 +82,6 @@ async def test_j28_assist_never_sees_other_chat_or_receives_tools(
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-@pytest.mark.xfail(strict=True, reason="needs I20", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 async def test_j18_unknown_privacy_continuity_cannot_be_cleared_by_fresh_consent(
     journey: Journey, locale: Locale

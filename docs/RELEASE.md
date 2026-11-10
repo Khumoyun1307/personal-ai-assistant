@@ -44,15 +44,15 @@ Open stabilization PRs are **not deployed**; once merged, classify them as **on 
 |---|---|
 | Code policy **v5** | [accounts/service.py](../src/assistant/accounts/service.py), inspected 2026-11-09. Unchanged by I32. |
 | Approved policy **v6**, pending publication | [Policy status/history](legal/privacy-policy.md), 2026-10-30: v6 covers M04/M05 processing not named in v5; v5 published 2026-10-26. **The published policy may still be v5 while M04/M05 processing is enabled.** Publication and notice were not live-checked. This compliance gap belongs to the owner and is not resolved by this record. |
-| D-S15 / I20 journal | [D-S15](engineering/stabilization/DECISIONS.md) / [C9](engineering/stabilization/contracts/C9-privacy-recovery-options.md), 2026-11-09: encrypted ids-only deletion/withdrawal metadata in existing Backblaze B2. Same storage does not waive policy/notice review. Applicability is **open; journal use is not cleared**. |
+| D-S15 / I20 journal | Local I20 candidate (uncommitted/unverified, updated 2026-11-10): migration 0019 records ids-only decisions locally; independent age-encrypted segments/head upload to the existing B2 remote without a policy-version, publication or notice check. **Owner decision 2026-11-10:** the owner handles the privacy policy personally; nothing waits on publication. Recovery/copy-inventory quarantine still protects the independent chain. [C9](engineering/stabilization/contracts/C9-privacy-recovery-options.md) specifies retention/export/final erasure. No publication, notice delivery or production test is claimed. |
 
 | Owner action | Required result |
 |---|---|
 | Publish approved v6 | Follow [PV6 §3.4](engineering/p3/specs/PV6.md#34-order-and-gates-od-24-od-25): publish at the existing URL, fill the publication date, verify the live page says v6, record dated evidence. I32 does not authorize publication. |
 | Align version and notice | Authorize a separate code/release change aligning `POLICY_VERSION` and the approved notice with publication; deliver and verify the owner notice with opt-out under [AGENTS §16](../AGENTS.md#16-documentation-rules). Record resolution of the already-enabled M04/M05 scope gap; a future notice does not establish past compliance. |
-| Check journal before I20 use | Review ids, purpose, retention, export/deletion and replay against the policy with I20; record whether approved text covers retained privacy metadata. Any policy edit needs a version bump; processing-scope growth needs owner notice with opt-out before use. Do not silently amend approved v6. |
+| Owner-managed privacy policy | The owner handles policy wording, publication and notices personally (2026-11-10). These are not prerequisites for journal shipping, recovery or stabilization work. The publication/version facts above remain unverified; this change does not edit approved policy text. |
 | Verify release and settings | Select/authorize the release; verify runtime values above. Review `tool.get_preferences` enablement and any previously omitted overrides before settings push/restart. |
-| Review acceptance before P3 | Complete/review the linked milestone and Phase 4 gates. P3 remains on hold; publication alone does not enable it. Later P3 activation also requires PV6's publication/notice waiting order. |
+| Review acceptance before P3 | Complete/review the linked milestone and Phase 4 gates. P3 remains on hold pending acceptance and the owner's resume decision. The owner handles policy publication/notices personally; journal shipping and stabilization do not wait on them (2026-11-10 amendment). |
 
 ## Acceptance and open risks
 

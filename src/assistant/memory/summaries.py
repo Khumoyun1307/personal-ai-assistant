@@ -742,7 +742,9 @@ async def invalidate_covering(
     already expired cannot be rebuilt: `summary_gap_before` records it, so
     answers say earlier messages expired without a summary. Returns the
     number of summaries removed. `message_ids` must be messages whose content
-    changed in that transaction (a repeated deletion is not one).
+    changed in that transaction, or explicit journal deletions during restore
+    replay: retention may have emptied their payload without removing summaries.
+    Ordinary repeated Telegram deletions pass only newly lost content.
     """
     if not message_ids:
         return 0
@@ -768,8 +770,15 @@ async def invalidate_covering(
         and rolling.covers_through_message_id is not None
         and min(message_ids) <= rolling.covers_through_message_id
     )
-    if covered:
-        await session.delete(rolling)
+    if covered and rolling is not None:
+        # Sessions disable autoflush. Remove the row now so another read in
+        # this transaction cannot reuse a summary of explicitly deleted text.
+        await session.execute(
+            delete(ConversationSummary)
+            .where(ConversationSummary.account_id == account_id)
+            .where(ConversationSummary.conversation_id == conversation_id)
+            .where(ConversationSummary.id == rolling.id)
+        )
         removed += 1
         expired = (
             await session.execute(

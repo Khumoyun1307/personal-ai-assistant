@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from uuid import UUID
 
 import pytest
 from pydantic import BaseModel
@@ -11,6 +12,7 @@ from sqlalchemy import select, update
 from assistant.accounts import service
 from assistant.accounts.models import Account, Consent, PendingInput
 from assistant.accounts.service import ConsentMissingError
+from assistant.agent.locales import supported_locale
 from assistant.agent.persistence import DbConsentReader
 from assistant.conversations.models import Message
 from assistant.db.models import KEY_RESTORE_PENDING, SystemState
@@ -22,6 +24,8 @@ from assistant.llm.consent import ConsentGatedLLMClient
 from assistant.llm.port import LLMRequest, Provenance, TextItem
 from assistant.privacy import post_restore as recovery
 from assistant.privacy.deletion import delete_managed_data
+from assistant.privacy.journal import complete_purge
+from assistant.telegram.control import onboarding_texts as texts
 from assistant.telegram.ingress.writer import write_batch
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response
@@ -34,11 +38,13 @@ from tests.integration.business_env import (
     deliver,
     events,
     grant_managed,
+    inbound,
     own_card,
     press_own,
     private_message,
 )
 from tests.integration.p2_factories import seed_account
+from tests.integration.privacy_recovery_helpers import reconcile_known_test_history
 
 pytestmark = pytest.mark.integration
 
@@ -137,6 +143,33 @@ async def test_rg08_restored_revocation_and_deleted_content_need_fresh_control_c
     assert fake.requests == []
     async with env.factory() as session:
         assert await session.scalar(select(Message.id)) is not None
+        marker = await session.get(SystemState, KEY_RESTORE_PENDING)
+        assert marker is not None
+        restore_id = UUID(marker.value["restore_id"])
+    # Fresh consent is never reconciliation. The lost deletion in this
+    # scenario requires replay or explicit conservative purge, not consent.
+    async with transaction(env.factory) as uow:
+        account = await uow.session.get(Account, account_id)
+        assert account is not None
+        settings_before = dict(account.settings)
+        grant = await service.grant_consent(
+            uow.session,
+            account,
+            kind=service.CONSENT_AI_CONTROL,
+            policy_version=service.POLICY_VERSION,
+            processors=list(service.AI_PROCESSORS),
+            clock=env.clock,
+        )
+        assert grant is None
+        assert account.settings == settings_before
+        assert await uow.session.get(SystemState, KEY_RESTORE_PENDING) is not None
+        active_grant = await uow.session.scalar(
+            select(Consent.id).where(Consent.account_id == account_id, Consent.revoked_at.is_(None))
+        )
+        assert active_grant is None
+    await complete_purge(env.factory, env.clock, restore_id=restore_id)
+    async with env.factory() as session:
+        assert await session.scalar(select(Message.id)) is None
     # A plain yes and an obsolete pre-backup card cannot grant consent.
     assert await own_card(env, service.MANAGED_CONSENT_CARD) is None
     await deliver(env, callback(f"managed_consent:{stale_token}:agree"))
@@ -163,6 +196,77 @@ async def test_rg08_restored_revocation_and_deleted_content_need_fresh_control_c
     assert parsed.parsed == SyntheticOutput(text="Synthetic parsed answer")
     await deliver(env, private_message(OWNER, "/status"))
     assert "restore_consent_pending" not in env.sender.texts[-1]
+
+
+@pytest.mark.parametrize("locale", ["en", "uz-Latn", "uz-Cyrl", "ru"])
+@pytest.mark.parametrize("kind", [service.CONSENT_AI_CONTROL, service.CONSENT_AI_MANAGED])
+async def test_unresolved_restore_consent_reply_is_blocked_without_crashing(
+    env: Env, locale: str, kind: str
+) -> None:
+    await connect(env)
+    await grant_managed(env)
+    await recovery.post_restore(env.factory, env.clock, backup_taken_at=env.clock.now())
+    async with transaction(env.factory) as uow:
+        account = (
+            await uow.session.scalars(select(Account).where(Account.telegram_user_id == OWNER))
+        ).one()
+        account_id = account.id
+        account.locale_pref = locale
+        account.status = "onboarding"
+        await service.set_managed_mode(uow.session, account, service.MANAGED_MODE_STOPPED)
+        settings_before = dict(account.settings)
+        marker = await uow.session.get(SystemState, KEY_RESTORE_PENDING)
+        assert marker is not None
+        marker_before = dict(marker.value)
+        consent_ids = set(
+            await uow.session.scalars(select(Consent.id).where(Consent.account_id == account_id))
+        )
+
+    if kind == service.CONSENT_AI_CONTROL:
+        await deliver(env, private_message(OWNER, "/start"))
+        async with env.factory() as session:
+            pending = await service.get_pending_input(
+                session, account_id=account_id, clock=env.clock
+            )
+            assert pending is not None
+            assert pending.prompt_message_id is not None
+            prompt_id = pending.prompt_message_id
+        reply = private_message(OWNER, "yes")
+        reply["message"]["message_id"] = prompt_id + 1
+        await deliver(env, reply)
+        outcome = env.sender.texts[-1]
+    else:
+        await deliver(env, private_message(OWNER, "/privacy managed"))
+        reply = await press_own(env, service.MANAGED_CONSENT_CARD, "agree")
+        outcome = env.sender.edits[-1]["text"]
+        assert env.sender.answered_callbacks[-1]["text"] == outcome
+
+    assert (await inbound(env, reply)).status == "processed"
+    assert outcome == texts.CONSENT_BLOCKED[supported_locale(locale)]
+    async with env.factory() as session:
+        marker = await session.get(SystemState, KEY_RESTORE_PENDING)
+        assert marker is not None
+        assert marker.value == marker_before
+        account = await session.get(Account, account_id)
+        assert account is not None
+        assert account.settings == settings_before
+        assert account.status == "onboarding"
+        remaining_consent_ids = set(
+            await session.scalars(select(Consent.id).where(Consent.account_id == account_id))
+        )
+        assert remaining_consent_ids == consent_ids
+        for scope in (service.CONSENT_AI_CONTROL, service.CONSENT_AI_MANAGED):
+            assert not (await service.active_consent(session, account_id, kind=scope)).granted
+    fake = FakeLLM()
+    gated = ConsentGatedLLMClient(fake, DbConsentReader(env.factory))
+    with pytest.raises(ConsentMissingError):
+        await gated.complete(request(account_id))
+    with pytest.raises(ConsentMissingError):
+        await gated.parse(request(account_id, managed=True), SyntheticOutput)
+    assert fake.requests == []
+    assert env.sender.plain_sends == []
+    assert env.sender.plain_edits == []
+    assert all(call["business_connection_id"] is None for call in env.sender.sends)
 
 
 async def test_restore_sweep_failure_keeps_gate_closed_and_retry_finishes(
@@ -195,6 +299,7 @@ async def test_restore_sweep_failure_keeps_gate_closed_and_retry_finishes(
         assert await session.scalar(select(PendingInput.id)) is None
     monkeypatch.setattr(recovery, "sweep_all", real_sweep)
     await recovery.post_restore(env.factory, env.clock, backup_taken_at=taken_at)
+    await reconcile_known_test_history(env)
     async with env.factory() as session:
         await recovery.assert_not_restore_pending(session)
         notice = await session.get(SystemState, recovery.KEY_RESTORE_NOTICE)
@@ -217,6 +322,7 @@ async def test_restore_reconsent_is_account_scoped(env: Env) -> None:
             clock=env.clock,
         )
     await recovery.post_restore(env.factory, env.clock, backup_taken_at=env.clock.now())
+    await reconcile_known_test_history(env)
     await deliver(env, private_message(OWNER, "/start"))
     await agree_to_current_prompt(env)
     gated = ConsentGatedLLMClient(FakeLLM(), DbConsentReader(env.factory))
@@ -256,9 +362,15 @@ async def test_restored_inbox_reply_cannot_answer_a_new_consent_prompt(
         await write_batch(uow.session, bot_id=env.bot_id, updates=[start, old_yes])
     env.clock.advance(hours=1)
     await recovery.post_restore(env.factory, env.clock, backup_taken_at=taken_at)
-    # Replaying /start sends a NEW prompt, but the next inbox row is still
-    # the old yes. Processing time must not turn it into a fresh decision.
+    await reconcile_known_test_history(env)
+    # Processing time must not turn an old answer into a fresh decision.
     await env.processor.process_batch()
+    # Restored raw updates are discarded at reconciliation. Issue a fresh
+    # /start, then replay the stale answer to exercise the message-id barrier.
+    await deliver(env, private_message(OWNER, "/start"))
+    stale_reply = private_message(OWNER, "yes")
+    stale_reply["message"]["message_id"] = 10001 + reply_offset
+    await deliver(env, stale_reply)
     fake = FakeLLM(text_response("Synthetic answer"))
     gated = ConsentGatedLLMClient(fake, DbConsentReader(env.factory))
     with pytest.raises(ConsentMissingError):
@@ -280,6 +392,7 @@ async def test_restored_inbox_reply_cannot_answer_a_new_consent_prompt(
 async def test_restore_consent_without_a_prompt_id_stays_quarantined(env: Env) -> None:
     await connect(env)
     await recovery.post_restore(env.factory, env.clock, backup_taken_at=env.clock.now())
+    await reconcile_known_test_history(env)
     await deliver(env, private_message(OWNER, "/start"))
     async with transaction(env.factory) as uow:
         account_id = await uow.session.scalar(
@@ -320,6 +433,7 @@ async def test_restore_language_picker_consent_repeats_warning_when_notice_fails
         ).one()
         account.locale_pref = None
     await recovery.post_restore(env.factory, env.clock, backup_taken_at=env.clock.now())
+    await reconcile_known_test_history(env)
     channel = FakeChannel(deliver=False)
     alerts = OwnerAlerts(env.factory, channel, env.clock)
     assert not await deliver_restore_notice(env.factory, alerts)
@@ -338,6 +452,7 @@ async def test_restore_managed_consent_entry_points_repeat_warning_when_notice_f
 ) -> None:
     await connect(env)
     await recovery.post_restore(env.factory, env.clock, backup_taken_at=env.clock.now())
+    await reconcile_known_test_history(env)
     channel = FakeChannel(deliver=False)
     alerts = OwnerAlerts(env.factory, channel, env.clock)
     assert not await deliver_restore_notice(env.factory, alerts)

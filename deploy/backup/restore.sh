@@ -13,7 +13,8 @@
 # The target database must exist and be empty (or be a scratch database for
 # the restore test). After a *production* restore, the operator must run
 # `python -m assistant post-restore --backup-taken-at <ts>`; `assistant run`
-# refuses to start until that is done (`system_state.restore_pending`).
+# refuses to start until maintenance AND I20 journal/manual/purge privacy
+# reconciliation complete (`system_state.restore_pending`).
 set -euo pipefail
 
 file="${1:?dump file}"
@@ -29,11 +30,15 @@ age --decrypt -i "$identity" "$file" \
   | pg_restore --no-owner --no-acl --dbname="$target" --exit-on-error
 
 # Mark the database as restored: the app will not start roles until
-# post-restore has run (§15.6 step 1). The file name is passed as a psql
+# recovery and privacy reconciliation finish (§15.6). The file name is passed as a psql
 # variable (quoted by psql), not spliced into the SQL text.
-psql --dbname="$target" -v ON_ERROR_STOP=1 -v dump_file="$(basename "$file")" <<'SQL'
+psql --dbname="$target" -v ON_ERROR_STOP=1 -v dump_file="$(basename "$file")" \
+  -v recovery_cutoff="${RESTORE_RECOVERY_CUTOFF:-}" <<'SQL'
 INSERT INTO app.system_state (key, value)
-VALUES ('restore_pending', jsonb_build_object('file', :'dump_file'::text, 'at', now()))
+VALUES ('restore_pending', jsonb_build_object('file', :'dump_file'::text, 'at', now(),
+    'restore_id', gen_random_uuid()::text,
+    'recovery_cutoff', COALESCE(NULLIF(:'recovery_cutoff', '')::timestamptz, clock_timestamp()),
+    'journal_supported', to_regclass('app.privacy_journal_heads') IS NOT NULL))
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
 SQL
 echo "restored $(basename "$file") into $target; restore_pending set — run post-restore"

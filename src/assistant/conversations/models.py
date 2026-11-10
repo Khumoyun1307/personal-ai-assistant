@@ -33,7 +33,7 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
-from assistant.db.base import Base, CreatedAt, IdPk
+from assistant.db.base import Base, CreatedAt, IdPk, RecoveryId
 
 CONVERSATION_KINDS = ("business",)
 CONVERSATION_MODES = ("ignore", "observe", "assist")
@@ -75,6 +75,7 @@ class Contact(Base):
     )
 
     id: Mapped[IdPk]
+    recovery_id: Mapped[RecoveryId]
     account_id: Mapped[int] = _account_fk()
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -105,6 +106,7 @@ class Conversation(Base):
     )
 
     id: Mapped[IdPk]
+    recovery_id: Mapped[RecoveryId]
     account_id: Mapped[int] = _account_fk()
     kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=sql_text("'business'"))
     business_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -202,6 +204,7 @@ class Message(Base):
     )
 
     id: Mapped[IdPk]
+    recovery_id: Mapped[RecoveryId]
     account_id: Mapped[int] = _account_fk()
     conversation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("app.conversations.id", ondelete="CASCADE"), nullable=False

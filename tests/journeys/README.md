@@ -143,7 +143,7 @@ not an implemented or approved product command.
 | J13/J14 | `test_interleavings`: queued selection; two interruptions/restarts | I13/I14 + request/proposal foundations |
 | J15 | `test_alerts_and_tasks`: digest off, quiet/cap holds, one-shot identity, uncertain no replay | Unmarked current behavior |
 | J16/J17 | `test_alerts_and_tasks`: triage/semantic backlog and long tails; hostile task closure | I2/I4/I5 |
-| J18 | `test_privacy_and_taint`: restore cancels approval/revokes authority; lost withdrawal + unknown continuity | Basic gate unmarked; I20 recovery |
+| J18 | `test_privacy_and_taint`: restore cancels approval/revokes authority; lost withdrawal + unknown continuity | Unmarked; I20 recovery satisfied |
 | J19/J25 | `test_continuations`: topic cancellation vs source reuse; advice/list edit | H4; advice unmarked |
 | J20/J27 | `test_privacy_and_taint`: exact owner preference, stale derived taint, configure confirmation | Unmarked current behavior |
 | J21–J23 | `test_card_facts`: redraft/restart; read/final race and purge; uncertain card recovery | H8/H7/I27 |

@@ -5,12 +5,14 @@ FROM postgres:18
 RUN apt-get update \
     && apt-get install --no-install-recommends -y age rclone ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY backup.sh restore.sh /usr/local/bin/
+COPY backup.sh restore.sh privacy-journal.sh /usr/local/bin/
+COPY journal.sql /usr/local/share/privacy-journal.sql
 # /backups is a named volume. Docker initialises an empty named volume from the
 # image's directory (contents and ownership), so creating it here as postgres
 # lets the unprivileged sidecar write to it; without this the volume root is
 # owned by root and every dump fails.
 RUN chmod 0755 /usr/local/bin/backup.sh /usr/local/bin/restore.sh \
+    /usr/local/bin/privacy-journal.sh \
     && mkdir -p /backups/daily /backups/weekly \
     && chown -R postgres:postgres /backups \
     && chmod 0755 /backups

@@ -80,7 +80,12 @@ def verify(conn: psycopg.Connection[Any]) -> int:
     print(f"restore_notice_pending={'yes' if row is not None else 'no'}")
     notice_valid = row is not None and _notice(row[0])
     print(f"restore_notice_valid={'yes' if notice_valid else 'no'}")
-    passed = pending == 0 and pending_jobs == 0 and notice_valid
+    gate = conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM app.system_state WHERE key = %s)", ("restore_pending",)
+    ).fetchone()
+    privacy_pending = gate is None or gate[0] is not False
+    print(f"privacy_recovery_pending={'yes' if privacy_pending else 'no'}")
+    passed = pending == 0 and pending_jobs == 0 and notice_valid and not privacy_pending
     print("restore_verification=PASS" if passed else "restore_verification=FAIL")
     return int(not passed)
 

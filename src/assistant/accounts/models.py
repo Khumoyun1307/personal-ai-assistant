@@ -21,7 +21,7 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
-from assistant.db.base import Base, CreatedAt, IdPk, JsonDict, TelegramId
+from assistant.db.base import Base, CreatedAt, IdPk, JsonDict, RecoveryId, TelegramId
 
 ACCOUNT_STATUSES = ("onboarding", "active", "blocked", "deleted")
 CONSENT_KINDS = ("ai_control", "ai_managed")
@@ -45,6 +45,7 @@ class Account(Base):
     __table_args__ = (_enum_check("status", ACCOUNT_STATUSES, "status"),)
 
     id: Mapped[IdPk]
+    recovery_id: Mapped[RecoveryId]
     telegram_user_id: Mapped[TelegramId] = mapped_column(unique=True, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="onboarding")
     #: The owner's private chat with the bot. NULL until they press Start —

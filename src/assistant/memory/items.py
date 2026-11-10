@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Boolean, delete, func, literal_column, or_, select, update
+from sqlalchemy import Boolean, delete, func, literal_column, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -665,6 +665,10 @@ async def delete_all(session: AsyncSession, account_id: int) -> int:
 
 async def sweep_forgotten(session: AsyncSession, now: datetime) -> int:
     """Forgotten items whose Undo window has passed are deleted (§10.4)."""
+    await session.execute(
+        text("SELECT set_config('app.privacy_decided_at', :at, true)"),
+        {"at": now.isoformat()},
+    )
     return _rowcount(
         await session.execute(
             delete(MemoryItem)

@@ -14,7 +14,8 @@ makes the restored state safe and honest, keeping the gate through the sweep:
    note `skipped_restore`, `next_run_at` from now (S05.3b);
 5. a `possible` coverage gap for [backup_taken_at, now] per active account;
 6. the retention sweep;
-7. `restore_pending` cleared, and a restore notice queued for the owner.
+7. maintenance completion recorded; I20 journal/manual/purge reconciliation
+   must succeed separately before opening the gate or publishing the notice.
 
 `assistant run` refuses to start any role while `restore_pending` is set.
 """
@@ -24,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -45,7 +47,7 @@ KEY_RESTORE_NOTICE = "restore_notice_pending"
 
 
 class RestorePendingError(RuntimeError):
-    """The database was restored and `post-restore` has not run yet."""
+    """A restored database still needs maintenance or privacy reconciliation."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +60,7 @@ class PostRestoreReport:
     actions_uncertain: int = 0
     #: Step 4: scheduled occurrences skipped with `skipped_restore`.
     schedules_skipped: int = 0
+    privacy_pending: bool = True
 
 
 async def restore_pending(session: AsyncSession) -> dict[str, Any] | None:
@@ -71,7 +74,8 @@ async def assert_not_restore_pending(session: AsyncSession) -> None:
     if marker is not None:
         raise RestorePendingError(
             "the database was restored from a backup; run "
-            "`python -m assistant post-restore --backup-taken-at <ts>` first"
+            "`python -m assistant post-restore --backup-taken-at <ts>`, then "
+            "reconcile privacy using the journal or documented manual/purge fallback"
         )
 
 
@@ -84,11 +88,40 @@ async def post_restore(
     # Commit the gate first, even for a direct invocation without restore.sh.
     # A later failure (including a separately committed sweep) cannot open it.
     async with transaction(session_factory) as uow:
+        from assistant.privacy.journal import anchors
+
         marker = await uow.session.get(SystemState, KEY_RESTORE_PENDING)
         if marker is None:
-            uow.session.add(SystemState(key=KEY_RESTORE_PENDING, value={}))
+            marker = SystemState(key=KEY_RESTORE_PENDING, value={})
+            uow.session.add(marker)
+        if "restore_id" not in marker.value:
+            marker.value = {**marker.value, "restore_id": str(uuid4())}
+        if "journal_anchors" not in marker.value:
+            heads = await anchors(uow.session)
+            cutoff = datetime.fromisoformat(marker.value.get("recovery_cutoff", now.isoformat()))
+            if cutoff.tzinfo is None or not backup_taken_at <= cutoff <= now:
+                raise ValueError("restore_cutoff_invalid")
+            marker.value = {
+                **marker.value,
+                "backup_taken_at": backup_taken_at.isoformat(),
+                "recovery_cutoff": cutoff.isoformat(),
+                "journal_anchors": [head.model_dump(mode="json") for head in heads],
+                "journal_supported": marker.value.get("journal_supported", bool(heads)),
+                "privacy_reason": "privacy_reconciliation_required",
+            }
+            blocked = await uow.session.get(SystemState, "privacy_journal_upload_blocked")
+            if blocked is None:
+                uow.session.add(
+                    SystemState(
+                        key="privacy_journal_upload_blocked", value={"reason": "restore_pending"}
+                    )
+                )
+        elif marker.value.get("backup_taken_at") != backup_taken_at.isoformat():
+            raise ValueError("restore_backup_mismatch")
     async with transaction(session_factory) as uow:
         session = uow.session
+        # Recovery itself must not append new decisions on the rewound chain.
+        await session.execute(text("SET LOCAL app.privacy_replay = 'on'"))
         # Revoke every restored scope, including inactive accounts: a later
         # reactivation must not resurrect an old grant. Invalidate old cards
         # and text questions so only a newly displayed consent can re-grant.
@@ -234,17 +267,12 @@ async def post_restore(
         await session.flush()
     # 6. Retention, outside the big transaction (each class commits on its own).
     sweep = await sweep_all(session_factory, clock)
-    # 7. Publish the notice and open the startup gate only after every step
-    # succeeded. AI remains quarantined independently until fresh consent.
+    # I20: maintenance and fresh consent do not prove deletion reconciliation.
+    # Only a validated independent journal or an explicit purge may open it.
     async with transaction(session_factory) as uow:
-        notice = await uow.session.get(SystemState, KEY_RESTORE_NOTICE)
-        if notice is None:
-            uow.session.add(SystemState(key=KEY_RESTORE_NOTICE, value=payload))
-        else:
-            notice.value = payload
         marker = await uow.session.get(SystemState, KEY_RESTORE_PENDING)
         if marker is not None:
-            await uow.session.delete(marker)
+            marker.value = {**marker.value, "maintenance_complete": True}
     return PostRestoreReport(
         accounts_paused,
         jobs_deleted,

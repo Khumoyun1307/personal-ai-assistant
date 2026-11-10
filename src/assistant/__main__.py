@@ -351,11 +351,11 @@ def post_restore_command(args: argparse.Namespace) -> int:
         finally:
             await engine.dispose()
         print(
-            f"OK: post-restore done — {report.accounts_paused} account(s) paused, "
+            f"OK: post-restore maintenance complete — {report.accounts_paused} account(s) paused, "
             f"{report.jobs_deleted} queued job(s) dropped, {report.gaps_recorded} coverage "
             f"gap(s) recorded, retention swept {report.sweep.total} item(s). "
-            "restore_pending cleared; AI remains blocked until fresh owner consent. "
-            "The owner is notified when the app starts."
+            "restore_pending remains closed: privacy reconciliation required. "
+            "Run privacy-status, then privacy-replay or the documented manual/purge fallback."
         )
         return EXIT_OK
 

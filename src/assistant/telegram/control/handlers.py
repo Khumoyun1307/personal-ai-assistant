@@ -343,7 +343,7 @@ async def handle_consent_reply(
         await offer_timezone(session, gateway, clock, account, target)
         return HandlerResult(True, "consent", result, note="declined")
 
-    await service.grant_consent(
+    consent = await service.grant_consent(
         session,
         account,
         kind=service.CONSENT_AI_CONTROL,
@@ -351,6 +351,9 @@ async def handle_consent_reply(
         processors=AI_PROCESSORS,
         clock=clock,
     )
+    if consent is None:
+        result = await gateway.send_text(target, texts.CONSENT_BLOCKED[locale])
+        return HandlerResult(True, "consent", result, note="privacy_reconciliation_required")
     account.status = "active"
     result = await gateway.send_text(target, texts.CONSENT_GRANTED[locale])
     await offer_timezone(session, gateway, clock, account, target)
@@ -425,11 +428,13 @@ async def handle_managed_consent_request(
     return HandlerResult(True, "managed_consent", result, note="requested")
 
 
-async def _grant_managed_consent(session: AsyncSession, clock: Clock, account: Account) -> bool:
-    """Record `ai_managed` (FR-ONB-05b). False if it was already active."""
+async def _grant_managed_consent(
+    session: AsyncSession, clock: Clock, account: Account
+) -> bool | None:
+    """True for a grant, False if already active, None if recovery blocks it."""
     if (await service.active_consent(session, account.id, kind=service.CONSENT_AI_MANAGED)).granted:
         return False
-    await service.grant_consent(
+    consent = await service.grant_consent(
         session,
         account,
         kind=service.CONSENT_AI_MANAGED,
@@ -437,6 +442,8 @@ async def _grant_managed_consent(session: AsyncSession, clock: Clock, account: A
         processors=AI_PROCESSORS,
         clock=clock,
     )
+    if consent is None:
+        return None
     # Agreeing again lifts a "stop observing" choice made earlier.
     await service.set_managed_mode(session, account, service.MANAGED_MODE_OBSERVE)
     return True
@@ -772,14 +779,19 @@ async def handle_card_press(
     match (press.kind, press.op):
         case (k, "agree") if k == service.MANAGED_CONSENT_CARD:
             granted = await _grant_managed_consent(session, clock, account)
-            settlement = _Settlement(
-                "Turned on" if granted else "Already on",
-                MANAGED_CONSENT_GRANTED_TEXT.format(processors=", ".join(AI_PROCESSORS))
-                if granted
-                else MANAGED_CONSENT_ALREADY_ON_TEXT,
-                keep_body=in_notice,
-            )
-            note = "granted" if granted else "already_granted"
+            if granted is None:
+                blocked = texts.CONSENT_BLOCKED[supported_locale(account.locale_pref)]
+                settlement = _Settlement(blocked, blocked, keep_body=in_notice)
+                note = "privacy_reconciliation_required"
+            else:
+                settlement = _Settlement(
+                    "Turned on" if granted else "Already on",
+                    MANAGED_CONSENT_GRANTED_TEXT.format(processors=", ".join(AI_PROCESSORS))
+                    if granted
+                    else MANAGED_CONSENT_ALREADY_ON_TEXT,
+                    keep_body=in_notice,
+                )
+                note = "granted" if granted else "already_granted"
         case (k, "decline") if k == service.MANAGED_CONSENT_CARD:
             state = await service.active_consent(
                 session, account.id, kind=service.CONSENT_AI_MANAGED

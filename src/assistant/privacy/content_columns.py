@@ -175,5 +175,11 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("memory_items", "tool_call_id"),
         # Alembic's own bookkeeping table.
         ("alembic_version", "version_num"),
+        ("privacy_journal_heads", "digest"),
+        ("privacy_journal", "scope"),
+        ("privacy_journal", "operation"),
+        ("privacy_journal", "processor_id"),
+        ("privacy_journal", "previous_digest"),
+        ("privacy_journal", "digest"),
     }
 )

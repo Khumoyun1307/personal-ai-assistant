@@ -137,6 +137,25 @@ CONSENT_GRANTED: Final[dict[SupportedLocale, str]] = {
     ),
 }
 
+CONSENT_BLOCKED: Final[dict[SupportedLocale, str]] = {
+    "en": (
+        "AI remains blocked after the restore. Privacy recovery must finish before "
+        "consent can be renewed. Consent was not granted."
+    ),
+    "uz-Latn": (
+        "Tiklashdan keyin AI hali bloklangan. Rozilikni qayta berishdan oldin "
+        "maxfiylikni tiklash tugashi kerak. Rozilik berilmadi."
+    ),
+    "uz-Cyrl": (
+        "Тиклашдан кейин AI ҳали блокланган. Розиликни қайта беришдан олдин "
+        "махфийликни тиклаш тугаши керак. Розилик берилмади."
+    ),
+    "ru": (
+        "После восстановления ИИ остаётся заблокированным. Сначала нужно завершить "
+        "восстановление решений о конфиденциальности. Согласие не предоставлено."
+    ),
+}
+
 CONSENT_DECLINED: Final[dict[SupportedLocale, str]] = {
     "en": (
         "No problem — nothing will be sent to an AI provider.\n"

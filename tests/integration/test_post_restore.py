@@ -1,7 +1,8 @@
 """After a restore: the gate and the post-restore transaction (ARCHITECTURE §15.6).
 
 A restored database must not run until `post-restore` has paused autonomy,
-dropped queued jobs, recorded the possible gap and cleared the marker — and
+dropped queued jobs, recorded the possible gap and privacy reconciliation
+has cleared the marker — and
 the owner must be told on the next start.
 """
 
@@ -29,6 +30,7 @@ from assistant.privacy.post_restore import (
 from tests.fakes.channel import FakeChannel
 from tests.integration.business_env import OWNER, Env, connect, deliver, private_message
 from tests.integration.p2_factories import seed_account, seed_automation
+from tests.integration.privacy_recovery_helpers import reconcile_known_test_history
 
 pytestmark = pytest.mark.integration
 
@@ -48,6 +50,7 @@ async def test_post_restore_cancels_pending_actions_and_marks_executing_uncertai
     )
     assert report.actions_cancelled == 4
     assert report.actions_uncertain == 1
+    await reconcile_known_test_history(env)
     async with env.factory() as session:
         rows = {row.id: row for row in await session.scalars(select(Action))}
         for state in ("proposed", "awaiting_approval", "approved", "scheduled"):
@@ -78,6 +81,7 @@ async def test_restore_notice_lists_only_its_accounts_action_ids_and_local_times
         second.control_chat_id = 7000080002
         second.timezone = "synthetic-invalid-timezone"
     await post_restore(env.factory, env.clock, backup_taken_at=env.clock.now() - timedelta(hours=1))
+    await reconcile_known_test_history(env)
     channel = FakeChannel()
     assert await deliver_restore_notice(env.factory, OwnerAlerts(env.factory, channel, env.clock))
     assert set(channel.recipients) == {account_id, other_account}
@@ -116,6 +120,7 @@ async def test_post_restore_pauses_drops_jobs_records_the_gap_and_clears_the_mar
     taken_at = env.clock.now() - timedelta(hours=5)
 
     report = await post_restore(env.factory, env.clock, backup_taken_at=taken_at)
+    await reconcile_known_test_history(env)
 
     assert report.accounts_paused == 1
     assert report.jobs_deleted == queued_before
@@ -157,6 +162,7 @@ async def test_the_restore_notice_is_delivered_once_on_the_next_run(env: Env) ->
     await connect(env)
     taken_at = datetime(2026, 10, 18, 2, 0, tzinfo=UTC)
     await post_restore(env.factory, env.clock, backup_taken_at=taken_at)
+    await reconcile_known_test_history(env)
     channel = FakeChannel()
     alerts = OwnerAlerts(env.factory, channel, env.clock)
 
@@ -226,6 +232,7 @@ async def test_post_restore_skips_past_occurrences_with_a_note_and_reschedules(e
         ids = (behind.id, far_behind.id, running.id, paused.id, monitor.id)
 
     report = await post_restore(env.factory, env.clock, backup_taken_at=now - timedelta(hours=5))
+    await reconcile_known_test_history(env)
 
     async with env.factory() as session:
         automations = {
