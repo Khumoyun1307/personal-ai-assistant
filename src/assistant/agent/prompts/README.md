@@ -30,7 +30,7 @@ in an authorized `psql` session, setting `account_id` to the account being audit
 ```sql
 \set account_id 1
 SELECT prompt_version, count(*) AS retained_runs
-FROM agent_runs
+FROM app.agent_runs
 WHERE account_id = :'account_id'::bigint
   AND prompt_version IS NOT NULL
 GROUP BY prompt_version
