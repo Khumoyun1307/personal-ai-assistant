@@ -190,6 +190,11 @@ async def _explicit(
             .order_by(OwnerRequest.id)
         )
     )
+    # A topic-switch turn initially inherits the previous focus. The request
+    # it subsequently opens is its reply target, even if that task has ended.
+    triggered = [row for row in rows if row.trigger_turn_id == target.id]
+    if triggered:
+        rows = triggered
     if not rows:
         action_ids = _ids((target.refs or {}).get("continuation_action_ids"))
         versions = _ids((target.refs or {}).get("continuation_action_versions"))
@@ -227,6 +232,8 @@ async def resolve(
         return Continuation("unavailable", code="not_available")
     if turn.text is None:
         return Continuation("unavailable", code="source_unavailable")
+    if (turn.refs or {}).get("explicit_target_unavailable") is True:
+        return Continuation("unavailable", code="not_available", basis="explicit_reply")
     if reply_to_message_id is not None:
         selected = await _explicit(
             session, account_id=account_id, turn_id=turn_id, message_id=reply_to_message_id, now=now

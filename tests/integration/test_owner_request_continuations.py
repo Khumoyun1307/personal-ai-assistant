@@ -22,7 +22,7 @@ from assistant.actions.requests import (
 )
 from assistant.agent.persistence import load_owner_continuation
 from assistant.conversations.models import Contact, Conversation
-from assistant.privacy.deletion import delete_everything
+from assistant.privacy.deletion import delete_conversation_data, delete_everything
 from assistant.privacy.owner_requests import purge_request_sources
 from assistant.privacy.requests import export_owner_requests
 from tests.integration.business_env import Env
@@ -123,6 +123,138 @@ async def test_j03_reply_to_original_turn_beats_other_focused_request(env: Env) 
         assert old.state == "suspended"
         assert new.sources[0].span.turn_id != original
         assert new.contact_id is None
+
+
+async def test_reply_to_topic_switch_turn_selects_triggered_request(env: Env) -> None:
+    account, _, _, old_id = await seed_request(env)
+    topic_id = await answer(env, account)
+    async with env.factory() as session, session.begin():
+        topic = await session.get(ControlTurn, topic_id)
+        assert topic is not None
+        loaded = await load_owner_continuation(
+            session,
+            account_id=account,
+            turn=topic,
+            now=env.clock.now(),
+            managed_allowed=True,
+        )
+        assert loaded.selection.request_id == old_id
+        assert topic.refs["owner_request_ids"] == [old_id]
+    # Runtime continuation loading commits before the model opens a distinct
+    # task. Its trigger turn still carries the previously inherited refs.
+    async with env.factory() as session, session.begin():
+        topic = await session.get(ControlTurn, topic_id)
+        assert topic is not None
+        new = await open_request(
+            session,
+            account_id=account,
+            turn_id=topic_id,
+            operation="compose",
+            sources=(source(topic_id, topic.text or "", purpose="instruction"),),
+            now=env.clock.now(),
+        )
+        new_id = new.request_id
+    reply_id = await answer(env, account, reply=902)
+    async with env.factory() as session, session.begin():
+        reply = await session.get(ControlTurn, reply_id)
+        assert reply is not None
+        loaded = await load_owner_continuation(
+            session,
+            account_id=account,
+            turn=reply,
+            now=env.clock.now(),
+            managed_allowed=True,
+        )
+        assert loaded.selection.status == "selected"
+        assert loaded.selection.basis == "explicit_reply"
+        assert loaded.request is not None
+        assert loaded.request.request_id == new_id
+        assert loaded.request.sources[0].span.turn_id == topic_id
+        old = await load_request(session, account_id=account, request_id=old_id)
+        assert old is not None
+        assert old.state == "suspended"
+
+
+@pytest.mark.parametrize("presented", [False, True])
+async def test_queued_reply_to_purged_card_never_resumes_other_focus(
+    env: Env, *, presented: bool
+) -> None:
+    account, conversation, _, focused_id = await seed_request(env)
+    foreign_account, _, _, _ = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        card = Action(
+            account_id=account,
+            conversation_id=conversation,
+            kind="send_message",
+            origin="owner_dictated",
+            state="awaiting_approval",
+            version=1,
+            card_message_id=None if presented else 990,
+            card_state="awaiting_approval",
+        )
+        session.add(card)
+        await session.flush()
+        if presented:
+            session.add(
+                AuditLogEntry(
+                    account_id=account,
+                    at=env.clock.now(),
+                    actor="system",
+                    event="card_presented",
+                    subject_type="action",
+                    subject_id=card.id,
+                    details={"control_message_id": 990, "version": 1},
+                )
+            )
+    turn_id = await answer(env, account, reply=990)
+    foreign_id = await answer(env, foreign_account, reply=990)
+    # Ingress has persisted the reply, but runtime has not attached any
+    # conversation refs yet. Purging the card must not make it implicit.
+    async with env.factory() as session, session.begin():
+        await delete_conversation_data(
+            session,
+            account_id=account,
+            conversation_id=conversation,
+            actor="owner",
+            clock=env.clock,
+        )
+    async with env.factory() as session, session.begin():
+        turn = await session.get(ControlTurn, turn_id)
+        assert turn is not None
+        assert turn.text == "Kamola Ziyo"
+        assert turn.reply_to_telegram_message_id is None
+        assert turn.refs.get("explicit_target_unavailable") is True
+        loaded = await load_owner_continuation(
+            session,
+            account_id=account,
+            turn=turn,
+            now=env.clock.now(),
+            managed_allowed=True,
+        )
+        assert loaded.selection.status == "unavailable"
+        assert loaded.selection.basis == "explicit_reply"
+        assert loaded.request is None
+        assert loaded.sources == ()
+        focused = await load_request(session, account_id=account, request_id=focused_id)
+        assert focused is not None
+        assert (
+            await session.scalar(
+                select(OwnerRequest.focused).where(
+                    OwnerRequest.account_id == account, OwnerRequest.id == focused_id
+                )
+            )
+            is True
+        )
+        assert focused.state == "collecting"
+        assert focused.version == 1
+        exported = await export_owner_requests(session, account_id=account)
+        assert len(exported["control_reply_metadata"]) == 1
+        assert exported["control_reply_metadata"][0]["turn_id"] == turn_id
+        assert exported["control_reply_metadata"][0]["explicit_target_unavailable"] is True
+        foreign = await session.get(ControlTurn, foreign_id)
+        assert foreign is not None
+        assert foreign.reply_to_telegram_message_id == 990
+        assert foreign.refs.get("explicit_target_unavailable") is None
 
 
 async def test_j06_cancelled_request_never_answers_a_later_name(env: Env) -> None:

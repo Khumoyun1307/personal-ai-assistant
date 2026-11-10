@@ -82,7 +82,8 @@ async def export_owner_requests(
         .where(
             ControlTurn.account_id == account_id,
             (ControlTurn.reply_to_telegram_message_id.is_not(None))
-            | (ControlTurn.owner_text_verified.is_(True)),
+            | (ControlTurn.owner_text_verified.is_(True))
+            | (ControlTurn.refs.contains({"explicit_target_unavailable": True})),
         )
         .order_by(ControlTurn.id)
     )
@@ -92,6 +93,9 @@ async def export_owner_requests(
             "turn_id": turn.id,
             "reply_to_telegram_message_id": turn.reply_to_telegram_message_id,
             "owner_text_verified": turn.owner_text_verified,
+            "explicit_target_unavailable": (
+                (turn.refs or {}).get("explicit_target_unavailable") is True
+            ),
         }
         for turn in turns
     ]

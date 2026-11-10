@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 
-from sqlalchemy import ColumnElement, delete, or_, select, update
+from sqlalchemy import ColumnElement, case, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry, ControlTurn, PendingInput
@@ -104,7 +104,20 @@ async def purge_request_sources(
         )
         refers.extend(ControlTurn.refs.contains({"owner_request_ids": [row.id]}) for row in rows)
         reply_scope = reply_scope.where(or_(*refers))
-    await session.execute(reply_scope.values(reply_to_telegram_message_id=None))
+    # A queued explicit reply may not have conversation refs yet. Erasing its
+    # pointer must not let runtime reinterpret its text against another focus.
+    await session.execute(
+        reply_scope.values(
+            reply_to_telegram_message_id=None,
+            refs=case(
+                (
+                    ControlTurn.reply_to_telegram_message_id.is_not(None),
+                    ControlTurn.refs.op("||")({"explicit_target_unavailable": True}),
+                ),
+                else_=ControlTurn.refs,
+            ),
+        )
+    )
     await session.execute(
         delete(AuditLogEntry).where(
             AuditLogEntry.account_id == account_id,
