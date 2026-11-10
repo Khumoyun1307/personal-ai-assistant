@@ -130,7 +130,6 @@ async def test_j18_unknown_privacy_continuity_cannot_be_cleared_by_fresh_consent
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-@pytest.mark.xfail(strict=True, reason="needs H12", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 async def test_j20_exact_owner_preference_survives_unrelated_contact_taint(
     journey: Journey, locale: Locale
@@ -206,7 +205,6 @@ async def test_j27_contact_read_then_configure_requires_owner_card(
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-@pytest.mark.xfail(strict=True, reason="needs H12", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 async def test_j27_next_run_drops_contact_and_derived_prose_preserving_owner_instruction(
     journey: Journey, locale: Locale
