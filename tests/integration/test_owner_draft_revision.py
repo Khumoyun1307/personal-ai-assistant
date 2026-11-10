@@ -20,6 +20,7 @@ from assistant.accounts.models import AuditLogEntry, ControlTurn
 from assistant.actions import lifecycle
 from assistant.actions.authorship import VersionAuthorship, current_authorship, is_ai_generated
 from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
+from assistant.actions.requests import RequestApplied, SetState, update_request
 from assistant.actions.states import StateReason
 from assistant.agent.tools.drafts import ReviseDraftArgs, revise_draft_tool
 from assistant.agent.tools.registry import OwnerTurn, ToolContext, ToolServices
@@ -29,10 +30,171 @@ from tests.integration.agent_env import ask
 from tests.integration.business_env import business_message, deliver
 from tests.integration.p2_factories import seed_action, seed_conversation
 from tests.integration.test_approvals import start_edit
-from tests.integration.test_reply_tools import call, source_message_args
+from tests.integration.test_reply_tools import call, generated_message_args, source_message_args
 from tests.scenarios.p2_drive import Scenario, m04_environment, revision_result, run_queued
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.parametrize(
+    ("edit", "request_operation"),
+    [
+        ("rewrite", "compose"),
+        ("rewrite", "revise"),
+        ("literal_append", "compose"),
+        ("literal_replace", "compose"),
+    ],
+)
+async def test_main_revision_uses_complete_body_and_version_cas_without_writer(
+    s: Scenario, edit: str, request_operation: str
+) -> None:
+    from tests.fakes.owner_fence import FakeOwnerFence
+
+    async with s.env.factory() as session, session.begin():
+        run_id = await seed_run(session, s.account_id)
+    turn_id = await ask(s.env, "SYNTH use this exact composition instruction")
+    ctx = ToolContext(
+        account_id=s.account_id,
+        run_id=run_id,
+        run_type="owner_request",
+        tainted=True,
+        services=ToolServices(
+            s.env.factory,
+            s.env.clock,
+            None,
+            approval_cards=s.wiring.approval_cards,
+            actions_config=s.wiring.actions_config,
+            owner_fence=FakeOwnerFence(),
+        ),
+        turn_id=turn_id,
+        owner_turn=OwnerTurn(turn_id, "SYNTH revise it", False, False, False),
+        managed_ok=True,
+    )
+    proposal = await generated_message_args(ctx, s.account_id, s.conversation_id)
+    flags = frozenset({"tool.propose_owner_message", "tool.revise_draft"})
+    staged = await call(ctx, "propose_owner_message", flags=flags, **proposal)
+    original = await s.action(staged["action_id"])
+    request_version = staged["request_version"]
+    if request_operation == "revise":
+        async with s.env.factory() as session, session.begin():
+            request = await session.get(OwnerRequest, proposal["request_id"])
+            source = await session.scalar(
+                select(OwnerRequestSource).where(
+                    OwnerRequestSource.account_id == s.account_id,
+                    OwnerRequestSource.request_id == proposal["request_id"],
+                )
+            )
+            assert request is not None
+            assert source is not None
+            # C1 permits a ready revision with literal change content alone.
+            request.operation = "revise"
+            source.purpose = "literal_body"
+            await session.flush()
+            ready = await update_request(
+                session,
+                account_id=s.account_id,
+                request_id=request.id,
+                expected_version=request.version,
+                update=SetState(state="ready", reason=None),
+                now=s.env.clock.now(),
+            )
+            assert isinstance(ready, RequestApplied)
+            request_version = ready.view.version
+    sources: list[int] = []
+    if edit != "rewrite":
+        async with s.env.factory() as session, session.begin():
+            source = await session.scalar(
+                select(OwnerRequestSource).where(
+                    OwnerRequestSource.request_id == proposal["request_id"],
+                    OwnerRequestSource.account_id == s.account_id,
+                )
+            )
+            assert source is not None
+            literal = OwnerRequestSource(
+                account_id=s.account_id,
+                request_id=source.request_id,
+                ordinal=1,
+                turn_id=source.turn_id,
+                field=source.field,
+                purpose="literal_body",
+                start_char=source.start_char,
+                end_char=source.end_char,
+                field_sha256=source.field_sha256,
+            )
+            session.add(literal)
+            await session.flush()
+            sources = [literal.id]
+    args = {
+        "request_id": proposal["request_id"],
+        "request_version": request_version,
+        "action_id": original.id,
+        "expected_version": original.version,
+        "edit": edit,
+        "text": "SYNTH complete rewrite with every requested point!" if edit == "rewrite" else None,
+        "source_ids": sources,
+        "context_fence_id": 1 if edit == "rewrite" else None,
+    }
+    invalid = args | ({"text": " \n "} if edit == "rewrite" else {"source_ids": [999_999]})
+    rejected = await call(ctx, "revise_draft", flags=flags, call_id="invalid", **invalid)
+    assert rejected["action"] is None
+    assert rejected["effect_version"] is None
+    assert rejected["requested_change_applied"] is False
+    unchanged = await s.action(original.id)
+    assert unchanged.version == original.version
+    assert unchanged.text == original.text
+    assert unchanged.approval_token == original.approval_token
+    assert "action_revision_requested" not in await s.events(original.id)
+    revised = await call(ctx, "revise_draft", flags=flags, call_id="revision", **args)
+    assert revised["proposal_status"] == "revised"
+    assert revised["requested_change_applied"] is True
+    updated = await s.action(original.id)
+    assert updated.version == original.version + 1
+    assert updated.approval_token != original.approval_token
+    assert updated.expires_at == original.expires_at
+    assert updated.base_message_id == original.base_message_id
+    assert updated.state == "awaiting_approval"
+    assert updated.approved_text_hash is None
+    async with s.env.factory() as session, session.begin():
+        old_tap = await lifecycle.approve(
+            session,
+            account_id=s.account_id,
+            token=original.approval_token or "",
+            now=s.env.clock.now(),
+        )
+    assert old_tap.status is lifecycle.ApproveStatus.NOT_ACTIVE
+    assert updated.authorship["kind"] == (
+        "assistant_written" if edit == "rewrite" else "owner_literal_edit"
+    )
+    assert updated.authorship["retains_generated_text"] is (edit != "literal_replace")
+    if edit == "rewrite":
+        assert updated.text == args["text"]
+    else:
+        literal_body = "SYNTH explain the three options and ask which they prefer"
+        assert updated.text == (
+            (original.text or "") + literal_body if edit == "literal_append" else literal_body
+        )
+    replay = await call(ctx, "revise_draft", flags=flags, call_id="revision", **args)
+    assert replay["proposal_status"] == "reused_exact"
+    assert replay["requested_change_applied"] is False
+    assert replay["action"]["version"] == updated.version
+    deduped = await call(ctx, "revise_draft", flags=flags, call_id="same-revision", **args)
+    assert deduped["proposal_status"] == "reused_exact"
+    assert deduped["effect_version"] is None
+    stale_change = await call(
+        ctx,
+        "revise_draft",
+        flags=flags,
+        call_id="changed-revision",
+        **(args | {"text": "SYNTH different rewrite"} if edit == "rewrite" else args),
+    )
+    assert stale_change["requested_change_applied"] is False
+    conflict = await call(ctx, "propose_owner_message", flags=flags, call_id="revision", **proposal)
+    assert conflict["proposal_status"] == "idempotency_conflict"
+    assert conflict["action"]["version"] == updated.version
+    original_retry = await call(ctx, "propose_owner_message", flags=flags, **proposal)
+    assert original_retry["effect_version"] == original.version
+    assert original_retry["action"]["version"] == updated.version
+    assert s.fake.requests == []
 
 
 @pytest.mark.parametrize("tainted", [False, True])

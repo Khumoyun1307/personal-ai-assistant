@@ -7,7 +7,7 @@ from assistant.accounts.models import ControlTurn
 from assistant.llm.port import TextItem
 from tests.fakes.llm import text_response
 from tests.integration.business_env import OWNER
-from tests.journeys.harness import Journey
+from tests.journeys.harness import JOURNEY_FLAGS, Journey
 from tests.journeys.models import CardCheck
 from tests.scenarios.p2_drive import run_queued
 
@@ -63,6 +63,52 @@ async def test_request_lookup_does_not_fabricate_missing_foundation(journey: Jou
     with pytest.raises(AssertionError, match="expected persisted request id, actual None"):
         await proposal(journey.s.fake.requests[-1])
     assert await journey.rows() == []
+
+
+async def test_main_revision_adapter_does_not_fall_back_to_legacy_writer(
+    journey: Journey,
+) -> None:
+    j = journey
+    row = await j.dictate(BODY)
+    request = j.s.fake.requests[-1]
+    revision = next(tool for tool in request.tools if tool.name == "revise_draft")
+    assert "expected_version" in revision.parameters["properties"]
+    script = j.revision("k", "CANARY-SYNTH main-model rewrite.")
+    assert callable(script)
+    # H10 is absent here. A flat-schema call must require its real read fence,
+    # rather than enqueue a legacy writer and emit arguments the run rejects.
+    with pytest.raises(AssertionError, match="expected at least one context fence"):
+        await script(request)
+    assert j.s.fake.parsed == []
+    unchanged = await j.action("k")
+    assert unchanged.version == row.version
+    assert unchanged.text == BODY
+
+
+@pytest.mark.parametrize(
+    "journey_flags",
+    [JOURNEY_FLAGS, JOURNEY_FLAGS - {"tool.propose_owner_message"}],
+    ids=["main-writer", "legacy-writer"],
+)
+async def test_restart_and_manifest_keep_selected_writer_flags(
+    journey: Journey, journey_flags: frozenset[str]
+) -> None:
+    j = journey
+    await j.dictate(BODY)
+    await j.restart()
+    await j.owner("CANARY-SYNTH advice only.", text_response("CANARY-SYNTH advice."))
+    request = j.s.fake.requests[-1]
+    offered = {tool.name for tool in request.tools}
+    revision = next(tool for tool in request.tools if tool.name == "revise_draft")
+    if "tool.propose_owner_message" in journey_flags:
+        assert "propose_owner_message" in offered
+        assert "propose_reply" not in offered
+        assert "expected_version" in revision.parameters["properties"]
+    else:
+        assert "propose_owner_message" not in offered
+        assert "propose_reply" in offered
+        assert "literal" in revision.parameters["properties"]
+    assert (await j.manifest())["flags"] == sorted(journey_flags)
 
 
 async def test_card_check_rejects_expected_body_only_in_unrelated_reply(journey: Journey) -> None:

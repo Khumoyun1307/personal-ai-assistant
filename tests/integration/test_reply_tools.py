@@ -21,6 +21,7 @@ from sqlalchemy import func, select, text, update
 from structlog.testing import capture_logs
 
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
+from assistant.actions import lifecycle
 from assistant.actions.authorship import current_authorship, is_ai_generated
 from assistant.actions.models import Action
 from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
@@ -83,6 +84,237 @@ from tests.integration.drafting_env import (
 from tests.unit.test_draft_owner_units import owner_output
 
 pytestmark = pytest.mark.integration
+
+
+async def generated_message_args(
+    denv: DraftEnv | ToolContext,
+    account_id: int,
+    conversation_id: int,
+    *,
+    brief: str = "SYNTH explain the three options and ask which they prefer",
+) -> dict[str, Any]:
+    selected = await source_message_args(denv, account_id, conversation_id, brief)
+    factory = denv.env.factory if isinstance(denv, DraftEnv) else denv.services.session_factory
+    async with factory() as session, session.begin():
+        request = await session.get(OwnerRequest, selected["request_id"])
+        source = await session.get(OwnerRequestSource, selected["source_ids"][0])
+        assert request is not None
+        assert source is not None
+        request.operation = "compose"
+        source.purpose = "instruction"
+    return {key: value for key, value in selected.items() if key != "source_ids"} | {
+        "mode": "new_message",
+        "text": "SYNTH first option, second option, third option. Which do you prefer?",
+        "context_fence_id": 1,
+    }
+
+
+async def test_main_proposal_exact_retry_conflict_and_request_dedupe(denv: DraftEnv) -> None:
+    from tests.fakes.owner_fence import FakeOwnerFence
+
+    account_id, conversation = await seed_chat(denv)
+    arguments = await generated_message_args(denv, account_id, conversation)
+    arguments["text"] = " \nSYNTH X1 — x/h, O‘g‘il e\u0301!\n  "
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    ctx = context(denv, account_id, run_id, turn_id, owner_fence=FakeOwnerFence())
+    flags = frozenset({"tool.propose_owner_message"})
+    staged = await call(ctx, "propose_owner_message", flags=flags, **arguments)
+    assert staged["proposal_status"] == "staged"
+    assert staged["requested_change_applied"] is True
+    assert staged["action"]["authorship"] == "assistant_written"
+    assert staged["action"]["presentation"] == "not_attempted"
+    exact = await call(ctx, "propose_owner_message", flags=flags, **arguments)
+    assert exact["proposal_status"] == "reused_exact"
+    assert exact["effect_version"] == 1
+    assert exact["requested_change_applied"] is False
+    changed = {**arguments, "text": "SYNTH different body"}
+    conflict = await call(ctx, "propose_owner_message", flags=flags, **changed)
+    assert conflict["proposal_status"] == "idempotency_conflict"
+    assert conflict["action"]["action_id"] == staged["action_id"]
+    assert conflict["effect_version"] is None
+    conflict = await call(ctx, "propose_owner_message", call_id="new-key", flags=flags, **changed)
+    assert conflict["proposal_status"] == "proposal_conflict"
+    assert conflict["requested_change_applied"] is False
+    reused = await call(ctx, "propose_owner_message", call_id="same-body", flags=flags, **arguments)
+    assert reused["proposal_status"] == "reused_exact"
+    assert reused["effect_version"] is None
+    [card] = await actions_of(denv.env, conversation)
+    assert card.text == arguments["text"]
+    assert card.version == 1
+    assert denv.presenter.presented == [card.id]
+    assert denv.fake.requests == []
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"text": "  \n"},
+        {"text": "😀" * 2049},
+        {"request_id": 999_999},
+        {"conversation_id": 999_999},
+        {"answered_message_id": 999_999},
+        {"mode": "reply"},
+        {"request_version": 999_999},
+        {"policy_approved": True},
+    ],
+)
+async def test_main_proposal_rejects_semantic_and_schema_errors_without_action(
+    denv: DraftEnv, changes: dict[str, Any]
+) -> None:
+    from tests.fakes.owner_fence import FakeOwnerFence
+
+    account_id, conversation = await seed_chat(denv)
+    arguments = await generated_message_args(denv, account_id, conversation)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    result = await call(
+        context(denv, account_id, run_id, turn_id, owner_fence=FakeOwnerFence()),
+        "propose_owner_message",
+        flags=frozenset({"tool.propose_owner_message"}),
+        **(arguments | changes),
+    )
+    assert result["action"] is None
+    assert result["effect_version"] is None
+    assert result["requested_change_applied"] is False
+    if "request_id" in changes:
+        assert result["request_id"] is None
+        assert result["request_version"] is None
+    assert await actions_of(denv.env, conversation) == []
+    assert denv.presenter.presented == []
+
+
+async def test_main_proposal_missing_fence_implementation_fails_closed(denv: DraftEnv) -> None:
+    account_id, conversation = await seed_chat(denv)
+    arguments = await generated_message_args(denv, account_id, conversation)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    result = await call(
+        context(denv, account_id, run_id, turn_id),
+        "propose_owner_message",
+        flags=frozenset({"tool.propose_owner_message"}),
+        **arguments,
+    )
+    assert result["reason"] == "fence_unavailable"
+    assert result["action"] is None
+    assert await actions_of(denv.env, conversation) == []
+
+
+async def test_main_proposal_in_memory_replay_checks_digest_and_reloads_artifact(
+    denv: DraftEnv,
+) -> None:
+    from tests.fakes.owner_fence import FakeOwnerFence
+
+    account_id, conversation = await seed_chat(denv)
+    arguments = await generated_message_args(denv, account_id, conversation)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    ctx = context(denv, account_id, run_id, turn_id, owner_fence=FakeOwnerFence())
+    offered = default_registry().for_run(
+        "owner_request",
+        tier=CapabilityTier.CONTROL_ONLY,
+        enabled_flags=frozenset({"tool.propose_owner_message"}),
+        managed_consent=True,
+    )
+
+    async def record(*_step: object) -> None:
+        return None
+
+    executor = ToolExecutor(context=ctx, offered=offered, record_step=record, clock=denv.env.clock)
+    first = await executor.execute(ToolCall("same", "propose_owner_message", json.dumps(arguments)))
+    staged = json.loads(first.output)
+    [card] = await actions_of(denv.env, conversation)
+    assert card.id == staged["action_id"]
+    async with denv.env.factory() as session, session.begin():
+        rejected = await lifecycle.reject(
+            session,
+            account_id=account_id,
+            token=card.approval_token or "",
+            now=denv.env.clock.now(),
+        )
+    assert rejected
+    replay = await executor.execute(
+        ToolCall("same", "propose_owner_message", json.dumps(arguments))
+    )
+    assert json.loads(replay.output)["action"]["state"] == "rejected"
+    changed = await executor.execute(
+        ToolCall("same", "propose_owner_message", json.dumps(arguments | {"text": "SYNTH changed"}))
+    )
+    conflict = json.loads(changed.output)
+    assert conflict["proposal_status"] == "idempotency_conflict"
+    assert conflict["action"]["state"] == "rejected"
+    assert conflict["requested_change_applied"] is False
+    assert len(await actions_of(denv.env, conversation)) == 1
+
+
+@pytest.mark.parametrize("failure", ["missing_content", "invalid_source", "foreign_fence"])
+async def test_main_proposal_validation_creates_no_artifact_beside_an_existing_card(
+    denv: DraftEnv, failure: str
+) -> None:
+    from tests.fakes.owner_fence import FakeOwnerFence
+
+    account_id, conversation = await seed_chat(denv)
+    literal = await source_message_args(denv, account_id, conversation, "SYNTH unrelated card")
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    ctx = context(denv, account_id, run_id, turn_id, owner_fence=FakeOwnerFence())
+    await call(ctx, "propose_message", **literal)
+    before = await actions_of(denv.env, conversation)
+    presentations = list(denv.presenter.presented)
+    syncs = list(denv.presenter.synced)
+    arguments = await generated_message_args(denv, account_id, conversation)
+    async with denv.env.factory() as session, session.begin():
+        request = await session.get(OwnerRequest, arguments["request_id"])
+        assert request is not None
+        source = await session.scalar(
+            select(OwnerRequestSource).where(OwnerRequestSource.request_id == request.id)
+        )
+        assert source is not None
+        if failure == "missing_content":
+            request.state = "collecting"
+            request.missing_slot = "content"
+        elif failure == "invalid_source":
+            source.field_sha256 = "0" * 64
+        else:
+            arguments["context_fence_id"] = 999_999
+    async with denv.env.factory() as session:
+        before_events = await session.scalar(
+            select(func.count())
+            .select_from(AuditLogEntry)
+            .where(
+                AuditLogEntry.account_id == account_id,
+                AuditLogEntry.subject_type.in_(["action", "tool_effect"]),
+            )
+        )
+    result = await call(
+        ctx,
+        "propose_owner_message",
+        call_id="generated",
+        flags=frozenset({"tool.propose_owner_message"}),
+        **arguments,
+    )
+    assert result["action"] is None
+    assert result["effect_version"] is None
+    assert result["requested_change_applied"] is False
+    assert result["proposal_status"] == (
+        "needs_input"
+        if failure == "missing_content"
+        else "invalid_arguments"
+        if failure == "invalid_source"
+        else "not_available"
+    )
+    after = await actions_of(denv.env, conversation)
+    assert [(a.id, a.version, a.text, a.approval_token) for a in after] == [
+        (a.id, a.version, a.text, a.approval_token) for a in before
+    ]
+    assert denv.fake.requests == []
+    assert denv.presenter.presented == presentations
+    assert denv.presenter.synced == syncs
+    async with denv.env.factory() as session:
+        after_events = await session.scalar(
+            select(func.count())
+            .select_from(AuditLogEntry)
+            .where(
+                AuditLogEntry.account_id == account_id,
+                AuditLogEntry.subject_type.in_(["action", "tool_effect"]),
+            )
+        )
+    assert after_events == before_events
 
 
 async def source_message_args(
@@ -835,6 +1067,25 @@ async def test_foreign_request_and_source_ids_have_no_action_and_no_foreign_fact
         assert result["effect_version"] is None
         assert result["requested_change_applied"] is False
         assert "foreign canary" not in json.dumps(result)
+    from tests.fakes.owner_fence import FakeOwnerFence
+
+    main = await generated_message_args(denv, account_id, conversation)
+    for changed in (
+        {"request_id": foreign["request_id"]},
+        {"conversation_id": chat.id},
+    ):
+        result = await call(
+            replace(ctx, services=replace(ctx.services, owner_fence=FakeOwnerFence())),
+            "propose_owner_message",
+            flags=frozenset({"tool.propose_owner_message"}),
+            **(main | changed),
+        )
+        assert result["action"] is None
+        assert result["requested_change_applied"] is False
+        assert "foreign canary" not in json.dumps(result)
+        if "request_id" in changed:
+            assert result["request_id"] is None
+            assert result["request_version"] is None
     assert await actions_of(denv.env, conversation) == []
 
 

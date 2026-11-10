@@ -146,11 +146,19 @@ class ToolExecutor:
         cached = self._done.get(call.call_id)
         if cached is not None:
             call_digest = _call_digest(call)
-            if self._done_digests.get(call.call_id) != call_digest:
+            definition = self.offered.get(call.name)
+            durable_main_call = call.name == "propose_owner_message" or (
+                call.name == "revise_draft"
+                and definition is not None
+                and "expected_version" in definition.args_model.model_fields
+            )
+            if self._done_digests.get(call.call_id) != call_digest and not durable_main_call:
                 known = call.name in self.offered or call.name in self.registered
                 tool = call.name if known else UNKNOWN_TOOL
                 status = (
-                    "not_drafted" if call.name in {"propose_message", "revise_draft"} else "error"
+                    "not_drafted"
+                    if call.name in {"propose_message", "propose_owner_message", "revise_draft"}
+                    else "error"
                 )
                 outcome = ToolOutcome(status, log_code="args_changed")
                 await self.record_step(tool, call_digest, outcome.status, 0)
@@ -174,7 +182,7 @@ class ToolExecutor:
             # Proposal retries read current artifact facts through their
             # persistent idempotency checks; a cached receipt can be stale
             # after another version was staged in this same run.
-            if call.name not in {"propose_message", "revise_draft"}:
+            if call.name not in {"propose_message", "propose_owner_message", "revise_draft"}:
                 return cached
         started = self.clock.now()
         outcome, digest = await self._run(call)
@@ -314,8 +322,12 @@ def _invalid(tool: ToolDefinition, error: ValidationError, raw: object) -> ToolO
     data: dict[str, object] = {"reason": "invalid arguments", "fields": sorted(fields)}
     if problems:
         data["problems"] = problems
-    source_proposal = tool.name == "propose_message" or (
-        tool.name == "revise_draft" and isinstance(raw, dict) and raw.get("literal") is not None
+    source_proposal = tool.name in {"propose_message", "propose_owner_message"} or (
+        tool.name == "revise_draft"
+        and (
+            "expected_version" in known
+            or (isinstance(raw, dict) and raw.get("literal") is not None)
+        )
     )
     if source_proposal:
         data.update(

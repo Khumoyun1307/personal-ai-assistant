@@ -9,7 +9,7 @@ from assistant.db.uow import transaction
 from assistant.llm.port import LLMRequest
 from tests.fakes.llm import text_response
 from tests.journeys.grading import assert_equal
-from tests.journeys.harness import Journey, call
+from tests.journeys.harness import JOURNEY_FLAGS, Journey, call
 from tests.journeys.locales import OUTDATED, OWNER_LABEL, SENT, TEXT, UNAVAILABLE, UNCERTAIN
 from tests.journeys.models import (
     LOCALES,
@@ -149,9 +149,15 @@ async def test_i04_j06_reply_selects_k_revision_and_rejected_v2_content(
 
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("literal_append", [False, True])
+@pytest.mark.parametrize(
+    "journey_flags", [JOURNEY_FLAGS - {"tool.propose_owner_message"}], ids=["legacy-writer"]
+)
 async def test_j12_rewrite_has_generated_authorship_and_revocation_cancels(
-    journey: Journey, locale: Locale, *, literal_append: bool
+    journey: Journey, locale: Locale, journey_flags: frozenset[str], *, literal_append: bool
 ) -> None:
+    # H9's baseline covers the still-shipped revision writer, including its
+    # generated authorship and exact-source append. H4/H10 activation is separate.
+    assert "tool.propose_owner_message" not in journey_flags
     j = journey
     await j.language(locale)
     await j.dictate(TEXT[locale].unique.split(": ", 1)[1])
@@ -164,6 +170,7 @@ async def test_j12_rewrite_has_generated_authorship_and_revocation_cancels(
     )
     revised = await j.bind_card("k")
     assert revised.version == 2
+    assert revised.text == TEXT[locale].revised
     proof = getattr(revised, "authorship", None)
     assert proof is not None, "rewritten version has no authorship proof"
     assert proof["kind"] == "assistant_written"

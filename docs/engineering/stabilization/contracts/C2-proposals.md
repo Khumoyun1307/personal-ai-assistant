@@ -4,6 +4,22 @@
 
 ## Strict model-facing APIs
 
+H4 implementation (2026-11-10, validation pending): `agent/tools/owner_composition.py`
+implements the generated proposal and flat revision schemas below. The default-off
+`tool.propose_owner_message` flag selects these through `ToolRegistry.for_run`,
+removes `propose_reply` from offered tools and switches `revise_draft` to its flat
+API; flag off retains the H3/legacy schemas and behavior. Application-set H9
+authorship, shared durable effects and nullable C2 receipts apply. Generated
+staging/revision requires the typed `OwnerProposalFence` seam in
+`actions/proposals.py`, injected through bootstrap/runtime/ToolServices; there is
+no passing production default. Its check validates account/run/request binding
+and locks dependencies; its bind method atomically associates fence/request time
+with the committed action version. A literal revision may pass a null fence ID
+for a source-only application snapshot, but never bypasses the checker. H10 owns
+the implementation/persistence/execution hooks. H6 owns prompt activation and H8
+card-button cutover. No prompt bytes or migration change in H4; repaired paid
+journey/retrieval evals must pass before enabling the flag.
+
 H3 implementation note (2026-11-09): `propose_message` adopts the source API below under its existing flag. Revision 0018 (after I8's 0017) adds the unique audit-effect key index and declares `COMPATIBILITY = "breaking"` under I23's existing-field constraint rule; source proposals and literal revisions share the immutable run/call effect identity independently of mutable draft flags, including cross-tool retries through fresh executors. Until H4/H8 activate the final flat revision API, `revise_draft` retains its one-card selector and legacy word-bound/instruction fields, replacing `append_text` with nullable `literal={request_id, request_version, expected_version, edit, source_ids}` (`edit=literal_append|literal_replace`). Both literal operations use the same C1 copy service; this seam does not implement model-written proposal/rewrite or change a used prompt. H6 must activate the next unused prompt with the current strict schemas. Lead/CI validation, including migration up/down, is pending.
 
 ```python

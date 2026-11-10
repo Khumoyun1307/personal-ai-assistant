@@ -25,6 +25,7 @@ from assistant.actions.drafts import assist_trigger, request_draft
 from assistant.actions.executor import ActionExecutor, uncertain_after
 from assistant.actions.ingestion import ActionsIngestionListener
 from assistant.actions.ports import ApprovalCardPresenter
+from assistant.actions.proposals import OwnerProposalFence
 from assistant.agent.confirmations import ConfirmationApplier
 from assistant.agent.drafting import AssistDraftJob, CardReviser, DraftConfig, Drafter
 from assistant.agent.monitor_eval import MonitorEvalConfig, MonitorEvaluator
@@ -209,6 +210,7 @@ def build_owner_runtime(
     actions_config: ActionsConfig | None = None,
     notifications_enabled: bool = False,
     card_reviser: CardReviser | None = None,
+    owner_fence: OwnerProposalFence | None = None,
 ) -> OwnerRequestRuntime:
     client = llm or build_llm_client(settings, session_factory, clock)
     return OwnerRequestRuntime(
@@ -224,6 +226,7 @@ def build_owner_runtime(
         actions_config=actions_config,
         notifications_enabled=notifications_enabled,
         card_reviser=card_reviser,
+        owner_fence=owner_fence,
     )
 
 

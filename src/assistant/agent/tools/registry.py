@@ -35,6 +35,7 @@ from assistant.llm.port import ToolSpec
 if TYPE_CHECKING:
     from assistant.actions.config import ActionsConfig
     from assistant.actions.ports import ApprovalCardPresenter
+    from assistant.actions.proposals import OwnerProposalFence
     from assistant.agent.drafting import (  # type: ignore[import-untyped, unused-ignore]
         CardReviser,
         Drafter,
@@ -101,6 +102,8 @@ class ToolServices:
     #: The card revision machinery for `revise_draft` (PF-13): the same path
     #: as the card's Edit button. None where the model cannot run.
     card_reviser: CardReviser | None = None
+    #: Required for main-model proposals; missing H10 implementation fails closed.
+    owner_fence: OwnerProposalFence | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,6 +375,12 @@ class ToolRegistry:
             return {}
         offered: dict[str, ToolDefinition] = {}
         for tool in self._tools.values():
+            if tool.name == "propose_reply" and "tool.propose_owner_message" in enabled_flags:
+                continue
+            if tool.name == "revise_draft" and "tool.propose_owner_message" in enabled_flags:
+                from assistant.agent.tools.owner_composition import REVISE_OWNER_DRAFT
+
+                tool = REVISE_OWNER_DRAFT
             if not (
                 run_type in tool.allowed_run_types
                 and tier >= tool.min_tier
@@ -410,6 +419,7 @@ def default_registry() -> ToolRegistry:
     from assistant.agent.tools.memory import FORGET, LIST_MEMORIES, REMEMBER
     from assistant.agent.tools.modes import SET_CONVERSATION_MODE, UPDATE_PREFERENCES
     from assistant.agent.tools.monitors import CREATE_MONITOR, LIST_MONITORS, STOP_MONITOR
+    from assistant.agent.tools.owner_composition import PROPOSE_OWNER_MESSAGE
     from assistant.agent.tools.preferences import GET_PREFERENCES
     from assistant.agent.tools.priority import SET_CONTACT_PRIORITY
     from assistant.agent.tools.replies import PROPOSE_MESSAGE, PROPOSE_REPLY
@@ -442,6 +452,7 @@ def default_registry() -> ToolRegistry:
             LIST_MONITORS,
             STOP_MONITOR,
             PROPOSE_REPLY,
+            PROPOSE_OWNER_MESSAGE,
             PROPOSE_MESSAGE,
             REVISE_DRAFT,
             GET_DRAFT,

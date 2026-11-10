@@ -418,6 +418,8 @@ async def _literal_receipt(
 
 
 async def revise_draft_tool(ctx: ToolContext, args: ReviseDraftArgs) -> ToolOutcome:
+    if "tool.propose_owner_message" in ctx.services.enabled_flags:
+        return source_failure("not_available", "use_main_revision_schema")
     services = ctx.services
     turn = ctx.owner_turn
     reviser = services.card_reviser

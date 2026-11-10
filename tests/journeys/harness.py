@@ -35,7 +35,6 @@ from assistant.actions.requests import (
     update_request,
 )
 from assistant.agent.models import AgentRun
-from assistant.agent.tools.registry import default_registry
 from assistant.bootstrap import build_owner_runtime, build_summarizer
 from assistant.config import Settings
 from assistant.conversations.models import Contact as ContactRow
@@ -132,6 +131,7 @@ class Journey:
     s: Scenario
     case_id: str = "fixture-journey"
     locale: Locale = "en"
+    flags: frozenset[str] = JOURNEY_FLAGS
     chats: dict[str, int] = field(default_factory=dict)
     names: dict[str, str] = field(default_factory=dict)
     cards: dict[str, int] = field(default_factory=dict)
@@ -347,10 +347,13 @@ class Journey:
     def revision(self, alias: str, text: str, *, append: bool = False) -> Script:
         """Baseline/C2 adapter; final text always has an explicit artifact oracle."""
 
-        async def revision(_request: LLMRequest) -> LLMResponse:
+        async def revision(model_request: LLMRequest) -> LLMResponse:
             row = await self.action(alias)
-            tool = next(tool for tool in default_registry().all() if tool.name == "revise_draft")
-            if "expected_version" in tool.args_model.model_fields:
+            # H4 selects the schema per run; the unfiltered registry retains
+            # the legacy definition so flag-off runs keep their existing path.
+            tool = next(tool for tool in model_request.tools if tool.name == "revise_draft")
+            fields = tool.parameters["properties"]
+            if "expected_version" in fields:
                 request = await self.request()
                 fences = [o["context_fence_id"] for o in self.outputs() if "context_fence_id" in o]
                 assert fences, "rewrite read: expected at least one context fence, actual 0"
@@ -368,7 +371,7 @@ class Journey:
                     source_ids=sources,
                     context_fence_id=None if append else fences[-1],
                 )
-            if "literal" in tool.args_model.model_fields:
+            if "literal" in fields:
                 literal: dict[str, Any] | None = None
                 if append:
                     # As dictate() does for baseline H3, classify this fixture's
@@ -722,7 +725,7 @@ class Journey:
             bot_token=None,
             openai_api_key=None,
             owner_telegram_ids=(OWNER,),
-            feature_flags=JOURNEY_FLAGS,
+            feature_flags=self.flags,
         )
         # I17 checks actual dispatch time after a throttle wait. Keep gateway
         # time advancing locally, as in m04_environment, without moving job time.
@@ -1045,7 +1048,7 @@ class Journey:
             ),
             "prompt_sha256": sorted({self.text_hash(r.instructions) for r in self.s.fake.requests}),
             "routes": sorted({(r.purpose, r.model, r.effort or "") for r in self.s.fake.requests}),
-            "flags": sorted(JOURNEY_FLAGS),
+            "flags": sorted(self.flags),
             "events": self.events,
             "turn_ids": self.turns,
             "run_ids": [run.id for run in await self.runs()],

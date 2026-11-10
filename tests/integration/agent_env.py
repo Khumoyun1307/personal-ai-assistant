@@ -59,6 +59,8 @@ MONITOR_FLAGS = frozenset({"tool.create_monitor", "tool.list_monitors", "tool.st
 #: The S04.2 propose tools (P2-T41). H3 changes only propose_message's source
 #: schema: keep its existing flag in both catalogues; no new tool/flag.
 PROPOSE_FLAGS = frozenset({"tool.propose_reply", "tool.propose_message"})
+#: H4 registered, default off until H6/H10 and paid acceptance gates pass.
+MAIN_PROPOSAL_FLAGS = frozenset({"tool.propose_owner_message"})
 #: The S04.4 kill-switch tools (P2-T41): control tools that never read chats.
 AUTONOMY_FLAGS = frozenset({"tool.pause_autonomy", "tool.resume_autonomy"})
 ALL_FLAGS = READ_FLAGS | {NOTE_FLAG} | PROPOSE_FLAGS | AUTONOMY_FLAGS | MONITOR_FLAGS

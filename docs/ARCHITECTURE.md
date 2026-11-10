@@ -438,6 +438,20 @@ class OutboundGateway(Protocol):
 
 ### 7.1 One agent, several run types
 
+**H4 / D-S6 (2026-11-10; flag off, validation pending).** With
+`tool.propose_owner_message` enabled, the main `owner_request` model writes the
+complete generated body using its owner conversation and validated C1 sources.
+It stages that body with `propose_owner_message`, without `Drafter.draft_owner`.
+Multi-chat owner context is permitted for this path; recipient plus full body
+on the approval card is the boundary. Contact-triggered Assist remains isolated
+and tool-less. With the flag off the legacy writer and schema remain available.
+H6 owns prompt activation; H8 owns the card-button dispatcher cutover.
+The content-brief requirement applies to standalone composition only. A ready
+reply uses its selected retained/read target without a separate instruction
+source. A ready revision may use literal change sources under C1; rewriting
+does not impose a separate composition brief. All retained sources, targets
+and settlement fences still require validation.
+
 There is one agent identity (same principles, memory, policy), invoked in **run types** that differ in trigger, context, tools, and output contract. Crucially, the **trust level of the trigger determines the capabilities** of the run (ADR-08):
 
 | Run type | Trigger | Trust | Context | Tools | Output |
@@ -503,6 +517,14 @@ return partial_with_note(run)
 - **`owner_request.v7` (S03.7 fix round, owner decisions 1-3 of 2026-10-26, D109).** v6 word for word, plus: rule 5, a message that is only a name, number, address, phrase or a few keywords with no other request is a search of the owner's chats (`search_messages` with the owner's own words, exactly as written, first, plus variants; ask only if nothing relevant is found; never a note to remember, a message to draft or send, or a general-knowledge question); a name `resolve_contact` cannot find may be someone mentioned inside a chat, so it is searched for across all chats first (backed by the tool's not-found note, §8.2); a search narrowed to one contact that answers nothing is followed by `get_conversation` of that chat before "not there"; rule 6, times, dates, amounts, prices, addresses, phone numbers and place names are copied as the message writes them; rule 16, the whole reply in the owner's preferred language and script (only a short quote or a copied value keeps the message's words). The owner profile in the instructions spells the language tag out with its script, as the `summarize` context does (`- preferred language: uz-Latn (Uzbek written in Latin letters)`, `context.summary_language`; D111). Why: the 2026-10-26 agent-mode run (v6) made no search for 9 bare-phrase or non-contact-name questions, stopped after an empty narrowed search once, and answered 10 of 33 replies outside uz-Latn. v1–v6 kept.
 
 ### 7.3 Context assembly
+
+**H4 composition input (2026-11-10).** H2/H12 continue supplying exact owner
+instructions independently of recent history and separately from untrusted
+contact/quoted prose. Composition adds no second context builder or model call.
+C8's effective preference input belongs in the main context under H13: current
+request constraints override defaults and scoped preferences do not become
+global. Main-model text is always generated, even when based on owner dictation.
+No main transcript is passed to proactive Assist.
 
 **Stabilization H3, 2026-11-09 (D-S2).** Dictation is resolved from C1 request source rows, including earlier owner turns; a clarification turn need not repeat the body. Only explicitly classified `literal_body` owner `text` spans can become owner wording. Separate `quoted_text` and forwarded text remain untrusted and cannot supply a literal body. Field hashes detect edits; they never authorize a source alone. No historical fuzzy substring search is used for authorship. H6 owns context/prompt activation; H9 owns current-version provenance.
 
@@ -685,6 +707,19 @@ There is **no** tool that sends a message directly. Owner-dictated sends always 
 
 ### 8.2 Tool catalogue (owner_request runs)
 
+**H4 catalogue addition (2026-11-10; not enabled):**
+
+| Tool | Capability / runs / tier | Release flag | Handler / schema |
+|---|---|---|---|
+| `propose_owner_message` | PROPOSE / owner_request only / CONTROL_ONLY | `tool.propose_owner_message`, default off | `agent/tools/owner_composition.py`, strict C2 `ProposeOwnerMessageArgs`; exact generated body, application-set authorship, no nested writer |
+| `revise_draft` at H4 cutover | PROPOSE / owner_request only / CONTROL_ONLY | existing `tool.revise_draft`, plus H4 cutover flag | flat C2 `ReviseOwnerDraftArgs`; complete rewrite or validated literal source copy, lifecycle CAS |
+
+The H4 flag retires `propose_reply` from offered tools and its handler refuses
+legacy writer calls under that flag. Historical `draft_owner` assets remain
+readable; no new version is added. Both generated tools retain managed admission
+and content-free blocked stubs when consent is off. Default production/test
+catalogues keep H4 separately disabled until H6/H10 and the paid gates pass.
+
 **Stabilization H9 (2026-11-09, C2):** proposal/revision authorship is an
 application-assigned `VersionAuthorship`, separate from immutable `origin`.
 `ProposalRequest.authorship` and `propose_draft(authorship=...)` accept validated
@@ -740,6 +775,24 @@ Each tool definition: name, description, JSON schema (strict), capability class,
 **I11 task correction freshness:** triage captures each open task's PostgreSQL row revision (`xmin`) alongside its context read and carries those revisions only in application memory. Before storing any verdict effects, it re-reads the open task revisions under the account/conversation apply locks. A changed task snapshot discards the verdict as `changed`, preserving owner corrections and their Undo even when timestamps are identical. This also guards implicit task deduplication and task resolution; no schema or prompt change is required.
 
 ### 8.3 Execution contract
+
+**H4 settlement (2026-11-10; unverified):** generated proposals and flat revisions
+share H3's durable `tool_effect_recorded` run/call identity and unique index.
+Canonical semantic digests distinguish exact retries from conflicts; effects
+and structural identities commit together. Receipts reload actual current
+artifacts, distinguish original effect version from current version, and carry
+no body or contact name. Validation failures have `action=NULL`,
+`effect_version=NULL`, applied=false, including beside an unrelated card.
+The v10-compatible top-level status is retained with C2 `proposal_status` detail.
+Presentation is reported only from recorded evidence, never from a card pointer.
+Normal runtime step recording stays content-free.
+
+The typed `actions.proposals.OwnerProposalFence` seam has **no passing default**.
+H10 must validate the generating account/run/request and all read dependencies,
+hold settlement locks, and atomically bind the fence/request time to the new
+action version. Literal edits may request a source-only snapshot with a null
+model fence id. No proposal/revision proceeds without a checker. H4 adds no
+fence tables, H10/H11 precedence logic, migration, provider or send path.
 
 **H3 regression repair (2026-11-09; validation unrun).** A changed source-proposal retry returns the original effect's scoped action receipt (including top-level `action_id`), with applied=false; it creates no new action or version. The immutable effect digest takes precedence over mutable card flags, including when the call key belongs to a literal revision. Effect identity rows use `subject_type=tool_effect` in the existing indexed audit storage, independently of `subject_type=action` lifecycle events; lookups also recognize older identity rows. A deterministic literal revision retains the action lifecycle order `action_revision_requested` then `action_edited`, without an extra action event for effect bookkeeping. The shared unique run/call key, retention and account-deletion rules are unchanged.
 
@@ -980,6 +1033,14 @@ Telegram offers no idempotency key (TF §4), so this protocol guarantees **at-mo
 **Transitions (as built; `actions/lifecycle.py`).** Every single-action change goes through `transition(session, *, account_id, action_id, from_state, to_state, reason, now, expected_version=None, token=None, values={}, details={})`: it raises `IllegalTransitionError` for a pair outside `TRANSITIONS`, refuses `awaiting_approval → approved` without a token (only the owner's press approves; `approve` passes it), runs one conditional `UPDATE … WHERE id AND account_id AND state [AND version] [AND approval_token]`, clears the token unless the new state is `awaiting_approval`, and writes exactly one content-free audit row (`details = {from, to, version, reason}` plus `attempt_id`, structural `authorship` on proposals/new versions, and any ids or codes the caller adds; `authorship` is a validated `VersionAuthorship` object containing only version/source ids, a boolean, and `kind` restricted to `owner_dictated`, `owner_literal_edit`, `assistant_written` or `agent_proposal_selected`). The event follows from the pair and reason (decision R15): `proposed → awaiting_approval` `action_proposed`; `→ revising` `action_revision_requested`; `revising → awaiting_approval` `action_edited` with a new version, else `action_revision_cancelled`; `awaiting_approval → approved` `action_approved`; `approved → executing` `action_claimed`; `executing → approved` `action_rate_limited`; `executing →` `succeeded`/`failed`/`delivery_uncertain` `action_succeeded`/`action_failed`/`action_delivery_uncertain`; from `delivery_uncertain` `action_late_result`; `→ outdated` `action_superseded` (reason `superseded`) or `action_outdated`; `→ rejected`/`blocked`/`expired`/`cancelled` `action_rejected`/`action_blocked`/`action_expired`/`action_cancelled`. The autonomy pairs (`proposed → approved`, `approved ↔ scheduled`) have no P2 event and raise. Built on it: `approve` (by token, which rotates per version, and `expires_at > now`; sets `decided_at` and `approved_text_hash` = sha256 of the stored text, computed in the same UPDATE; a card past its expiry is expired instead), `reject`, `start_edit` (voids the token), `set_revision_turn`, `cancel_edit` and `revision_failed` (same version, new token), `apply_new_version` (version + 1, new token, `TOO_LONG`/`EMPTY`/`STALE` write nothing; `expires_at` is never extended; for an autonomous action only it shortens when the window now closes earlier), and `expire_due` (`awaiting_approval`/`revising`/`approved` past `expires_at` ⇒ `expired` with `window_closed` when an autonomous action's window is closed now, else `max_age` — owner-approved actions always `max_age`, owner decision 2026-10-30, P2-O20; never `executing`). `lifecycle.window_bounds(origin)` is the one switch.
 
 ### 9.5 Approval handling
+
+**H4 / D-S17 (owner, 2026-11-10).** Main-model rewrites and literal edits use
+`start_revision` → `apply_new_version` in one transaction, preserving target and
+expiry, rotating the token and clearing the old approval hash. Failed/cancelled
+revision behavior remains in the existing lifecycle. No new card state or new
+owner-approval veto is introduced; D-S17 requires warnings to leave the owner
+with final approval authority. H4 still stages only: the existing version-bound
+tap, policy re-check and committed claim remain the sole execution path.
 
 **Stabilization H2 explicit selection:** successful current-version card sends/edits record a structural `card_presented` audit event (`action_id`, `version`, fixed `state`, `control_message_id`, nullable `claim_id`). Resolution uses the account's latest successful mapping for that control message; replaced messages retain their old version for stale detection. Historical cards without a mapping use only the current action pointer, and an unrecorded current presentation is stale. An explicit reply selects the presented version, never approves it, revises it or sends it. The existing version-bound tap and execution policy checks remain mandatory. An explicit return may refocus an unexpired request suspended for a topic switch; opening a distinct request or cancelling one uses C1 and never transfers the old body/recipient. H6 and the request-consuming tools own interpretation of natural-language topic changes/cancellation; H2 supplies the deterministic selection and lifecycle seam.
 
@@ -1696,6 +1757,14 @@ Monitor feedback is scoped by `(kind, contact_id, automation_id)` from the exist
 ---
 
 ## 20. Architecture decision log
+
+**D-S6 implementation amendment (H4, 2026-11-10).** Owner-requested composition
+and chat rewrites move to the main model behind a default-off flag. This amends
+the owner-requested parts of P2 R2/E3 and PF-10/PF-11; tool-less isolated Assist
+and historical writer assets remain. H6 activates a new owner prompt only after
+its dependencies; H10 completes freshness persistence/checks before activation.
+Full repaired journey/retrieval evaluations require separately approved spend
+and must pass before enabling the flag. This worktree has not run those gates.
 
 | ADR | Decision | Status | Rationale / alternatives |
 |---|---|---|---|

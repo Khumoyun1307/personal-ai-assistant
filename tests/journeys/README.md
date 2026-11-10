@@ -135,7 +135,27 @@ the retained append turn as `dictate` does. J12 now exercises rewrite, mixed
 append, stale token and managed-consent cancellation without an expected failure;
 execution is pending lead/CI validation. Combined H6/H9 markers remain because
 they still require H6 runtime classification. The adapter also selects flat C2
-arguments when that schema lands. The card authorship-label journey is unmarked
+arguments from the schema actually offered in each model request, rather than
+the unfiltered registry's legacy definition. H4 selects the flat schema per run;
+using the legacy schema under its enabled flag produced `args_invalid` and left
+J12 at version 1. J12 explicitly keeps the flag off to cover H9's still-shipped
+legacy rewrite and source-backed append, with all eight locale/append variants
+and its version/authorship/revocation assertions retained. Its exact rewritten
+body is also checked. This is separate from H4's main-writer integration tests;
+enabling the H4 path here would additionally need H10 read fences, which this
+fixture does not supply. No passing fence is fabricated. A harness guard requires
+the flat-schema adapter to reject missing fences without queueing a legacy
+writer. Per-journey flags survive restart and appear in the manifest; a regression
+covers both configurations.
+
+`test_h6_chat_cutover_offers_main_writer_and_retires_nested_writer` is now
+unmarked: H4 implements the flag-on tool-offering boundary that it asserts.
+The test also checks the flat revision schema and zero nested writer calls.
+It does not establish H6 prompt activation/classification or H10 settlement;
+their contract journeys retain their pending markers. These fix-round edits
+were reviewed statically only; tests were not run at the owner's request.
+
+The card authorship-label journey is unmarked
 for English after H9; non-English locales retain the strict I27 expected failure.
 I27's
 recovery command needs its final spelling wired into its marked case; `/current` is a test assumption,
