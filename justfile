@@ -148,9 +148,18 @@ deploy ip sha="" *flags:
 deploy ip sha="" *flags:
     pwsh -NoLogo -NoProfile -File deploy/deploy.ps1 -Ip "{{ ip }}" -Sha "{{ sha }}" -Flags "{{ flags }}" -OpsImage "{{ oci_image }}" -Repository "{{ repo_slug }}"
 
-# Switch to the recorded previous image/SHA without rebuilding (same migration heads only).
+# Switch to the recorded previous image/SHA across reviewed expand-only migrations.
 prod-rollback ip:
     {{ ops }} deploy/oci/ssh.sh {{ ip }} rollback
+
+# Synthetic schema-changing failure rehearsal; isolated Docker project, no live APIs.
+[unix]
+smoke-recovery:
+    bash deploy/smoke/recovery-smoke.sh
+
+[windows]
+smoke-recovery:
+    & "$env:ProgramFiles\Git\bin\bash.exe" deploy/smoke/recovery-smoke.sh
 
 # The last production app log lines (content-free by construction, AGENTS §9).
 prod-logs ip lines="200":

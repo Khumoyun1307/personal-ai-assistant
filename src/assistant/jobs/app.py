@@ -44,7 +44,7 @@ class QueueSpec:
 QUEUES: tuple[QueueSpec, ...] = (
     QueueSpec(QUEUE_SYSTEM, concurrency=1, shutdown_grace_seconds=20.0),
     QueueSpec(QUEUE_OUTBOUND, concurrency=2, shutdown_grace_seconds=30.0),
-    # Within Compose's 90 s stop grace period. An agent run cut off here is
+    # Within Compose's 180 s stop grace period. An agent run cut off here is
     # re-run: the interrupted run is marked and the turn is re-deferred.
     QueueSpec(QUEUE_LLM, concurrency=3, shutdown_grace_seconds=45.0),
 )

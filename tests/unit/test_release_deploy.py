@@ -19,6 +19,9 @@ set -euo pipefail
 cd "$WORK"
 mkdir -p deploy
 source "$HELPER"
+RELEASE_HEALTH_TIMEOUT_SECONDS=1
+RELEASE_POLL_SECONDS=1
+sleep() { SECONDS=$((SECONDS + 1)); }
 git() {
   printf 'git %s\n' "$*" >> calls
   case "$1" in
@@ -39,6 +42,12 @@ docker() {
       esac ;;
     build*) cat >/dev/null; [ "${FAIL_BUILD:-0}" = 0 ] ;;
     'image inspect '*) [ "${FAIL_INSPECT:-0}" = 0 ] ;;
+    *migration_compatibility*)
+      [ "${UNKNOWN_COMPATIBILITY:-0}" = 0 ] || return 1
+      echo "${COMPATIBILITY:-expand}" ;;
+    'inspect --format {{.State.Running}} {{.State.ExitCode}} '*)
+      echo "${STOPPED_STATE:-false 0}" ;;
+    'inspect --format {{.State.Running}} '*) echo "${INITIAL_RUNNING:-true}" ;;
     run*) echo "${HEADS:-0042} (head)"; [ "${FAIL_HEADS:-0}" = 0 ] ;;
   esac
 }
@@ -47,12 +56,27 @@ compose() {
   case "$*" in
     'up -d --wait --no-build db') [ "${FAIL_DB:-0}" = 0 ] ;;
     'run --rm --no-deps -T db-roles') [ "${FAIL_ROLES:-0}" = 0 ] ;;
-    'stop app')
+    'stop -t 180 app')
       [ "${FAIL_MARKER:-0}" = 0 ] || ln -s /dev/full deploy/release-in-progress
       [ "${FAIL_STOP:-0}" = 0 ] ;;
     'start app') [ "${FAIL_RECOVERY:-0}" = 0 ] ;;
-    'run --rm --no-deps -T migrate') [ "${FAIL_MIGRATE:-0}" = 0 ] ;;
-    *'--remove-orphans app') [ "${FAIL_STARTUP:-0}" = 0 ] ;;
+    'ps -a -q app') echo synthetic-app ;;
+    *'SELECT string_agg(version_num'*) echo "${DB_HEADS:-0042}" ;;
+    *'SELECT count(*) >= 3'*)
+      if [[ "$ASSISTANT_IMAGE" = assistant:aaaaaaaaaaaa ]]; then echo t
+      else echo "${WORKERS_READY:-t}"; fi ;;
+    *'app timeout 25 python'*)
+      [ "${FAIL_HEALTH:-0}" = 0 ] || [[ "$ASSISTANT_IMAGE" = assistant:aaaaaaaaaaaa ]] ;;
+    *'cat /backups/last_success_file'*)
+      if [ "${FAIL_BACKUP_REFERENCE:-0}" = 1 ]; then echo partial; return 1; fi
+      echo 20261109T000000Z.dump.age ;;
+    *'cat /backups/last_success'*) echo 2026-11-09T00:00:05Z ;;
+    'run --rm --no-deps -T backup once') [ "${FAIL_BACKUP:-0}" = 0 ] ;;
+    'run --rm --no-deps -T migrate')
+      [ "${FAIL_MIGRATE:-0}" = 0 ] || return 1
+      DB_HEADS="${HEADS:-0042}" ;;
+    *'--remove-orphans app')
+      [ "${FAIL_STARTUP:-0}" = 0 ] || [[ "$ASSISTANT_IMAGE" = assistant:aaaaaaaaaaaa ]] ;;
   esac
 }
 """
@@ -101,10 +125,12 @@ def test_compose_run_never_uses_unsupported_no_build_flag() -> None:
 @pytest.mark.parametrize("failure", ["FAIL_BUILD=1", "FAIL_INSPECT=1", "FAIL_HEADS=1", "FAIL_DB=1"])
 def test_preparation_failure_keeps_the_old_app_running(tmp_path: Path, failure: str) -> None:
     seed(tmp_path, current=OLD)
-    result = run_release(tmp_path, f"release_load\n{failure}\nrelease_up {NEW}\n")
+    result = run_release(
+        tmp_path, f"release_load\nCOMPATIBILITY=breaking\n{failure}\nrelease_up {NEW}\n"
+    )
     assert result.returncode != 0
     calls = (tmp_path / "calls").read_text("utf-8")
-    assert "stop app" not in calls
+    assert "stop -t 180 app" not in calls
     assert " migrate" not in calls
     assert not (tmp_path / "deploy/release-in-progress").exists()
     assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(OLD) + state(OLD)
@@ -173,14 +199,16 @@ def test_deploy_pins_checkout_and_keeps_both_release_images(tmp_path: Path) -> N
     assert "--no-build" in calls
     assert "prune" not in calls
     assert "--network none" in calls
-    assert "stop app" in calls
-    assert calls.index(f"docker image inspect assistant:{NEW[:12]}") < calls.index("stop app")
-    assert calls.index(f"docker image inspect assistant-backup:{NEW[:12]}") < calls.index(
-        "stop app"
+    assert "stop -t 180 app" in calls
+    assert calls.index(f"docker image inspect assistant:{NEW[:12]}") < calls.index(
+        "stop -t 180 app"
     )
-    assert calls.index("--network none") < calls.index("stop app")
-    assert calls.index("run --rm --no-deps -T db-roles") < calls.index("stop app")
-    assert calls.index("stop app") < calls.index("run --rm --no-deps -T migrate")
+    assert calls.index(f"docker image inspect assistant-backup:{NEW[:12]}") < calls.index(
+        "stop -t 180 app"
+    )
+    assert calls.index("--network none") < calls.index("stop -t 180 app")
+    assert calls.index("run --rm --no-deps -T db-roles") < calls.index("stop -t 180 app")
+    assert calls.index("stop -t 180 app") < calls.index("run --rm --no-deps -T migrate")
     assert calls.count("compose up -d --wait --no-build db") == 1
     assert calls.splitlines()[-1] == (
         f"compose ps image=assistant:{NEW[:12]} backup=assistant-backup:{NEW[:12]}"
@@ -226,7 +254,9 @@ def test_failed_transition_keeps_old_state_and_blocks_rollback(
 ) -> None:
     seed(tmp_path)
     before = (tmp_path / "deploy/release-state").read_text("utf-8")
-    result = run_release(tmp_path, f"release_load\n{failure}\nrelease_up {NEW}\n")
+    result = run_release(
+        tmp_path, f"release_load\nCOMPATIBILITY=breaking\n{failure}\nrelease_up {NEW}\n"
+    )
     assert result.returncode != 0
     assert (tmp_path / "deploy/release-state").read_text("utf-8") == before
     assert (tmp_path / "deploy/release-in-progress").exists()
@@ -251,9 +281,9 @@ def test_rollback_uses_previous_images_without_build_or_migration(tmp_path: Path
     assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(OLD) + state(NEW)
 
 
-@pytest.mark.parametrize("problem", ["schema", "missing", "pending", "malformed"])
+@pytest.mark.parametrize("problem", ["missing", "pending", "malformed"])
 def test_rollback_fails_closed_before_switching(tmp_path: Path, problem: str) -> None:
-    seed(tmp_path, heads="0043" if problem == "schema" else "0042")
+    seed(tmp_path)
     if problem == "missing":
         (tmp_path / "deploy/release-state").write_text(state(NEW), encoding="utf-8")
     elif problem == "pending":
@@ -281,7 +311,7 @@ def test_missing_roles_refuse_deploy_before_app_stop(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "I24 role upgrade" in result.stderr
     calls = (tmp_path / "calls").read_text("utf-8")
-    assert "stop app" not in calls
+    assert "stop -t 180 app" not in calls
     assert not (tmp_path / "deploy/release-in-progress").exists()
 
 
@@ -299,7 +329,7 @@ def test_rollback_cannot_restore_shared_superuser_environment(tmp_path: Path) ->
     result = run_release(tmp_path, "release_load\nEXISTING=1\nLEGACY_ENV=1\nrelease_rollback\n")
     assert result.returncode != 0
     assert "environment separation" in result.stderr
-    assert "stop app" not in (tmp_path / "calls").read_text("utf-8")
+    assert "stop -t 180 app" not in (tmp_path / "calls").read_text("utf-8")
 
 
 def test_release_status_is_content_free(tmp_path: Path) -> None:
@@ -407,3 +437,134 @@ def test_first_release_has_no_invented_previous_artifact(tmp_path: Path) -> None
     result = run_release(tmp_path, f"release_load\nrelease_up {NEW}\n")
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(NEW)
+
+
+@pytest.mark.parametrize(
+    "failure", ["FAIL_MIGRATE=1", "FAIL_STARTUP=1", "FAIL_HEALTH=1", "WORKERS_READY=f"]
+)
+def test_expand_failure_recovers_previous_image_without_recording_candidate(
+    tmp_path: Path, failure: str
+) -> None:
+    seed(tmp_path, current=OLD, previous=OLDER)
+    result = run_release(tmp_path, f"release_load\nHEADS=0043\n{failure}\nrelease_up {NEW}\n")
+    assert result.returncode != 0
+    assert "previous image recovered" in result.stderr
+    actual = "0042" if failure == "FAIL_MIGRATE=1" else "0043"
+    assert (tmp_path / "deploy/release-state").read_text("utf-8") == (
+        state(OLD, actual) + state(OLDER)
+    )
+    assert not (tmp_path / "deploy/release-in-progress").exists()
+    calls = (tmp_path / "calls").read_text("utf-8")
+    recovered = f"--remove-orphans app image=assistant:{OLD[:12]}"
+    assert recovered in calls
+    assert calls.index("backup once") < calls.index("-T migrate")
+    assert "run --rm --no-deps -T migrate" in calls
+    assert calls.count("run --rm --no-deps -T migrate") == 1
+
+
+@pytest.mark.parametrize("failure", ["FAIL_MIGRATE=1", "FAIL_HEALTH=1", "WORKERS_READY=f"])
+def test_breaking_failure_stops_safely_and_preserves_backup(tmp_path: Path, failure: str) -> None:
+    seed(tmp_path, current=OLD, previous=OLDER)
+    before = (tmp_path / "deploy/release-state").read_text("utf-8")
+    result = run_release(
+        tmp_path, f"release_load\nCOMPATIBILITY=breaking\n{failure}\nrelease_up {NEW}\n"
+    )
+    assert result.returncode != 0
+    assert "no automatic downgrade" in result.stderr
+    assert "Forward-fix" in result.stderr
+    assert "restore" in result.stderr
+    assert (tmp_path / "deploy/release-state").read_text("utf-8") == before
+    assert (tmp_path / "deploy/release-in-progress").exists()
+    assert (tmp_path / "deploy/pre-deploy-backup").read_text("utf-8") == (
+        "20261109T000000Z.dump.age\n"
+    )
+    calls = (tmp_path / "calls").read_text("utf-8")
+    assert "compose stop app backup" in calls
+    assert f"--remove-orphans app image=assistant:{OLD[:12]}" not in calls
+    assert "downgrade" not in calls
+    assert "cat /backups/last_success_file" in calls
+
+
+def test_unavailable_backup_reference_preserves_previous_reference_and_prevents_migration(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path, current=OLD)
+    reference = tmp_path / "deploy/pre-deploy-backup"
+    reference.write_text("20261108T000000Z.dump.age\n", encoding="utf-8")
+    result = run_release(tmp_path, f"release_load\nFAIL_BACKUP_REFERENCE=1\nrelease_up {NEW}\n")
+
+    assert result.returncode != 0
+    assert "completed pre-deploy backup file unavailable" in result.stderr
+    assert reference.read_text("utf-8") == "20261108T000000Z.dump.age\n"
+    assert " migrate" not in (tmp_path / "calls").read_text("utf-8")
+
+
+def test_rollback_across_expand_heads_preserves_actual_database_head(tmp_path: Path) -> None:
+    seed(tmp_path, heads="0043")
+    result = run_release(tmp_path, "release_load\nEXISTING=1\nDB_HEADS=0043\nrelease_rollback\n")
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "deploy/release-state").read_text("utf-8") == (
+        state(OLD, "0043") + state(NEW, "0043")
+    )
+    assert " migrate" not in (tmp_path / "calls").read_text("utf-8")
+
+
+@pytest.mark.parametrize(
+    "setup", ["COMPATIBILITY=breaking", "UNKNOWN_COMPATIBILITY=1", "DB_HEADS=0044"]
+)
+def test_rollback_refuses_breaking_unknown_or_drifted_schema(tmp_path: Path, setup: str) -> None:
+    seed(tmp_path)
+    result = run_release(tmp_path, f"release_load\nEXISTING=1\n{setup}\nrelease_rollback\n")
+    assert result.returncode != 0
+    assert "forward-fix" in result.stderr
+    calls = (tmp_path / "calls").read_text("utf-8")
+    assert "stop -t 180 app" not in calls
+    assert "checkout" not in calls
+
+
+def test_backup_failure_prevents_migration(tmp_path: Path) -> None:
+    seed(tmp_path, current=OLD)
+    result = run_release(tmp_path, f"release_load\nFAIL_BACKUP=1\nrelease_up {NEW}\n")
+    assert result.returncode != 0
+    assert " migrate" not in (tmp_path / "calls").read_text("utf-8")
+
+
+def test_rollback_health_failure_does_not_swap_release_records(tmp_path: Path) -> None:
+    seed(tmp_path, current=OLD, previous=NEW)
+    before = (tmp_path / "deploy/release-state").read_text("utf-8")
+    result = run_release(tmp_path, "release_load\nEXISTING=1\nFAIL_HEALTH=1\nrelease_rollback\n")
+    assert result.returncode != 0
+    assert (tmp_path / "deploy/release-state").read_text("utf-8") == before
+    assert (tmp_path / "deploy/release-in-progress").exists()
+
+
+def test_forced_drain_refuses_migration(tmp_path: Path) -> None:
+    seed(tmp_path, current=OLD)
+    result = run_release(tmp_path, f"release_load\nSTOPPED_STATE='false 137'\nrelease_up {NEW}\n")
+    assert result.returncode != 0
+    assert "did not drain cleanly" in result.stderr
+    assert " migrate" not in (tmp_path / "calls").read_text("utf-8")
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "invalid"])
+def test_invalid_health_timeout_refuses_before_external_commands(
+    tmp_path: Path, value: str
+) -> None:
+    seed(tmp_path)
+    result = run_release(
+        tmp_path, f"release_load\nRELEASE_HEALTH_TIMEOUT_SECONDS={value}\nrelease_up {NEW}\n"
+    )
+    assert result.returncode != 0
+    assert "invalid positive integer" in result.stderr
+    assert not (tmp_path / "calls").exists()
+
+
+def test_forward_fix_can_start_from_an_already_failed_container(tmp_path: Path) -> None:
+    seed(tmp_path)
+    (tmp_path / "deploy/release-in-progress").touch()
+    result = run_release(
+        tmp_path,
+        f"release_load\nINITIAL_RUNNING=false\nSTOPPED_STATE='false 1'\nrelease_up {NEW}\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "deploy/release-in-progress").exists()

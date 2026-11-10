@@ -4,7 +4,7 @@
 # script avoids quoting compose commands through PowerShell, docker and ssh.
 #
 #   deploy/server.sh deploy SHA      fetch/check out exactly SHA, build, migrate, restart
-#   deploy/server.sh rollback        use previous images, only with identical heads
+#   deploy/server.sh rollback        use previous images across expand-only migrations
 #   deploy/server.sh status          containers, app healthcheck, backup markers
 #   deploy/server.sh logs [N]        last N (default 200) app log lines (content-free)
 #   deploy/server.sh backup          a backup now (exit 3: dump ok, upload failed)

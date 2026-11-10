@@ -150,6 +150,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect recovery rehearsal changes
+        id: recovery-changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = 0000000000000000000000000000000000000000 ]; then
+            changed=$(git ls-files -- deploy migrations src/assistant/db justfile)
+          else
+            changed=$(git diff --name-only "$BASE_SHA" "$GITHUB_SHA" -- deploy migrations src/assistant/db justfile)
+          fi
+          if [ -n "$changed" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Shellcheck
         run: |
@@ -169,6 +187,10 @@ jobs:
       # runs in its own job (buildx below switches builders).
       - name: Backup smoke test
         run: bash deploy/smoke/backup-smoke.sh
+
+      - name: Schema-aware release recovery (synthetic only)
+        if: steps.recovery-changes.outputs.run == 'true'
+        run: bash deploy/smoke/recovery-smoke.sh
 
   # The production host is an Oracle A1 (arm64) VM; prove both images build
   # for it as well as for amd64. Nothing is pushed (no registry).
