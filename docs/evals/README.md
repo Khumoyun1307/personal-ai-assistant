@@ -86,8 +86,22 @@ contact filter and the final answer (synthetic data, for review; E-s, E-t, E-u).
 
 ## Dataset log
 
+H3 contract change (2026-11-09, D-S2; review R2-15): `owner_drafting`
+dictation is identified by explicit source references to the owner's own messages
+in the active request, including earlier turns before recipient clarification.
+The loader validates source role, field hash and code-point bounds; exact-text
+and append-prefix checks no longer normalize case, punctuation, Unicode or x/h.
+Quoted/forwarded text is not owner dictation. Dataset v1.2 adds source metadata to
+od08–od10 only; synthetic messages and expected bodies are unchanged. Offline
+FakeLLM coverage includes earlier-turn copying. No paid evaluation was run for
+this change; a paid re-run is pending the stabilization Phase 4 gate and the
+owner's run-specific cost approval. Historical scores use the old contract and
+are not evidence that H3 passes.
+
 | Date | Set | Version | Change | Manifest |
 |---|---|---|---|---|
+| 2026-11-10 | owner_drafting | v1.3 | H3/C2: od31 explicitly binds the selected assistant suggestion to its source span and the owner's selection instruction. Synthetic wording and expected body are unchanged; this remains generated text. Restore the owner_drafting manifest hash after the I1 rebase, preserving E3 entries. No paid evaluation run. | `evals/datasets/MANIFEST.sha256` at this commit |
+| 2026-11-09 | owner_drafting | v1.2 | H3/C2: exact owner source spans for od08–od10; no synthetic message or expected-text changes. Loader accepts earlier owner turns in the active request and checks character-exact copies. Paid re-run pending Phase 4. | `evals/datasets/MANIFEST.sha256` at this commit |
 | 2026-10-23 | E1 + retrieval | v1 | Initial synthetic set: 40 conversations (8 per variant; c01–c08 = S00.3 smoke set), 262 labelled items, 38 retrieval queries. Hand-written by an AI coding agent; pending the owner's Uzbek and label review. | `evals/datasets/MANIFEST.sha256` at this commit |
 | 2026-10-30 | owner_drafting | v1.1 | od03 (ru identity) only: `reply_includes` accepts the name in Cyrillic (`["Alviro", "Алвиро", "Альвиро"]`, a list of alternatives — the check's new, minimal form; `evals/owner_drafting.py::ReplyValue`). Both 2026-10-30 runs (low and medium) failed od03 on replies such as "Меня зовут Алвиро.", a correct answer in the reply's own script; the check was wrong, not the model. No other case changed. | `evals/datasets/MANIFEST.sha256` at this commit |
 | 2026-10-30 | owner_drafting | v1 | PF-16b: 31 hand-written synthetic cases (17 uz-Latn, 6 ru, 8 en) for owner-requested drafting and routing: identity, suggest contacts, advice, dictate (an instruction prefix left out), command words never staged, compose where no reply is needed, reply to a named earlier message, carried substance, append, shorter, 5-7 words, tone, word count, pick suggestion #2. Never derived from the 2026-10-30 playtest chats (AGENTS §8). Run by the TL only (`python -m evals run owner_drafting`, estimate, `--limit 1`, `--calibrate-from`), at low and at medium effort (D10); pending the owner's Uzbek review. | `evals/datasets/MANIFEST.sha256` at this commit |

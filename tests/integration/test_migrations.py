@@ -489,7 +489,7 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0017"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0018"]
 
 
 def test_0017_notification_sources_round_trip(scratch_url: str) -> None:
@@ -511,6 +511,7 @@ def test_0016_control_reply_metadata_round_trip(scratch_url: str) -> None:
     )
     run_alembic(scratch_url, "0015", down=True)
     assert "reply_to_telegram_message_id" not in _columns(scratch_url, "control_turns")
+    assert "owner_text_verified" not in _columns(scratch_url, "control_turns")
     with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
         account, _ = _phase_conversation(conn, 81016)
         turn = conn.execute(
@@ -529,6 +530,55 @@ def test_0016_control_reply_metadata_round_trip(scratch_url: str) -> None:
             (turn_id,),
         ).fetchone()
         assert metadata == (False, None)
+
+
+def test_0018_tool_effect_identity_reverse(scratch_url: str) -> None:
+    """H3 must preserve H2's provenance and I8's storage in both directions."""
+    index = "uq_audit_log_tool_effect_key"
+    run_alembic(scratch_url, "head")
+    run_alembic(scratch_url, "0017", down=True)
+    assert index not in _indexes(scratch_url, "audit_log")
+    notification_columns = _columns(scratch_url, "notification_sources")
+    assert {"notification_id", "account_id", "conversation_id", "reasons"} <= notification_columns
+    control_columns = _columns(scratch_url, "control_turns")
+    assert {"reply_to_telegram_message_id", "owner_text_verified"} <= control_columns
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account, _conversation = _phase_conversation(conn, 81017)
+        turn = conn.execute(
+            "INSERT INTO app.control_turns "
+            "(account_id, role, text, quoted_text, third_party, "
+            "owner_text_verified, reply_to_telegram_message_id) "
+            "VALUES (%s, 'owner', 'Synthetic owner text', 'Synthetic quote', true, true, 81017) "
+            "RETURNING id",
+            (account,),
+        ).fetchone()
+        assert turn is not None
+        turn_id = turn[0]
+    for target, downgrade in (("0018", False), ("0017", True), ("0018", False)):
+        run_alembic(scratch_url, target, down=downgrade)
+        assert _columns(scratch_url, "control_turns") == control_columns
+        assert _columns(scratch_url, "notification_sources") == notification_columns
+        if downgrade:
+            assert index not in _indexes(scratch_url, "audit_log")
+        else:
+            assert index in _indexes(scratch_url, "audit_log")
+        with psycopg.connect(libpq(scratch_url)) as conn:
+            metadata = conn.execute(
+                "SELECT owner_text_verified, reply_to_telegram_message_id "
+                "FROM app.control_turns WHERE account_id = %s AND id = %s",
+                (account, turn_id),
+            ).fetchone()
+        assert metadata == (True, 81017)
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        statement = (
+            "INSERT INTO app.audit_log (account_id, actor, event, details) "
+            "VALUES (%s, 'system', %s, "
+            "jsonb_build_object('run_id', 17, 'tool_call_id', 'SYNTH-CALL'))"
+        )
+        conn.execute(statement, (account, "tool_effect_recorded"))
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(statement, (account, "tool_effect_recorded"))
+        conn.execute(statement, (account, "synthetic_unrelated_event"))
 
 
 def test_0015_owner_requests_reverse(scratch_url: str) -> None:

@@ -154,6 +154,8 @@ On 2026-10-30 the owner playtested M04/M05 on Alviro and handed the TL nine issu
 | D10 | Compare `low` and `medium` effort in the eval; choose by the results | Recorded with the eval report. |
 | D11 | Fix on `main` first; P3 starts from the fixed `main` (D0 stays the owner's) | `owner_request.v10` is taken here, so P3's PR-OR10 becomes **v11** (P3-T152 path). |
 
+**D4 / PF-12 amendment, owner D-S2 of 2026-11-09 (stabilization H3):** the fuzzy/current-turn proof and whitespace trimming are superseded. `propose_message` accepts only C1 request/source ids and copies validated literal-body spans from retained owner messages across the active request. Unicode, case, punctuation and whitespace are preserved exactly. Selected assistant suggestions require exact scoped artifact sources plus a separate owner selection source and remain generated. Missing/changed/deleted/foreign/quoted/forwarded or instruction-only sources fail with C2's no-action result; there is no regeneration fallback. Literal revisions use the same copying service. H6 owns the new prompt activation; H9 owns per-version authorship. Local tests/type/lint/manual checks are unrun in the restricted H3 worktree.
+
 Also fixed without a product decision (P2 fixes):
 - PF-01: text typed after a card's Edit button was re-run 30 s later as a new owner request by the lost-turn reconciler.
 - PF-02: "Answering (their words)" is shown only for a real base message.

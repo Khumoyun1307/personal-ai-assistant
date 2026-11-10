@@ -15,7 +15,12 @@ from assistant.actions.request_models import (
     OwnerRequest,
     OwnerRequestSource,
 )
-from assistant.actions.requests import cancel_linked_action, expire_requests, lock_requests
+from assistant.actions.requests import (
+    SUGGESTION_SELECTED,
+    cancel_linked_action,
+    expire_requests,
+    lock_requests,
+)
 from assistant.actions.states import StateReason
 
 
@@ -128,6 +133,7 @@ async def purge_request_sources(
     )
     for row in rows:
         await cancel_linked_action(session, row, now=now, clear_text=True)
+        await _delete_selection(session, account_id=account_id, request_id=row.id)
         await session.execute(
             delete(PendingInput).where(
                 PendingInput.account_id == account_id,
@@ -158,6 +164,17 @@ async def purge_request_sources(
             await session.delete(row)
     await session.flush()
     return len(rows)
+
+
+async def _delete_selection(session: AsyncSession, *, account_id: int, request_id: int) -> None:
+    await session.execute(
+        delete(AuditLogEntry).where(
+            AuditLogEntry.account_id == account_id,
+            AuditLogEntry.event == SUGGESTION_SELECTED,
+            AuditLogEntry.subject_type == "owner_request",
+            AuditLogEntry.subject_id == request_id,
+        )
+    )
 
 
 async def delete_source_turns(
@@ -209,6 +226,7 @@ async def sweep_requests(session: AsyncSession, *, account_id: int, now: datetim
     )
     for row in old:
         await cancel_linked_action(session, row, now=now, reason=StateReason.MAX_AGE)
+        await _delete_selection(session, account_id=account_id, request_id=row.id)
         await session.execute(
             delete(PendingInput).where(
                 PendingInput.account_id == account_id,

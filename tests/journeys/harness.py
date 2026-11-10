@@ -18,11 +18,21 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from assistant.accounts.models import Account, AuditLogEntry, Consent
+from assistant.accounts.models import Account, AuditLogEntry, Consent, ControlTurn
 from assistant.actions.card_facts import presentation_facts
 from assistant.actions.models import Action
 from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
-from assistant.actions.requests import OwnerRequestView, load_request
+from assistant.actions.requests import (
+    OwnerRequestView,
+    RequestApplied,
+    RequestSource,
+    SelectRecipient,
+    SetState,
+    SourceSpan,
+    load_request,
+    open_request,
+    update_request,
+)
 from assistant.agent.models import AgentRun
 from assistant.agent.tools.registry import default_registry
 from assistant.bootstrap import build_owner_runtime, build_summarizer
@@ -274,12 +284,15 @@ class Journey:
         self.turns.append(turn_id)
         self.record("owner", turn_id=turn_id, text_sha256=self.text_hash(text))
         if run:
-            jobs = await run_queued(self.s, "agent.owner_request", limit=1)
-            assert_equal(jobs, 1, field=f"owner turn {turn_id} jobs run")
-            self.last_reply = "\n".join(
-                item["text"] for item in self.s.env.sender.delivered_control_sends[start:]
-            )
+            await self._run_owner(turn_id, start)
         return turn_id
+
+    async def _run_owner(self, turn_id: int, delivery_start: int) -> None:
+        jobs = await run_queued(self.s, "agent.owner_request", limit=1)
+        assert_equal(jobs, 1, field=f"owner turn {turn_id} jobs run")
+        self.last_reply = "\n".join(
+            item["text"] for item in self.s.env.sender.delivered_control_sends[delivery_start:]
+        )
 
     def outputs(self) -> list[dict[str, Any]]:
         return [
@@ -431,23 +444,13 @@ class Journey:
         )
 
     async def dictate(self, text: str, *, alias: str = "k", chat: str = "k") -> Action:
-        """Current API for baseline cases; source API automatically used after H3.
+        """Baseline fixture with explicit C1 classification of an ingested turn.
 
-        Future-contract cases use source_proposal explicitly and never fall back.
+        H3 consumes classified request spans; it does not open requests from
+        natural language. Only this baseline helper supplies that prerequisite.
+        Contract journeys use source_proposal directly and must establish it
+        through the runtime themselves; their missing-foundation checks stay strict.
         """
-        tool = next(tool for tool in default_registry().all() if tool.name == "propose_message")
-        fields = tool.args_model.model_fields
-        script = (
-            self.source_proposal(chat)
-            if "source_ids" in fields
-            else call(
-                "propose_message",
-                conversation_id=self.chats[chat],
-                contact_id=None,
-                text=text,
-                answered_message_id=None,
-            )
-        )
         prefixes = {
             "uz-Latn": "Aynan yoz",
             "uz-Cyrl": "Айнан ёз",
@@ -460,11 +463,82 @@ class Journey:
             "ru": "Ожидает вашего подтверждения.",
             "en": "Awaiting your approval.",
         }
-        await self.owner(
-            f"{self.names[chat]} — {prefixes[self.locale]}: {text}",
-            script,
+        framing = f"{self.names[chat]} — {prefixes[self.locale]}: "
+        start = len(self.s.env.sender.delivered_control_sends)
+        turn_id = await self.owner(
+            framing + text,
+            self.source_proposal(chat),
             text_response(awaiting[self.locale]),
+            run=False,
         )
+        async with transaction(self.s.env.factory) as uow:
+            turn = await uow.session.scalar(
+                select(ControlTurn).where(
+                    ControlTurn.account_id == self.s.account_id,
+                    ControlTurn.id == turn_id,
+                    ControlTurn.role == "owner",
+                )
+            )
+            assert turn is not None, (
+                f"dictation: expected ingested owner turn {turn_id}, actual None"
+            )
+            assert_equal(turn.text, framing + text, field="dictation source field")
+            assert turn.text is not None
+            request = await open_request(
+                uow.session,
+                account_id=self.s.account_id,
+                turn_id=turn.id,
+                operation="dictate",
+                sources=(
+                    RequestSource(
+                        span=SourceSpan(
+                            turn_id=turn.id,
+                            field="text",
+                            start=len(framing),
+                            end=len(turn.text),
+                            field_sha256=self.text_hash(turn.text),
+                        ),
+                        purpose="literal_body",
+                    ),
+                ),
+                now=self.s.env.clock.now(),
+            )
+            contact_id = await uow.session.scalar(
+                select(Conversation.contact_id).where(
+                    Conversation.account_id == self.s.account_id,
+                    Conversation.id == self.chats[chat],
+                )
+            )
+            assert contact_id is not None, (
+                f"dictation: expected contact for chat {chat!r}, actual None"
+            )
+            selected = await update_request(
+                uow.session,
+                account_id=self.s.account_id,
+                request_id=request.request_id,
+                expected_version=request.version,
+                update=SelectRecipient(
+                    contact_id=contact_id,
+                    conversation_id=self.chats[chat],
+                    basis="owner_choice",
+                ),
+                now=self.s.env.clock.now(),
+            )
+            assert isinstance(selected, RequestApplied), (
+                f"dictation recipient: expected applied, actual {selected.status!r}"
+            )
+            ready = await update_request(
+                uow.session,
+                account_id=self.s.account_id,
+                request_id=request.request_id,
+                expected_version=selected.view.version,
+                update=SetState(state="ready", reason=None),
+                now=self.s.env.clock.now(),
+            )
+            assert isinstance(ready, RequestApplied), (
+                f"dictation readiness: expected applied, actual {ready.status!r}"
+            )
+        await self._run_owner(turn_id, start)
         return await self.bind_card(alias, chat)
 
     async def tap(self, card: str, version: int, op: str) -> None:

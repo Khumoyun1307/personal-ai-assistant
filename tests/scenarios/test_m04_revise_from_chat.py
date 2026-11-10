@@ -164,8 +164,10 @@ async def test_append_text_must_be_the_owners_own_words(s: Scenario) -> None:
         **revise_args(s, append_text="SYNTH words the owner never wrote"),
     )
     output = last_output(s)
-    assert output["status"] == "error"
-    assert output["fields"] == ["append_text"]
+    assert output["status"] == "not_drafted"
+    assert output["proposal_status"] == "invalid_arguments"
+    assert output["action"] is None
+    assert output["requested_change_applied"] is False
     after = await s.action(row.id)
     assert (after.state, after.version, after.text) == ("awaiting_approval", 1, DRAFT)
     assert after.approval_token == row.approval_token
@@ -314,7 +316,8 @@ async def test_a_card_past_its_approval_time_expires_instead_of_revising(s: Scen
     row = await s.seed(expires_at=s.env.clock.now() - timedelta(minutes=1))
     await s.owner("revise_draft", said=f"Add: {PHRASE}", **revise_args(s, append_text=PHRASE))
     output = last_output(s)
-    assert (output["status"], output["reason"]) == ("no_live_card", "expired")
+    assert (output["status"], output["reason"]) == ("not_drafted", "expired")
+    assert output["proposal_status"] == "not_available"
     after = await s.action(row.id)
     assert (after.state, after.version, after.text) == ("expired", 1, DRAFT)
 
@@ -443,6 +446,10 @@ def _context(s: Scenario, *, run_id: int, turn: OwnerTurn, call_id: str) -> Tool
 
 async def _call(ctx: ToolContext, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """One call through a fresh executor (no in-memory replay between calls)."""
+    if name == "revise_draft" and "append_text" in arguments:
+        from tests.integration.test_reply_tools import prepare_literal
+
+        arguments = await prepare_literal(ctx, arguments)
     offered = default_registry().for_run(
         "owner_request",
         tier=CapabilityTier.CONTROL_ONLY,
@@ -479,14 +486,17 @@ async def test_a_retried_call_or_owner_turn_never_bumps_the_version_twice(s: Sce
     )
     for replay in (again, retried_turn):
         assert (replay["status"], replay["version"], replay["reused"]) == ("revised", 2, True)
+        assert replay["proposal_status"] == "reused_exact"
     after = await s.action(row.id)
     assert (after.version, after.text) == (2, f"{DRAFT} {PHRASE}")
     assert (await s.events(row.id)).count("action_edited") == 1
-    # A new call in the same run is a new request: a second change is made.
+    # C2 (2026-11-09): repeating the old expected version cannot edit v2.
     second = await _call(
         _context(s, run_id=9001, turn=turn, call_id="c-2"), "revise_draft", arguments
     )
-    assert (second["status"], second["version"]) == ("revised", 3)
+    assert second["status"] == "not_drafted"
+    assert second["proposal_status"] == "stale"
+    assert (await s.action(row.id)).version == 2
 
 
 async def test_foreign_and_unknown_ids_read_not_found(s: Scenario) -> None:
@@ -512,7 +522,13 @@ async def test_foreign_and_unknown_ids_read_not_found(s: Scenario) -> None:
         ("revise_draft", {**revise_args(s, append_text=PHRASE), "conversation_id": foreign_chat}),
     ):
         result = await _call(ctx, name, arguments)
-        assert result == {"status": "error", "reason": "not found"}, (name, arguments)
+        if name == "revise_draft":
+            assert result["status"] == "not_drafted"
+            assert result["proposal_status"] == "not_available"
+            assert result["reason"] == "not_found"
+            assert result["action"] is None
+        else:
+            assert result == {"status": "error", "reason": "not found"}, (name, arguments)
         assert EIGHT_WORDS not in json.dumps(result)
     async with s.env.factory() as session:
         untouched = await session.scalar(select(Action).where(Action.id == foreign_id))

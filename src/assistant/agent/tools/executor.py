@@ -20,7 +20,8 @@ For every tool call the executor:
    status, latency); a name that is not a registered tool is model output,
    recorded as "(unknown)";
 7. logs one content-free line for every call that does not end `ok` (M03 fix
-   round C2): a warning `agent_tool_call_failed`, or `agent_tool_call_not_run`
+   round C2): `agent_tool_call_succeeded` for an approval-card result, a
+   warning `agent_tool_call_failed`, or `agent_tool_call_not_run`
    (info) for an expected state — held for a card, already decided on one,
    chat access off. Ids, the tool name, the status and a fixed code only;
    never arguments, reasons or messages.
@@ -73,7 +74,7 @@ EXTRA_FIELD = "(extra)"
 #: Statuses that are expected states, not failures: logged at info. Held
 #: for the owner's tap or already decided on its card (a repeated call), a
 #: chat tool's blocked stub while chat access is off, or a propose tool's
-#: normal result — a card awaiting approval, blocked, not drafted (ICR-3).
+#: normal no-action result — blocked or not drafted (ICR-3).
 NOT_RUN_STATUSES = frozenset(
     {
         "awaiting_confirmation",
@@ -82,7 +83,6 @@ NOT_RUN_STATUSES = frozenset(
         "applied",
         "rejected",
         CHAT_ACCESS_OFF,
-        "awaiting_approval",
         "blocked",
         "not_drafted",
         "conflict_existing_draft",
@@ -101,6 +101,14 @@ NOT_RUN_STATUSES = frozenset(
 
 async def _no_taint_recorder() -> None:
     return None
+
+
+def _call_digest(call: ToolCall) -> str:
+    try:
+        raw = json.loads(call.arguments or "{}")
+    except json.JSONDecodeError:
+        return args_digest({"tool": call.name, "invalid_json": call.arguments})
+    return args_digest({"tool": call.name, "args": raw})
 
 
 @dataclass
@@ -124,6 +132,7 @@ class ToolExecutor:
     #: recorded and logged by it; any other name is model output.
     registered: frozenset[str] = frozenset()
     _done: dict[str, ToolResultItem] = field(default_factory=dict)
+    _done_digests: dict[str, str] = field(default_factory=dict)
 
     @property
     def tainted(self) -> bool:
@@ -136,7 +145,37 @@ class ToolExecutor:
     async def execute(self, call: ToolCall) -> ToolResultItem:
         cached = self._done.get(call.call_id)
         if cached is not None:
-            return cached
+            call_digest = _call_digest(call)
+            if self._done_digests.get(call.call_id) != call_digest:
+                known = call.name in self.offered or call.name in self.registered
+                tool = call.name if known else UNKNOWN_TOOL
+                status = (
+                    "not_drafted" if call.name in {"propose_message", "revise_draft"} else "error"
+                )
+                outcome = ToolOutcome(status, log_code="args_changed")
+                await self.record_step(tool, call_digest, outcome.status, 0)
+                self._log(tool, outcome)
+                return ToolResultItem(
+                    call_id=call.call_id,
+                    output=json.dumps(
+                        {
+                            "status": status,
+                            "proposal_status": "idempotency_conflict",
+                            "action": None,
+                            "reason": "args_changed",
+                            "request_id": None,
+                            "request_version": None,
+                            "effect_version": None,
+                            "requested_change_applied": False,
+                        }
+                    ),
+                    provenance=Provenance.TOOL_RESULT,
+                )
+            # Proposal retries read current artifact facts through their
+            # persistent idempotency checks; a cached receipt can be stale
+            # after another version was staged in this same run.
+            if call.name not in {"propose_message", "revise_draft"}:
+                return cached
         started = self.clock.now()
         outcome, digest = await self._run(call)
         latency_ms = int((self.clock.now() - started).total_seconds() * 1000)
@@ -163,6 +202,7 @@ class ToolExecutor:
             provenance=Provenance.MANAGED if outcome.contains_managed else Provenance.TOOL_RESULT,
         )
         self._done[call.call_id] = result
+        self._done_digests[call.call_id] = _call_digest(call)
         return result
 
     def _log(self, tool: str, outcome: ToolOutcome) -> None:
@@ -176,7 +216,9 @@ class ToolExecutor:
             "tainted": self.context.tainted,
             **outcome.log_detail,
         }
-        if outcome.status in NOT_RUN_STATUSES:
+        if outcome.status == "awaiting_approval":
+            logger.info("agent_tool_call_succeeded", **fields)
+        elif outcome.status in NOT_RUN_STATUSES:
             logger.info("agent_tool_call_not_run", **fields)
         else:
             logger.warning("agent_tool_call_failed", **fields)
@@ -193,7 +235,7 @@ class ToolExecutor:
         try:
             args = tool.args_model.model_validate(raw)
         except ValidationError as error:
-            return _invalid(tool, error), digest
+            return _invalid(tool, error, raw), digest
         if tool.needs_confirmation(tainted=self.context.tainted, args=args):
             try:
                 held = await confirmations.hold(
@@ -247,7 +289,7 @@ def _coded(stage: str, outcome: ToolOutcome) -> ToolOutcome:
     return replace(outcome, log_code=f"{stage}:{outcome.log_code or outcome.status}")
 
 
-def _invalid(tool: ToolDefinition, error: ValidationError) -> ToolOutcome:
+def _invalid(tool: ToolDefinition, error: ValidationError, raw: object) -> ToolOutcome:
     """For the model: every field path, and the fixed text of each of our own
     rules it broke. For the log: only real field names and pydantic's error
     types — never input, messages, or an unknown key (model output)."""
@@ -272,8 +314,22 @@ def _invalid(tool: ToolDefinition, error: ValidationError) -> ToolOutcome:
     data: dict[str, object] = {"reason": "invalid arguments", "fields": sorted(fields)}
     if problems:
         data["problems"] = problems
+    source_proposal = tool.name == "propose_message" or (
+        tool.name == "revise_draft" and isinstance(raw, dict) and raw.get("literal") is not None
+    )
+    if source_proposal:
+        data.update(
+            {
+                "proposal_status": "invalid_arguments",
+                "request_id": None,
+                "request_version": None,
+                "action": None,
+                "effect_version": None,
+                "requested_change_applied": False,
+            }
+        )
     return ToolOutcome(
-        "error",
+        "not_drafted" if source_proposal else "error",
         data,
         log_code="args_invalid",
         log_detail={"fields": sorted(logged_fields), "error_types": sorted(error_types)},

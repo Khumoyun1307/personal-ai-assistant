@@ -49,6 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from assistant.accounts import callbacks, service
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, PendingInput
 from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
+from assistant.actions.requests import SUGGESTION_SELECTED
 from assistant.core.channel import Button, ControlChannel, Delivery
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
@@ -77,6 +78,26 @@ async def export_owner_requests(
                 values[column.name] = value.isoformat() if isinstance(value, datetime) else value
             exported.append(values)
         result[model.__tablename__] = exported
+    selections = await session.scalars(
+        select(AuditLogEntry)
+        .where(
+            AuditLogEntry.account_id == account_id,
+            AuditLogEntry.event == SUGGESTION_SELECTED,
+            AuditLogEntry.subject_type == "owner_request",
+        )
+        .order_by(AuditLogEntry.id)
+    )
+    result["suggestion_selections"] = [
+        {
+            "id": row.id,
+            "account_id": account_id,
+            "request_id": row.subject_id,
+            "at": row.at.isoformat(),
+            "instruction_source_id": row.details.get("instruction_source_id"),
+            "source_ids": row.details.get("source_ids"),
+        }
+        for row in selections
+    ]
     turns = await session.scalars(
         select(ControlTurn)
         .where(

@@ -217,10 +217,6 @@ class Scenario:
         said: str = "P2 synthetic owner request.",
         **values: Any,
     ) -> None:
-        self.fake.queue(
-            tool_response(("qa-call", tool, args(**values))),
-            text_response("P2 synthetic owner-run completion."),
-        )
         extra = (
             {
                 "forward_origin": {
@@ -232,7 +228,29 @@ class Scenario:
             if forwarded
             else {}
         )
-        await ask(self.env, said, **extra)
+        turn_id = await ask(self.env, said, **extra)
+        if tool == "propose_message" or (tool == "revise_draft" and "append_text" in values):
+            from assistant.agent.tools.registry import OwnerTurn, ToolContext, ToolServices
+            from tests.integration.test_reply_tools import prepare_literal, prepare_message
+
+            ctx = ToolContext(
+                account_id=self.account_id,
+                run_id=1,
+                run_type="owner_request",
+                tainted=False,
+                turn_id=turn_id,
+                owner_turn=OwnerTurn(turn_id, said, forwarded, False, False),
+                services=ToolServices(self.env.factory, self.env.clock, None),
+            )
+            values = await (
+                prepare_message(ctx, values)
+                if tool == "propose_message"
+                else prepare_literal(ctx, values)
+            )
+        self.fake.queue(
+            tool_response(("qa-call", tool, args(**values))),
+            text_response("P2 synthetic owner-run completion."),
+        )
         assert await run_queued(self, "agent.owner_request") == 1
 
     async def propose(self, *, dictated: bool = False) -> Action:

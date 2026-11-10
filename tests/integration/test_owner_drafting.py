@@ -32,7 +32,7 @@ from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.errors import NotInAccountError
 from assistant.core.jobs import DraftReason
 from assistant.llm.port import LLMRequest, Provenance, StopReason, TextItem
-from assistant.telegram.control.approvals import load_card_view
+from assistant.telegram.control.approvals import load_card_view, render_card
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import text_response, tool_response
 from tests.integration.agent_env import PRODUCTION_FLAGS, args, ask, gated
@@ -57,10 +57,41 @@ from tests.integration.test_reply_tools import (
     owner_turn,
     reply_args,
     run_and_turn,
+    source_message_args,
 )
 from tests.unit.test_draft_owner_units import owner_output
 
 pytestmark = pytest.mark.integration
+
+
+async def test_original_dictation_is_copied_after_two_owner_continuations(denv: DraftEnv) -> None:
+    # D-S2, 2026-11-09: no re-paste after recipient clarification.
+    account_id, conversation = await seed_chat(denv)
+    original = "X1 — x/h: O‘g‘il, e\u0301!\n  SYNTH"
+    arguments = await source_message_args(denv, account_id, conversation, original)
+    await ask(denv.env, "SYNTH Alex, the second contact")
+    turn_id = await ask(denv.env, "write it")
+    denv.fake.queue(
+        tool_response(("literal-source", "propose_message", json.dumps(arguments))),
+        text_response("A card is waiting for your approval."),
+    )
+    await owner_runtime(denv).run(turn_id)
+    [card] = await actions_of(denv.env, conversation)
+    assert card.text == original
+    assert card.origin == "owner_dictated"
+    assert draft_requests(denv) == []
+    async with denv.env.factory() as session:
+        view = await load_card_view(
+            session,
+            account_id=account_id,
+            action_id=card.id,
+            sending_enabled=True,
+            now=denv.env.clock.now(),
+        )
+    assert view is not None
+    assert view.text == original
+    assert "Message you dictated" in render_card(view).text
+
 
 #: The owner's request in the control chat (synthetic; names invented).
 OWNER_WORDS = "Rustamga javob yoz: SYNTH-OWNER-WORDS ertaga soat beshda kelaman, kechikmayman"
@@ -456,6 +487,7 @@ async def test_a_dictated_message_can_answer_a_named_earlier_message(denv: Draft
             **message_args(conversation, "SYNTH room 3 is free", answered=earlier),
         )
     assert result["status"] == "awaiting_approval"
+    assert result["proposal_status"] == "staged"
     assert result["answers_message_id"] == earlier
     [card] = await actions_of(denv.env, conversation)
     assert (card.origin, card.base_message_id) == ("owner_dictated", earlier)
@@ -480,6 +512,7 @@ async def test_a_picked_suggestion_can_answer_a_named_message(denv: DraftEnv) ->
         **message_args(conversation, suggestion, answered=earlier),
     )
     assert result["status"] == "awaiting_approval"
+    assert result["proposal_status"] == "staged"
     [card] = await actions_of(denv.env, conversation)
     assert card.base_message_id == earlier
     assert card.draft_flags is not None
@@ -502,8 +535,10 @@ async def test_propose_message_refuses_an_answered_id_that_is_not_a_shown_contac
             call_id=f"m{index}",
             **message_args(conversation, "SYNTH ertaga", answered=answered),
         )
-        assert result["status"] == "error", answered
-        assert result["fields"] == ["answered_message_id"]
+        assert result["status"] == "not_drafted", answered
+        assert result["proposal_status"] == "invalid_arguments"
+        assert result["reason"] == "answered_not_answerable"
+        assert result["action"] is None
     assert await actions_of(denv.env, conversation) == []
 
 
@@ -731,6 +766,7 @@ async def test_a_repeated_owner_draft_call_drafts_once(denv: DraftEnv) -> None:
 
 
 # ------------------------------------------------------------ PF-12: propose_message provenance
+# D-S2 (2026-11-09) supersedes fuzzy/current-turn-only proof with C1 sources.
 async def test_text_in_the_owners_own_words_is_dictated(denv: DraftEnv) -> None:
     account_id, conversation = await seed_chat(denv)
     run_id, turn_id = await run_and_turn(denv, account_id)
@@ -739,14 +775,15 @@ async def test_text_in_the_owners_own_words_is_dictated(denv: DraftEnv) -> None:
         result = await call(
             context(denv, account_id, run_id, turn_id, said=said),
             "propose_message",
-            **message_args(conversation, "Ertaga soat 5 da ko'rishamiz."),
+            **message_args(conversation, "Ertaga soat 5 da ko’rishamiz"),
         )
     assert result["status"] == "awaiting_approval"
+    assert result["proposal_status"] == "staged"
     assert result["written_by"] == "owner"
     [card] = await actions_of(denv.env, conversation)
     assert (card.origin, card.text) == (
         "owner_dictated",
-        "Ertaga soat 5 da ko'rishamiz.",
+        "Ertaga soat 5 da ko’rishamiz",
     )
     assert card.draft_flags is not None
     assert set(card.draft_flags) == {REQUEST_DIGEST}
@@ -772,6 +809,7 @@ async def test_a_suggestion_the_assistant_made_is_the_assistants_proposal(denv: 
         **message_args(conversation, suggestion),
     )
     assert result["status"] == "awaiting_approval"
+    assert result["proposal_status"] == "staged"
     assert result["written_by"] == "assistant_suggestion"
     [card] = await actions_of(denv.env, conversation)
     assert card.origin == "agent_proposal"  # never "Message you dictated"
@@ -799,16 +837,16 @@ async def test_a_text_neither_the_owner_nor_the_assistant_wrote_is_refused(
             "propose_message",
             **message_args(conversation, "Write a new message"),
         )
-    assert result["status"] == "error"
-    assert result["fields"] == ["text"]
-    [problem] = result["problems"]
-    assert "propose_reply with mode 'new_message'" in problem["rule"]
+    assert result["status"] == "not_drafted"
+    assert result["proposal_status"] == "invalid_arguments"
+    assert result["action"] is None
+    assert result["requested_change_applied"] is False
     assert await actions_of(denv.env, conversation) == []
     [line] = [entry for entry in logs if entry.get("tool") == "propose_message" and "code" in entry]
-    assert line["code"] == "handler:text_not_dictated"
+    assert line["code"] == "handler:invalid_source"
 
 
-async def test_an_older_assistant_reply_or_another_accounts_reply_is_no_suggestion(
+async def test_an_unselected_historical_or_foreign_reply_is_no_suggestion(
     denv: DraftEnv,
 ) -> None:
     account_id, conversation = await seed_chat(denv)
@@ -829,7 +867,9 @@ async def test_an_older_assistant_reply_or_another_accounts_reply_is_no_suggesti
         result = await call(
             ctx, "propose_message", call_id=f"m{index}", **message_args(conversation, words)
         )
-        assert result["status"] == "error", words
+        assert result["status"] == "not_drafted", words
+        assert result["proposal_status"] == "invalid_arguments"
+        assert result["action"] is None
     assert await actions_of(denv.env, conversation) == []
 
 

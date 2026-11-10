@@ -54,6 +54,7 @@ RequestReason = Literal[
 ]
 PositiveId = Annotated[int, Field(strict=True, gt=0, le=2**63 - 1)]
 REQUEST_TTL = timedelta(hours=24)
+SUGGESTION_SELECTED = "owner_request_suggestion_selected"
 
 
 def _check_time(now: datetime) -> None:
@@ -118,6 +119,20 @@ class SelectRecipient(StrictValue):
     basis: Literal["unique_strong", "owner_choice", "explicit_reply"]
 
 
+class SelectSuggestion(StrictValue):
+    """Bind a classified owner selection to exact retained artifact sources."""
+
+    kind: Literal["select_suggestion"] = "select_suggestion"
+    instruction_source_id: PositiveId
+    source_ids: Annotated[tuple[PositiveId, ...], Field(min_length=1, max_length=64)]
+
+    @model_validator(mode="after")
+    def unique_sources(self) -> SelectSuggestion:
+        if len(set(self.source_ids)) != len(self.source_ids):
+            raise ValueError("duplicate suggestion sources")
+        return self
+
+
 class SetQuestion(StrictValue):
     kind: Literal["set_question"] = "set_question"
     slot: MissingSlot
@@ -147,7 +162,14 @@ class SetState(StrictValue):
 
 
 RequestUpdate = Annotated[
-    AddSources | SelectRecipient | SetQuestion | SetTarget | SetConstraints | LinkAction | SetState,
+    AddSources
+    | SelectRecipient
+    | SelectSuggestion
+    | SetQuestion
+    | SetTarget
+    | SetConstraints
+    | LinkAction
+    | SetState,
     Field(discriminator="kind"),
 ]
 
@@ -167,6 +189,7 @@ class OwnerRequestView:
     sources: tuple[RequestSource, ...]
     requested_at: datetime
     expires_at: datetime
+    source_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -279,13 +302,14 @@ async def load_source(
     if turn is None:
         return SourceUnavailable()
     field = turn.text if source.span.field == "text" else turn.quoted_text
-    if field is None or source.span.end > len(field):
-        return SourceUnavailable()
-    if hashlib.sha256(field.encode("utf-8")).hexdigest() != source.span.field_sha256:
+    text = copy_source_text(field, source)
+    if text is None:
         return SourceUnavailable()
     if turn.role == "assistant":
         if source.purpose != "suggestion" or source.span.field != "text":
             return SourceUnavailable()
+    elif turn.role != "owner":
+        return SourceUnavailable()
     elif source.span.field == "text":
         if source.purpose == "suggestion":
             return SourceUnavailable()
@@ -298,7 +322,7 @@ async def load_source(
         ):
             return SourceUnavailable()
     return ValidatedSource(
-        text=field[source.span.start : source.span.end],
+        text=text,
         managed=bool(
             turn.contains_managed
             and not (
@@ -326,9 +350,23 @@ def _source_ref_ids(turn: ControlTurn, key: str) -> tuple[int, ...]:
     return tuple(value for value in values if type(value) is int and 0 < value <= 2**63 - 1)
 
 
-async def _sources(
+def copy_source_text(field: str | None, source: RequestSource) -> str | None:
+    """Validate the whole retained field before copying Unicode code points.
+
+    Hashes detect edits; role/purpose/account/request checks remain required.
+    No normalization or invented whitespace is permitted (D-S2, H3).
+    """
+    span = source.span
+    if field is None or not 0 <= span.start < span.end <= len(field):
+        return None
+    if hashlib.sha256(field.encode("utf-8")).hexdigest() != span.field_sha256:
+        return None
+    return field[span.start : span.end]
+
+
+async def _source_rows(
     session: AsyncSession, *, account_id: int, request_id: int
-) -> tuple[RequestSource, ...]:
+) -> tuple[OwnerRequestSource, ...]:
     rows = await session.scalars(
         select(OwnerRequestSource)
         .where(
@@ -337,24 +375,35 @@ async def _sources(
         )
         .order_by(OwnerRequestSource.ordinal)
     )
+    return tuple(rows)
+
+
+def _source_value(row: OwnerRequestSource) -> RequestSource:
+    return RequestSource.model_validate(
+        {
+            "span": {
+                "turn_id": row.turn_id,
+                "field": row.field,
+                "start": row.start_char,
+                "end": row.end_char,
+                "field_sha256": row.field_sha256,
+            },
+            "purpose": row.purpose,
+        }
+    )
+
+
+async def _sources(
+    session: AsyncSession, *, account_id: int, request_id: int
+) -> tuple[RequestSource, ...]:
     return tuple(
-        RequestSource.model_validate(
-            {
-                "span": {
-                    "turn_id": row.turn_id,
-                    "field": row.field,
-                    "start": row.start_char,
-                    "end": row.end_char,
-                    "field_sha256": row.field_sha256,
-                },
-                "purpose": row.purpose,
-            }
-        )
-        for row in rows
+        _source_value(row)
+        for row in await _source_rows(session, account_id=account_id, request_id=request_id)
     )
 
 
 async def _view(session: AsyncSession, row: OwnerRequest) -> OwnerRequestView:
+    sources = await _source_rows(session, account_id=row.account_id, request_id=row.id)
     return OwnerRequestView(
         request_id=row.id,
         version=row.version,
@@ -366,9 +415,10 @@ async def _view(session: AsyncSession, row: OwnerRequest) -> OwnerRequestView:
         action_id=row.action_id,
         action_version=row.action_version,
         target_message_id=row.target_message_id,
-        sources=await _sources(session, account_id=row.account_id, request_id=row.id),
+        sources=tuple(_source_value(source) for source in sources),
         requested_at=row.requested_at,
         expires_at=row.expires_at,
+        source_ids=tuple(source.id for source in sources),
     )
 
 
@@ -626,6 +676,40 @@ async def update_request(
             )
         )
         row.last_turn_id = max([row.last_turn_id, *owner_turns])
+    elif isinstance(update, SelectSuggestion):
+        view = await _view(session, row)
+        by_id = dict(zip(view.source_ids, view.sources, strict=True))
+        instruction = by_id.get(update.instruction_source_id)
+        if (
+            instruction is None
+            or instruction.purpose != "instruction"
+            or instruction.span.field != "text"
+        ):
+            return RequestUnavailable("invalid_reference")
+        for source_id in update.source_ids:
+            suggestion = by_id.get(source_id)
+            if (
+                suggestion is None
+                or suggestion.purpose != "suggestion"
+                or suggestion.span.field != "text"
+                or suggestion.span.turn_id >= instruction.span.turn_id
+            ):
+                return RequestUnavailable("invalid_reference")
+        # All sources have already been revalidated above. This explicit
+        # classification binds the instruction to one ordered source list;
+        # retaining a later instruction alone never selects every artifact.
+        session.add(
+            AuditLogEntry(
+                account_id=account_id,
+                at=now,
+                actor="owner",
+                event=SUGGESTION_SELECTED,
+                subject_type="owner_request",
+                subject_id=row.id,
+                details=update.model_dump(mode="json"),
+            )
+        )
+        row.last_turn_id = max(row.last_turn_id, instruction.span.turn_id)
     elif isinstance(update, SelectRecipient):
         conversation = await session.scalar(
             select(Conversation)

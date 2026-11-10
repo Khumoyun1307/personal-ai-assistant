@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.journey]
     "case_id",
     [
         pytest.param(
-            "J01", marks=pytest.mark.xfail(strict=True, reason="needs H3", raises=AssertionError)
+            "J01", marks=pytest.mark.xfail(strict=True, reason="needs H6", raises=AssertionError)
         ),
         pytest.param(
             "J03", marks=pytest.mark.xfail(strict=True, reason="needs H4", raises=AssertionError)

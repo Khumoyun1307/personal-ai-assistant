@@ -258,7 +258,9 @@ async def test_j26_foreign_action_read_has_uniform_not_found_and_no_effect(
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-@pytest.mark.xfail(strict=True, reason="needs H3", raises=AssertionError)
+# The first owner turn must establish real C1 sources via runtime classification
+# (H6). Keep this strict: baseline fixture setup would bypass that trajectory.
+@pytest.mark.xfail(strict=True, reason="needs H6", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("loss", ["cleared", "deleted", "expired"])
 async def test_j26_lost_source_never_reconstructs_from_assistant_memory(
@@ -328,13 +330,19 @@ async def test_j26_lost_source_never_reconstructs_from_assistant_memory(
     await j.check(CountCheck(artifact="actions", count=0))
     await j.check(CountCheck(artifact="business_attempts", count=0))
     output = j.outputs()[-1]
-    assert output["status"] in {"not_available", "invalid_arguments", "stale"}
-    assert output["reason"] in {
-        "source_unavailable",
-        "not_available",
-        "request_expired",
-        "max_age",
-    }
+    # H3 keeps v10's transport vocabulary; proposal_status discriminates C2.
+    assert output["status"] == "not_drafted"
+    assert output["proposal_status"] == (
+        "invalid_arguments" if loss == "cleared" else "not_available"
+    )
+    assert (
+        output["reason"]
+        == {
+            "cleared": "source_unavailable",
+            "deleted": "not_found",
+            "expired": "request_unavailable",
+        }[loss]
+    )
     assert output["action"] is None
     assert output["effect_version"] is None
     assert output["requested_change_applied"] is False
@@ -364,7 +372,9 @@ async def test_j28_main_model_approved_body_has_no_other_chat_canary(
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-@pytest.mark.xfail(strict=True, reason="needs H3", raises=AssertionError)
+# Own request/source classification still needs H6; the generated-proposal
+# fence variant also needs H4. Never substitute invented own source IDs.
+@pytest.mark.xfail(strict=True, reason="needs H6/H4", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("foreign_kind", ["request", "source", "recipient", "fence"])
 async def test_j26_foreign_proposal_references_are_rejected_one_at_a_time(

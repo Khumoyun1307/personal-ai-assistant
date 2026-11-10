@@ -24,6 +24,16 @@ owner's message, and what the result must show. Each case runs under its
 **own synthetic account** in the throwaway database, so no case sees
 another's chats, history or cards.
 
+H3/C2 (D-S2, 2026-11-09): dictation fixtures name exact owner literal-body
+source spans in that case's active request, including earlier turns before a
+clarification. The loader validates role, field hash and code-point bounds and
+retains those original turns as C1 sources. Exact-text and append-prefix checks
+compare original characters without normalization; quotes/forwards never prove
+owner authorship. A paid re-run is pending the stabilization Phase 4 gate.
+Picked-suggestion fixtures separately name exact assistant artifact spans
+and the later owner selection instruction, loaded as a C1 SelectSuggestion
+binding before the runtime starts; model fakes never create that state.
+
 Deterministic checks (`check_case`, pure): which tools the run called or must
 not have called (recorded by an instrumentation wrapper around every tool
 handler: name, arguments, status); whether a card was staged or revised, on
@@ -76,6 +86,18 @@ from assistant.accounts.service import (
 )
 from assistant.actions.config import ActionsConfig
 from assistant.actions.models import Action
+from assistant.actions.requests import (
+    RequestApplied,
+    RequestSource,
+    SelectRecipient,
+    SelectSuggestion,
+    SetState,
+    SetTarget,
+    SourceSpan,
+    copy_source_text,
+    open_request,
+    update_request,
+)
 from assistant.actions.states import ActionOrigin
 from assistant.agent import prompt_registry
 from assistant.agent.draft_owner_schemas import word_count
@@ -97,7 +119,6 @@ from assistant.agent.tools.registry import (
     ToolRegistry,
     default_registry,
 )
-from assistant.agent.tools.replies import normalise_for_match
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.channel import Button, Delivery
 from assistant.core.model_routes import processor_for_model
@@ -204,6 +225,43 @@ class Chat(_Strict):
 class HistoryTurn(_Strict):
     role: Literal["owner", "assistant"]
     text: str = Field(min_length=1)
+    quoted_text: str | None = None
+    third_party: bool = False
+
+
+class SourceReference(_Strict):
+    """An explicit control-text span in this case's active request.
+
+    Zero-based index into history followed by the current owner turn. Database
+    ids are allocated when loading the case; the retained field hash and offsets
+    use C1 unchanged. No search or normalization establishes authorship.
+    """
+
+    turn_index: int = Field(ge=0)
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    field_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    def as_source(
+        self,
+        turn_id: int,
+        purpose: Literal["literal_body", "suggestion", "instruction"] = "literal_body",
+    ) -> RequestSource:
+        return RequestSource(
+            span=SourceSpan(
+                turn_id=turn_id,
+                field="text",
+                start=self.start,
+                end=self.end,
+                field_sha256=self.field_sha256,
+            ),
+            purpose=purpose,
+        )
+
+
+class SuggestionSelection(_Strict):
+    sources: tuple[SourceReference, ...] = Field(min_length=1, max_length=63)
+    instruction: SourceReference
 
 
 class LiveDraft(_Strict):
@@ -222,7 +280,7 @@ class CardExpectation(_Strict):
     mode: Literal["reply", "new_message"] | None
     #: The message key the card answers (its base message).
     answered: str | None
-    #: The exact text (a dictated or picked text), compared normalised.
+    #: The exact text (dictated or picked), compared code point for code point.
     exact_text: str | None
     #: Each must be in the card (as a value, or as a folded substring).
     includes: tuple[str, ...]
@@ -274,7 +332,61 @@ class OwnerDraftingCase(_Strict):
     history: tuple[HistoryTurn, ...]
     live_draft: LiveDraft | None
     turn: str = Field(min_length=1)
+    turn_quoted_text: str | None = None
+    turn_third_party: bool = False
+    dictation_sources: tuple[SourceReference, ...] = Field(default=(), max_length=64)
+    suggestion_selection: SuggestionSelection | None = None
     expect: Expectation
+
+    def dictation_text(self) -> str:
+        if not self.dictation_sources or len(set(self.dictation_sources)) != len(
+            self.dictation_sources
+        ):
+            raise ValueError("dictation needs distinct literal-body source references")
+        return "".join(
+            self._source_text(source, role="owner", purpose="literal_body")
+            for source in self.dictation_sources
+        )
+
+    def suggestion_text(self) -> str:
+        selection = self.suggestion_selection
+        if selection is None or len(set(selection.sources)) != len(selection.sources):
+            raise ValueError("suggestion needs distinct artifact and owner selection references")
+        self._source_text(selection.instruction, role="owner", purpose="instruction")
+        if any(
+            source.turn_index >= selection.instruction.turn_index for source in selection.sources
+        ):
+            raise ValueError("suggestions must precede the owner's selection")
+        return "".join(
+            self._source_text(source, role="assistant", purpose="suggestion")
+            for source in selection.sources
+        )
+
+    def _source_text(
+        self,
+        source: SourceReference,
+        *,
+        role: Literal["owner", "assistant"],
+        purpose: Literal["literal_body", "suggestion", "instruction"],
+    ) -> str:
+        turns = (
+            *self.history,
+            HistoryTurn(
+                role="owner",
+                text=self.turn,
+                quoted_text=self.turn_quoted_text,
+                third_party=self.turn_third_party,
+            ),
+        )
+        if source.turn_index >= len(turns):
+            raise ValueError("source turn is unavailable")
+        turn = turns[source.turn_index]
+        if turn.role != role or (turn.third_party and turn.quoted_text is None):
+            raise ValueError("source is not the required role's own text")
+        copied = copy_source_text(turn.text, source.as_source(source.turn_index + 1, purpose))
+        if copied is None:
+            raise ValueError("source is unavailable")
+        return copied
 
     def chat(self, key: str) -> Chat:
         return next(c for c in self.chats if c.key == key)
@@ -330,20 +442,11 @@ class OwnerDraftingCase(_Strict):
         if needs_live and (live is None or live.chat != card.chat):
             raise ValueError("same_card, keeps_prefix and fewer_words need a live draft there")
         if card.exact_text is not None:
-            if card.origin == "owner_dictated" and not _occurs(card.exact_text, self.turn):
-                raise ValueError("a dictated exact_text must be in the owner's message")
-            if card.origin == "agent_proposal" and not any(
-                _occurs(card.exact_text, t.text) for t in self.history if t.role == "assistant"
-            ):
-                raise ValueError("a picked exact_text must be in an assistant turn")
+            if card.origin == "owner_dictated" and card.exact_text != self.dictation_text():
+                raise ValueError("dictated exact_text must equal its owner source slices")
+            if card.origin == "agent_proposal" and card.exact_text != self.suggestion_text():
+                raise ValueError("picked exact_text must equal explicitly selected artifact slices")
         return self
-
-
-def _occurs(needle: str, haystack: str) -> bool:
-    return normalise_for_match(needle).strip(_EDGE) in normalise_for_match(haystack)
-
-
-_EDGE = " '\".,!?;:…"
 
 
 def load_cases(path: Path = DATASET_PATH) -> list[OwnerDraftingCase]:
@@ -429,9 +532,7 @@ def _card_problems(card: CardRecord, want: CardExpectation, live: CardRecord | N
         problems.append("card:answers_nothing")
     if want.answered is not None and card.answered != want.answered:
         problems.append("card:wrong_answered_message")
-    if want.exact_text is not None and normalise_for_match(card.text).strip(
-        _EDGE
-    ) != normalise_for_match(want.exact_text).strip(_EDGE):
+    if want.exact_text is not None and card.text != want.exact_text:
         problems.append("card:not_exact_text")
     problems += [f"card:missing:{v}" for v in want.includes if not _includes(card.text, v)]
     problems += [f"card:contains:{v}" for v in want.excludes if fold(v) in fold(card.text)]
@@ -441,9 +542,7 @@ def _card_problems(card: CardRecord, want: CardExpectation, live: CardRecord | N
     if want.max_words is not None and words > want.max_words:
         problems.append("card:too_many_words")
     if live is not None:
-        if want.keeps_prefix and not normalise_for_match(card.text).startswith(
-            normalise_for_match(live.text).rstrip(".!?…")
-        ):
+        if want.keeps_prefix and not card.text.startswith(live.text):
             problems.append("card:prefix_lost")
         if want.fewer_words and words >= word_count(live.text):
             problems.append("card:not_shorter")
@@ -722,6 +821,7 @@ class _Loaded:
     conversations: Mapping[str, int]
     messages: Mapping[str, int]
     live_action_id: int | None
+    history_turn_ids: tuple[int, ...]
 
 
 def _actions_config(model: str) -> ActionsConfig:
@@ -918,7 +1018,14 @@ class OwnerDraftingTarget:
                 scheduler=_NoJobs(),
             ),
         )
-        turn_id = await self._turn(loaded.account_id, case.turn, at=NOW)
+        turn_id = await self._turn(
+            loaded.account_id,
+            case.turn,
+            at=NOW,
+            quoted_text=case.turn_quoted_text,
+            third_party=case.turn_third_party,
+        )
+        await self._source_request(case, loaded, turn_id)
         outcome = await runtime.run(turn_id)
         error_class = await self._error_class(outcome.run_id)
         new_cards = await self._new_cards(loaded)
@@ -1037,11 +1144,18 @@ class OwnerDraftingTarget:
             await _barrier(session)
             account_id = account.id
         count = len(case.history)
+        history_turn_ids: list[int] = []
         trigger: int | None = None
         for index, turn in enumerate(case.history):
             turn_id = await self._turn(
-                account_id, turn.text, at=NOW - timedelta(minutes=count - index), role=turn.role
+                account_id,
+                turn.text,
+                at=NOW - timedelta(minutes=count - index),
+                role=turn.role,
+                quoted_text=turn.quoted_text,
+                third_party=turn.third_party,
             )
+            history_turn_ids.append(turn_id)
             if turn.role == "owner":
                 trigger = turn_id
         live_id: int | None = None
@@ -1066,12 +1180,112 @@ class OwnerDraftingTarget:
                 )
                 assert not isinstance(proposal, Stale)  # a given text is never stale
                 live_id = proposal.action_id
-        return _Loaded(account_id, conversations, messages, live_id)
+        return _Loaded(account_id, conversations, messages, live_id, tuple(history_turn_ids))
 
-    async def _turn(self, account_id: int, text: str, *, at: datetime, role: str = "owner") -> int:
+    async def _source_request(self, case: OwnerDraftingCase, loaded: _Loaded, turn_id: int) -> None:
+        """Load explicit fixture selections into one active C1 request.
+
+        This stages no card and makes no model decision: the runtime must still
+        call the real tool with validated request/source ids. Earlier turns stay
+        the source; the clarification is never used as a replacement body.
+        """
+        card = case.expect.card
+        if card is None or card.exact_text is None:
+            return
+        turn_ids = (*loaded.history_turn_ids, turn_id)
+        selection = case.suggestion_selection if card.origin == "agent_proposal" else None
+        if card.origin == "owner_dictated":
+            sources = tuple(s.as_source(turn_ids[s.turn_index]) for s in case.dictation_sources)
+            trigger_turn_id = sources[0].span.turn_id
+        elif selection is not None:
+            instruction = selection.instruction
+            sources = (
+                instruction.as_source(turn_ids[instruction.turn_index], "instruction"),
+                *(s.as_source(turn_ids[s.turn_index], "suggestion") for s in selection.sources),
+            )
+            trigger_turn_id = turn_ids[instruction.turn_index]
+        else:
+            return
+        async with self._database() as session, session.begin():
+            request = await open_request(
+                session,
+                account_id=loaded.account_id,
+                turn_id=trigger_turn_id,
+                operation="dictate" if selection is None else "compose",
+                sources=sources,
+                now=NOW,
+            )
+            conversation_id = loaded.conversations[card.chat]
+            contact_id = await session.scalar(
+                select(Conversation.contact_id).where(
+                    Conversation.account_id == loaded.account_id,
+                    Conversation.id == conversation_id,
+                )
+            )
+            assert contact_id is not None
+            selected = await update_request(
+                session,
+                account_id=loaded.account_id,
+                request_id=request.request_id,
+                expected_version=request.version,
+                update=SelectRecipient(
+                    contact_id=contact_id, conversation_id=conversation_id, basis="owner_choice"
+                ),
+                now=NOW,
+            )
+            assert isinstance(selected, RequestApplied)
+            if selection is not None:
+                selected = await update_request(
+                    session,
+                    account_id=loaded.account_id,
+                    request_id=request.request_id,
+                    expected_version=selected.view.version,
+                    update=SelectSuggestion(
+                        instruction_source_id=request.source_ids[0],
+                        source_ids=request.source_ids[1:],
+                    ),
+                    now=NOW,
+                )
+                assert isinstance(selected, RequestApplied)
+            if card.answered is not None:
+                selected = await update_request(
+                    session,
+                    account_id=loaded.account_id,
+                    request_id=request.request_id,
+                    expected_version=selected.view.version,
+                    update=SetTarget(message_id=loaded.messages[card.answered]),
+                    now=NOW,
+                )
+                assert isinstance(selected, RequestApplied)
+            ready = await update_request(
+                session,
+                account_id=loaded.account_id,
+                request_id=request.request_id,
+                expected_version=selected.view.version,
+                update=SetState(state="ready", reason=None),
+                now=NOW,
+            )
+            assert isinstance(ready, RequestApplied)
+
+    async def _turn(
+        self,
+        account_id: int,
+        text: str,
+        *,
+        at: datetime,
+        role: str = "owner",
+        quoted_text: str | None = None,
+        third_party: bool = False,
+    ) -> int:
         async with self._database() as session, session.begin():
             turn = await record_control_turn(
-                session, account_id=account_id, role=role, text=text, created_at=at
+                session,
+                account_id=account_id,
+                role=role,
+                text=text,
+                created_at=at,
+                quoted_text=quoted_text,
+                third_party=third_party,
             )
             return turn.id
 

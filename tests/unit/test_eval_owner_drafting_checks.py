@@ -20,7 +20,7 @@ from evals.owner_drafting import (
 )
 from pydantic import ValidationError
 
-from tests.unit.test_owner_drafting_dataset import card_expectation, case_record
+from tests.unit.test_owner_drafting_dataset import card_expectation, case_record, dictation_source
 
 LIVE_TEXT = "SYNTH one two three four five six seven eight nine ten"
 LIVE_DRAFT = {"chat": "a", "origin": "agent_proposal", "text": LIVE_TEXT}
@@ -73,9 +73,39 @@ def test_a_dictated_card_with_the_exact_text_passes() -> None:
     dictated = case(card_expectation(origin="owner_dictated", exact_text="SYNTH ertaga keldim"))
     result = seen(
         tool("propose_message"),
-        new=(card_row("SYNTH ertaga keldim.", origin="owner_dictated"),),  # end punctuation aside
+        new=(card_row("SYNTH ertaga keldim", origin="owner_dictated"),),
     )
     assert check_case(dictated, result) == ()
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "SYNTH ertaga keldim.",
+        "synth ertaga keldim",
+        " SYNTH ertaga keldim",
+        "SYNTH  ertaga keldim",
+    ],
+)
+def test_exact_dictation_does_not_normalise_case_punctuation_or_whitespace(changed: str) -> None:
+    """D-S2/H3 (2026-11-09) supersedes the punctuation-tolerant PF-16b check."""
+    dictated = case(card_expectation(origin="owner_dictated", exact_text="SYNTH ertaga keldim"))
+    result = seen(tool("propose_message"), new=(card_row(changed, origin="owner_dictated"),))
+    assert check_case(dictated, result) == ("card:not_exact_text",)
+
+
+@pytest.mark.parametrize("changed", ["H1 h/h — Oʻgʻil, é!", "X1 x/h — O'g'il, e\u0301!"])
+def test_exact_dictation_preserves_x_h_codes_apostrophes_and_unicode(changed: str) -> None:
+    body = "X1 x/h — Oʻgʻil, e\u0301!"
+    dictated = case(
+        card_expectation(origin="owner_dictated", exact_text=body),
+        turn=body,
+        dictation_sources=[dictation_source(body, body)],
+    )
+    good = seen(tool("propose_message"), new=(card_row(body, origin="owner_dictated"),))
+    assert check_case(dictated, good) == ()
+    bad = seen(tool("propose_message"), new=(card_row(changed, origin="owner_dictated"),))
+    assert check_case(dictated, bad) == ("card:not_exact_text",)
 
 
 def test_routing_problems_are_named() -> None:
@@ -172,6 +202,19 @@ def test_an_append_keeps_the_old_text_as_its_prefix_on_the_same_card() -> None:
         "routing:new_card_instead_of_revision",
         "routing:live_card_not_revised",
     )
+
+
+def test_append_must_keep_original_case_and_punctuation() -> None:
+    original = "SYNTH X1 x/h!"
+    append = case(
+        card_expectation(same_card=True, keeps_prefix=True),
+        history=HISTORY,
+        live_draft={"chat": "a", "origin": "agent_proposal", "text": original},
+    )
+    before = card_row(original, action_id=1)
+    after = card_row("synth H1 h/h See you!", action_id=1, version=2)
+    result = seen(tool("propose_message"), before=before, after=after)
+    assert check_case(append, result) == ("card:prefix_lost",)
 
 
 def test_shorter_means_fewer_words_than_the_live_card() -> None:

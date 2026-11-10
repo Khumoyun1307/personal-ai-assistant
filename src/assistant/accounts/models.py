@@ -277,6 +277,14 @@ class AuditLogEntry(Base):
     __table_args__ = (
         _enum_check("actor", AUDIT_ACTORS, "actor"),
         Index("ix_audit_log_account_id_at", "account_id", "at"),
+        Index(
+            "uq_audit_log_tool_effect_key",
+            "account_id",
+            sql_text("(details ->> 'run_id')"),
+            sql_text("(details ->> 'tool_call_id')"),
+            unique=True,
+            postgresql_where=sql_text("event = 'tool_effect_recorded'"),
+        ),
     )
 
     id: Mapped[IdPk]

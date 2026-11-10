@@ -24,6 +24,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
 from structlog.testing import capture_logs
 
 from assistant.agent.tools.common import ArgumentRuleError
+from assistant.agent.tools.drafts import ReviseDraftArgs
 from assistant.agent.tools.executor import ToolExecutor
 from assistant.agent.tools.registry import (
     CHAT_ACCESS_OFF,
@@ -339,6 +340,86 @@ async def test_a_successful_call_logs_no_failure_line() -> None:
     assert tool_lines(logs) == []
 
 
+async def test_an_approval_card_is_logged_as_a_successful_call() -> None:
+    async def proposal(_ctx: ToolContext, _args: ConversationArgs) -> ToolOutcome:
+        return ToolOutcome("awaiting_approval", {"action_id": 42})
+
+    executor, steps = make(Handler())
+    tool = replace(executor.offered["get_conversation"], handler=proposal)
+    executor.offered = {tool.name: tool}
+    with capture_logs() as logs:
+        result = await executor.execute(call(MY_CONVERSATION))
+
+    assert output(result) == {"status": "awaiting_approval", "action_id": 42}
+    assert steps[0][2] == "awaiting_approval"
+    assert tool_lines(logs) == []
+    [line] = [entry for entry in logs if entry["event"] == "agent_tool_call_succeeded"]
+    assert line["status"] == "awaiting_approval"
+    assert line["log_level"] == "info"
+    assert_content_free(logs)
+
+
+async def test_source_schema_errors_keep_v10_no_action_status() -> None:
+    executor, _ = make(Handler())
+    tool = replace(executor.offered["get_conversation"], name="propose_message")
+    executor.offered = {tool.name: tool}
+    result = output(await executor.execute(ToolCall("c1", tool.name, "{}")))
+    assert result["status"] == "not_drafted"
+    assert result["proposal_status"] == "invalid_arguments"
+    assert result["action"] is None
+    assert result["effect_version"] is None
+    assert result["requested_change_applied"] is False
+
+
+@pytest.mark.parametrize("source_ids", [[], [True]])
+async def test_literal_revision_schema_errors_return_c2_no_action(source_ids: list[Any]) -> None:
+    handler = Handler()
+    executor, _ = make(handler)
+    tool = replace(
+        executor.offered["get_conversation"], name="revise_draft", args_model=ReviseDraftArgs
+    )
+    executor.offered = {tool.name: tool}
+    arguments = {
+        "conversation_id": None,
+        "action_id": 1,
+        "min_words": None,
+        "max_words": None,
+        "literal": {
+            "request_id": 1,
+            "request_version": 1,
+            "expected_version": 1,
+            "edit": "literal_append",
+            "source_ids": source_ids,
+        },
+    }
+    result = output(await executor.execute(ToolCall("c1", tool.name, json.dumps(arguments))))
+    assert result["status"] == "not_drafted"
+    assert result["proposal_status"] == "invalid_arguments"
+    assert result["request_id"] is None
+    assert result["request_version"] is None
+    assert result["action"] is None
+    assert result["effect_version"] is None
+    assert result["requested_change_applied"] is False
+    assert any(field.startswith("literal.source_ids") for field in result["fields"])
+    assert handler.calls == 0
+
+
+async def test_source_call_id_conflict_keeps_v10_no_action_status() -> None:
+    handler = Handler()
+    executor, _ = make(handler)
+    tool = replace(executor.offered["get_conversation"], name="propose_message")
+    executor.offered = {tool.name: tool}
+    await executor.execute(ToolCall("c1", tool.name, '{"conversation_id": 11}'))
+    result = output(await executor.execute(ToolCall("c1", tool.name, '{"conversation_id": 14}')))
+    assert result["status"] == "not_drafted"
+    assert result["proposal_status"] == "idempotency_conflict"
+    assert result["reason"] == "args_changed"
+    assert result["action"] is None
+    assert result["effect_version"] is None
+    assert result["requested_change_applied"] is False
+    assert handler.calls == 1
+
+
 async def test_a_repeated_call_id_executes_once() -> None:
     handler = Handler()
     executor, steps = make(handler)
@@ -350,6 +431,20 @@ async def test_a_repeated_call_id_executes_once() -> None:
     assert first == second
     assert handler.calls == 1
     assert len(steps) == 1
+
+
+async def test_a_repeated_call_id_with_changed_arguments_is_not_a_cached_success() -> None:
+    handler = Handler()
+    executor, _ = make(handler)
+    await executor.execute(call(MY_CONVERSATION))
+    changed = await executor.execute(call(BLOCKED))
+    result = json.loads(changed.output)
+    assert result["status"] == "error"
+    assert result["proposal_status"] == "idempotency_conflict"
+    assert result["action"] is None
+    assert result["effect_version"] is None
+    assert result["requested_change_applied"] is False
+    assert handler.calls == 1
 
 
 async def test_steps_are_content_free_and_managed_results_are_marked() -> None:
