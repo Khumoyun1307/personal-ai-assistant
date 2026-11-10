@@ -446,6 +446,11 @@ Multi-chat owner context is permitted for this path; recipient plus full body
 on the approval card is the boundary. Contact-triggered Assist remains isolated
 and tool-less. With the flag off the legacy writer and schema remain available.
 H6 owns prompt activation; H8 owns the card-button dispatcher cutover.
+The content-brief requirement applies to standalone composition only. A ready
+reply uses its selected retained/read target without a separate instruction
+source. A ready revision may use literal change sources under C1; rewriting
+does not impose a separate composition brief. All retained sources, targets
+and settlement fences still require validation.
 
 There is one agent identity (same principles, memory, policy), invoked in **run types** that differ in trigger, context, tools, and output contract. Crucially, the **trust level of the trigger determines the capabilities** of the run (ADR-08):
 

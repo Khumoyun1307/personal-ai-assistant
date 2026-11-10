@@ -21,6 +21,8 @@ from sqlalchemy import select, update
 from structlog.testing import capture_logs
 
 from assistant.accounts.models import Account, ControlTurn
+from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
+from assistant.actions.requests import RequestApplied, SetState, update_request
 from assistant.agent import prompt_registry
 from assistant.agent.draft_owner_schemas import WordBounds
 from assistant.agent.drafting import DraftStatus
@@ -63,6 +65,86 @@ from tests.integration.test_reply_tools import (
 from tests.unit.test_draft_owner_units import owner_output
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["ready", "no_sources", "invalid_source", "deleted_target", "foreign_fence", "no_fence"],
+)
+async def test_main_reply_needs_selected_target_but_no_separate_composition_brief(
+    denv: DraftEnv, scenario: str
+) -> None:
+    from tests.fakes.owner_fence import FakeOwnerFence
+
+    account_id, conversation = await seed_chat(denv)
+    target = await _first_contact_message(denv, conversation)
+    selected = await source_message_args(
+        denv, account_id, conversation, "SYNTH reply to that message", answered=target
+    )
+    async with denv.env.factory() as session, session.begin():
+        request = await session.get(OwnerRequest, selected["request_id"])
+        source = await session.get(OwnerRequestSource, selected["source_ids"][0])
+        assert request is not None
+        assert source is not None
+        assert source.purpose == "literal_body"
+        request.operation = "reply"
+        if scenario == "no_sources":
+            await session.delete(source)
+        await session.flush()
+        ready = await update_request(
+            session,
+            account_id=account_id,
+            request_id=request.id,
+            expected_version=request.version,
+            update=SetState(state="ready", reason=None),
+            now=denv.env.clock.now(),
+        )
+        assert isinstance(ready, RequestApplied)
+        if scenario == "invalid_source":
+            source.field_sha256 = "0" * 64
+        elif scenario == "deleted_target":
+            await session.execute(
+                update(Message)
+                .where(Message.account_id == account_id, Message.id == target)
+                .values(deleted_at=denv.env.clock.now())
+            )
+    proposal = {key: value for key, value in selected.items() if key != "source_ids"} | {
+        "request_version": ready.view.version,
+        "mode": "reply",
+        "text": "SYNTH thank you for the update!",
+        "context_fence_id": 999_999 if scenario == "foreign_fence" else 1,
+    }
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    result = await call(
+        context(
+            denv,
+            account_id,
+            run_id,
+            turn_id,
+            owner_fence=None if scenario == "no_fence" else FakeOwnerFence(),
+        ),
+        "propose_owner_message",
+        flags=frozenset({"tool.propose_owner_message"}),
+        **proposal,
+    )
+    if scenario in {"ready", "no_sources"}:
+        assert result["proposal_status"] == "staged"
+        assert result["requested_change_applied"] is True
+        [card] = await actions_of(denv.env, conversation)
+        assert card.text == proposal["text"]
+        assert card.base_message_id == target
+        assert card.authorship["kind"] == "assistant_written"
+        assert denv.presenter.presented == [card.id]
+    else:
+        assert result["proposal_status"] == (
+            "invalid_arguments" if scenario == "invalid_source" else "not_available"
+        )
+        assert result["action"] is None
+        assert result["effect_version"] is None
+        assert result["requested_change_applied"] is False
+        assert await actions_of(denv.env, conversation) == []
+        assert denv.presenter.presented == []
+    assert denv.fake.requests == []
 
 
 @pytest.mark.parametrize("quoted", [False, True])

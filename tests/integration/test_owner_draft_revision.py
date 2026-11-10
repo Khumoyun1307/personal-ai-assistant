@@ -20,6 +20,7 @@ from assistant.accounts.models import AuditLogEntry, ControlTurn
 from assistant.actions import lifecycle
 from assistant.actions.authorship import VersionAuthorship, current_authorship, is_ai_generated
 from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
+from assistant.actions.requests import RequestApplied, SetState, update_request
 from assistant.actions.states import StateReason
 from assistant.agent.tools.drafts import ReviseDraftArgs, revise_draft_tool
 from assistant.agent.tools.registry import OwnerTurn, ToolContext, ToolServices
@@ -35,9 +36,17 @@ from tests.scenarios.p2_drive import Scenario, m04_environment, revision_result,
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.parametrize("edit", ["rewrite", "literal_append", "literal_replace"])
+@pytest.mark.parametrize(
+    ("edit", "request_operation"),
+    [
+        ("rewrite", "compose"),
+        ("rewrite", "revise"),
+        ("literal_append", "compose"),
+        ("literal_replace", "compose"),
+    ],
+)
 async def test_main_revision_uses_complete_body_and_version_cas_without_writer(
-    s: Scenario, edit: str
+    s: Scenario, edit: str, request_operation: str
 ) -> None:
     from tests.fakes.owner_fence import FakeOwnerFence
 
@@ -65,6 +74,32 @@ async def test_main_revision_uses_complete_body_and_version_cas_without_writer(
     flags = frozenset({"tool.propose_owner_message", "tool.revise_draft"})
     staged = await call(ctx, "propose_owner_message", flags=flags, **proposal)
     original = await s.action(staged["action_id"])
+    request_version = staged["request_version"]
+    if request_operation == "revise":
+        async with s.env.factory() as session, session.begin():
+            request = await session.get(OwnerRequest, proposal["request_id"])
+            source = await session.scalar(
+                select(OwnerRequestSource).where(
+                    OwnerRequestSource.account_id == s.account_id,
+                    OwnerRequestSource.request_id == proposal["request_id"],
+                )
+            )
+            assert request is not None
+            assert source is not None
+            # C1 permits a ready revision with literal change content alone.
+            request.operation = "revise"
+            source.purpose = "literal_body"
+            await session.flush()
+            ready = await update_request(
+                session,
+                account_id=s.account_id,
+                request_id=request.id,
+                expected_version=request.version,
+                update=SetState(state="ready", reason=None),
+                now=s.env.clock.now(),
+            )
+            assert isinstance(ready, RequestApplied)
+            request_version = ready.view.version
     sources: list[int] = []
     if edit != "rewrite":
         async with s.env.factory() as session, session.begin():
@@ -91,7 +126,7 @@ async def test_main_revision_uses_complete_body_and_version_cas_without_writer(
             sources = [literal.id]
     args = {
         "request_id": proposal["request_id"],
-        "request_version": staged["request_version"],
+        "request_version": request_version,
         "action_id": original.id,
         "expected_version": original.version,
         "edit": edit,
