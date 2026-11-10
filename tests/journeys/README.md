@@ -51,12 +51,28 @@ the test-only method wrapper delegates to the real executor.
 dispatch, asserting that the harness rejects them. It also checks that distinct
 actions may legitimately send identical text.
 
+H3 integration repair: `dictate` now ingests its actual owner message first,
+then explicitly classifies its literal-body span and recipient through C1's
+`open_request` / `update_request` services before running the queued owner job.
+The source uses that turn's generated ID, exact code-point offsets and whole-field
+hash; no extra owner turn or copied text row is seeded. The model context therefore
+contains the real request/source IDs. H3's source proposal tool consumes these
+selections; it does not create them from natural language. The old baseline
+adapter switched tool schemas without supplying this prerequisite, so every
+baseline `dictate` failed at the strict request lookup. The new guard checks the
+actual turn, exact Unicode/whitespace body, source metadata, visible source ID and
+card; another guard requires a direct contract proposal to reject absent request
+state. Existing card binding, committed-claim and per-attempt assertions stay intact.
+
 J26 captures and validates the original source IDs before clearing, physical
 deletion or request expiry, then replays those same IDs with the retained
 request's current version when available. It requires explicit unavailability,
 no applied effect and zero actions/business calls. Rejecting an invented source
 ID or merely an old request version does not satisfy this regression. These
-review fixes remain unexecuted in the restricted worktree at the owner's request.
+checks now read H3's C2 `proposal_status` discriminator alongside the v10
+`not_drafted` transport status and require the specific clearing/deletion/expiry
+reason. These review fixes remain unexecuted in the restricted worktree at the
+owner's request.
 
 `models.py` defines a closed data format for owner/tool turns, contact arrival,
 edit/delete, taps, clock, consent revocation, failure and runtime restart, plus
@@ -99,23 +115,29 @@ To add a journey:
    remove the mark when its dependencies land. Never blanket-mark the directory.
    Use `--runxfail -x` on a selected test to inspect its first unmet contract.
 
-The current-schema adapter in `dictate` exists only for baseline regressions.
+The explicit C1 setup in `dictate` exists only for baseline regressions.
 Contract journeys explicitly use the C2 source/main-writer APIs and do not fall
 back. H2 now loads continuations and explicit reply/card associations. The runner
-has an unmarked two-card, reply-after-restart journey for that seam. H2 leaves
-proposal tools unchanged: source-based core cases still need H3, and generated
-proposal/revision cases still need H4. Their strict xfail reasons now name those
-remaining dependencies; no existing H2-marked full trajectory is yet satisfiable
-by the offered tools. The adaptive scripts must follow their final APIs. The
-baseline revision adapter selects C2 arguments when that schema lands. I27's
+has an unmarked two-card, reply-after-restart journey for that seam. H3 implements
+source copying, but runtime request/source classification is still absent: the
+only production `open_request` occurrence is its service definition. None of the
+six formerly `needs H3` marked trajectories would XPASS merely from this baseline
+fixture repair, so none was unmarked. Their reasons now name the remaining
+dependencies: dictation and normalization need H6 classification and H9 authorship;
+J01 continuation, unique-contact binding and lost-source replay need H6
+classification; foreign proposal references need H6, with the generated-fence
+variant also needing H4. Contract helpers retain their missing-foundation
+assertions and do not use baseline setup to bypass these requirements. Generated
+proposal/revision cases still need H4. The adaptive scripts must follow their
+final APIs. The baseline revision adapter selects C2 arguments when that schema lands. I27's
 recovery command needs its final spelling wired into its marked case; `/current` is a test assumption,
 not an implemented or approved product command.
 
 | Cases | Family / coverage | Pending dependencies |
 |---|---|---|
-| I01 / J01 | `test_dictation`, `test_continuations`: real question, restart, source Unicode, double tap | H3/H9 |
+| I01 / J01 | `test_dictation`, `test_continuations`: real question, restart, source Unicode, double tap | H3 copy seam implemented; H6 classification/H9 authorship |
 | I02 / J03–J05 | `test_missing_content`: missing substance, standalone topic, mixed quote | H4/H6/H10/H12 |
-| I03 / J02 | `test_contact_resolution`: real/weak/ambiguous/capped verdict; cross-turn binding | Verdict unmarked; binding H3 |
+| I03 / J02 | `test_contact_resolution`: real/weak/ambiguous/capped verdict; cross-turn binding | Verdict unmarked; binding H6 classification |
 | I04 / J06/J11/J12 | `test_card_facts`: two actual cards, reply, version/token, terminal read, rewrite/revoke | Reads and H2 reply selection in `test_runner` unmarked; H4/H7/H9 |
 | J07–J10 | `test_interleavings`: older target; arrival/base/non-base edit/delete; same-second takeover; late Assist | H4/H10/H11 |
 | J13/J14 | `test_interleavings`: queued selection; two interruptions/restarts | I13/I14 + request/proposal foundations |
@@ -126,7 +148,7 @@ not an implemented or approved product command.
 | J20/J27 | `test_privacy_and_taint`: exact owner preference, stale derived taint, configure confirmation | Unmarked current behavior |
 | J21–J23 | `test_card_facts`: redraft/restart; read/final race and purge; uncertain card recovery | H8/H7/I27 |
 | J24 | `test_budgets`: nested-call token admission/partial result, unpriced route | I15/I16 |
-| J26/J28 | `test_privacy_and_taint`: foreign request/source/recipient/fence/action, missing source, main-context canary, isolated tool-less Assist | Reads/Assist unmarked; H3/H4/H10 |
+| J26/J28 | `test_privacy_and_taint`: foreign request/source/recipient/fence/action, missing source, main-context canary, isolated tool-less Assist | Reads/Assist unmarked; H6 classification/H4/H10 |
 
 `matrix.json` freezes the 28 localized scenario inputs; tests never read changing
 coordination docs at runtime. Core incident transcripts are in `locales.py`.

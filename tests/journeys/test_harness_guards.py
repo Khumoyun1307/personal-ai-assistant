@@ -1,7 +1,11 @@
 """Deliberately bad transport evidence must fail the journey safety gate."""
 
 import pytest
+from sqlalchemy import select
 
+from assistant.accounts.models import ControlTurn
+from assistant.llm.port import TextItem
+from tests.fakes.llm import text_response
 from tests.integration.business_env import OWNER
 from tests.journeys.harness import Journey
 from tests.journeys.models import CardCheck
@@ -10,6 +14,55 @@ from tests.scenarios.p2_drive import run_queued
 pytestmark = [pytest.mark.integration, pytest.mark.journey]
 
 BODY = "CANARY-SYNTH exact approved body."
+
+
+async def test_baseline_dictation_selects_source_from_actual_ingested_owner_turn(
+    journey: Journey,
+) -> None:
+    body = "X1 Max — Oʻzbek!\nA'B / A’B 🙂  "
+    row = await journey.dictate(body)
+    request = await journey.request()
+    assert len(journey.turns) == 1
+    [source] = request.sources
+    assert source.purpose == "literal_body"
+    assert source.span.turn_id == journey.turns[0]
+    assert source.span.field == "text"
+    async with journey.s.env.factory() as session:
+        turns = list(
+            await session.scalars(
+                select(ControlTurn).where(
+                    ControlTurn.account_id == journey.s.account_id,
+                    ControlTurn.role == "owner",
+                )
+            )
+        )
+    [turn] = turns
+    assert turn.id == journey.turns[0]
+    assert turn.text is not None
+    assert source.span.start > 0
+    assert source.span.end == len(turn.text)
+    assert turn.text[source.span.start : source.span.end] == body
+    assert source.span.field_sha256 == journey.text_hash(turn.text)
+    assert row.text == body
+    assert request.action_id == row.id
+    assert request.conversation_id == journey.chats["k"]
+    assert journey.outputs()[-1]["proposal_status"] == "staged"
+    # Selection precedes runtime context loading: the fake model uses actual
+    # visible C1 references, rather than creating a request during its call.
+    context = "\n".join(
+        item.text for item in journey.s.fake.requests[0].items if isinstance(item, TextItem)
+    )
+    assert f'"source_id": {request.source_ids[0]}' in context
+    await journey.check(CardCheck(alias="k", text=body, origin="owner_dictated"))
+
+
+async def test_request_lookup_does_not_fabricate_missing_foundation(journey: Journey) -> None:
+    await journey.owner("CANARY-SYNTH advice only.", text_response("CANARY-SYNTH advice."))
+    proposal = journey.source_proposal()
+    assert callable(proposal)
+    with pytest.raises(AssertionError, match="expected persisted request id, actual None"):
+        await proposal(journey.s.fake.requests[-1])
+    assert await journey.rows() == []
 
 
 async def test_card_check_rejects_expected_body_only_in_unrelated_reply(journey: Journey) -> None:
