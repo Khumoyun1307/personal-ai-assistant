@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from assistant.accounts.models import Account
 from assistant.core.channel import Button, ControlChannel
 from assistant.core.clock import Clock
+from assistant.core.control_texts import text as operational_text
 from assistant.db.uow import transaction
 from assistant.inbox.system_notifications import (
     EVENT_CLAIMED,
@@ -165,12 +166,16 @@ class OwnerAlerts:
         """
         if kind is AlertKind.RESTORE_NOTICE:
             values.setdefault("actions", "")
+        async with self._session_factory() as session:
+            locale = await session.scalar(
+                select(Account.locale_pref).where(Account.id == account_id)
+            )
         outcome = await self._system_delivery.send(
             account_id=account_id,
             kind=kind.value,
             key=dedupe_key,
             cooldown=cooldown,
-            rendered_text=ALERT_TEXT[kind].format(**values),
+            rendered_text=operational_text(f"alert_{kind.value}", locale, **values),
             buttons=buttons,
         )
         logger.info(

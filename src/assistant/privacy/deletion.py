@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.core.clock import Clock
+from assistant.core.control_texts import text as operational_text
 from assistant.core.errors import NotInAccountError
 from assistant.inbox.models import InboundUpdate
 from assistant.memory import items
@@ -60,7 +61,7 @@ BACKUP_NOTE = (
 ARRIVING_NOTE = "A message arriving at the moment of deletion may still be stored."
 
 
-def receipt_text(counts: Mapping[str, Any]) -> str:
+def receipt_text(counts: Mapping[str, Any], locale: str | None = None) -> str:
     """What the owner is told after a deletion (from `DeletionReport.counts`,
     or a deletion tool's result): counts only, and the backups that still
     hold the data for a while (safety review items 5 and 6)."""
@@ -69,13 +70,24 @@ def receipt_text(counts: Mapping[str, Any]) -> str:
         value = counts.get(key, 0)
         return value if isinstance(value, int) else 0
 
-    return (
-        f"🗑 Deleted: {n('messages')} message(s), {n('contacts_cleared')} contact name(s), "
-        f"{n('payloads_cleared')} raw update(s), {n('summaries_deleted')} summary(ies), "
-        f"{n('memory_items_deleted')} note(s), {n('control_turns_cleared')} turn(s) of our "
-        f"conversation here, {n('held_calls_cleared')} held change(s), "
-        f"{n('actions')} action(s), {n('tasks')} task(s), "
-        f"{n('notifications')} notification(s), {n('automations')} automation(s).\n" + BACKUP_NOTE
+    keys = (
+        "messages",
+        "contacts_cleared",
+        "payloads_cleared",
+        "summaries_deleted",
+        "memory_items_deleted",
+        "control_turns_cleared",
+        "held_calls_cleared",
+        "actions",
+        "tasks",
+        "notifications",
+        "automations",
+    )
+    return operational_text(
+        "delete_receipt",
+        locale,
+        **{key: n(key) for key in keys},
+        backup=operational_text("backup_note", locale),
     )
 
 
@@ -112,9 +124,9 @@ class DeletionReport:
             + self.automations
         )
 
-    def receipt(self) -> str:
+    def receipt(self, locale: str | None = None) -> str:
         """What the owner is told after a deletion (`receipt_text`)."""
-        return receipt_text(self.counts())
+        return receipt_text(self.counts(), locale)
 
     def counts(self) -> dict[str, int]:
         """For the content-free audit row and the owner's receipt."""

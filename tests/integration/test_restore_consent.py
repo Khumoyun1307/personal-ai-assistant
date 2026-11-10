@@ -414,7 +414,14 @@ async def test_restore_consent_without_a_prompt_id_stays_quarantined(env: Env) -
         assert await service.get_pending_input(session, account_id=account_id, clock=env.clock)
 
 
-def assert_privacy_warning(prompt: str) -> None:
+def assert_privacy_warning(prompt: str, locale: str = "en") -> None:
+    from assistant.core.control_texts import text
+
+    assert text("restore_warning", locale) in prompt
+    assert "/privacy revoke" in prompt
+    assert "/privacy delete" in prompt
+    if locale != "en":
+        return
     assert "deletions" in prompt.lower()
     assert "revocations" in prompt
     assert "after the backup time may have been undone" in prompt
@@ -439,7 +446,8 @@ async def test_restore_language_picker_consent_repeats_warning_when_notice_fails
     assert not await deliver_restore_notice(env.factory, alerts)
     await deliver(env, private_message(OWNER, "/start"))
     await press_own(env, "onb_lang", language)
-    assert_privacy_warning(env.sender.texts[-1])
+    locale = {"uz_latn": "uz-Latn", "uz_cyrl": "uz-Cyrl"}.get(language, language)
+    assert_privacy_warning(env.sender.texts[-1], locale)
     async with env.factory() as session:
         pending = await service.get_pending_input(session, account_id=account.id, clock=env.clock)
         assert pending is not None

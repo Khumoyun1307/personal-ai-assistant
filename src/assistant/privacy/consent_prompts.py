@@ -2,6 +2,7 @@
 
 from assistant.accounts import service
 from assistant.accounts.models import Account
+from assistant.core.control_texts import text as operational_text
 
 #: Translation review is part of the stabilization wording unit (I22).
 RESTORE_PRIVACY_WARNING = (
@@ -21,5 +22,5 @@ def render_consent_prompt(account: Account, prompt: str) -> str:
     undone privacy decisions before offering a way to renew consent.
     """
     if service.restore_consent_pending(account):
-        return RESTORE_PRIVACY_WARNING + "\n\n" + prompt
+        return operational_text("restore_warning", account.locale_pref) + "\n\n" + prompt
     return prompt

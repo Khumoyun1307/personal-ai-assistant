@@ -106,6 +106,8 @@ allowed-confusables = ["ʻ", "ʼ", "‘", "’"]
 # M03 fix round C4: the localized onboarding texts (Uzbek Cyrillic, Russian).
 "src/assistant/telegram/control/onboarding_texts.py" = ["RUF001"]
 "tests/unit/test_citations.py" = ["RUF001"]
+# Operational language fixtures intentionally contain Uzbek Cyrillic and Russian.
+"tests/unit/test_operational_texts.py" = ["RUF001"]
 # AGENTS §5: only these modules may touch the Bot API. ingress/ is limited to
 # getUpdates, getMe and deleteWebhook; gateway.py owns everything with a
 # visible effect. An AST test additionally bans aiogram shortcuts in control/.

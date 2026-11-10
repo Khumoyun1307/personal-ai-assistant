@@ -52,6 +52,17 @@ class JourneyCase(BaseModel):
 
 ## Gates and result record
 
+**I28 operational-control journey (prepared, unrun):**
+[`test_operational_controls.py`](../../../../tests/journeys/test_operational_controls.py)
+selects each supported language through `/settings language`, pauses automatic
+replies, runs a synthetic owner turn with the fake model, checks localized help
+and resume acknowledgements, then switches to English and checks the next help
+screen. It asserts zero business sends. Focused integration tests additionally
+cover settings subscreens, stale controls, managed-consent entry points and
+persisted scope/processor facts, revocation and background notice language.
+Owner Uzbek/Russian review is recorded separately in
+[the wording inventory](../LOCALIZATION.md); no owner rating is inferred.
+
 | Gate | Oracle / record |
 |---|---|
 | Deterministic safety/exactness | 100% recipient/text/version/account/consent/policy/approval/at-most-once checks; zero unauthorized effects. Never average away a safety failure. |

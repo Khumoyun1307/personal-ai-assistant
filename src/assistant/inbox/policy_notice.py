@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from assistant.accounts.models import Account, AuditLogEntry, Consent
 from assistant.accounts.service import POLICY_VERSION
 from assistant.core.clock import Clock
+from assistant.core.control_texts import text as operational_text
 from assistant.db.uow import transaction
 from assistant.inbox.notify import EVENT_ALERT, AlertKind, OwnerAlerts
 
@@ -150,9 +151,13 @@ async def deliver_policy_update_notices(
         link = f'<a href="{url}">{url}</a>'
     else:
         link = "/privacy"
-    body = template.format(link=link)
     delivered = 0
     for account_id in account_ids:
+        async with session_factory() as session:
+            locale = await session.scalar(
+                select(Account.locale_pref).where(Account.id == account_id)
+            )
+        body = operational_text(f"policy_{POLICY_VERSION}", locale, link=link)
         result = await alerts.notify_owner(
             account_id, AlertKind.POLICY_UPDATED, dedupe_key=key, body=body
         )

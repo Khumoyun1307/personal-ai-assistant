@@ -9,8 +9,8 @@ wording are drafts the owner proofreads in the fix-round PR. Change them
 here only. A translated consent question must say exactly what the English
 one says: a consent row records the policy version, not the language shown.
 
-Only onboarding and these two screens are localised; /help, /settings,
-/privacy and the cards stay English until a wider localisation.
+Operational controls share the resolver in `core/locales.py` and the
+catalogue in `core/control_texts.json` (stabilization I28).
 
 The language picker offers four languages. Telegram's `language_code` of
 the owner's control message ("the user's language", commonly their app's;
@@ -28,6 +28,7 @@ from typing import Final
 from zoneinfo import ZoneInfo
 
 from assistant.agent.locales import SupportedLocale, supported_locale
+from assistant.core.control_texts import text as operational_text
 
 #: The picker's options, as `(callback op, stored tag, label)`. Ops are
 #: callback-safe (`accounts/callbacks.py`); each label is in its own
@@ -138,22 +139,10 @@ CONSENT_GRANTED: Final[dict[SupportedLocale, str]] = {
 }
 
 CONSENT_BLOCKED: Final[dict[SupportedLocale, str]] = {
-    "en": (
-        "AI remains blocked after the restore. Privacy recovery must finish before "
-        "consent can be renewed. Consent was not granted."
-    ),
-    "uz-Latn": (
-        "Tiklashdan keyin AI hali bloklangan. Rozilikni qayta berishdan oldin "
-        "maxfiylikni tiklash tugashi kerak. Rozilik berilmadi."
-    ),
-    "uz-Cyrl": (
-        "Тиклашдан кейин AI ҳали блокланган. Розиликни қайта беришдан олдин "
-        "махфийликни тиклаш тугаши керак. Розилик берилмади."
-    ),
-    "ru": (
-        "После восстановления ИИ остаётся заблокированным. Сначала нужно завершить "
-        "восстановление решений о конфиденциальности. Согласие не предоставлено."
-    ),
+    "en": operational_text("consent_blocked", "en"),
+    "uz-Latn": operational_text("consent_blocked", "uz-Latn"),
+    "uz-Cyrl": operational_text("consent_blocked", "uz-Cyrl"),
+    "ru": operational_text("consent_blocked", "ru"),
 }
 
 CONSENT_DECLINED: Final[dict[SupportedLocale, str]] = {

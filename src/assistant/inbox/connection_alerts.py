@@ -23,6 +23,7 @@ from assistant.accounts.connections import Change, Tier, connection_for_account,
 from assistant.accounts.models import Account, BusinessConnectionEvent
 from assistant.core.channel import Button, ControlChannel, Delivery
 from assistant.core.clock import Clock
+from assistant.core.control_texts import text as operational_text
 from assistant.db.uow import transaction
 from assistant.inbox.notify import AlertKind, AlertResult, OwnerAlerts
 from assistant.privacy.consent_prompts import render_consent_prompt
@@ -81,47 +82,39 @@ MANAGED_CONSENT_DECLINED_NOTE = (
 )
 
 
-def consent_buttons(token: str) -> list[Button]:
+def consent_buttons(token: str, locale: str | None = None) -> list[Button]:
     """Turn on / Not now for a `managed_consent` card (§6.7)."""
     kind = service.MANAGED_CONSENT_CARD
-    return [Button(label, encode(kind, token, op)) for label, op in MANAGED_CONSENT_BUTTONS]
+    return [
+        Button(operational_text(key, locale), encode(kind, token, op))
+        for key, op in (("turn_on", "agree"), ("not_now", "decline"))
+    ]
 
 
-def _rights_note(rights: list[str]) -> str:
-    surplus = unused_rights(frozenset(rights))
-    if not surplus:
-        return ""
-    return (
-        "\n\nRights you granted that I do not use: "
-        + ", ".join(f"<code>{name}</code>" for name in surplus)
-        + ". You can turn them off where you connected me."
+def compose(change: Change, tier: Tier, rights: list[str], locale: str | None = None) -> str:
+    """The current capability and coverage facts, in the owner's language."""
+    capability = operational_text(
+        "capability", locale, tier=operational_text(f"connection_{tier.value}", locale)
     )
-
-
-def compose(change: Change, tier: Tier, rights: list[str]) -> str:
-    """The notice body. Plain statements of fact (§6 invariant 11)."""
-    capability = f"Capability: {TIER_TEXT[tier]}"
-    match change:
-        case Change.CONNECTED | Change.ACTIVATED:
-            return (
-                f"✅ <b>Connected to your account.</b>\n\n{capability}\n\n{VISIBILITY}"
-                + _rights_note(rights)
-            )
-        case Change.RECONNECTED:
-            return (
-                f"🔄 <b>Reconnected to your account.</b>\n\n{capability}\n\n"
-                "Messages sent while I was disconnected never reached me." + _rights_note(rights)
-            )
-        case Change.RIGHTS_CHANGED:
-            return f"🔧 <b>My permissions changed.</b>\n\n{capability}" + _rights_note(rights)
-        case Change.DISABLED:
-            return (
-                "⚠️ <b>I am disconnected from your account.</b>\n\n"
-                "I have stopped processing your chats. Messages sent while I am "
-                "disconnected will not reach me. Connect me again to resume."
-            )
-        case _:
-            raise ValueError(f"no notice for change {change.value}")
+    keys = {
+        Change.CONNECTED: "connected",
+        Change.ACTIVATED: "connected",
+        Change.RECONNECTED: "reconnected",
+        Change.RIGHTS_CHANGED: "rights_changed",
+        Change.DISABLED: "disconnected",
+    }
+    key = keys.get(change)
+    if key is None:
+        raise ValueError(f"no notice for change {change.value}")
+    body = operational_text(key, locale, capability=capability)
+    surplus = unused_rights(frozenset(rights))
+    if surplus and change != Change.DISABLED:
+        body += "\n\n" + operational_text(
+            "unused_rights",
+            locale,
+            rights=", ".join(f"<code>{name}</code>" for name in surplus),
+        )
+    return body
 
 
 async def _managed_consent_missing(session: AsyncSession, account_id: int) -> bool:
@@ -147,27 +140,32 @@ async def notify_connection_change(
         change = Change(event.change)
         # The tier now, not at event time: if rights changed again since, the
         # owner should read the current truth.
-        body = compose(change, Tier(connection.capability_tier), list(connection.rights))
+        locale = account.locale_pref
+        body = compose(change, Tier(connection.capability_tier), list(connection.rights), locale)
         live = change in (Change.CONNECTED, Change.ACTIVATED, Change.RECONNECTED)
         token: str | None = None
         if live and await _managed_consent_missing(session, account.id):
             if await service.live_card(
                 session, account_id=account.id, kind=service.MANAGED_CONSENT_CARD, clock=clock
             ):
-                body += "\n\n" + MANAGED_CONSENT_STILL_OPEN
+                body += "\n\n" + operational_text("managed_open", locale)
             elif await service.managed_consent_declined_since(
                 session,
                 account_id=account.id,
                 since=clock.now() - service.MANAGED_CONSENT_TTL,
             ):
-                body += "\n\n" + MANAGED_CONSENT_DECLINED_NOTE
+                body += "\n\n" + operational_text("managed_declined_note", locale)
             else:
                 # The card is recorded only once the question has arrived
                 # (below): a failed send leaves nothing open.
                 token = new_token()
                 body += "\n\n" + render_consent_prompt(
                     account,
-                    MANAGED_CONSENT_QUESTION.format(processors=", ".join(service.AI_PROCESSORS)),
+                    operational_text(
+                        "managed_prompt",
+                        account.locale_pref,
+                        processors=", ".join(service.AI_PROCESSORS),
+                    ),
                 )
         account_id = account.id
 
@@ -175,7 +173,7 @@ async def notify_connection_change(
         account_id,
         AlertKind.CONNECTION_CHANGE,
         dedupe_key=f"connection_event:{event_id}",
-        buttons=consent_buttons(token) if token is not None else (),
+        buttons=consent_buttons(token, account.locale_pref) if token is not None else (),
         body=body,
     )
     if token is not None and result.sent:
@@ -230,14 +228,18 @@ async def send_managed_consent_card(
             return None
         prompt = render_consent_prompt(
             account,
-            MANAGED_CONSENT_QUESTION.format(processors=", ".join(service.AI_PROCESSORS)),
+            operational_text(
+                "managed_prompt",
+                account.locale_pref,
+                processors=", ".join(service.AI_PROCESSORS),
+            ),
         )
     token = new_token()
     delivery = await channel.send(
         account_id=account_id,
         chat_id=chat_id,
         text=prompt,
-        buttons=consent_buttons(token),
+        buttons=consent_buttons(token, account.locale_pref),
     )
     if delivery.ok:
         async with transaction(session_factory) as uow:

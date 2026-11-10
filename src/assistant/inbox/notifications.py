@@ -37,6 +37,7 @@ from assistant.accounts.service import create_card
 from assistant.conversations.models import Contact
 from assistant.core.channel import Button, ControlChannel
 from assistant.core.clock import Clock
+from assistant.core.control_texts import text as operational_text
 from assistant.core.jobs import NOTIFY_TASK, JobScheduler, notification_queueing_lock
 from assistant.db.uow import after_commit, transaction
 from assistant.inbox.alert_texts import RENDERERS, RenderedAlert, Renderer
@@ -294,7 +295,9 @@ class NotificationDelivery:
             notification.status = "uncertain"
             notification.reason_code = "claimed"
             notification.updated_at = now
-            card_id, buttons = await self._card(session, notification, rendered)
+            card_id, buttons = await self._card(
+                session, notification, rendered, account.locale_pref
+            )
             account_id, chat_id, kind = account.id, account.control_chat_id, notification.kind
 
         sent = await self._channel.send(
@@ -389,7 +392,11 @@ class NotificationDelivery:
         return DeliveryResult(status, reason)
 
     async def _card(
-        self, session: AsyncSession, notification: Notification, rendered: RenderedAlert
+        self,
+        session: AsyncSession,
+        notification: Notification,
+        rendered: RenderedAlert,
+        locale: str | None = None,
     ) -> tuple[int | None, tuple[Button, ...]]:
         """A standard alert about a chat is a card: Open chat, Useful, Not
         useful (S05.2 §3.2). Created in the claim transaction. The renderer's
@@ -406,7 +413,14 @@ class NotificationDelivery:
         )
         token = card.token or ""
         return card.id, (
-            *(Button(label, encode(NTF_CARD, token, op)) for label, op in NTF_BUTTONS),
+            *(
+                Button(operational_text(key, locale), encode(NTF_CARD, token, op))
+                for key, op in (
+                    ("open_chat", OP_OPEN_CHAT),
+                    ("useful", OP_USEFUL),
+                    ("not_useful_button", OP_NOT_USEFUL),
+                )
+            ),
             *rendered.extra_buttons,
         )
 
