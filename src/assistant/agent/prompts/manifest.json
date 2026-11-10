@@ -1,0 +1,163 @@
+{
+  "draft_owner.v1": {
+    "sha256": "b3b238107d6194149d248f36a668c0beb91f0dd1a5663b6289ca095a6a8d6624",
+    "active": false,
+    "structured_outputs": ["assistant.agent.draft_owner_schemas.OwnerDraftResult"],
+    "schema_notes": "Historical schema before answers_message_id was added in v3; current Python classes are not byte-for-byte historical schema snapshots.",
+    "eval_records": []
+  },
+  "draft_owner.v2": {
+    "sha256": "7bae08be169af3cfc0cd9e20903e8c49b06a2ac0d445f258634f27bf0cb92c9b",
+    "active": false,
+    "structured_outputs": ["assistant.agent.draft_owner_schemas.OwnerDraftResult","assistant.agent.draft_owner_schemas.OwnerRevisionResult"],
+    "schema_notes": "Historical schema before answers_message_id was added in v3; current Python classes are not byte-for-byte historical schema snapshots.",
+    "eval_records": ["docs/evals/2026-10-30-owner-drafting-effort-low-gpt-6-luna.json","docs/evals/2026-10-30-owner-drafting-effort-low-gpt-6-luna-trial.json","docs/evals/2026-10-30-owner-drafting-effort-medium-gpt-6-luna.json","docs/evals/2026-10-30-owner-drafting-effort-medium-gpt-6-luna-trial.json"]
+  },
+  "draft_owner.v3": {
+    "sha256": "04f2a8b678de4929c0bf36ab2cc062dedac3200e7026fdeaad84f56e4e73a656",
+    "active": true,
+    "structured_outputs": ["assistant.agent.draft_owner_schemas.OwnerDraftResult","assistant.agent.draft_owner_schemas.OwnerRevisionResult"],
+    "schema_notes": "",
+    "eval_records": ["docs/evals/2026-10-30-owner-drafting-effort-medium-gpt-6-luna-trial-2.json"]
+  },
+  "draft_reply.v1": {
+    "sha256": "ebd4be103bebd0b83f81433b8740e32abe15fa1e53eb827e3f9a6b395468c37f",
+    "active": true,
+    "structured_outputs": ["assistant.agent.draft_schemas.DraftResult"],
+    "schema_notes": "",
+    "eval_records": ["docs/evals/2026-10-29-e2-drafts-gpt-6-luna.json","docs/evals/2026-10-29-e2-drafts-gpt-6-luna-trial.json"]
+  },
+  "evaluate_monitor.v1": {
+    "sha256": "78af21d6b9a86b8caafa06514d32c131606df867b6ac6b937fe0171f67c85c55",
+    "active": true,
+    "structured_outputs": ["assistant.agent.monitor_schemas.MonitorVerdicts"],
+    "schema_notes": "",
+    "eval_records": ["docs/evals/2026-10-29-monitors-gpt-6-luna.json","docs/evals/2026-10-29-monitors-gpt-6-luna-trial.json"]
+  },
+  "owner_request.v1": {
+    "sha256": "b4502118278612deffa2fddd743ff4cee23ebb6251605c59eae5a5668afcc5fa",
+    "active": false,
+    "structured_outputs": [],
+    "schema_notes": "",
+    "eval_records": []
+  },
+  "owner_request.v10": {
+    "sha256": "9b0442834a0765f43454e0e9b650264121f70a1134c2c756b9c432a595172efe",
+    "active": true,
+    "structured_outputs": [],
+    "schema_notes": "",
+    "eval_records": ["docs/evals/2026-10-30-owner-drafting-effort-low-gpt-6-luna.json","docs/evals/2026-10-30-owner-drafting-effort-low-gpt-6-luna-trial.json","docs/evals/2026-10-30-owner-drafting-effort-medium-gpt-6-luna.json","docs/evals/2026-10-30-owner-drafting-effort-medium-gpt-6-luna-trial.json","docs/evals/2026-10-30-owner-drafting-effort-medium-gpt-6-luna-trial-2.json","docs/evals/2026-10-30-retrieval-agent-gpt-6-luna.json","docs/evals/2026-10-30-retrieval-agent-gpt-6-luna-trial.json"]
+  },
+  "owner_request.v2": {
+    "sha256": "c884a298cf67a390fdcf32ed3ed68ecfa08ae9be155e39b2f3e8bffae656f4df",
+    "active": false,
+    "structured_outputs": [],
+    "schema_notes": "",
+    "eval_records": []
+  },
+  "owner_request.v3": {
+    "sha256": "7893b24dbdca7153c764e888ca249417b8b628fe816b4ef7778ab04f927c45cf",
+    "active": false,
+    "structured_outputs": [],
+    "schema_notes": "",
+    "eval_records": []
+  },
+  "owner_request.v4": {
+    "sha256": "ea0edca6d114eace022309f0ff7bede763dd5b9229faff4fd715c14ebbb5f00c",
+    "active": false,
+    "structured_outputs": [],
+    "schema_notes": "",
+    "eval_records": []
+  },
+  "owner_request.v5": {
+    "sha256": "e5fd17ac8a916475e82b8bb113d1f07f684b1033a8683c8f8d9a2b8a33068ef2",
+    "active": false,
+    "structured_outputs": [],
+    "schema_notes": "",
+    "eval_records": []
+  },
+  "owner_request.v6": {
+    "sha256": "66cfbd389dc980294c7b61f87087adaf0f67f7bb130f707ae009fe17e3704117",
+    "active": false,
+    "structured_outputs": [],
+    "schema_notes": "",
+    "eval_records": ["docs/evals/2026-10-26-retrieval-agent-gpt-6-luna-s037-v6.json","docs/evals/2026-10-26-retrieval-agent-gpt-6-luna-s037-v6-trial.json"]
+  },
+  "owner_request.v7": {
+    "sha256": "08adcba2e63fbe81ba66123ae31ed6912a45a43b5c497fe51e1d652acffead90",
+    "active": false,
+    "structured_outputs": [],
+    "schema_notes": "",
+    "eval_records": ["docs/evals/2026-10-26-retrieval-agent-gpt-6-luna-s037-v7.json","docs/evals/2026-10-26-retrieval-agent-gpt-6-luna-s037-v7-trial.json"]
+  },
+  "owner_request.v8": {
+    "sha256": "babf82dd69580cad1605a11daf05244b110dbe79bccba5f2bb0a354904ac4380",
+    "active": false,
+    "structured_outputs": [],
+    "schema_notes": "",
+    "eval_records": ["docs/evals/2026-10-28-retrieval-agent-gpt-6-luna.json","docs/evals/2026-10-28-retrieval-agent-gpt-6-luna-trial.json"]
+  },
+  "owner_request.v9": {
+    "sha256": "6209389f2785f83d3f6404568dbb2801a7839b423f66e812f4acfd5c511da552",
+    "active": false,
+    "structured_outputs": [],
+    "schema_notes": "",
+    "eval_records": ["docs/evals/2026-10-29-retrieval-agent-gpt-6-luna.json","docs/evals/2026-10-29-retrieval-agent-gpt-6-luna-2.json","docs/evals/2026-10-29-retrieval-agent-gpt-6-luna-trial.json","docs/evals/2026-10-29-retrieval-agent-gpt-6-luna-trial-2.json"]
+  },
+  "summarize.v1": {
+    "sha256": "791845b31e8403a3f19af20bd2746f8044f261c62c990a82b87760c33e7362fa",
+    "active": false,
+    "structured_outputs": ["assistant.agent.schemas.ConversationSummaryOutputV4"],
+    "schema_notes": "Legacy v1-v4 schema family; v4 moves language to the first field (v1-v3 predate that ordering).",
+    "eval_records": []
+  },
+  "summarize.v2": {
+    "sha256": "4331a6f112eb17dc32bb07dbeb5a86d89dcb27b84846cbea7cd9e2fa4c7ea250",
+    "active": false,
+    "structured_outputs": ["assistant.agent.schemas.ConversationSummaryOutputV4"],
+    "schema_notes": "Legacy v1-v4 schema family; v4 moves language to the first field (v1-v3 predate that ordering).",
+    "eval_records": ["docs/evals/2026-10-26-summary-gpt-6-luna.json","docs/evals/2026-10-26-summary-gpt-6-luna-trial.json"]
+  },
+  "summarize.v3": {
+    "sha256": "32e59909dfa7d100b3038a9d00e0a7786f1daaad294975dc67c58c496c97eb8b",
+    "active": false,
+    "structured_outputs": ["assistant.agent.schemas.ConversationSummaryOutputV4"],
+    "schema_notes": "Legacy v1-v4 schema family; v4 moves language to the first field (v1-v3 predate that ordering).",
+    "eval_records": ["docs/evals/2026-10-26-summary-gpt-6-luna-s036-v3.json","docs/evals/2026-10-26-summary-gpt-6-luna-s036-v3-trial.json"]
+  },
+  "summarize.v4": {
+    "sha256": "65631c24887a78e6fecb560ce2f7070448eb25c2b590a154a09c1d8031a26bef",
+    "active": false,
+    "structured_outputs": ["assistant.agent.schemas.ConversationSummaryOutputV4"],
+    "schema_notes": "Legacy v1-v4 schema family; v4 moves language to the first field (v1-v3 predate that ordering).",
+    "eval_records": ["docs/evals/2026-10-26-summary-gpt-6-luna-s036-v4.json","docs/evals/2026-10-26-summary-gpt-6-luna-s036-v4-trial.json"]
+  },
+  "summarize.v5": {
+    "sha256": "cfb0372e6fe44dee20ab0d62679cd4fadd531d7951aafd213d57a1e0354a8bc0",
+    "active": false,
+    "structured_outputs": ["assistant.agent.schemas.ConversationSummaryOutput"],
+    "schema_notes": "",
+    "eval_records": ["docs/evals/2026-10-26-summary-gpt-6-luna-s037-v5.json","docs/evals/2026-10-26-summary-gpt-6-luna-s037-v5-trial.json"]
+  },
+  "summarize.v6": {
+    "sha256": "3da43165be00e5432bd58fb3b846165effc2127b104238ead5db896c6dc8f501",
+    "active": false,
+    "structured_outputs": ["assistant.agent.schemas.ConversationSummaryOutput"],
+    "schema_notes": "",
+    "eval_records": ["docs/evals/2026-10-26-summary-gpt-6-luna-s037-v6.json","docs/evals/2026-10-26-summary-gpt-6-luna-s037-v6-trial.json"]
+  },
+  "summarize.v7": {
+    "sha256": "e1a37502d350f2ec7182b4c99a0eb4be0461da42ff641264cc82690c47171dc0",
+    "active": true,
+    "structured_outputs": ["assistant.agent.schemas.ConversationSummaryOutput"],
+    "schema_notes": "",
+    "eval_records": ["docs/evals/2026-10-26-summary-gpt-6-luna-s037-v7.json","docs/evals/2026-10-26-summary-gpt-6-luna-s037-v7-only-low.json","docs/evals/2026-10-26-summary-gpt-6-luna-s037-v7-only-medium.json","docs/evals/2026-10-27-summary-gpt-6-sol-g1-c15.json","docs/evals/2026-10-27-summary-gpt-6-sol-g1-c28.json","docs/evals/2026-10-27-summary-gpt-6-sol-g1-c36.json"]
+  },
+  "triage.v1": {
+    "sha256": "6820dcb05a14f06d5d4258192ed56bec6fd678195767438cbef54c8645165689",
+    "active": true,
+    "structured_outputs": ["assistant.agent.triage_schemas.TriageResult"],
+    "schema_notes": "",
+    "eval_records": ["docs/evals/2026-10-29-triage-gpt-6-luna.json","docs/evals/2026-10-29-triage-gpt-6-luna-trial.json"]
+  }
+}

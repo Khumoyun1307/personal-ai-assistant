@@ -1,6 +1,6 @@
 """Versioned prompts (ARCHITECTURE §7.6, AGENTS §8).
 
-Prompts are files named `name.vN.md` in `agent/prompts/`. `ACTIVE` says which
+Prompts are manifest-listed files in `agent/prompts/` and its `archive/`. `ACTIVE` says which
 version each run type uses, and that version is stored on every `agent_runs`
 row. A version that has been used in a run is never edited: add the next
 version and switch it here.
@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cache
+from hashlib import sha256
 from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 
@@ -121,10 +124,50 @@ class Prompt:
         return f"{self.name}.{self.version}"
 
 
+class PromptAsset(BaseModel):
+    """Content-free provenance; historical schema notes are not replay adapters."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    active: bool
+    structured_outputs: list[str]
+    schema_notes: str
+    eval_records: list[str]
+
+
+def manifest() -> dict[str, PromptAsset]:
+    """Read the committed inventory (labels are the retained run identifiers)."""
+    return TypeAdapter(dict[str, PromptAsset]).validate_json(
+        (PROMPT_DIR / "manifest.json").read_bytes()
+    )
+
+
+def asset_path(name: str, version: str) -> Path:
+    """Resolve only inventoried labels, including archived versions."""
+    label = f"{name}.{version}"
+    asset = manifest()[label]
+    # Never accept path syntax, even if an inventory entry is accidentally invalid.
+    if not name.isidentifier() or not version.removeprefix("v").isdigit():
+        raise ValueError("invalid prompt label")
+    directory = PROMPT_DIR if asset.active else PROMPT_DIR / "archive"
+    return directory / f"{label}.md"
+
+
+def load_bytes(name: str, version: str) -> bytes:
+    """The identical on-disk bytes, checked before model-facing decoding."""
+    label = f"{name}.{version}"
+    asset = manifest()[label]
+    raw = asset_path(name, version).read_bytes()
+    if sha256(raw).hexdigest() != asset.sha256:
+        raise ValueError(f"prompt hash mismatch: {label}")
+    return raw
+
+
 @cache
 def load(name: str, version: str) -> Prompt:
-    path = PROMPT_DIR / f"{name}.{version}.md"
-    return Prompt(name=name, version=version, text=path.read_text(encoding="utf-8").strip())
+    text = load_bytes(name, version).decode("utf-8").strip()
+    return Prompt(name=name, version=version, text=text)
 
 
 def active(name: str) -> Prompt:
