@@ -77,6 +77,7 @@ from assistant.telegram.control.handlers import (
     HandlerResult,
     IncomingMessage,
     arm_consent_question,
+    local_time,
     queue_deletion,
     render_panel,
 )
@@ -972,7 +973,7 @@ async def mutes_screen(
             scope += f", monitor #{mute.monitor_id}"
         lines.append(
             f"\n{escape(label)} ({scope})\n"
-            f"Why: Not useful feedback. Since: {mute.since.isoformat()} (UTC)."
+            f"Why: Not useful feedback. Since: {local_time(mute.since, account.timezone)}."
         )
         rows.append([(f"Reset {label} ({scope})", f"r{mute.notification_id}")])
     if not mutes:

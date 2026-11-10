@@ -46,7 +46,7 @@ async def test_mutes_are_visible_scoped_and_resettable(env: Env) -> None:
         assert "triage needs reply" in shown.text
         assert "monitor #11" in shown.text
         assert "Not useful feedback" in shown.text
-        assert DAY.isoformat() in shown.text
+        assert "Since: 2026-10-18 12:00 UTC." in shown.text
         assert shown.rows is not None
         assert any(op == f"r{first}" for row in shown.rows for _, op in row)
         assert any(op == f"r{monitor}" for row in shown.rows for _, op in row)
@@ -59,6 +59,17 @@ async def test_mutes_are_visible_scoped_and_resettable(env: Env) -> None:
         assert await reset_mutes(session, account_id=owner.id)
         assert await list_mutes(session, account_id=owner.id, now=DAY) == []
         assert len(await list_mutes(session, account_id=other.id, now=DAY)) == 1
+
+
+async def test_mute_start_time_uses_owner_timezone_across_date_boundary(env: Env) -> None:
+    env.clock.set(DAY)
+    async with env.factory() as session, session.begin():
+        owner = await seed_account(session, timezone="Pacific/Auckland")
+        await mute(session, owner.id)
+        shown = await mutes_screen(session, env.clock, owner)
+        assert "Since: 2026-10-19 01:00 NZDT." in shown.text
+        assert "2026-10-18" not in shown.text
+        assert "UTC" not in shown.text
 
 
 async def test_delivery_reads_monitor_scoped_feedback(env: Env) -> None:
