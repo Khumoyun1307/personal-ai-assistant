@@ -394,12 +394,18 @@ async def list_items(
     conversation_id: int | None = None,
     scope: str | None = None,
     limit: int = 20,
+    offset: int = 0,
+    kind: str | None = None,
+    query: str | None = None,
     include_managed: bool = True,
 ) -> tuple[list[MemoryView], int]:
     """Active items, newest first: (page, total matching). A contact filter
     also returns the notes of that contact's conversations. Without
     `include_managed` (no `ai_managed` consent) items that may hold
-    managed-chat content are left out (invariant 9)."""
+    managed-chat content are left out before counting/paging (invariant 9).
+    `query` is a literal, case-insensitive substring of the saved content.
+    Pages use created_at/id descending, including a deterministic tie-break.
+    Offsets describe the current matching set; restart after changing items."""
     statement = (
         select(MemoryItem)
         .where(MemoryItem.account_id == account_id)
@@ -420,11 +426,17 @@ async def list_items(
         statement = statement.where(MemoryItem.conversation_id == conversation_id)
     if scope is not None:
         statement = statement.where(MemoryItem.scope == scope)
+    if kind is not None:
+        statement = statement.where(MemoryItem.kind == kind)
+    if query is not None:
+        statement = statement.where(MemoryItem.content.icontains(query, autoescape=True))
     total = (
         await session.execute(select(func.count()).select_from(statement.subquery()))
     ).scalar_one()
     rows = await session.execute(
-        statement.order_by(MemoryItem.created_at.desc(), MemoryItem.id.desc()).limit(limit)
+        statement.order_by(MemoryItem.created_at.desc(), MemoryItem.id.desc())
+        .offset(offset)
+        .limit(limit)
     )
     return [_view(row) for row in rows.scalars().all()], int(total)
 

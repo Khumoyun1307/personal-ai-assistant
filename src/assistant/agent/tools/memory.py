@@ -34,7 +34,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictInt, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -89,6 +89,16 @@ def _limit(value: int | None) -> int | None:
     if value is not None and not 1 <= value <= 50:
         raise ArgumentRuleError("must be between 1 and 50")
     return value
+
+
+def _offset(value: int | None) -> int | None:
+    if value is not None and not 0 <= value < 2**63:
+        raise ArgumentRuleError("must be between 0 and 2**63 - 1")
+    return value
+
+
+def _query(value: str | None) -> str | None:
+    return None if value is None else _content(value)
 
 
 # ------------------------------------------------------------ remember
@@ -432,6 +442,23 @@ class ListMemoriesArgs(BaseModel):
     limit: Annotated[int | None, AfterValidator(_limit)] = Field(
         description="How many, 1-50 (default 20), or null."
     )
+    offset: Annotated[StrictInt | None, AfterValidator(_offset)] = Field(
+        default=None,
+        description=(
+            "Skip this many matching items (default 0), or null. For the next page, "
+            "copy next_offset and keep the same filters. Restart at 0 after changing notes."
+        ),
+    )
+    kind: MemoryKind | None = Field(
+        default=None, description="Only instruction, preference, fact or style items, or null."
+    )
+    query: Annotated[str | None, AfterValidator(_query)] = Field(
+        default=None,
+        description=(
+            "Literal case-insensitive text to find in saved notes (1-400 characters), "
+            "or null. Combines with the other filters."
+        ),
+    )
 
     @model_validator(mode="after")
     def _one_filter(self) -> Self:
@@ -488,6 +515,9 @@ async def list_memories_tool(ctx: ToolContext, args: ListMemoriesArgs) -> ToolOu
             conversation_id=args.conversation_id,
             scope=args.scope,
             limit=args.limit or 20,
+            offset=args.offset or 0,
+            kind=args.kind,
+            query=args.query,
             include_managed=managed_ok,
         )
         withheld = 0
@@ -498,20 +528,29 @@ async def list_memories_tool(ctx: ToolContext, args: ListMemoriesArgs) -> ToolOu
                 contact_id=args.contact_id,
                 conversation_id=args.conversation_id,
                 scope=args.scope,
+                kind=args.kind,
+                query=args.query,
                 limit=1,
             )
             withheld = everything - total
+    offset = args.offset or 0
+    next_offset = offset + len(found) if offset + len(found) < total else None
     data: dict[str, object] = {
         "items": [memory_view(item, account.timezone) for item in found],
         "count": len(found),
         "total": total,
+        "offset": offset,
+        "next_offset": next_offset,
         "rule": (
             "These are only the notes the owner saved. They are not everything known "
             "about a person: their chat's summary comes from get_conversation."
         ),
     }
-    if total > len(found):
-        data["note"] = f"{total - len(found)} older item(s) not shown (limit)."
+    if next_offset is not None:
+        data["note"] = (
+            f"{total - next_offset} older item(s) not shown; "
+            f"use offset={next_offset} with the same filters for the next page."
+        )
     if withheld:
         data["withheld"] = withheld
         data["withheld_note"] = (
@@ -539,7 +578,8 @@ LIST_MEMORIES = ToolDefinition(
     name="list_memories",
     description=(
         "List what the owner asked you to remember: their instructions, preferences "
-        "and facts, and notes about contacts or chats, newest first, with memory_id."
+        "and facts, and notes about contacts or chats, newest first, with memory_id. "
+        "Filter by kind or literal text (query); use next_offset to page through matches."
     ),
     args_model=ListMemoriesArgs,
     capability=CapabilityClass.READ,

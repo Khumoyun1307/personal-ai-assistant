@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -188,6 +189,222 @@ async def ctx(env: Env, *, run_id: int = 0, call_id: str = "", channel: Any = No
         ),
         call_id=call_id,
     )
+
+
+def lookup_args(**extra: Any) -> ListMemoriesArgs:
+    return ListMemoriesArgs.model_validate(
+        {"contact_id": None, "conversation_id": None, "scope": None, "limit": 50, **extra}
+    )
+
+
+async def test_memory_pages_find_correct_and_forget_an_item_beyond_fifty(env: Env) -> None:
+    await seed(env)
+    account = await account_id(env)
+    async with env.factory() as session, session.begin():
+        rows = [
+            MemoryItem(
+                account_id=account,
+                scope="owner",
+                kind="fact",
+                content=f"SYNTH page {i}",
+                created_at=env.clock.now(),
+                updated_at=env.clock.now(),
+            )
+            for i in range(55)
+        ]
+        session.add_all(rows)
+        await session.flush()
+        expected = [row.id for row in reversed(rows)]
+
+    context = await ctx(env)
+    first = await list_memories_tool(context, lookup_args())
+    second = await list_memories_tool(context, lookup_args(offset=first.data["next_offset"]))
+    assert [i["memory_id"] for i in first.data["items"]] == expected[:50]
+    assert [i["memory_id"] for i in second.data["items"]] == expected[50:]
+    assert first.data["total"] == 55
+    assert first.data["next_offset"] == 50
+    assert second.data["next_offset"] is None
+    assert "note" not in second.data
+    empty = await list_memories_tool(context, lookup_args(offset=55))
+    assert empty.data["items"] == []
+    assert empty.data["total"] == 55
+    assert empty.data["next_offset"] is None
+
+    target = expected[-1]
+    turn = await ask(env, "Correct SYNTH page 0")
+    fake = FakeLLM(
+        tool_response(
+            ("correct", "remember", remember_args("SYNTH corrected", replaces_memory_id=target))
+        ),
+        text_response("Saved."),
+    )
+    await runtime(env, fake, FakeChannel(), flags=FLAGS).run(turn)
+    saved = results(fake.requests[1])[0]
+    assert saved["replaced_memory_id"] == target
+    assert next(row for row in await items(env) if row.id == target).status == "archived"
+    found = await list_memories_tool(context, lookup_args(query="corrected", kind="fact"))
+    assert [i["memory_id"] for i in found.data["items"]] == [saved["memory_id"]]
+    turn = await ask(env, "Forget SYNTH corrected")
+    fake = FakeLLM(
+        tool_response(("forget", "forget", args(memory_id=saved["memory_id"]))),
+        text_response("Forgotten."),
+    )
+    await runtime(env, fake, FakeChannel(), flags=FLAGS).run(turn)
+    assert results(fake.requests[1])[0]["status"] == "ok"
+    found = await list_memories_tool(context, lookup_args(query="corrected"))
+    assert found.data["items"] == []
+    # A different item discovered on page two can also be forgotten directly.
+    older = expected[-2]
+    turn = await ask(env, "Forget SYNTH page 1")
+    fake = FakeLLM(
+        tool_response(("forget-older", "forget", args(memory_id=older))),
+        text_response("Forgotten."),
+    )
+    await runtime(env, fake, FakeChannel(), flags=FLAGS).run(turn)
+    assert results(fake.requests[1])[0]["status"] == "ok"
+    assert next(row for row in await items(env) if row.id == older).status == "archived"
+
+
+async def test_memory_lookup_combines_text_contact_and_kind_without_foreign_rows(env: Env) -> None:
+    conversation = await seed(env)
+    contact = await contact_id(env)
+    account = await account_id(env)
+    async with env.factory() as session, session.begin():
+        other = Account(telegram_user_id=7000000099, timezone="UTC")
+        session.add(other)
+        await session.flush()
+        rows = [
+            MemoryItem(
+                account_id=account,
+                scope="contact",
+                contact_id=contact,
+                kind="preference",
+                content="SYNTH 50%_done contact",
+            ),
+            MemoryItem(
+                account_id=account,
+                scope="conversation",
+                conversation_id=conversation,
+                kind="preference",
+                content="SYNTH 50%_done chat",
+            ),
+            MemoryItem(
+                account_id=account,
+                scope="owner",
+                kind="preference",
+                content="SYNTH 50%_done owner",
+            ),
+            MemoryItem(
+                account_id=account,
+                scope="contact",
+                contact_id=contact,
+                kind="fact",
+                content="SYNTH 50%_done fact",
+            ),
+            MemoryItem(
+                account_id=account,
+                scope="contact",
+                contact_id=contact,
+                kind="preference",
+                content="SYNTH 50xxdone wildcard decoy",
+            ),
+            MemoryItem(
+                account_id=other.id,
+                scope="owner",
+                kind="preference",
+                content="SYNTH 50%_done foreign",
+            ),
+        ]
+        session.add_all(rows)
+        await session.flush()
+        matching = {rows[0].id, rows[1].id}
+        foreign = rows[-1].id
+    context = await ctx(env)
+    found = await list_memories_tool(
+        context, lookup_args(contact_id=contact, query="50%_DONE", kind="preference", limit=1)
+    )
+    assert found.data["total"] == 2
+    assert found.data["next_offset"] == 1
+    last = await list_memories_tool(
+        context,
+        lookup_args(contact_id=contact, query="50%_DONE", kind="preference", limit=1, offset=1),
+    )
+    assert {i["memory_id"] for page in (found, last) for i in page.data["items"]} == matching
+    all_matches = await list_memories_tool(context, lookup_args(query="50%_done"))
+    assert all_matches.data["total"] == 4
+    assert foreign not in {i["memory_id"] for i in all_matches.data["items"]}
+    with pytest.raises(NotInAccountError):
+        await forget_tool(context, ForgetArgs(memory_id=foreign))
+    with pytest.raises(NotInAccountError):
+        await remember_tool(
+            context,
+            RememberArgs.model_validate(
+                json.loads(remember_args("SYNTH", replaces_memory_id=foreign))
+            ),
+        )
+
+
+async def test_memory_lookup_pages_preserve_managed_withholding_wrapping_and_refs(env: Env) -> None:
+    conversation = await seed(env)
+    contact = await contact_id(env)
+    account = await account_id(env)
+    async with env.factory() as session, session.begin():
+        tainted = MemoryItem(
+            account_id=account,
+            scope="owner",
+            kind="fact",
+            content=INJECTION,
+            created_at=env.clock.now(),
+            updated_at=env.clock.now(),
+            provenance={
+                "tainted": True,
+                "refs": {"conversation_ids": [conversation], "contact_ids": [contact]},
+            },
+        )
+        session.add(tainted)
+        await session.flush()
+        tainted_id = tainted.id
+        session.add_all(
+            [
+                MemoryItem(
+                    account_id=account,
+                    scope="owner",
+                    kind="fact",
+                    content="SYNTH clean",
+                    created_at=env.clock.now(),
+                    updated_at=env.clock.now(),
+                )
+                for _ in range(51)
+            ]
+        )
+    context = await ctx(env)
+    hidden = await list_memories_tool(context, lookup_args(offset=50, kind="fact"))
+    assert hidden.data["total"] == 51
+    assert hidden.data["count"] == 1
+    assert hidden.data["withheld"] == 1
+    assert hidden.data["next_offset"] is None
+    assert hidden.contains_managed is False
+    assert hidden.untrusted is False
+    assert INJECTION not in json.dumps(dict(hidden.data))
+    visible = await list_memories_tool(
+        replace(context, managed_ok=True), lookup_args(offset=50, kind="fact")
+    )
+    assert visible.data["total"] == 52
+    assert visible.contains_managed is True
+    assert visible.untrusted is True
+    shown = next(i for i in visible.data["items"] if i["memory_id"] == tainted_id)
+    assert "memory_from_tainted_run" in shown["content"]
+    assert shown["source"] == "owner_stated"
+    assert visible.refs.conversation_ids == frozenset({conversation})
+    assert visible.refs.contact_ids == frozenset({contact})
+    filtered = await list_memories_tool(
+        context, lookup_args(query="SYSTEM", kind="fact", offset=50)
+    )
+    assert filtered.data["total"] == 0
+    assert filtered.data["withheld"] == 1
+    assert filtered.data["items"] == []
+    clean = await list_memories_tool(context, lookup_args(query="clean", kind="fact"))
+    assert "withheld" not in clean.data
 
 
 # ------------------------------------------------------------ CRUD with Undo
