@@ -1,0 +1,1019 @@
+{
+    "alerts_title": {
+        "en": "Alerts & digest",
+        "uz-Latn": "Bildirishnomalar va dayjest",
+        "uz-Cyrl": "Билдиришномалар ва дайжест",
+        "ru": "Уведомления и дайджест"
+    },
+    "consent_blocked": {
+        "en": "AI remains blocked after the restore. Privacy recovery must finish before consent can be renewed. Consent was not granted.",
+        "uz-Latn": "Tiklashdan keyin AI hali bloklangan. Rozilikni qayta berishdan oldin maxfiylikni tiklash tugashi kerak. Rozilik berilmadi.",
+        "uz-Cyrl": "Тиклашдан кейин AI ҳали блокланган. Розиликни қайта беришдан олдин махфийликни тиклаш тугаши керак. Розилик берилмади.",
+        "ru": "После восстановления ИИ остаётся заблокированным. Сначала нужно завершить восстановление решений о конфиденциальности. Согласие не предоставлено."
+    },
+    "restore_pending": {
+        "en": "  restore_pending: recovery incomplete; AI processing blocked",
+        "uz-Latn": "  restore_pending: tiklash tugamagan; AI orqali qayta ishlash bloklangan",
+        "uz-Cyrl": "  restore_pending: тиклаш тугамаган; AI орқали қайта ишлаш блокланган",
+        "ru": "  restore_pending: восстановление не завершено; обработка ИИ заблокирована"
+    },
+    "restore_consent_pending": {
+        "en": "  restore_consent_pending: {scopes}; renew with /start or /privacy managed",
+        "uz-Latn": "  restore_consent_pending: {scopes}; /start yoki /privacy managed orqali rozilikni yangilang",
+        "uz-Cyrl": "  restore_consent_pending: {scopes}; /start ёки /privacy managed орқали розиликни янгиланг",
+        "ru": "  restore_consent_pending: {scopes}; обновите согласие через /start или /privacy managed"
+    },
+    "feedback_muted": {
+        "en": "Muted this alert scope for up to 30 days, except urgent. View/reset: /settings → Alerts & digest → Derived mutes.",
+        "uz-Latn": "Bu doiradagi shoshilinch boʻlmagan bildirishnomalar 30 kungacha oʻchirildi. Koʻrish/qayta yoqish: /settings → Bildirishnomalar va dayjest → Fikrlar asosida oʻchirilganlar.",
+        "uz-Cyrl": "Бу доирадаги шошилинч бўлмаган билдиришномалар 30 кунгача ўчирилди. Кўриш/қайта ёқиш: /settings → Билдиришномалар ва дайжест → Фикрлар асосида ўчирилганлар.",
+        "ru": "Уведомления в этой области отключены на срок до 30 дней, кроме срочных. Просмотр/сброс: /settings → Уведомления и дайджест → Отключённые по отзывам."
+    },
+    "mutes_title": {
+        "en": "Derived mutes",
+        "uz-Latn": "Fikrlar asosida oʻchirilganlar",
+        "uz-Cyrl": "Фикрлар асосида ўчирилганлар",
+        "ru": "Отключённые по отзывам"
+    },
+    "mutes_button": {
+        "en": "Derived mutes…",
+        "uz-Latn": "Fikrlar asosida oʻchirilganlar…",
+        "uz-Cyrl": "Фикрлар асосида ўчирилганлар…",
+        "ru": "Отключённые по отзывам…"
+    },
+    "mutes_body": {
+        "en": "Two Not useful marks mute non-urgent alerts in the same scope for up to 30 days. They remain available in /digest. Reset restores future delivery policy; it does not replay old alerts.",
+        "uz-Latn": "Bir doirada ikki marta «Foydasiz» bosilsa, shoshilinch boʻlmagan bildirishnomalar 30 kungacha oʻchiriladi. Ular /digest da qoladi. Qayta yoqish keyingi bildirishnomalarga odatdagi qoidalarni qoʻllaydi; eskilarini qayta yubormaydi.",
+        "uz-Cyrl": "Бир доирада икки марта «Фойдасиз» босилса, шошилинч бўлмаган билдиришномалар 30 кунгача ўчирилади. Улар /digest да қолади. Қайта ёқиш кейинги билдиришномаларга одатдаги қоидаларни қўллайди; эскиларини қайта юбормайди.",
+        "ru": "Две отметки «Не полезно» отключают несрочные уведомления в той же области на срок до 30 дней. Они остаются в /digest. Сброс возвращает обычные правила для будущих уведомлений; старые повторно не отправляются."
+    },
+    "mute_contact": {
+        "en": "contact #{id}", "uz-Latn": "kontakt #{id}", "uz-Cyrl": "контакт #{id}", "ru": "контакт №{id}"
+    },
+    "mute_no_contact": {
+        "en": "no contact", "uz-Latn": "kontaktsiz", "uz-Cyrl": "контактсиз", "ru": "без контакта"
+    },
+    "mute_monitor": {
+        "en": "monitor #{id}", "uz-Latn": "kuzatuv #{id}", "uz-Cyrl": "кузатув #{id}", "ru": "наблюдение №{id}"
+    },
+    "mute_reason": {
+        "en": "Why: Not useful feedback. Since: {since}.",
+        "uz-Latn": "Sabab: «Foydasiz» baholari. Boshlangan vaqt: {since}.",
+        "uz-Cyrl": "Сабаб: «Фойдасиз» баҳолари. Бошланган вақт: {since}.",
+        "ru": "Причина: отметки «Не полезно». С: {since}."
+    },
+    "mute_reset": {
+        "en": "Reset {label} ({scope})",
+        "uz-Latn": "Qayta yoqish: {label} ({scope})",
+        "uz-Cyrl": "Қайта ёқиш: {label} ({scope})",
+        "ru": "Сбросить: {label} ({scope})"
+    },
+    "mutes_empty": {
+        "en": "No current derived mutes.",
+        "uz-Latn": "Hozir fikrlar asosida oʻchirilgan bildirishnomalar yoʻq.",
+        "uz-Cyrl": "Ҳозир фикрлар асосида ўчирилган билдиришномалар йўқ.",
+        "ru": "Сейчас нет уведомлений, отключённых по отзывам."
+    },
+    "previous": {
+        "en": "Previous", "uz-Latn": "Oldingi", "uz-Cyrl": "Олдинги", "ru": "Назад"
+    },
+    "next": {
+        "en": "Next", "uz-Latn": "Keyingi", "uz-Cyrl": "Кейинги", "ru": "Далее"
+    },
+    "mutes_reset_all": {
+        "en": "Reset all feedback mutes",
+        "uz-Latn": "Fikrlar asosida oʻchirilganlarning barchasini qayta yoqish",
+        "uz-Cyrl": "Фикрлар асосида ўчирилганларнинг барчасини қайта ёқиш",
+        "ru": "Сбросить все отключения по отзывам"
+    },
+    "mutes_all_reset": {
+        "en": "All feedback mutes reset",
+        "uz-Latn": "Fikrlar asosidagi barcha oʻchirishlar bekor qilindi",
+        "uz-Cyrl": "Фикрлар асосидаги барча ўчиришлар бекор қилинди",
+        "ru": "Все отключения по отзывам сброшены"
+    },
+    "mute_reset_done": {
+        "en": "Feedback mute reset",
+        "uz-Latn": "Fikrlar asosidagi oʻchirish bekor qilindi",
+        "uz-Cyrl": "Фикрлар асосидаги ўчириш бекор қилинди",
+        "ru": "Отключение по отзывам сброшено"
+    },
+    "mute_kind_triage_urgent": {
+        "en": "triage urgent", "uz-Latn": "shoshilinch xabar", "uz-Cyrl": "шошилинч хабар", "ru": "срочное сообщение"
+    },
+    "mute_kind_triage_decision": {
+        "en": "triage decision", "uz-Latn": "qaror kerak", "uz-Cyrl": "қарор керак", "ru": "нужно решение"
+    },
+    "mute_kind_triage_needs_reply": {
+        "en": "triage needs reply", "uz-Latn": "javob kerak", "uz-Cyrl": "жавоб керак", "ru": "нужен ответ"
+    },
+    "mute_kind_triage_suspicious": {
+        "en": "triage suspicious", "uz-Latn": "shubhali xabar", "uz-Cyrl": "шубҳали хабар", "ru": "подозрительное сообщение"
+    },
+    "mute_kind_task_closed": {
+        "en": "task closed", "uz-Latn": "vazifa yopildi", "uz-Cyrl": "вазифа ёпилди", "ru": "задача закрыта"
+    },
+    "mute_kind_commitment_due": {
+        "en": "commitment due", "uz-Latn": "vaʼda muddati", "uz-Cyrl": "ваъда муддати", "ru": "срок обязательства"
+    },
+    "mute_kind_monitor_match": {
+        "en": "monitor match", "uz-Latn": "kuzatuv sharti bajarildi", "uz-Cyrl": "кузатув шарти бажарилди", "ru": "условие наблюдения выполнено"
+    },
+    "mute_kind_system": {
+        "en": "system", "uz-Latn": "tizim", "uz-Cyrl": "тизим", "ru": "система"
+    },
+    "settings_heading":  {
+                             "en":  "\u003cb\u003eSettings\u003c/b\u003e",
+                             "uz-Latn":  "\u003cb\u003eSozlamalar\u003c/b\u003e",
+                             "uz-Cyrl":  "\u003cb\u003eСозламалар\u003c/b\u003e",
+                             "ru":  "\u003cb\u003eНастройки\u003c/b\u003e"
+                         },
+    "privacy_heading":  {
+                            "en":  "\u003cb\u003ePrivacy\u003c/b\u003e",
+                            "uz-Latn":  "\u003cb\u003eMaxfiylik\u003c/b\u003e",
+                            "uz-Cyrl":  "\u003cb\u003eМахфийлик\u003c/b\u003e",
+                            "ru":  "\u003cb\u003eКонфиденциальность\u003c/b\u003e"
+                        },
+    "alerts_heading":  {
+                           "en":  "\u003cb\u003eAlerts \u0026 digest\u003c/b\u003e",
+                           "uz-Latn":  "\u003cb\u003eBildirishnomalar va dayjest\u003c/b\u003e",
+                           "uz-Cyrl":  "\u003cb\u003eБилдиришномалар ва дайжест\u003c/b\u003e",
+                           "ru":  "\u003cb\u003eУведомления и дайджест\u003c/b\u003e"
+                       },
+    "paused":  {
+                   "en":  "Paused: no automatic replies until you send /resume. Replies you approve are still sent.",
+                   "uz-Latn":  "Toʻxtatildi: /resume yubormaguningizcha avtomatik javoblar boʻlmaydi. Siz tasdiqlagan javoblar yuboriladi.",
+                   "uz-Cyrl":  "Тўхтатилди: /resume юбормагунингизча автоматик жавоблар бўлмайди. Сиз тасдиқлаган жавоблар юборилади.",
+                   "ru":  "Приостановлено: автоматических ответов не будет до /resume. Одобренные вами ответы по-прежнему отправляются."
+               },
+    "resumed":  {
+                    "en":  "Resumed.",
+                    "uz-Latn":  "Davom ettirildi.",
+                    "uz-Cyrl":  "Давом эттирилди.",
+                    "ru":  "Возобновлено."
+                },
+    "expired":  {
+                    "en":  "This button is no longer active.",
+                    "uz-Latn":  "Bu tugma endi faol emas.",
+                    "uz-Cyrl":  "Бу тугма энди фаол эмас.",
+                    "ru":  "Эта кнопка больше не действует."
+                },
+    "back":  {
+                 "en":  "◀ Back",
+                 "uz-Latn":  "◀ Orqaga",
+                 "uz-Cyrl":  "◀ Орқага",
+                 "ru":  "◀ Назад"
+             },
+    "saved":  {
+                  "en":  "Saved",
+                  "uz-Latn":  "Saqlandi",
+                  "uz-Cyrl":  "Сақланди",
+                  "ru":  "Сохранено"
+              },
+    "settings":  {
+                     "en":  "Settings",
+                     "uz-Latn":  "Sozlamalar",
+                     "uz-Cyrl":  "Созламалар",
+                     "ru":  "Настройки"
+                 },
+    "cancel":  {
+                   "en":  "Cancel",
+                   "uz-Latn":  "Bekor qilish",
+                   "uz-Cyrl":  "Бекор қилиш",
+                   "ru":  "Отмена"
+               },
+    "turn_on":  {
+                    "en":  "Turn on",
+                    "uz-Latn":  "Yoqish",
+                    "uz-Cyrl":  "Ёқиш",
+                    "ru":  "Включить"
+                },
+    "not_now":  {
+                    "en":  "Not now",
+                    "uz-Latn":  "Hozir emas",
+                    "uz-Cyrl":  "Ҳозир эмас",
+                    "ru":  "Не сейчас"
+                },
+    "delete":  {
+                   "en":  "Delete",
+                   "uz-Latn":  "Oʻchirish",
+                   "uz-Cyrl":  "Ўчириш",
+                   "ru":  "Удалить"
+               },
+    "delete_all":  {
+                       "en":  "Delete everything",
+                       "uz-Latn":  "Hammasini oʻchirish",
+                       "uz-Cyrl":  "Ҳаммасини ўчириш",
+                       "ru":  "Удалить всё"
+                   },
+    "keep":  {
+                 "en":  "Keep",
+                 "uz-Latn":  "Saqlash",
+                 "uz-Cyrl":  "Сақлаш",
+                 "ru":  "Оставить"
+             },
+    "without_ai":  {
+                       "en":  "Without AI",
+                       "uz-Latn":  "AI ishlatmasdan",
+                       "uz-Cyrl":  "AI ишлатмасдан",
+                       "ru":  "Без ИИ"
+                   },
+    "stop_observing":  {
+                           "en":  "Stop observing",
+                           "uz-Latn":  "Kuzatishni toʻxtatish",
+                           "uz-Cyrl":  "Кузатишни тўхтатиш",
+                           "ru":  "Прекратить наблюдение"
+                       },
+    "language":  {
+                     "en":  "Language…",
+                     "uz-Latn":  "Til…",
+                     "uz-Cyrl":  "Тил…",
+                     "ru":  "Язык…"
+                 },
+    "replies":  {
+                    "en":  "Replies…",
+                    "uz-Latn":  "Javoblar…",
+                    "uz-Cyrl":  "Жавоблар…",
+                    "ru":  "Ответы…"
+                },
+    "retention":  {
+                      "en":  "Retention…",
+                      "uz-Latn":  "Saqlash muddati…",
+                      "uz-Cyrl":  "Сақлаш муддати…",
+                      "ru":  "Срок хранения…"
+                  },
+    "alerts":  {
+                   "en":  "Alerts \u0026 digest…",
+                   "uz-Latn":  "Bildirishnomalar va dayjest…",
+                   "uz-Cyrl":  "Билдиришномалар ва дайжест…",
+                   "ru":  "Уведомления и дайджест…"
+               },
+    "delete_all_more":  {
+                            "en":  "Delete everything…",
+                            "uz-Latn":  "Hammasini oʻchirish…",
+                            "uz-Cyrl":  "Ҳаммасини ўчириш…",
+                            "ru":  "Удалить всё…"
+                        },
+    "observe":  {
+                    "en":  "Observe",
+                    "uz-Latn":  "Kuzatish",
+                    "uz-Cyrl":  "Кузатиш",
+                    "ru":  "Наблюдать"
+                },
+    "ignore":  {
+                   "en":  "Ignore",
+                   "uz-Latn":  "Eʼtiborsiz qoldirish",
+                   "uz-Cyrl":  "Эътиборсиз қолдириш",
+                   "ru":  "Игнорировать"
+               },
+    "assist":  {
+                   "en":  "Assist",
+                   "uz-Latn":  "Yordam",
+                   "uz-Cyrl":  "Ёрдам",
+                   "ru":  "Помогать"
+               },
+    "new_chats":  {
+                      "en":  "New chats: {mode}",
+                      "uz-Latn":  "Yangi chatlar: {mode}",
+                      "uz-Cyrl":  "Янги чатлар: {mode}",
+                      "ru":  "Новые чаты: {mode}"
+                  },
+    "observed":  {
+                     "en":  "Observed chats ({count})",
+                     "uz-Latn":  "Kuzatilayotgan chatlar ({count})",
+                     "uz-Cyrl":  "Кузатилаётган чатлар ({count})",
+                     "ru":  "Наблюдаемые чаты ({count})"
+                 },
+    "ignored":  {
+                    "en":  "Ignored chats ({count})",
+                    "uz-Latn":  "Eʼtiborsiz chatlar ({count})",
+                    "uz-Cyrl":  "Эътиборсиз чатлар ({count})",
+                    "ru":  "Игнорируемые чаты ({count})"
+                },
+    "invalid_timezone":  {
+                             "en":  "I do not know the timezone \u003ccode\u003e{value}\u003c/code\u003e.",
+                             "uz-Latn":  "\u003ccode\u003e{value}\u003c/code\u003e vaqt mintaqasini bilmayman.",
+                             "uz-Cyrl":  "\u003ccode\u003e{value}\u003c/code\u003e вақт минтақасини билмайман.",
+                             "ru":  "Неизвестный часовой пояс: \u003ccode\u003e{value}\u003c/code\u003e."
+                         },
+    "timezone_saved":  {
+                           "en":  "Timezone set to {zone}.",
+                           "uz-Latn":  "Vaqt mintaqasi: {zone}.",
+                           "uz-Cyrl":  "Вақт минтақаси: {zone}.",
+                           "ru":  "Часовой пояс: {zone}."
+                       },
+    "language_saved":  {
+                           "en":  "Language set to {language}.",
+                           "uz-Latn":  "Til: {language}.",
+                           "uz-Cyrl":  "Тил: {language}.",
+                           "ru":  "Язык: {language}."
+                       },
+    "invalid_language":  {
+                             "en":  "That does not look like a language code.",
+                             "uz-Latn":  "Bu til kodiga oʻxshamaydi.",
+                             "uz-Cyrl":  "Бу тил кодига ўхшамайди.",
+                             "ru":  "Это не похоже на код языка."
+                         },
+    "setting_keys":  {
+                         "en":  "I can set \u003cb\u003etimezone\u003c/b\u003e or \u003cb\u003elanguage\u003c/b\u003e.",
+                         "uz-Latn":  "\u003cb\u003etimezone\u003c/b\u003e yoki \u003cb\u003elanguage\u003c/b\u003e ni sozlashim mumkin.",
+                         "uz-Cyrl":  "\u003cb\u003etimezone\u003c/b\u003e ёки \u003cb\u003elanguage\u003c/b\u003e ни созлашим мумкин.",
+                         "ru":  "Можно изменить \u003cb\u003etimezone\u003c/b\u003e или \u003cb\u003elanguage\u003c/b\u003e."
+                     },
+    "unknown_command":  {
+                            "en":  "I do not know /{command}. See /help.",
+                            "uz-Latn":  "/{command} buyrugʻini bilmayman. /help ni koʻring.",
+                            "uz-Cyrl":  "/{command} буйруғини билмайман. /help ни кўринг.",
+                            "ru":  "Неизвестная команда /{command}. См. /help."
+                        },
+    "not_connected":  {
+                          "en":  "I am not connected to your account yet. Connect me in your Telegram settings (Chat Automation, or Telegram Business → Chatbots in older apps) first; I will ask you then.",
+                          "uz-Latn":  "Hali hisobingizga ulanmaganman. Avval Telegram sozlamalarida ulang (Chat Automation yoki eski ilovalarda Telegram Business → Chatbots); keyin soʻrayman.",
+                          "uz-Cyrl":  "Ҳали ҳисобингизга уланмаганман. Аввал Telegram созламаларида уланг (Chat Automation ёки эски иловаларда Telegram Business → Chatbots); кейин сўрайман.",
+                          "ru":  "Я ещё не подключён к вашему аккаунту. Сначала подключите меня в настройках Telegram (Chat Automation или Telegram Business → Chatbots в старых приложениях); затем я спрошу вас."
+                      },
+    "no_consent":  {
+                       "en":  "\u003cb\u003enot granted\u003c/b\u003e — nothing is sent to an AI provider",
+                       "uz-Latn":  "\u003cb\u003eberilmagan\u003c/b\u003e — AI xizmatiga hech narsa yuborilmaydi",
+                       "uz-Cyrl":  "\u003cb\u003eберилмаган\u003c/b\u003e — AI хизматига ҳеч нарса юборилмайди",
+                       "ru":  "\u003cb\u003eне дано\u003c/b\u003e — сервису ИИ ничего не отправляется"
+                   },
+    "consent_state":  {
+                          "en":  "granted (policy {version}, processor: {processors})",
+                          "uz-Latn":  "berilgan (siyosat {version}, xizmat: {processors})",
+                          "uz-Cyrl":  "берилган (сиёсат {version}, хизмат: {processors})",
+                          "ru":  "дано (политика {version}, обработчик: {processors})"
+                      },
+    "none_named":  {
+                       "en":  "none named",
+                       "uz-Latn":  "koʻrsatilmagan",
+                       "uz-Cyrl":  "кўрсатилмаган",
+                       "ru":  "не указан"
+                   },
+    "privacy_managed_hint":  {
+                                 "en":  "Send \u003ccode\u003e/privacy managed\u003c/code\u003e to decide about your other chats.",
+                                 "uz-Latn":  "Boshqa chatlaringiz boʻyicha qaror qilish uchun \u003ccode\u003e/privacy managed\u003c/code\u003e yuboring.",
+                                 "uz-Cyrl":  "Бошқа чатларингиз бўйича қарор қилиш учун \u003ccode\u003e/privacy managed\u003c/code\u003e юборинг.",
+                                 "ru":  "Отправьте \u003ccode\u003e/privacy managed\u003c/code\u003e, чтобы решить, как работать с другими чатами."
+                             },
+    "privacy_revoke_hint":  {
+                                "en":  "Send \u003ccode\u003e/privacy revoke\u003c/code\u003e to stop all AI processing.",
+                                "uz-Latn":  "AI orqali barcha qayta ishlashni toʻxtatish uchun \u003ccode\u003e/privacy revoke\u003c/code\u003e yuboring.",
+                                "uz-Cyrl":  "AI орқали барча қайта ишлашни тўхтатиш учун \u003ccode\u003e/privacy revoke\u003c/code\u003e юборинг.",
+                                "ru":  "Отправьте \u003ccode\u003e/privacy revoke\u003c/code\u003e, чтобы прекратить всю обработку ИИ."
+                            },
+    "policy_link":  {
+                        "en":  "Full policy: \u003ca href=\"{url}\"\u003e{url}\u003c/a\u003e",
+                        "uz-Latn":  "Toʻliq siyosat: \u003ca href=\"{url}\"\u003e{url}\u003c/a\u003e",
+                        "uz-Cyrl":  "Тўлиқ сиёсат: \u003ca href=\"{url}\"\u003e{url}\u003c/a\u003e",
+                        "ru":  "Полная политика: \u003ca href=\"{url}\"\u003e{url}\u003c/a\u003e"
+                    },
+    "nothing_to_revoke":  {
+                              "en":  "There was no AI consent to revoke.",
+                              "uz-Latn":  "Bekor qilinadigan AI roziligi yoʻq edi.",
+                              "uz-Cyrl":  "Бекор қилинадиган AI розилиги йўқ эди.",
+                              "ru":  "Согласия на обработку ИИ не было."
+                          },
+    "revoked":  {
+                    "en":  "AI consent revoked. Nothing more will be sent to an AI provider.\n/settings, /status and /privacy still work. Send /start to agree again.",
+                    "uz-Latn":  "AI roziligi bekor qilindi. AI xizmatiga boshqa hech narsa yuborilmaydi.\n/settings, /status va /privacy ishlaydi. Qayta rozilik berish uchun /start yuboring.",
+                    "uz-Cyrl":  "AI розилиги бекор қилинди. AI хизматига бошқа ҳеч нарса юборилмайди.\n/settings, /status ва /privacy ишлайди. Қайта розилик бериш учун /start юборинг.",
+                    "ru":  "Согласие на обработку ИИ отозвано. Сервису ИИ больше ничего не отправляется.\n/settings, /status и /privacy работают. Для нового согласия отправьте /start."
+                },
+    "managed_already":  {
+                            "en":  "It\u0027s already on. Send \u003ccode\u003e/privacy revoke\u003c/code\u003e to turn AI off (for this chat too).",
+                            "uz-Latn":  "Allaqachon yoqilgan. AI ni oʻchirish uchun \u003ccode\u003e/privacy revoke\u003c/code\u003e yuboring (bu chat uchun ham).",
+                            "uz-Cyrl":  "Аллақачон ёқилган. AI ни ўчириш учун \u003ccode\u003e/privacy revoke\u003c/code\u003e юборинг (бу чат учун ҳам).",
+                            "ru":  "Уже включено. Отправьте \u003ccode\u003e/privacy revoke\u003c/code\u003e, чтобы отключить ИИ (и для этого чата тоже)."
+                        },
+    "managed_declined":  {
+                             "en":  "Not now. Alviro\u0027s AI agent doesn\u0027t read the chats you connected. Send \u003ccode\u003e/privacy managed\u003c/code\u003e if you change your mind.",
+                             "uz-Latn":  "Hozir emas. Alviro AI agenti siz ulagan chatlarni oʻqimaydi. Fikringiz oʻzgarsa, \u003ccode\u003e/privacy managed\u003c/code\u003e yuboring.",
+                             "uz-Cyrl":  "Ҳозир эмас. Alviro AI агенти сиз улаган чатларни ўқимайди. Фикрингиз ўзгарса, \u003ccode\u003e/privacy managed\u003c/code\u003e юборинг.",
+                             "ru":  "Не сейчас. ИИ-агент Alviro не читает подключённые чаты. Если передумаете, отправьте \u003ccode\u003e/privacy managed\u003c/code\u003e."
+                         },
+    "managed_granted":  {
+                            "en":  "Turned on. Alviro\u0027s AI agent can now read the messages saved from the chats you connected when it works on them for you; the text is processed by {processors}. Send \u003ccode\u003e/privacy revoke\u003c/code\u003e to turn AI off (this also turns it off for this chat).",
+                            "uz-Latn":  "Yoqildi. Alviro AI agenti endi siz ulagan chatlardan saqlangan xabarlarni siz uchun ishlaganda oʻqiy oladi; matnni {processors} qayta ishlaydi. AI ni oʻchirish uchun \u003ccode\u003e/privacy revoke\u003c/code\u003e yuboring (bu chat uchun ham oʻchadi).",
+                            "uz-Cyrl":  "Ёқилди. Alviro AI агенти энди сиз улаган чатлардан сақланган хабарларни сиз учун ишлаганда ўқий олади; матнни {processors} қайта ишлайди. AI ни ўчириш учун \u003ccode\u003e/privacy revoke\u003c/code\u003e юборинг (бу чат учун ҳам ўчади).",
+                            "ru":  "Включено. ИИ-агент Alviro теперь может читать сохранённые сообщения подключённых чатов при работе для вас; текст обрабатывает {processors}. Отправьте \u003ccode\u003e/privacy revoke\u003c/code\u003e, чтобы отключить ИИ (и для этого чата тоже)."
+                        },
+    "turned_on":  {
+                      "en":  "Turned on",
+                      "uz-Latn":  "Yoqildi",
+                      "uz-Cyrl":  "Ёқилди",
+                      "ru":  "Включено"
+                  },
+    "already_on":  {
+                       "en":  "Already on",
+                       "uz-Latn":  "Allaqachon yoqilgan",
+                       "uz-Cyrl":  "Аллақачон ёқилган",
+                       "ru":  "Уже включено"
+                   },
+    "on":  {
+               "en":  "on",
+               "uz-Latn":  "yoqilgan",
+               "uz-Cyrl":  "ёқилган",
+               "ru":  "включено"
+           },
+    "off_button": {
+        "en": "Off",
+        "uz-Latn": "Oʻchirish",
+        "uz-Cyrl": "Ўчириш",
+        "ru": "Выключить"
+    },
+    "off":  {
+                "en":  "off",
+                "uz-Latn":  "oʻchirilgan",
+                "uz-Cyrl":  "ўчирилган",
+                "ru":  "выключено"
+            },
+    "bypass_on":  {
+                      "en":  "Bypass on",
+                      "uz-Latn":  "Shoshilinchlar oʻtsin",
+                      "uz-Cyrl":  "Шошилинчлар ўтсин",
+                      "ru":  "Срочные без задержки"
+                  },
+    "bypass_off":  {
+                       "en":  "Bypass off",
+                       "uz-Latn":  "Shoshilinchlar ham kutsin",
+                       "uz-Cyrl":  "Шошилинчлар ҳам кутсин",
+                       "ru":  "Срочные тоже ждут"
+                   },
+    "not_useful":  {
+                       "en":  "Feedback saved; delivery is unchanged until two Not useful marks.",
+                       "uz-Latn":  "Fikringiz saqlandi; ikki marta «Foydasiz» bosilmaguncha yuborish tartibi oʻzgarmaydi.",
+                       "uz-Cyrl":  "Фикрингиз сақланди; икки марта «Фойдасиз» босилмагунча юбориш тартиби ўзгармайди.",
+                       "ru":  "Отзыв сохранён; доставка не изменится до двух отметок «Не полезно»."
+                   },
+    "noted":  {
+                  "en":  "Noted",
+                  "uz-Latn":  "Qayd etildi",
+                  "uz-Cyrl":  "Қайд этилди",
+                  "ru":  "Учтено"
+              },
+    "opening":  {
+                    "en":  "Opening the chat",
+                    "uz-Latn":  "Chat ochilmoqda",
+                    "uz-Cyrl":  "Чат очилмоқда",
+                    "ru":  "Открываю чат"
+                },
+    "same_chat":  {
+                      "en":  "Same as chat",
+                      "uz-Latn":  "Chat tilida",
+                      "uz-Cyrl":  "Чат тилида",
+                      "ru":  "Как в чате"
+                  },
+    "uzbek":  {
+                  "en":  "Uzbek",
+                  "uz-Latn":  "Oʻzbekcha",
+                  "uz-Cyrl":  "Ўзбекча",
+                  "ru":  "Узбекский"
+              },
+    "russian":  {
+                    "en":  "Russian",
+                    "uz-Latn":  "Ruscha",
+                    "uz-Cyrl":  "Русча",
+                    "ru":  "Русский"
+                },
+    "english":  {
+                    "en":  "English",
+                    "uz-Latn":  "Inglizcha",
+                    "uz-Cyrl":  "Инглизча",
+                    "ru":  "Английский"
+                },
+    "neutral":  {
+                    "en":  "Neutral",
+                    "uz-Latn":  "Betaraf",
+                    "uz-Cyrl":  "Бетараф",
+                    "ru":  "Нейтральный"
+                },
+    "friendly":  {
+                     "en":  "Friendly",
+                     "uz-Latn":  "Samimiy",
+                     "uz-Cyrl":  "Самимий",
+                     "ru":  "Дружелюбный"
+                 },
+    "formal":  {
+                   "en":  "Formal",
+                   "uz-Latn":  "Rasmiy",
+                   "uz-Cyrl":  "Расмий",
+                   "ru":  "Официальный"
+               },
+    "brief":  {
+                  "en":  "Brief",
+                  "uz-Latn":  "Qisqa",
+                  "uz-Cyrl":  "Қисқа",
+                  "ru":  "Кратко"
+              },
+    "detailed":  {
+                     "en":  "Detailed",
+                     "uz-Latn":  "Batafsil",
+                     "uz-Cyrl":  "Батафсил",
+                     "ru":  "Подробно"
+                 },
+    "cannot_undo":  {
+                        "en":  "This cannot be undone.",
+                        "uz-Latn":  "Buni ortga qaytarib boʻlmaydi.",
+                        "uz-Cyrl":  "Буни ортга қайтариб бўлмайди.",
+                        "ru":  "Это нельзя отменить."
+                    },
+    "confirm_first":  {
+                          "en":  "Confirm first",
+                          "uz-Latn":  "Avval tasdiqlang",
+                          "uz-Cyrl":  "Аввал тасдиқланг",
+                          "ru":  "Сначала подтвердите"
+                      },
+    "nothing_changed":  {
+                            "en":  "Nothing changed",
+                            "uz-Latn":  "Hech narsa oʻzgarmadi",
+                            "uz-Cyrl":  "Ҳеч нарса ўзгармади",
+                            "ru":  "Ничего не изменилось"
+                        },
+    "saved_cleanup":  {
+                          "en":  "Saved: applies at the next cleanup",
+                          "uz-Latn":  "Saqlandi: keyingi tozalashda qoʻllanadi",
+                          "uz-Cyrl":  "Сақланди: кейинги тозалашда қўлланади",
+                          "ru":  "Сохранено: применяется при следующей очистке"
+                      },
+    "keep_days":  {
+                      "en":  "Keep {days} days",
+                      "uz-Latn":  "{days} kun saqlash",
+                      "uz-Cyrl":  "{days} кун сақлаш",
+                      "ru":  "Хранить {days} дней"
+                  },
+    "messages_short":  {
+                           "en":  "Msgs",
+                           "uz-Latn":  "Xabarlar",
+                           "uz-Cyrl":  "Хабарлар",
+                           "ru":  "Сообщ."
+                       },
+    "chat_short":  {
+                       "en":  "Chat",
+                       "uz-Latn":  "Bu chat",
+                       "uz-Cyrl":  "Бу чат",
+                       "ru":  "Этот чат"
+                   },
+    "raw_short":  {
+                      "en":  "Raw",
+                      "uz-Latn":  "Yangilanishlar",
+                      "uz-Cyrl":  "Янгиланишлар",
+                      "ru":  "Обновл."
+                  },
+    "retention_days":  {
+                           "en":  "{label} {days}d",
+                           "uz-Latn":  "{label} {days} kun",
+                           "uz-Cyrl":  "{label} {days} кун",
+                           "ru":  "{label} {days} дн."
+                       },
+    "deleting":  {
+                     "en":  "Deleting",
+                     "uz-Latn":  "Oʻchirilmoqda",
+                     "uz-Cyrl":  "Ўчирилмоқда",
+                     "ru":  "Удаляется"
+                 },
+    "nothing_deleted":  {
+                            "en":  "Nothing was deleted",
+                            "uz-Latn":  "Hech narsa oʻchirilmadi",
+                            "uz-Cyrl":  "Ҳеч нарса ўчирилмади",
+                            "ru":  "Ничего не удалено"
+                        },
+    "help":  {
+                 "en":  "\u003cb\u003eWhat I can do\u003c/b\u003e\n\n/start — set up or re-run onboarding\n/help — this message\n/pause — stop automatic replies\n/resume — allow automatic replies again\n/status — what I can see: connection, rights, coverage, gaps, consent\n/activity — what I sent or drafted today\n/settings — language, timezone, chat modes, replies, how long things are kept, deleting data\n/digest — your digest now: alerts held for you, chats waiting, commitments due\n/privacy — what I store, who sees it, and how to delete it (\u003ccode\u003e/privacy delete\u003c/code\u003e deletes everything, after asking)\n\nSend me anything else and I will answer it.\nSend \u003cb\u003estop\u003c/b\u003e at any time to pause automatic replies.\nAlerts, digest and replies you approve keep working.\nTo stop everything, disconnect me in Telegram\u0027s Chat Automation settings.",
+                 "uz-Latn":  "\u003cb\u003eNimalar qila olaman\u003c/b\u003e\n\n/start — boshlangʻich sozlashni boshlash yoki takrorlash\n/help — shu yordam\n/pause — avtomatik javoblarni toʻxtatish\n/resume — avtomatik javoblarni qayta yoqish\n/status — ulanish, huquqlar, qamrov, uzilishlar va rozilik\n/activity — bugun yuborgan yoki tayyorlagan javoblarim\n/settings — til, vaqt mintaqasi, chat rejimlari, javoblar, saqlash muddati va oʻchirish\n/digest — kutayotgan bildirishnomalar, chatlar va muddati kelgan majburiyatlar\n/privacy — nimalarni saqlayman, kim koʻradi va qanday oʻchirish mumkin (\u003ccode\u003e/privacy delete\u003c/code\u003e avval soʻrab, hammasini oʻchiradi)\n\nBoshqa savol yoki xabar yuboring, javob beraman.\nAvtomatik javoblarni toʻxtatish uchun istalgan payt \u003cb\u003etoʻxta\u003c/b\u003e deb yozing.\nBildirishnomalar, dayjest va siz tasdiqlagan javoblar ishlashda davom etadi.\nHammasini toʻxtatish uchun Telegram Chat Automation sozlamalarida meni uzing.",
+                 "uz-Cyrl":  "\u003cb\u003eНималар қила оламан\u003c/b\u003e\n\n/start — бошланғич созлашни бошлаш ёки такрорлаш\n/help — шу ёрдам\n/pause — автоматик жавобларни тўхтатиш\n/resume — автоматик жавобларни қайта ёқиш\n/status — уланиш, ҳуқуқлар, қамров, узилишлар ва розилик\n/activity — бугун юборган ёки тайёрлаган жавобларим\n/settings — тил, вақт минтақаси, чат режимлари, жавоблар, сақлаш муддати ва ўчириш\n/digest — кутаётган билдиришномалар, чатлар ва муддати келган мажбуриятлар\n/privacy — нималарни сақлайман, ким кўради ва қандай ўчириш мумкин (\u003ccode\u003e/privacy delete\u003c/code\u003e аввал сўраб, ҳаммасини ўчиради)\n\nБошқа савол ёки хабар юборинг, жавоб бераман.\nАвтоматик жавобларни тўхтатиш учун исталган пайт \u003cb\u003eтўхта\u003c/b\u003e деб ёзинг.\nБилдиришномалар, дайжест ва сиз тасдиқлаган жавоблар ишлашда давом этади.\nҲаммасини тўхтатиш учун Telegram Chat Automation созламаларида мени узинг.",
+                 "ru":  "\u003cb\u003eЧто я умею\u003c/b\u003e\n\n/start — начать или повторить настройку\n/help — эта справка\n/pause — остановить автоматические ответы\n/resume — снова разрешить автоматические ответы\n/status — подключение, права, охват, пробелы и согласие\n/activity — что я отправил или подготовил сегодня\n/settings — язык, часовой пояс, режимы чатов, ответы, хранение и удаление\n/digest — отложенные уведомления, ожидающие чаты и обязательства со сроком\n/privacy — что я храню, кто это видит и как удалить (\u003ccode\u003e/privacy delete\u003c/code\u003e удаляет всё после подтверждения)\n\nПришлите что-нибудь ещё, и я отвечу.\nНапишите \u003cb\u003eстоп\u003c/b\u003e в любой момент, чтобы приостановить автоматические ответы.\nУведомления, дайджест и одобренные вами ответы продолжают работать.\nЧтобы остановить всё, отключите меня в настройках Chat Automation в Telegram."
+             },
+    "settings_body":  {
+                          "en":  "Language: {language}\nTimezone: {zone}\nNew chats start in: {mode}\nChats: {observed} observed, {ignored} ignored\nReplies: {replies}\nMessages kept: {messages} days; this chat: {control} days; raw updates: {raw} days. Summaries and your notes are kept until you delete them.\n\nSend \u003ccode\u003e/settings timezone Asia/Tashkent\u003c/code\u003e or \u003ccode\u003e/settings language uz\u003c/code\u003e to change one.",
+                          "uz-Latn":  "Til: {language}\nVaqt mintaqasi: {zone}\nYangi chatlar rejimi: {mode}\nChatlar: {observed} kuzatiladi, {ignored} eʼtiborsiz\nJavoblar: {replies}\nXabarlar {messages} kun; bu chat {control} kun; Telegram yangilanishlari {raw} kun saqlanadi. Xulosalar va qaydlaringiz oʻzingiz oʻchirmaguningizcha saqlanadi.\n\nOʻzgartirish uchun \u003ccode\u003e/settings timezone Asia/Tashkent\u003c/code\u003e yoki \u003ccode\u003e/settings language uz\u003c/code\u003e yuboring.",
+                          "uz-Cyrl":  "Тил: {language}\nВақт минтақаси: {zone}\nЯнги чатлар режими: {mode}\nЧатлар: {observed} кузатилади, {ignored} эътиборсиз\nЖавоблар: {replies}\nХабарлар {messages} кун; бу чат {control} кун; Telegram янгиланишлари {raw} кун сақланади. Хулосалар ва қайдларингиз ўзингиз ўчирмагунингизча сақланади.\n\nЎзгартириш учун \u003ccode\u003e/settings timezone Asia/Tashkent\u003c/code\u003e ёки \u003ccode\u003e/settings language uz\u003c/code\u003e юборинг.",
+                          "ru":  "Язык: {language}\nЧасовой пояс: {zone}\nРежим новых чатов: {mode}\nЧаты: {observed} наблюдаемых, {ignored} игнорируемых\nОтветы: {replies}\nСообщения хранятся {messages} дней; этот чат — {control} дней; исходные обновления — {raw} дней. Сводки и заметки хранятся до удаления вами.\n\nДля изменения отправьте \u003ccode\u003e/settings timezone Asia/Tashkent\u003c/code\u003e или \u003ccode\u003e/settings language uz\u003c/code\u003e."
+                      },
+    "privacy_body":  {
+                         "en":  "AI for this chat: {control}\nAI for your chats with other people: {managed}\n\nIn this chat I store your messages and my replies (text kept for 90 days), your settings, and a record of what I did that contains no message text (kept for 1 year).\n\nFrom the chats you connected, I save new messages (text kept up to 90 days), whether or not AI is on. If someone else writes to me directly, I don\u0027t keep their message. Notes you ask me to remember and summaries of your chats are kept until you delete them. Everything is on a server in the US (Oracle, Ashburn) with encrypted daily backups, also kept at Backblaze B2 in the EU, for up to 35 days.\n\nYour messages are never used to train a model.\n\nTo delete one chat\u0027s data, open its panel from /settings; \u003ccode\u003e/privacy delete\u003c/code\u003e deletes everything (I ask first). /settings also lets you keep messages for a shorter time.",
+                         "uz-Latn":  "Bu chat uchun AI: {control}\nBoshqalar bilan chatlaringiz uchun AI: {managed}\n\nBu yerda xabarlaringiz va javoblarimni (matn 90 kun), sozlamalaringizni va xabar matnisiz amallar qaydini (1 yil) saqlayman.\n\nAI yoqilgan yoki oʻchirilgan boʻlishidan qatʼi nazar, ulangan chatlardan yangi xabarlar saqlanadi (matn 90 kungacha). Boshqa odam menga bevosita yozsa, uning xabari saqlanmaydi. Eslab qolishimni soʻragan qaydlaringiz va chat xulosalari oʻzingiz oʻchirmaguningizcha saqlanadi. Hammasi AQShdagi serverda (Oracle, Ashburn); shifrlangan kunlik zaxiralar Yevropa Ittifoqidagi Backblaze B2 da ham 35 kungacha saqlanadi.\n\nXabarlaringiz model oʻqitish uchun hech qachon ishlatilmaydi.\n\nBitta chat maʼlumotlarini oʻchirish uchun /settings dan uning panelini oching; \u003ccode\u003e/privacy delete\u003c/code\u003e avval soʻrab hammasini oʻchiradi. /settings orqali saqlash muddatini ham qisqartirish mumkin.",
+                         "uz-Cyrl":  "Бу чат учун AI: {control}\nБошқалар билан чатларингиз учун AI: {managed}\n\nБу ерда хабарларингиз ва жавобларимни (матн 90 кун), созламаларингизни ва хабар матнисиз амаллар қайдини (1 йил) сақлайман.\n\nAI ёқилган ёки ўчирилган бўлишидан қатъи назар, уланган чатлардан янги хабарлар сақланади (матн 90 кунгача). Бошқа одам менга бевосита ёзса, унинг хабари сақланмайди. Эслаб қолишимни сўраган қайдларингиз ва чат хулосалари ўзингиз ўчирмагунингизча сақланади. Ҳаммаси АҚШдаги серверда (Oracle, Ashburn); шифрланган кунлик захиралар Европа Иттифоқидаги Backblaze B2 да ҳам 35 кунгача сақланади.\n\nХабарларингиз модел ўқитиш учун ҳеч қачон ишлатилмайди.\n\nБитта чат маълумотларини ўчириш учун /settings дан унинг панелини очинг; \u003ccode\u003e/privacy delete\u003c/code\u003e аввал сўраб ҳаммасини ўчиради. /settings орқали сақлаш муддатини ҳам қисқартириш мумкин.",
+                         "ru":  "ИИ для этого чата: {control}\nИИ для ваших чатов с другими людьми: {managed}\n\nЗдесь я храню ваши сообщения и свои ответы (текст — 90 дней), настройки и журнал действий без текста сообщений (1 год).\n\nИз подключённых чатов сохраняются новые сообщения (текст — до 90 дней), включён ИИ или нет. Если другой человек пишет мне напрямую, его сообщение не сохраняется. Заметки, которые вы просите запомнить, и сводки чатов хранятся до удаления вами. Всё хранится на сервере в США (Oracle, Ashburn); зашифрованные ежедневные резервные копии также хранятся в Backblaze B2 в ЕС до 35 дней.\n\nВаши сообщения никогда не используются для обучения моделей.\n\nЧтобы удалить данные одного чата, откройте его панель в /settings; \u003ccode\u003e/privacy delete\u003c/code\u003e удаляет всё после подтверждения. В /settings также можно сократить срок хранения."
+                     },
+    "managed_prompt":  {
+                           "en":  "\u003cb\u003eLet Alviro\u0027s AI agent work with these chats?\u003c/b\u003e\n\nWhen this is on, Alviro\u0027s AI agent can read the messages saved from the chats you connected, so it can summarise them, find things for you and answer your questions about them. The text is processed by {processors} and isn\u0027t used to train their models.\n\nWhen it\u0027s off, Alviro still saves new messages from these chats (kept up to 90 days), but its AI agent doesn\u0027t read them and nothing from them is sent to {processors}.\n\nYou can change this any time with /privacy.",
+                           "uz-Latn":  "\u003cb\u003eAlviro AI agenti bu chatlar bilan ishlasinmi?\u003c/b\u003e\n\nYoqilganda, Alviro AI agenti siz ulagan chatlardan saqlangan xabarlarni oʻqib, xulosa qiladi, kerakli maʼlumotni topadi va ular haqidagi savollaringizga javob beradi. Matnni {processors} qayta ishlaydi va ularning modellarini oʻqitish uchun ishlatilmaydi.\n\nOʻchirilganda ham Alviro bu chatlardagi yangi xabarlarni saqlaydi (90 kungacha), ammo AI agenti ularni oʻqimaydi va ulardan hech narsa {processors} xizmatiga yuborilmaydi.\n\nBuni istalgan payt /privacy orqali oʻzgartirishingiz mumkin.",
+                           "uz-Cyrl":  "\u003cb\u003eAlviro AI агенти бу чатлар билан ишласинми?\u003c/b\u003e\n\nЁқилганда, Alviro AI агенти сиз улаган чатлардан сақланган хабарларни ўқиб, хулоса қилади, керакли маълумотни топади ва улар ҳақидаги саволларингизга жавоб беради. Матнни {processors} қайта ишлайди ва уларнинг моделларини ўқитиш учун ишлатилмайди.\n\nЎчирилганда ҳам Alviro бу чатлардаги янги хабарларни сақлайди (90 кунгача), аммо AI агенти уларни ўқимайди ва улардан ҳеч нарса {processors} хизматига юборилмайди.\n\nБуни исталган пайт /privacy орқали ўзгартиришингиз мумкин.",
+                           "ru":  "\u003cb\u003eРазрешить ИИ-агенту Alviro работать с этими чатами?\u003c/b\u003e\n\nКогда это включено, ИИ-агент Alviro может читать сохранённые сообщения подключённых чатов, чтобы составлять сводки, искать информацию и отвечать на ваши вопросы о них. Текст обрабатывает {processors}; для обучения их моделей он не используется.\n\nКогда это выключено, Alviro по-прежнему сохраняет новые сообщения этих чатов (до 90 дней), но ИИ-агент их не читает и ничего из них не отправляется в {processors}.\n\nЭто можно изменить в любой момент через /privacy."
+                       },
+    "alerts_body":  {
+                        "en":  "Quiet hours: {quiet}{held}\nUrgent bypass: {bypass}\nDaily digest: {digest}\nMost alerts per hour: {cap}\nTimes are in your timezone ({zone}).",
+                        "uz-Latn":  "Tinch vaqt: {quiet}{held}\nShoshilinchlarni kutmasdan yetkazish: {bypass}\nKunlik dayjest: {digest}\nBir soatda eng koʻp bildirishnomalar: {cap}\nVaqtlar sizning mintaqangizda ({zone}).",
+                        "uz-Cyrl":  "Тинч вақт: {quiet}{held}\nШошилинчларни кутмасдан етказиш: {bypass}\nКунлик дайжест: {digest}\nБир соатда энг кўп билдиришномалар: {cap}\nВақтлар сизнинг минтақангизда ({zone}).",
+                        "ru":  "Тихие часы: {quiet}{held}\nСрочные без задержки: {bypass}\nЕжедневный дайджест: {digest}\nНе больше уведомлений в час: {cap}\nВремя в вашем часовом поясе ({zone})."
+                    },
+    "urgent_wait":  {
+                        "en":  " (urgent alerts wait too, unless \"Urgent bypass\" is on)",
+                        "uz-Latn":  " (shoshilinchlar ham kutadi, kutmasdan yetkazish yoqilgan boʻlmasa)",
+                        "uz-Cyrl":  " (шошилинчлар ҳам кутади, кутмасдан етказиш ёқилган бўлмаса)",
+                        "ru":  " (срочные тоже ждут, если их доставка без задержки выключена)"
+                    },
+    "reply_body":  {
+                       "en":  "\u003cb\u003eReplies\u003c/b\u003e\n\nThe default language, tone and length of replies drafted for your contacts. Wishes in your own words (\"short and polite with colleagues\") are notes: tell me to remember them.",
+                       "uz-Latn":  "\u003cb\u003eJavoblar\u003c/b\u003e\n\nKontaktlaringiz uchun tayyorlanadigan javoblarning odatiy tili, ohangi va uzunligi. Oʻz soʻzlaringizdagi istaklarni (masalan, «hamkasblarga qisqa va muloyim») eslab qolishimni soʻrang — ularni qayd sifatida saqlayman.",
+                       "uz-Cyrl":  "\u003cb\u003eЖавоблар\u003c/b\u003e\n\nКонтактларингиз учун тайёрланадиган жавобларнинг одатий тили, оҳанги ва узунлиги. Ўз сўзларингиздаги истакларни (масалан, «ҳамкасбларга қисқа ва мулойим») эслаб қолишимни сўранг — уларни қайд сифатида сақлайман.",
+                       "ru":  "\u003cb\u003eОтветы\u003c/b\u003e\n\nЯзык, тон и длина черновиков для ваших контактов по умолчанию. Пожелания своими словами («коллегам кратко и вежливо») можно сохранить как заметки: попросите меня их запомнить."
+                   },
+    "retention_body":  {
+                           "en":  "\u003cb\u003eHow long things are kept\u003c/b\u003e\n\nMessages: text from your chats. This chat: our conversation here. Raw updates: what Telegram delivers, kept briefly for recovery.\n\nYou can shorten each period; a shorter one deletes older data at the next hourly cleanup. Going back to a longer one keeps new data longer; what was already deleted does not come back. Summaries and your notes are kept until you delete them.",
+                           "uz-Latn":  "\u003cb\u003eSaqlash muddati\u003c/b\u003e\n\nXabarlar — chatlaringizdagi matn. Bu chat — shu yerdagi suhbatimiz. Telegram yangilanishlari tiklash uchun qisqa muddat saqlanadi.\n\nHar bir muddatni qisqartirish mumkin: eski maʼlumotlar keyingi soatlik tozalashda oʻchiriladi. Muddatni uzaytirish yangi maʼlumotlarni uzoqroq saqlaydi; oʻchirilganini qaytarmaydi. Xulosalar va qaydlar oʻzingiz oʻchirmaguningizcha saqlanadi.",
+                           "uz-Cyrl":  "\u003cb\u003eСақлаш муддати\u003c/b\u003e\n\nХабарлар — чатларингиздаги матн. Бу чат — шу ердаги суҳбатимиз. Telegram янгиланишлари тиклаш учун қисқа муддат сақланади.\n\nҲар бир муддатни қисқартириш мумкин: эски маълумотлар кейинги соатлик тозалашда ўчирилади. Муддатни узайтириш янги маълумотларни узоқроқ сақлайди; ўчирилганини қайтармайди. Хулосалар ва қайдлар ўзингиз ўчирмагунингизча сақланади.",
+                           "ru":  "\u003cb\u003eСрок хранения\u003c/b\u003e\n\nСообщения — текст из ваших чатов. Этот чат — наш разговор здесь. Исходные обновления — данные Telegram, кратко сохраняемые для восстановления.\n\nКаждый срок можно сократить: старые данные удалятся при следующей ежечасной очистке. Увеличение срока продлевает хранение новых данных, но не возвращает удалённое. Сводки и заметки хранятся до удаления вами."
+                       },
+    "retention_confirm":  {
+                              "en":  "\u003cb\u003eKeep {what} for {days} days?\u003c/b\u003e\n\nEverything older than {days} days is deleted at the next hourly cleanup. {undo}",
+                              "uz-Latn":  "\u003cb\u003e{what}: {days} kun saqlansinmi?\u003c/b\u003e\n\n{days} kundan eski maʼlumotlar keyingi soatlik tozalashda oʻchiriladi. {undo}",
+                              "uz-Cyrl":  "\u003cb\u003e{what}: {days} кун сақлансинми?\u003c/b\u003e\n\n{days} кундан эски маълумотлар кейинги соатлик тозалашда ўчирилади. {undo}",
+                              "ru":  "\u003cb\u003eХранить {what} {days} дней?\u003c/b\u003e\n\nДанные старше {days} дней удалятся при следующей ежечасной очистке. {undo}"
+                          },
+    "restore_warning":  {
+                            "en":  "AI processing was blocked after a restore. Deletions and consent revocations made after the backup time may have been undone. Before agreeing again, redo deletions in /settings → Delete data (or /privacy delete for everything), and redo consent revocations with /privacy revoke. Use /start to renew consent for this control chat, then /privacy managed only if you want AI to read connected chats again.",
+                            "uz-Latn":  "Tiklashdan keyin AI orqali qayta ishlash bloklandi. Zaxira vaqtidan keyingi oʻchirishlar va rozilikni bekor qilishlar ortga qaytgan boʻlishi mumkin. Qayta rozilik berishdan oldin /settings orqali maʼlumotlarni (yoki /privacy delete bilan hammasini) qayta oʻchiring va /privacy revoke orqali rozilikni yana bekor qiling. Bu chat uchun /start orqali qayta rozilik bering; ulangan chatlarni AI yana oʻqishini xohlasangizgina /privacy managed yuboring.",
+                            "uz-Cyrl":  "Тиклашдан кейин AI орқали қайта ишлаш блокланди. Захира вақтидан кейинги ўчиришлар ва розиликни бекор қилишлар ортга қайтган бўлиши мумкин. Қайта розилик беришдан олдин /settings орқали маълумотларни (ёки /privacy delete билан ҳаммасини) қайта ўчиринг ва /privacy revoke орқали розиликни яна бекор қилинг. Бу чат учун /start орқали қайта розилик беринг; уланган чатларни AI яна ўқишини хоҳласангизгина /privacy managed юборинг.",
+                            "ru":  "После восстановления обработка ИИ заблокирована. Удаления и отзывы согласия после времени резервной копии могли отмениться. Прежде чем соглашаться снова, повторите удаление через /settings (или /privacy delete для всего) и отзыв согласия через /privacy revoke. Для нового согласия в этом чате используйте /start, а /privacy managed — только если хотите снова разрешить ИИ читать подключённые чаты."
+                        },
+    "managed_open":  {
+                         "en":  "The question above about letting Alviro\u0027s AI agent work with these chats is still open. Until you tap \u003cb\u003eTurn on\u003c/b\u003e, Alviro saves new messages from them but its AI agent doesn\u0027t read them.",
+                         "uz-Latn":  "Yuqoridagi Alviro AI agenti bu chatlar bilan ishlashi haqidagi savol hali ochiq. \u003cb\u003eYoqish\u003c/b\u003e tugmasini bosmaguningizcha Alviro yangi xabarlarni saqlaydi, ammo AI agenti ularni oʻqimaydi.",
+                         "uz-Cyrl":  "Юқоридаги Alviro AI агенти бу чатлар билан ишлаши ҳақидаги савол ҳали очиқ. \u003cb\u003eЁқиш\u003c/b\u003e тугмасини босмагунингизча Alviro янги хабарларни сақлайди, аммо AI агенти уларни ўқимайди.",
+                         "ru":  "Вопрос выше о работе ИИ-агента Alviro с чатами ещё открыт. Пока вы не нажмёте \u003cb\u003eВключить\u003c/b\u003e, Alviro сохраняет новые сообщения, но ИИ-агент их не читает."
+                     },
+    "managed_declined_note":  {
+                                  "en":  "You chose \u003cb\u003eNot now\u003c/b\u003e for Alviro\u0027s AI agent in these chats: Alviro saves new messages from them, but its AI agent doesn\u0027t read them. Send \u003ccode\u003e/privacy managed\u003c/code\u003e to turn it on.",
+                                  "uz-Latn":  "Bu chatlar uchun \u003cb\u003eHozir emas\u003c/b\u003e ni tanladingiz: Alviro yangi xabarlarni saqlaydi, ammo AI agenti ularni oʻqimaydi. Yoqish uchun \u003ccode\u003e/privacy managed\u003c/code\u003e yuboring.",
+                                  "uz-Cyrl":  "Бу чатлар учун \u003cb\u003eҲозир эмас\u003c/b\u003e ни танладингиз: Alviro янги хабарларни сақлайди, аммо AI агенти уларни ўқимайди. Ёқиш учун \u003ccode\u003e/privacy managed\u003c/code\u003e юборинг.",
+                                  "ru":  "Вы выбрали \u003cb\u003eНе сейчас\u003c/b\u003e для этих чатов: Alviro сохраняет новые сообщения, но ИИ-агент их не читает. Для включения отправьте \u003ccode\u003e/privacy managed\u003c/code\u003e."
+                              },
+    "connection_none":  {
+                            "en":  "\u003cb\u003eNo permissions\u003c/b\u003e — the connection is off.",
+                            "uz-Latn":  "\u003cb\u003eHuquqlar yoʻq\u003c/b\u003e — ulanish oʻchirilgan.",
+                            "uz-Cyrl":  "\u003cb\u003eҲуқуқлар йўқ\u003c/b\u003e — уланиш ўчирилган.",
+                            "ru":  "\u003cb\u003eНет разрешений\u003c/b\u003e — подключение выключено."
+                        },
+    "connection_observe_only":  {
+                                    "en":  "\u003cb\u003eObserve only\u003c/b\u003e — I can see new messages in the chats you included, but I cannot reply in them.",
+                                    "uz-Latn":  "\u003cb\u003eFaqat kuzatish\u003c/b\u003e — kiritgan chatlaringizdagi yangi xabarlarni koʻraman, lekin javob bera olmayman.",
+                                    "uz-Cyrl":  "\u003cb\u003eФақат кузатиш\u003c/b\u003e — киритган чатларингиздаги янги хабарларни кўраман, лекин жавоб бера олмайман.",
+                                    "ru":  "\u003cb\u003eТолько наблюдение\u003c/b\u003e — вижу новые сообщения включённых чатов, но не могу отвечать."
+                                },
+    "connection_can_reply":  {
+                                 "en":  "\u003cb\u003eCan reply\u003c/b\u003e — I can see new messages in the chats you included, and I can reply in them only when you approve a reply or delegate a conversation.",
+                                 "uz-Latn":  "\u003cb\u003eJavob bera olaman\u003c/b\u003e — kiritgan chatlaringizdagi yangi xabarlarni koʻraman; faqat siz javobni tasdiqlasangiz yoki suhbatni topshirsangiz javob beraman.",
+                                 "uz-Cyrl":  "\u003cb\u003eЖавоб бера оламан\u003c/b\u003e — киритган чатларингиздаги янги хабарларни кўраман; фақат сиз жавобни тасдиқласангиз ёки суҳбатни топширсангиз жавоб бераман.",
+                                 "ru":  "\u003cb\u003eМогу отвечать\u003c/b\u003e — вижу новые сообщения включённых чатов; отвечаю только после вашего одобрения ответа или делегирования разговора."
+                             },
+    "connection_extended":  {
+                                "en":  "\u003cb\u003eExtended\u003c/b\u003e — as \u003ci\u003eCan reply\u003c/i\u003e, plus rights I use only for my own messages (removing them). I never touch messages you or your contacts wrote.",
+                                "uz-Latn":  "\u003cb\u003eKengaytirilgan\u003c/b\u003e — \u003ci\u003eJavob bera olaman\u003c/i\u003e huquqlariga qoʻshimcha ravishda faqat oʻz xabarlarimni oʻchirish huquqi. Siz yoki kontaktlaringiz yozgan xabarlarga tegmayman.",
+                                "uz-Cyrl":  "\u003cb\u003eКенгайтирилган\u003c/b\u003e — \u003ci\u003eЖавоб бера оламан\u003c/i\u003e ҳуқуқларига қўшимча равишда фақат ўз хабарларимни ўчириш ҳуқуқи. Сиз ёки контактларингиз ёзган хабарларга тегмайман.",
+                                "ru":  "\u003cb\u003eРасширенные\u003c/b\u003e — как \u003ci\u003eМогу отвечать\u003c/i\u003e, плюс права, используемые только для удаления моих сообщений. Ваши сообщения и сообщения контактов я не трогаю."
+                            },
+    "connected":  {
+                      "en":  "✅ \u003cb\u003eConnected to your account.\u003c/b\u003e\n\n{capability}\n\nI see the chats you included from now on. I cannot see older history.",
+                      "uz-Latn":  "✅ \u003cb\u003eHisobingizga ulandim.\u003c/b\u003e\n\n{capability}\n\nKiritgan chatlaringizni shu paytdan koʻraman. Oldingi tarixni koʻra olmayman.",
+                      "uz-Cyrl":  "✅ \u003cb\u003eҲисобингизга уландим.\u003c/b\u003e\n\n{capability}\n\nКиритган чатларингизни шу пайтдан кўраман. Олдинги тарихни кўра олмайман.",
+                      "ru":  "✅ \u003cb\u003eПодключён к вашему аккаунту.\u003c/b\u003e\n\n{capability}\n\nВижу включённые чаты с этого момента. Старую историю не вижу."
+                  },
+    "reconnected":  {
+                        "en":  "🔄 \u003cb\u003eReconnected to your account.\u003c/b\u003e\n\n{capability}\n\nMessages sent while I was disconnected never reached me.",
+                        "uz-Latn":  "🔄 \u003cb\u003eHisobingizga qayta ulandim.\u003c/b\u003e\n\n{capability}\n\nUzilgan paytdagi xabarlar menga kelmagan.",
+                        "uz-Cyrl":  "🔄 \u003cb\u003eҲисобингизга қайта уландим.\u003c/b\u003e\n\n{capability}\n\nУзилган пайтдаги хабарлар менга келмаган.",
+                        "ru":  "🔄 \u003cb\u003eСнова подключён к вашему аккаунту.\u003c/b\u003e\n\n{capability}\n\nСообщения за время отключения мне не поступили."
+                    },
+    "rights_changed":  {
+                           "en":  "🔧 \u003cb\u003eMy permissions changed.\u003c/b\u003e\n\n{capability}",
+                           "uz-Latn":  "🔧 \u003cb\u003eHuquqlarim oʻzgardi.\u003c/b\u003e\n\n{capability}",
+                           "uz-Cyrl":  "🔧 \u003cb\u003eҲуқуқларим ўзгарди.\u003c/b\u003e\n\n{capability}",
+                           "ru":  "🔧 \u003cb\u003eМои разрешения изменились.\u003c/b\u003e\n\n{capability}"
+                       },
+    "disconnected":  {
+                         "en":  "⚠️ \u003cb\u003eI am disconnected from your account.\u003c/b\u003e\n\nI have stopped processing your chats. Messages sent while I am disconnected will not reach me. Connect me again to resume.",
+                         "uz-Latn":  "⚠️ \u003cb\u003eHisobingizdan uzildim.\u003c/b\u003e\n\nChatlaringizni qayta ishlash toʻxtadi. Uzilgan paytdagi xabarlar menga kelmaydi. Davom ettirish uchun qayta ulang.",
+                         "uz-Cyrl":  "⚠️ \u003cb\u003eҲисобингиздан узилдим.\u003c/b\u003e\n\nЧатларингизни қайта ишлаш тўхтади. Узилган пайтдаги хабарлар менга келмайди. Давом эттириш учун қайта уланг.",
+                         "ru":  "⚠️ \u003cb\u003eЯ отключён от вашего аккаунта.\u003c/b\u003e\n\nОбработка чатов остановлена. Сообщения за время отключения мне не поступят. Для продолжения подключите меня снова."
+                     },
+    "capability":  {
+                       "en":  "Capability: {tier}",
+                       "uz-Latn":  "Imkoniyatlar: {tier}",
+                       "uz-Cyrl":  "Имкониятлар: {tier}",
+                       "ru":  "Возможности: {tier}"
+                   },
+    "unused_rights":  {
+                          "en":  "Rights you granted that I do not use: {rights}. You can turn them off where you connected me.",
+                          "uz-Latn":  "Siz bergan, ammo men ishlatmaydigan huquqlar: {rights}. Meni ulagan joyda ularni oʻchirishingiz mumkin.",
+                          "uz-Cyrl":  "Сиз берган, аммо мен ишлатмайдиган ҳуқуқлар: {rights}. Мени улаган жойда уларни ўчиришингиз мумкин.",
+                          "ru":  "Выданные, но не используемые мной права: {rights}. Их можно отключить там, где вы меня подключили."
+                      },
+    "alert_ingestion_stall":  {
+                                  "en":  "⚠️ I have not been able to receive Telegram updates for a few minutes. Messages are queued by Telegram for up to 24 hours; I will catch up when this clears.",
+                                  "uz-Latn":  "⚠️ Bir necha daqiqadan beri Telegram yangilanishlarini ololmayapman. Telegram xabarlarni 24 soatgacha navbatda saqlaydi; aloqa tiklanganda yetib olaman.",
+                                  "uz-Cyrl":  "⚠️ Бир неча дақиқадан бери Telegram янгиланишларини ололмаяпман. Telegram хабарларни 24 соатгача навбатда сақлайди; алоқа тикланганда етиб оламан.",
+                                  "ru":  "⚠️ Несколько минут не удаётся получать обновления Telegram. Telegram держит сообщения в очереди до 24 часов; когда связь восстановится, я наверстаю."
+                              },
+    "alert_dead_letter":  {
+                              "en":  "⚠️ {count} incoming update(s) could not be processed after several attempts and were set aside. They can be retried once the problem is fixed, but only until {purge_date}: then their content is deleted and they cannot be recovered. I will remind you daily until then.",
+                              "uz-Latn":  "⚠️ {count} ta kiruvchi yangilanish bir necha urinishdan keyin ham qayta ishlanmadi va ajratib qoʻyildi. Muammo tuzatilgach, {purge_date} gacha qayta urinish mumkin; keyin mazmuni oʻchiriladi va tiklab boʻlmaydi. Ungacha har kuni eslataman.",
+                              "uz-Cyrl":  "⚠️ {count} та кирувчи янгиланиш бир неча уринишдан кейин ҳам қайта ишланмади ва ажратиб қўйилди. Муаммо тузатилгач, {purge_date} гача қайта уриниш мумкин; кейин мазмуни ўчирилади ва тиклаб бўлмайди. Унгача ҳар куни эслатаман.",
+                              "ru":  "⚠️ Не удалось обработать {count} входящих обновлений после нескольких попыток; они отложены. После исправления можно повторить обработку до {purge_date}, затем содержимое удалится без возможности восстановления. До этого буду напоминать ежедневно."
+                          },
+    "alert_budget_threshold":  {
+                                   "en":  "💰 This month\u0027s AI spend has reached {percent}% of the budget.",
+                                   "uz-Latn":  "💰 Bu oy AI xarajatlari byudjetning {percent}% iga yetdi.",
+                                   "uz-Cyrl":  "💰 Бу ой AI харажатлари бюджетнинг {percent}% ига етди.",
+                                   "ru":  "💰 Расходы на ИИ в этом месяце достигли {percent}% бюджета."
+                               },
+    "alert_delivery_uncertain":  {
+                                     "en":  "⚠️ I\u0027m not sure a reply reached {contact}: Telegram did not confirm it. Please check the chat. I will not resend it.",
+                                     "uz-Latn":  "⚠️ Javob {contact} ga yetganiga ishonchim komil emas: Telegram tasdiqlamadi. Chatni tekshiring. Qayta yubormayman.",
+                                     "uz-Cyrl":  "⚠️ Жавоб {contact} га етганига ишончим комил эмас: Telegram тасдиқламади. Чатни текширинг. Қайта юбормайман.",
+                                     "ru":  "⚠️ Не уверен, что ответ дошёл до {contact}: Telegram не подтвердил доставку. Проверьте чат. Повторно отправлять не буду."
+                                 },
+    "alert_connection_stale":  {
+                                   "en":  "⚠️ Telegram stopped accepting replies through the old connection and no new one has arrived for {minutes} minutes. Open Chat Automation in Telegram and check Alviro is connected.",
+                                   "uz-Latn":  "⚠️ Telegram eski ulanish orqali javoblarni qabul qilmayapti va {minutes} daqiqadan beri yangi ulanish kelmadi. Telegram Chat Automation ni ochib, Alviro ulanganini tekshiring.",
+                                   "uz-Cyrl":  "⚠️ Telegram эски уланиш орқали жавобларни қабул қилмаяпти ва {minutes} дақиқадан бери янги уланиш келмади. Telegram Chat Automation ни очиб, Alviro уланганини текширинг.",
+                                   "ru":  "⚠️ Telegram перестал принимать ответы через старое подключение; нового нет уже {minutes} минут. Откройте Chat Automation в Telegram и проверьте подключение Alviro."
+                               },
+    "alert_connection_change":  {
+                                    "en":  "{body}",
+                                    "uz-Latn":  "{body}",
+                                    "uz-Cyrl":  "{body}",
+                                    "ru":  "{body}"
+                                },
+    "alert_policy_updated":  {
+                                 "en":  "📄 {body}",
+                                 "uz-Latn":  "📄 {body}",
+                                 "uz-Cyrl":  "📄 {body}",
+                                 "ru":  "📄 {body}"
+                             },
+    "alert_backup_stale":  {
+                               "en":  "⚠️ No successful database backup for {hours} hours. Check the backup container (runbooks/deploy.md) — until it works, a server loss would lose recent data.",
+                               "uz-Latn":  "⚠️ {hours} soatdan beri maʼlumotlar bazasining zaxirasi muvaffaqiyatli olinmadi. Zaxira konteynerini tekshiring (runbooks/deploy.md) — tuzatilmaguncha server yoʻqolsa, yangi maʼlumotlar ham yoʻqoladi.",
+                               "uz-Cyrl":  "⚠️ {hours} соатдан бери маълумотлар базасининг захираси муваффақиятли олинмади. Захира контейнерини текширинг (runbooks/deploy.md) — тузатилмагунча сервер йўқолса, янги маълумотлар ҳам йўқолади.",
+                               "ru":  "⚠️ Уже {hours} часов нет успешной резервной копии базы. Проверьте контейнер резервирования (runbooks/deploy.md): до исправления потеря сервера приведёт к потере свежих данных."
+                           },
+    "alert_backup_upload_stale":  {
+                                      "en":  "⚠️ The off-site copy of the database backups has not been updated for {hours} hours. Backups are still kept on the server, but a server loss would lose them; check the backup container (runbooks/restore.md). If uploads failed for more than about a week, the next sync is refused on purpose — it would delete more old off-site dumps than the guard allows — and stays refused until it is run once by hand (runbooks/restore.md §C).",
+                                      "uz-Latn":  "⚠️ Tashqi zaxira nusxalari {hours} soatdan beri yangilanmagan. Zaxiralar serverda bor, lekin server yoʻqolsa, ular ham yoʻqoladi; zaxira konteynerini tekshiring (runbooks/restore.md). Yuklash bir haftadan koʻproq ishlamasa, keyingi sinxronlash himoya tufayli rad etiladi: juda koʻp eski tashqi nusxalar oʻchib ketishi mumkin. Bir marta qoʻlda ishga tushirmaguncha rad etiladi (runbooks/restore.md §C).",
+                                      "uz-Cyrl":  "⚠️ Ташқи захира нусхалари {hours} соатдан бери янгиланмаган. Захиралар серверда бор, лекин сервер йўқолса, улар ҳам йўқолади; захира контейнерини текширинг (runbooks/restore.md). Юклаш бир ҳафтадан кўпроқ ишламаса, кейинги синхронлаш ҳимоя туфайли рад этилади: жуда кўп эски ташқи нусхалар ўчиб кетиши мумкин. Бир марта қўлда ишга туширмагунча рад этилади (runbooks/restore.md §C).",
+                                      "ru":  "⚠️ Внешняя копия резервных копий базы не обновлялась {hours} часов. Копии есть на сервере, но при его потере исчезнут и они; проверьте контейнер (runbooks/restore.md). После сбоев загрузки дольше примерно недели синхронизация намеренно блокируется: она удалила бы больше старых внешних копий, чем допускает защита. Нужен один ручной запуск (runbooks/restore.md §C)."
+                                  },
+    "alert_confirmation_interrupted":  {
+                                           "en":  "⚠️ A change you confirmed (\u003ccode\u003e{tool}\u003c/code\u003e) was interrupted while it was being applied. It may or may not have taken effect; please check before asking again. I am not counting it as done.",
+                                           "uz-Latn":  "⚠️ Siz tasdiqlagan oʻzgarish (\u003ccode\u003e{tool}\u003c/code\u003e) qoʻllanayotganda uzildi. Amalga oshgan yoki oshmagan boʻlishi mumkin; qayta soʻrashdan oldin tekshiring. Bajarildi deb hisoblamayman.",
+                                           "uz-Cyrl":  "⚠️ Сиз тасдиқлаган ўзгариш (\u003ccode\u003e{tool}\u003c/code\u003e) қўлланаётганда узилди. Амалга ошган ёки ошмаган бўлиши мумкин; қайта сўрашдан олдин текширинг. Бажарилди деб ҳисобламайман.",
+                                           "ru":  "⚠️ Подтверждённое изменение (\u003ccode\u003e{tool}\u003c/code\u003e) прервалось во время применения. Оно могло вступить в силу или нет; проверьте перед повторным запросом. Я не считаю его выполненным."
+                                       },
+    "alert_restore_notice":  {
+                                 "en":  "♻️ The database was restored from a backup taken {backup_taken_at}. Everything decided after that is undone: autonomy is paused, open approvals were cancelled, and messages from the gap may be missing (it is recorded as a coverage gap). Restored AI consents were revoked; processing requires fresh consent. Deletions and consent revocations after the backup time may have been undone: redo deletions via /settings → Delete data (or /privacy delete for everything), and revoke consent with /privacy revoke. Review this before renewing consent with /start for this control chat, then /privacy managed for connected chats. Please check /status and re-apply settings or pauses you changed since.{actions}",
+                                 "uz-Latn":  "♻️ Baza {backup_taken_at} vaqtidagi zaxiradan tiklandi. Keyingi qarorlar ortga qaytdi: avtonomiya toʻxtatildi, ochiq tasdiqlar bekor qilindi, uzilish paytidagi xabarlar yetishmasligi mumkin (qamrov uzilishi qayd etilgan). Tiklangan AI roziliklari bekor qilindi; qayta ishlash uchun yangi rozilik kerak. Zaxiradan keyingi oʻchirishlar va rozilikni bekor qilishlar ortga qaytgan boʻlishi mumkin: /settings yoki hammasi uchun /privacy delete orqali qayta oʻchiring; /privacy revoke orqali rozilikni bekor qiling. Qayta rozilik berishdan oldin buni tekshiring: bu chat uchun /start, keyin ulangan chatlar uchun /privacy managed. /status ni tekshirib, keyingi oʻzgartirgan sozlama va toʻxtatishlaringizni qayta qoʻllang.{actions}",
+                                 "uz-Cyrl":  "♻️ База {backup_taken_at} вақтидаги захирадан тикланди. Кейинги қарорлар ортга қайтди: автономия тўхтатилди, очиқ тасдиқлар бекор қилинди, узилиш пайтидаги хабарлар етишмаслиги мумкин (қамров узилиши қайд этилган). Тикланган AI розиликлари бекор қилинди; қайта ишлаш учун янги розилик керак. Захирадан кейинги ўчиришлар ва розиликни бекор қилишлар ортга қайтган бўлиши мумкин: /settings ёки ҳаммаси учун /privacy delete орқали қайта ўчиринг; /privacy revoke орқали розиликни бекор қилинг. Қайта розилик беришдан олдин буни текширинг: бу чат учун /start, кейин уланган чатлар учун /privacy managed. /status ни текшириб, кейинги ўзгартирган созлама ва тўхтатишларингизни қайта қўлланг.{actions}",
+                                 "ru":  "♻️ База восстановлена из копии от {backup_taken_at}. Более поздние решения отменены: автономия приостановлена, открытые одобрения отменены, сообщения за пробел могут отсутствовать (пробел охвата записан). Восстановленные согласия ИИ отозваны; нужно новое согласие. Удаления и отзывы согласия после копии могли отмениться: повторите удаление через /settings или /privacy delete для всего, отзовите согласие через /privacy revoke. Проверьте это перед новым согласием через /start для этого чата, затем /privacy managed для подключённых чатов. Проверьте /status и повторите изменения настроек и паузы после времени копии.{actions}"
+                             },
+    "arriving_note":  {
+                          "en":  "A message arriving at the moment of deletion may still be stored.",
+                          "uz-Latn":  "Oʻchirish paytida kelgan xabar baribir saqlanishi mumkin.",
+                          "uz-Cyrl":  "Ўчириш пайтида келган хабар барибир сақланиши мумкин.",
+                          "ru":  "Сообщение, пришедшее в момент удаления, всё же может сохраниться."
+                      },
+    "backup_note":  {
+                        "en":  "Encrypted backups made before now still contain it until they are rotated out (up to 35 days).",
+                        "uz-Latn":  "Oldingi shifrlangan zaxiralarda maʼlumotlar aylanishdan chiqmaguncha (35 kungacha) qoladi.",
+                        "uz-Cyrl":  "Олдинги шифрланган захираларда маълумотлар айланишдан чиқмагунча (35 кунгача) қолади.",
+                        "ru":  "В прежних зашифрованных копиях данные остаются до ротации (до 35 дней)."
+                    },
+    "delete_all_body":  {
+                            "en":  "\u003cb\u003eDelete everything?\u003c/b\u003e\n\nThis deletes all stored content: every message, name, summary and note (yours too), the history of this chat and the raw updates.\n\nKept: your account, settings, AI consents and the connection, so I keep observing your chats from now on (to stop that: /privacy revoke, or remove me under Chat Automation). To delete one chat only, open its panel from /settings. {undo} {arriving} {backup}",
+                            "uz-Latn":  "\u003cb\u003eHammasi oʻchirilsinmi?\u003c/b\u003e\n\nBarcha saqlangan mazmun oʻchadi: xabarlar, ismlar, xulosalar, qaydlar (siznikilar ham), bu chat tarixi va Telegram yangilanishlari.\n\nHisobingiz, sozlamalar, AI roziliklari va ulanish qoladi; chatlarni kuzatishda davom etaman (toʻxtatish: /privacy revoke yoki Chat Automation da meni uzing). Faqat bitta chatni oʻchirish uchun /settings dan panelini oching. {undo} {arriving} {backup}",
+                            "uz-Cyrl":  "\u003cb\u003eҲаммаси ўчирилсинми?\u003c/b\u003e\n\nБарча сақланган мазмун ўчади: хабарлар, исмлар, хулосалар, қайдлар (сизникилар ҳам), бу чат тарихи ва Telegram янгиланишлари.\n\nҲисобингиз, созламалар, AI розиликлари ва уланиш қолади; чатларни кузатишда давом этаман (тўхтатиш: /privacy revoke ёки Chat Automation да мени узинг). Фақат битта чатни ўчириш учун /settings дан панелини очинг. {undo} {arriving} {backup}",
+                            "ru":  "\u003cb\u003eУдалить всё?\u003c/b\u003e\n\nУдалится всё сохранённое содержимое: сообщения, имена, сводки, заметки (ваши тоже), история этого чата и исходные обновления.\n\nОстанутся аккаунт, настройки, согласия ИИ и подключение; наблюдение продолжится (чтобы остановить: /privacy revoke или отключите меня в Chat Automation). Для одного чата откройте его панель из /settings. {undo} {arriving} {backup}"
+                        },
+    "managed_delete_body":  {
+                                "en":  "\u003cb\u003eDelete what I stored from your chats?\u003c/b\u003e\n\nThis removes every message, name, summary and raw update I kept from the chats you included under Chat Automation, and your notes about the people in them. It cannot be undone. Your own notes and settings stay.\n\n\u003cb\u003eDelete everything\u003c/b\u003e also deletes the history of this chat and all your notes. To delete one chat only, open its panel from /settings instead.\n\n{arriving} {backup}",
+                                "uz-Latn":  "\u003cb\u003eChatlaringizdan saqlaganlarim oʻchirilsinmi?\u003c/b\u003e\n\nChat Automation ga kiritgan chatlaringizdan saqlangan barcha xabar, ism, xulosa, Telegram yangilanishi va ulardagi odamlar haqidagi qaydlar oʻchadi. Buni ortga qaytarib boʻlmaydi. Shaxsiy qaydlaringiz va sozlamalar qoladi.\n\n\u003cb\u003eHammasini oʻchirish\u003c/b\u003e bu chat tarixini va barcha qaydlaringizni ham oʻchiradi. Faqat bitta chat uchun /settings dan panelini oching.\n\n{arriving} {backup}",
+                                "uz-Cyrl":  "\u003cb\u003eЧатларингиздан сақлаганларим ўчирилсинми?\u003c/b\u003e\n\nChat Automation га киритган чатларингиздан сақланган барча хабар, исм, хулоса, Telegram янгиланиши ва улардаги одамлар ҳақидаги қайдлар ўчади. Буни ортга қайтариб бўлмайди. Шахсий қайдларингиз ва созламалар қолади.\n\n\u003cb\u003eҲаммасини ўчириш\u003c/b\u003e бу чат тарихини ва барча қайдларингизни ҳам ўчиради. Фақат битта чат учун /settings дан панелини очинг.\n\n{arriving} {backup}",
+                                "ru":  "\u003cb\u003eУдалить сохранённое из ваших чатов?\u003c/b\u003e\n\nУдалятся все сообщения, имена, сводки и исходные обновления из чатов Chat Automation, а также ваши заметки о людях в них. Это нельзя отменить. Ваши собственные заметки и настройки останутся.\n\n\u003cb\u003eУдалить всё\u003c/b\u003e также удаляет историю этого чата и все ваши заметки. Для одного чата откройте его панель из /settings.\n\n{arriving} {backup}"
+                            },
+    "mode_body":  {
+                      "en":  "\u003cb\u003eHow should I continue?\u003c/b\u003e\n\n\u003cb\u003eWithout AI\u003c/b\u003e — I keep observing your included chats for coverage and visibility only; nothing is sent to an AI provider.\n\u003cb\u003eStop observing\u003c/b\u003e — I store nothing further from them. To disconnect me completely, remove me under Settings → Chat Automation; there is no way for me to do that myself.",
+                      "uz-Latn":  "\u003cb\u003eQanday davom etay?\u003c/b\u003e\n\n\u003cb\u003eAI ishlatmasdan\u003c/b\u003e — kiritgan chatlaringizni faqat qamrov va koʻrinish uchun kuzataman; AI xizmatiga hech narsa yuborilmaydi.\n\u003cb\u003eKuzatishni toʻxtatish\u003c/b\u003e — ulardan boshqa hech narsa saqlamayman. Toʻliq uzish uchun Settings → Chat Automation da meni olib tashlang; buni oʻzim qila olmayman.",
+                      "uz-Cyrl":  "\u003cb\u003eҚандай давом этай?\u003c/b\u003e\n\n\u003cb\u003eAI ишлатмасдан\u003c/b\u003e — киритган чатларингизни фақат қамров ва кўриниш учун кузатаман; AI хизматига ҳеч нарса юборилмайди.\n\u003cb\u003eКузатишни тўхтатиш\u003c/b\u003e — улардан бошқа ҳеч нарса сақламайман. Тўлиқ узиш учун Settings → Chat Automation да мени олиб ташланг; буни ўзим қила олмайман.",
+                      "ru":  "\u003cb\u003eКак продолжить?\u003c/b\u003e\n\n\u003cb\u003eБез ИИ\u003c/b\u003e — наблюдение за включёнными чатами продолжается только для охвата и видимости; сервису ИИ ничего не отправляется.\n\u003cb\u003eПрекратить наблюдение\u003c/b\u003e — больше ничего из них не сохраняется. Для полного отключения удалите меня в Settings → Chat Automation; сам я этого сделать не могу."
+                  },
+    "kept":  {
+                 "en":  "Kept",
+                 "uz-Latn":  "Saqlandi",
+                 "uz-Cyrl":  "Сақланди",
+                 "ru":  "Оставлено"
+             },
+    "kept_body":  {
+                      "en":  "Kept. Nothing was deleted.",
+                      "uz-Latn":  "Saqlandi. Hech narsa oʻchirilmadi.",
+                      "uz-Cyrl":  "Сақланди. Ҳеч нарса ўчирилмади.",
+                      "ru":  "Оставлено. Ничего не удалено."
+                  },
+    "observing_without_ai":  {
+                                 "en":  "Observing without AI",
+                                 "uz-Latn":  "AI ishlatmasdan kuzatilmoqda",
+                                 "uz-Cyrl":  "AI ишлатмасдан кузатилмоқда",
+                                 "ru":  "Наблюдение без ИИ"
+                             },
+    "observing_body":  {
+                           "en":  "👀 I keep observing your included chats for coverage and visibility. Nothing is sent to an AI provider. Send \u003ccode\u003e/privacy managed\u003c/code\u003e to change that.",
+                           "uz-Latn":  "👀 Kiritgan chatlaringizni qamrov va koʻrinish uchun kuzatishda davom etaman. AI xizmatiga hech narsa yuborilmaydi. Oʻzgartirish uchun \u003ccode\u003e/privacy managed\u003c/code\u003e yuboring.",
+                           "uz-Cyrl":  "👀 Киритган чатларингизни қамров ва кўриниш учун кузатишда давом этаман. AI хизматига ҳеч нарса юборилмайди. Ўзгартириш учун \u003ccode\u003e/privacy managed\u003c/code\u003e юборинг.",
+                           "ru":  "👀 Наблюдение за включёнными чатами для охвата и видимости продолжается. Сервису ИИ ничего не отправляется. Для изменения отправьте \u003ccode\u003e/privacy managed\u003c/code\u003e."
+                       },
+    "stopped":  {
+                    "en":  "Stopped",
+                    "uz-Latn":  "Toʻxtatildi",
+                    "uz-Cyrl":  "Тўхтатилди",
+                    "ru":  "Остановлено"
+                },
+    "stopped_body":  {
+                         "en":  "⏹ Stopped. I store nothing further from your included chats. To disconnect me completely, remove me under Settings → Chat Automation. Send \u003ccode\u003e/privacy managed\u003c/code\u003e to start observing again.",
+                         "uz-Latn":  "⏹ Toʻxtatildi. Kiritgan chatlaringizdan boshqa hech narsa saqlamayman. Toʻliq uzish uchun Settings → Chat Automation da meni olib tashlang. Qayta kuzatish uchun \u003ccode\u003e/privacy managed\u003c/code\u003e yuboring.",
+                         "uz-Cyrl":  "⏹ Тўхтатилди. Киритган чатларингиздан бошқа ҳеч нарса сақламайман. Тўлиқ узиш учун Settings → Chat Automation да мени олиб ташланг. Қайта кузатиш учун \u003ccode\u003e/privacy managed\u003c/code\u003e юборинг.",
+                         "ru":  "⏹ Остановлено. Больше ничего из включённых чатов не сохраняется. Для полного отключения удалите меня в Settings → Chat Automation. Чтобы снова наблюдать, отправьте \u003ccode\u003e/privacy managed\u003c/code\u003e."
+                     },
+    "queued_deletion":  {
+                            "en":  "🗑 Deleting now. I finish anything I was doing first, so nothing I write meanwhile keeps it; you get a receipt when it is done.",
+                            "uz-Latn":  "🗑 Oʻchirilmoqda. Avval boshlangan ishlarimni tugataman, shunda yozganlarim oʻchiriladigan maʼlumotni saqlab qolmaydi. Tugagach, natijasini yuboraman.",
+                            "uz-Cyrl":  "🗑 Ўчирилмоқда. Аввал бошланган ишларимни тугатаман, шунда ёзганларим ўчириладиган маълумотни сақлаб қолмайди. Тугагач, натижасини юбораман.",
+                            "ru":  "🗑 Удаляю. Сначала завершу начатую работу, чтобы написанное мной не сохранило удаляемые данные. После завершения пришлю результат."
+                        },
+    "delete_not_found":  {
+                             "en":  "Nothing was deleted: that chat or contact is no longer there.",
+                             "uz-Latn":  "Hech narsa oʻchirilmadi: bu chat yoki kontakt endi yoʻq.",
+                             "uz-Cyrl":  "Ҳеч нарса ўчирилмади: бу чат ёки контакт энди йўқ.",
+                             "ru":  "Ничего не удалено: этого чата или контакта уже нет."
+                         },
+    "delete_failed":  {
+                          "en":  "⚠️ The deletion failed, so nothing was deleted: it is done all at once or not at all. {ask_again}",
+                          "uz-Latn":  "⚠️ Oʻchirish bajarilmadi, hech narsa oʻchirilmadi: bu amal toʻliq bajariladi yoki umuman bajarilmaydi. {ask_again}",
+                          "uz-Cyrl":  "⚠️ Ўчириш бажарилмади, ҳеч нарса ўчирилмади: бу амал тўлиқ бажарилади ёки умуман бажарилмайди. {ask_again}",
+                          "ru":  "⚠️ Удаление не удалось, ничего не удалено: оно выполняется целиком или никак. {ask_again}"
+                      },
+    "delete_unclear":  {
+                           "en":  "⚠️ The deletion did not finish cleanly and I could not confirm whether it went through. It is done all at once or not at all, so either all of it was deleted or none of it. Check before asking again. {ask_again}",
+                           "uz-Latn":  "⚠️ Oʻchirish toʻgʻri yakunlanmadi, bajarilganini tasdiqlay olmadim. Bu amal toʻliq bajariladi yoki umuman bajarilmaydi: yo hammasi oʻchgan, yo hech narsa oʻchmagan. Qayta soʻrashdan oldin tekshiring. {ask_again}",
+                           "uz-Cyrl":  "⚠️ Ўчириш тўғри якунланмади, бажарилганини тасдиқлай олмадим. Бу амал тўлиқ бажарилади ёки умуман бажарилмайди: ё ҳаммаси ўчган, ё ҳеч нарса ўчмаган. Қайта сўрашдан олдин текширинг. {ask_again}",
+                           "ru":  "⚠️ Удаление завершилось с ошибкой; подтвердить результат не удалось. Оно выполняется целиком или никак: удалено либо всё, либо ничего. Проверьте перед повторным запросом. {ask_again}"
+                       },
+    "retry_panel":  {
+                        "en":  "To try again, open the chat\u0027s panel (/settings → the chat) and tap Delete stored data….",
+                        "uz-Latn":  "Qayta urinish uchun /settings dan chat panelini ochib, saqlangan maʼlumotlarni oʻchirish tugmasini bosing.",
+                        "uz-Cyrl":  "Қайта уриниш учун /settings дан чат панелини очиб, сақланган маълумотларни ўчириш тугмасини босинг.",
+                        "ru":  "Чтобы повторить, откройте панель чата (/settings → чат) и нажмите удаление сохранённых данных."
+                    },
+    "retry_everything":  {
+                             "en":  "To try again, send /privacy delete.",
+                             "uz-Latn":  "Qayta urinish uchun /privacy delete yuboring.",
+                             "uz-Cyrl":  "Қайта уриниш учун /privacy delete юборинг.",
+                             "ru":  "Чтобы повторить, отправьте /privacy delete."
+                         },
+    "retry_managed":  {
+                          "en":  "To try again, tap Delete below.",
+                          "uz-Latn":  "Qayta urinish uchun quyidagi Oʻchirish tugmasini bosing.",
+                          "uz-Cyrl":  "Қайта уриниш учун қуйидаги Ўчириш тугмасини босинг.",
+                          "ru":  "Чтобы повторить, нажмите «Удалить» ниже."
+                      },
+    "retry_managed_no_card":  {
+                                  "en":  "A chat\u0027s panel in /settings shows what is still stored there; /privacy delete deletes everything.",
+                                  "uz-Latn":  "/settings dagi chat paneli nima saqlanganini koʻrsatadi; /privacy delete hammasini oʻchiradi.",
+                                  "uz-Cyrl":  "/settings даги чат панели нима сақланганини кўрсатади; /privacy delete ҳаммасини ўчиради.",
+                                  "ru":  "Панель чата в /settings показывает оставшиеся данные; /privacy delete удаляет всё."
+                              },
+    "retry_unknown":  {
+                          "en":  "Please ask again.",
+                          "uz-Latn":  "Qayta soʻrang.",
+                          "uz-Cyrl":  "Қайта сўранг.",
+                          "ru":  "Пожалуйста, запросите снова."
+                      },
+    "delete_receipt":  {
+                           "en":  "🗑 Deleted: {messages} message(s), {contacts_cleared} contact name(s), {payloads_cleared} raw update(s), {summaries_deleted} summary(ies), {memory_items_deleted} note(s), {control_turns_cleared} turn(s) of our conversation here, {held_calls_cleared} held change(s), {actions} action(s), {tasks} task(s), {notifications} notification(s), {automations} automation(s).\n{backup}",
+                           "uz-Latn":  "🗑 Oʻchirildi: {messages} ta xabar, {contacts_cleared} ta kontakt ismi, {payloads_cleared} ta yangilanish, {summaries_deleted} ta xulosa, {memory_items_deleted} ta qayd, bu suhbatdan {control_turns_cleared} ta navbat, {held_calls_cleared} ta kutayotgan oʻzgarish, {actions} ta amal, {tasks} ta vazifa, {notifications} ta bildirishnoma, {automations} ta avtomatlashtirish.\n{backup}",
+                           "uz-Cyrl":  "🗑 Ўчирилди: {messages} та хабар, {contacts_cleared} та контакт исми, {payloads_cleared} та янгиланиш, {summaries_deleted} та хулоса, {memory_items_deleted} та қайд, бу суҳбатдан {control_turns_cleared} та навбат, {held_calls_cleared} та кутаётган ўзгариш, {actions} та амал, {tasks} та вазифа, {notifications} та билдиришнома, {automations} та автоматлаштириш.\n{backup}",
+                           "ru":  "🗑 Удалено: {messages} сообщений, {contacts_cleared} имён контактов, {payloads_cleared} исходных обновлений, {summaries_deleted} сводок, {memory_items_deleted} заметок, {control_turns_cleared} реплик этого чата, {held_calls_cleared} ожидающих изменений, {actions} действий, {tasks} задач, {notifications} уведомлений, {automations} автоматизаций.\n{backup}"
+                       },
+    "text_only":  {
+                      "en":  "I can only read text messages for now.",
+                      "uz-Latn":  "Hozircha faqat matnli xabarlarni oʻqiy olaman.",
+                      "uz-Cyrl":  "Ҳозирча фақат матнли хабарларни ўқий оламан.",
+                      "ru":  "Пока я могу читать только текстовые сообщения."
+                  },
+    "open_chat":  {
+                      "en":  "Open chat",
+                      "uz-Latn":  "Chatni ochish",
+                      "uz-Cyrl":  "Чатни очиш",
+                      "ru":  "Открыть чат"
+                  },
+    "useful":  {
+                   "en":  "Useful",
+                   "uz-Latn":  "Foydali",
+                   "uz-Cyrl":  "Фойдали",
+                   "ru":  "Полезно"
+               },
+    "not_useful_button":  {
+                              "en":  "Not useful",
+                              "uz-Latn":  "Foydasiz",
+                              "uz-Cyrl":  "Фойдасиз",
+                              "ru":  "Не полезно"
+                          },
+    "settings_compact":  {
+                             "en":  "Language: {language}\nTimezone: {zone}\n\nSend \u003ccode\u003e/settings timezone Asia/Tashkent\u003c/code\u003e or \u003ccode\u003e/settings language uz\u003c/code\u003e to change one.",
+                             "uz-Latn":  "Til: {language}\nVaqt mintaqasi: {zone}\n\nOʻzgartirish uchun \u003ccode\u003e/settings timezone Asia/Tashkent\u003c/code\u003e yoki \u003ccode\u003e/settings language uz\u003c/code\u003e yuboring.",
+                             "uz-Cyrl":  "Тил: {language}\nВақт минтақаси: {zone}\n\nЎзгартириш учун \u003ccode\u003e/settings timezone Asia/Tashkent\u003c/code\u003e ёки \u003ccode\u003e/settings language uz\u003c/code\u003e юборинг.",
+                             "ru":  "Язык: {language}\nЧасовой пояс: {zone}\n\nДля изменения отправьте \u003ccode\u003e/settings timezone Asia/Tashkent\u003c/code\u003e или \u003ccode\u003e/settings language uz\u003c/code\u003e."
+                         },
+    "policy_v4":  {
+                      "en":  "Alviro\u0027s privacy policy was updated (version 4). It now says where your data is kept — a server in the US — and that it is backed up daily, encrypted, with a copy in the EU. Your settings stay as they are. Read it here: {link}. If you don\u0027t agree: \u003ccode\u003e/privacy revoke\u003c/code\u003e stops all AI processing, and to stop Alviro saving your chats, remove it under Settings → Chat Automation.",
+                      "uz-Latn":  "Alviro maxfiylik siyosati yangilandi (4-versiya). Endi maʼlumotlaringiz AQShdagi serverda saqlanishi va har kuni shifrlangan zaxira olinib, nusxasi Yevropa Ittifoqida ham saqlanishi koʻrsatilgan. Sozlamalaringiz oʻzgarmaydi. Oʻqing: {link}. Rozi boʻlmasangiz, \u003ccode\u003e/privacy revoke\u003c/code\u003e AI orqali barcha qayta ishlashni toʻxtatadi; chatlaringiz saqlanishini toʻxtatish uchun Settings → Chat Automation dan Alviro ni olib tashlang.",
+                      "uz-Cyrl":  "Alviro махфийлик сиёсати янгиланди (4-версия). Энди маълумотларингиз АҚШдаги серверда сақланиши ва ҳар куни шифрланган захира олиниб, нусхаси Европа Иттифоқида ҳам сақланиши кўрсатилган. Созламаларингиз ўзгармайди. Ўқинг: {link}. Рози бўлмасангиз, \u003ccode\u003e/privacy revoke\u003c/code\u003e AI орқали барча қайта ишлашни тўхтатади; чатларингиз сақланишини тўхтатиш учун Settings → Chat Automation дан Alviro ни олиб ташланг.",
+                      "ru":  "Политика конфиденциальности Alviro обновлена (версия 4). Указано, что данные хранятся на сервере в США, ежедневно создаются зашифрованные резервные копии, в том числе в ЕС. Настройки не меняются. Прочитать: {link}. Если вы не согласны, \u003ccode\u003e/privacy revoke\u003c/code\u003e прекращает всю обработку ИИ; чтобы прекратить сохранение чатов, удалите Alviro в Settings → Chat Automation."
+                  },
+    "policy_v5":  {
+                      "en":  "Alviro\u0027s privacy policy was updated (version 5). It now covers the notes you ask Alviro to remember and the summaries of your chats: both are kept until you delete them, also after the messages themselves expire, and you can delete them for one chat, for one person or all at once. It also describes the settings that keep messages for a shorter time. Your settings stay as they are. Read it here: {link}. If you don\u0027t agree: \u003ccode\u003e/privacy revoke\u003c/code\u003e stops all AI processing, \u003ccode\u003e/privacy delete\u003c/code\u003e deletes everything stored (after asking), and to stop Alviro saving your chats, remove it under Settings → Chat Automation.",
+                      "uz-Latn":  "Alviro maxfiylik siyosati yangilandi (5-versiya). Eslab qolishni soʻragan qaydlaringiz va chat xulosalari oʻzingiz oʻchirmaguningizcha, xabarlar muddati tugagandan keyin ham saqlanadi. Ularni bir chat, bir odam yoki hammasi uchun oʻchirish mumkin. Xabarlarni qisqaroq saqlash sozlamalari ham bayon qilingan. Sozlamalaringiz oʻzgarmaydi. Oʻqing: {link}. Rozi boʻlmasangiz, \u003ccode\u003e/privacy revoke\u003c/code\u003e AI orqali barcha qayta ishlashni toʻxtatadi; \u003ccode\u003e/privacy delete\u003c/code\u003e avval soʻrab, saqlangan hamma narsani oʻchiradi. Chatlaringiz saqlanishini toʻxtatish uchun Settings → Chat Automation dan Alviro ni olib tashlang.",
+                      "uz-Cyrl":  "Alviro махфийлик сиёсати янгиланди (5-версия). Эслаб қолишни сўраган қайдларингиз ва чат хулосалари ўзингиз ўчирмагунингизча, хабарлар муддати тугагандан кейин ҳам сақланади. Уларни бир чат, бир одам ёки ҳаммаси учун ўчириш мумкин. Хабарларни қисқароқ сақлаш созламалари ҳам баён қилинган. Созламаларингиз ўзгармайди. Ўқинг: {link}. Рози бўлмасангиз, \u003ccode\u003e/privacy revoke\u003c/code\u003e AI орқали барча қайта ишлашни тўхтатади; \u003ccode\u003e/privacy delete\u003c/code\u003e аввал сўраб, сақланган ҳамма нарсани ўчиради. Чатларингиз сақланишини тўхтатиш учун Settings → Chat Automation дан Alviro ни олиб ташланг.",
+                      "ru":  "Политика конфиденциальности Alviro обновлена (версия 5). Заметки, которые вы просите запомнить, и сводки чатов хранятся до удаления вами, даже после истечения срока самих сообщений. Их можно удалить для одного чата, человека или все сразу. Также описаны настройки сокращённого хранения сообщений. Настройки не меняются. Прочитать: {link}. Если вы не согласны, \u003ccode\u003e/privacy revoke\u003c/code\u003e прекращает всю обработку ИИ, \u003ccode\u003e/privacy delete\u003c/code\u003e удаляет всё сохранённое после подтверждения; чтобы прекратить сохранение чатов, удалите Alviro в Settings → Chat Automation."
+                  },
+    "hourly_cap":  {
+                       "en":  "{count}/h",
+                       "uz-Latn":  "{count}/soat",
+                       "uz-Cyrl":  "{count}/соат",
+                       "ru":  "{count}/ч"
+                   },
+    "panel_unknown":  {
+                          "en":  "I don\u0027t have that chat. Only chats included under Chat Automation appear here.",
+                          "uz-Latn":  "Bu chat menda yoʻq. Bu yerda faqat Chat Automation ga kiritilgan chatlar koʻrinadi.",
+                          "uz-Cyrl":  "Бу чат менда йўқ. Бу ерда фақат Chat Automation га киритилган чатлар кўринади.",
+                          "ru":  "Этого чата у меня нет. Здесь видны только чаты, включённые в Chat Automation."
+                      },
+    "panel_unavailable":  {
+                              "en":  "⚠️ The chat may be paused or excluded; my last action there failed.",
+                              "uz-Latn":  "⚠️ Chat toʻxtatilgan yoki chiqarib tashlangan boʻlishi mumkin; u yerdagi oxirgi amalim bajarilmadi.",
+                              "uz-Cyrl":  "⚠️ Чат тўхтатилган ёки чиқариб ташланган бўлиши мумкин; у ердаги охирги амалим бажарилмади.",
+                              "ru":  "⚠️ Чат мог быть приостановлен или исключён; моё последнее действие в нём не удалось."
+                          },
+    "panel_ingest_failed":  {
+                                "en":  "⚠️ A message here could not be processed; automation is paused.",
+                                "uz-Latn":  "⚠️ Bu yerda bir xabarni qayta ishlab boʻlmadi; avtomatik ishlar toʻxtatildi.",
+                                "uz-Cyrl":  "⚠️ Бу ерда бир хабарни қайта ишлаб бўлмади; автоматик ишлар тўхтатилди.",
+                                "ru":  "⚠️ Не удалось обработать сообщение в этом чате; автоматизация приостановлена."
+                            },
+    "panel_gaps":  {
+                       "en":  "⚠️ {count} coverage gap(s): some messages may be missing.",
+                       "uz-Latn":  "⚠️ Qamrovda {count} ta uzilish: ayrim xabarlar yetishmasligi mumkin.",
+                       "uz-Cyrl":  "⚠️ Қамровда {count} та узилиш: айрим хабарлар етишмаслиги мумкин.",
+                       "ru":  "⚠️ Пробелов в охвате: {count}; некоторые сообщения могут отсутствовать."
+                   },
+    "chat_data_button": {"en":"Chat data","uz-Latn":"Chat maʼlumotlari","uz-Cyrl":"Чат маълумотлари","ru":"Данные чата"},
+    "chat_notes_button": {"en":"Chat + notes","uz-Latn":"Chat + qaydlar","uz-Cyrl":"Чат + қайдлар","ru":"Чат + заметки"},
+    "ignore_button": {"en":"Ignore","uz-Latn":"Eʼtiborsiz qoldirish","uz-Cyrl":"Эътиборсиз қолдириш","ru":"Игнорировать"},
+    "ignore_delete_button": {"en":"Ignore + delete data","uz-Latn":"Eʼtiborsiz qoldirish + oʻchirish","uz-Cyrl":"Эътиборсиз қолдириш + ўчириш","ru":"Игнорировать + удалить данные"},
+    "confirm_delete": {"en":"Confirm to delete","uz-Latn":"Oʻchirishni tasdiqlang","uz-Cyrl":"Ўчиришни тасдиқланг","ru":"Подтвердите удаление"},
+    "confirm_ignore": {"en":"Confirm to ignore","uz-Latn":"Eʼtiborsiz qoldirishni tasdiqlang","uz-Cyrl":"Эътиборсиз қолдиришни тасдиқланг","ru":"Подтвердите игнорирование"},
+    "ignore_question": {"en":"<b>Ignore the chat with {name}?</b>","uz-Latn":"<b>{name} bilan chat eʼtiborsiz qoldirilsinmi?</b>","uz-Cyrl":"<b>{name} билан чат эътиборсиз қолдирилсинми?</b>","ru":"<b>Игнорировать чат с {name}?</b>"},
+    "ignore_delete_body": {
+        "en":"<b>Ignore + delete data</b> also deletes what is stored from this chat now: its messages, summary and raw updates, notes about this chat, and every note or turn here that drew on this chat or on {name}. Other notes about {name} stay. {undo} {arriving} {backup}",
+        "uz-Latn":"<b>Eʼtiborsiz qoldirish + oʻchirish</b> bu chatdan hozir saqlangan maʼlumotlarni ham oʻchiradi: xabarlar, xulosa va xom yangilanishlar, chat haqidagi qaydlar hamda shu chat yoki {name} maʼlumotlariga tayangan bu yerdagi har bir qayd va suhbat navbati. {name} haqidagi boshqa qaydlar qoladi. {undo} {arriving} {backup}",
+        "uz-Cyrl":"<b>Эътиборсиз қолдириш + ўчириш</b> бу чатдан ҳозир сақланган маълумотларни ҳам ўчиради: хабарлар, хулоса ва хом янгиланишлар, чат ҳақидаги қайдлар ҳамда шу чат ёки {name} маълумотларига таянган бу ердаги ҳар бир қайд ва суҳбат навбати. {name} ҳақидаги бошқа қайдлар қолади. {undo} {arriving} {backup}",
+        "ru":"<b>Игнорировать + удалить данные</b> также удаляет уже сохранённое из этого чата: сообщения, сводку и исходные обновления, заметки об этом чате и все заметки или реплики здесь, основанные на этом чате или данных о {name}. Другие заметки о {name} останутся. {undo} {arriving} {backup}"
+    },
+    "delete_chat_body": {
+        "en":"<b>Delete what is stored from the chat with {name}?</b>\n\n<b>Chat data</b>: its messages, summary and raw updates, notes about this chat, and every note or turn here that drew on this chat or on {name}. Other notes about {name} stay.\n<b>Chat + notes</b>: also all notes saved about {name}. Your general notes that only mention {name} stay.\n\nThe chat stays in its mode: new messages are stored as before. {undo} {arriving} {backup}",
+        "uz-Latn":"<b>{name} bilan chatdan saqlangan maʼlumotlar oʻchirilsinmi?</b>\n\n<b>Chat maʼlumotlari</b>: xabarlar, xulosa va xom yangilanishlar, chat haqidagi qaydlar hamda shu chat yoki {name} maʼlumotlariga tayangan bu yerdagi har bir qayd va suhbat navbati. {name} haqidagi boshqa qaydlar qoladi.\n<b>Chat + qaydlar</b>: {name} haqida saqlangan barcha qaydlar ham oʻchiriladi. Faqat {name} tilga olingan umumiy qaydlaringiz qoladi.\n\nChat rejimi oʻzgarmaydi: yangi xabarlar avvalgidek saqlanadi. {undo} {arriving} {backup}",
+        "uz-Cyrl":"<b>{name} билан чатдан сақланган маълумотлар ўчирилсинми?</b>\n\n<b>Чат маълумотлари</b>: хабарлар, хулоса ва хом янгиланишлар, чат ҳақидаги қайдлар ҳамда шу чат ёки {name} маълумотларига таянган бу ердаги ҳар бир қайд ва суҳбат навбати. {name} ҳақидаги бошқа қайдлар қолади.\n<b>Чат + қайдлар</b>: {name} ҳақида сақланган барча қайдлар ҳам ўчирилади. Фақат {name} тилга олинган умумий қайдларингиз қолади.\n\nЧат режими ўзгармайди: янги хабарлар аввалгидек сақланади. {undo} {arriving} {backup}",
+        "ru":"<b>Удалить сохранённые данные чата с {name}?</b>\n\n<b>Данные чата</b>: сообщения, сводка и исходные обновления, заметки об этом чате и все заметки или реплики здесь, основанные на этом чате или данных о {name}. Другие заметки о {name} останутся.\n<b>Чат + заметки</b>: также все заметки о {name}. Ваши общие заметки, где {name} только упоминается, останутся.\n\nРежим чата не меняется: новые сообщения сохраняются как прежде. {undo} {arriving} {backup}"
+    },
+    "alert_unnamed": {"en":"A contact","uz-Latn":"Bir kontakt","uz-Cyrl":"Бир контакт","ru":"Контакт"},
+    "triage_urgent_headline": {"en":"🚨 <b>{name}: urgent.</b>","uz-Latn":"🚨 <b>{name}: shoshilinch.</b>","uz-Cyrl":"🚨 <b>{name}: шошилинч.</b>","ru":"🚨 <b>{name}: срочно.</b>"},
+    "triage_decision_headline": {"en":"🔔 <b>{name} needs a decision from you.</b>","uz-Latn":"🔔 <b>{name} sizdan qaror kutyapti.</b>","uz-Cyrl":"🔔 <b>{name} сиздан қарор кутяпти.</b>","ru":"🔔 <b>{name} ждёт вашего решения.</b>"},
+    "triage_needs_reply_headline": {"en":"💬 <b>{name} is waiting for a reply.</b>","uz-Latn":"💬 <b>{name} javob kutyapti.</b>","uz-Cyrl":"💬 <b>{name} жавоб кутяпти.</b>","ru":"💬 <b>{name} ждёт ответа.</b>"},
+    "triage_suspicious_headline": {"en":"⚠️ <b>{name}'s messages look like an attempt to instruct the assistant</b> — I did not act on them.","uz-Latn":"⚠️ <b>{name} xabarlari yordamchiga koʻrsatma berishga urinishga oʻxshaydi.</b> Ularga amal qilmadim.","uz-Cyrl":"⚠️ <b>{name} хабарлари ёрдамчига кўрсатма беришга уринишга ўхшайди.</b> Уларга амал қилмадим.","ru":"⚠️ <b>Сообщения от {name} похожи на попытку дать указания помощнику.</b> Я их не выполнил."},
+    "triage_urgent_next": {"en":"Urgent alerts reach you right away. Open the chat to reply.","uz-Latn":"Shoshilinch bildirishnomalar darhol yetkaziladi. Javob berish uchun chatni oching.","uz-Cyrl":"Шошилинч билдиришномалар дарҳол етказилади. Жавоб бериш учун чатни очинг.","ru":"Срочные уведомления приходят сразу. Откройте чат, чтобы ответить."},
+    "triage_decision_next": {"en":"Open the chat to answer.","uz-Latn":"Javob berish uchun chatni oching.","uz-Cyrl":"Жавоб бериш учун чатни очинг.","ru":"Откройте чат, чтобы ответить."},
+    "triage_needs_reply_next": {"en":"Open the chat to reply.","uz-Latn":"Javob berish uchun chatni oching.","uz-Cyrl":"Жавоб бериш учун чатни очинг.","ru":"Откройте чат, чтобы ответить."},
+    "triage_suspicious_next": {"en":"Nothing was changed. You may want to look at the chat yourself.","uz-Latn":"Hech narsa oʻzgartirilmadi. Chatni oʻzingiz koʻrib chiqishingiz mumkin.","uz-Cyrl":"Ҳеч нарса ўзгартирилмади. Чатни ўзингиз кўриб чиқишингиз мумкин.","ru":"Ничего не изменено. Вы можете сами посмотреть чат."},
+    "triage_urgent_event": {"en":"urgent request","uz-Latn":"shoshilinch soʻrov","uz-Cyrl":"шошилинч сўров","ru":"срочный запрос"},
+    "triage_decision_event": {"en":"decision request","uz-Latn":"qaror soʻrovi","uz-Cyrl":"қарор сўрови","ru":"запрос решения"},
+    "triage_needs_reply_event": {"en":"reply request","uz-Latn":"javob soʻrovi","uz-Cyrl":"жавоб сўрови","ru":"ожидание ответа"},
+    "triage_suspicious_event": {"en":"suspicious instructions","uz-Latn":"shubhali koʻrsatmalar","uz-Cyrl":"шубҳали кўрсатмалар","ru":"подозрительные указания"},
+    "triage_earlier": {"en":"<b>Earlier alert: {name} ({event}).</b>","uz-Latn":"<b>Avvalgi bildirishnoma: {name} ({event}).</b>","uz-Cyrl":"<b>Аввалги билдиришнома: {name} ({event}).</b>","ru":"<b>Прежнее уведомление: {name} ({event}).</b>"},
+    "triage_unavailable": {"en":"The original explanation is no longer available (retention or deletion).","uz-Latn":"Asl izoh endi mavjud emas (saqlash muddati tugagan yoki oʻchirilgan).","uz-Cyrl":"Асл изоҳ энди мавжуд эмас (сақлаш муддати тугаган ёки ўчирилган).","ru":"Исходное объяснение больше недоступно (истёк срок хранения или данные удалены)."},
+    "triage_historical": {"en":"This earlier condition was superseded or resolved; check the chat for current state.","uz-Latn":"Bu avvalgi holat oʻzgargan yoki hal boʻlgan; hozirgi vaziyatni chatdan tekshiring.","uz-Cyrl":"Бу аввалги ҳолат ўзгарган ёки ҳал бўлган; ҳозирги вазиятни чатдан текширинг.","ru":"Прежняя ситуация изменилась или разрешилась; проверьте текущее состояние в чате."},
+    "task_closed": {"en":"✅ Closed automatically: {title}{who}\n\nA later message in the chat showed it done or answered.","uz-Latn":"✅ Avtomatik yopildi: {title}{who}\n\nChatdagi keyingi xabar bajarilganini yoki javob berilganini koʻrsatdi.","uz-Cyrl":"✅ Автоматик ёпилди: {title}{who}\n\nЧатдаги кейинги хабар бажарилганини ёки жавоб берилганини кўрсатди.","ru":"✅ Закрыто автоматически: {title}{who}\n\nПоследующее сообщение в чате показало, что задача выполнена или ответ получен."},
+    "task_due": {"en":"⏰ Due: {title}{who}","uz-Latn":"⏰ Muddati keldi: {title}{who}","uz-Cyrl":"⏰ Муддати келди: {title}{who}","ru":"⏰ Наступил срок: {title}{who}"},
+    "task_earlier": {"en":"Earlier due alert ({status}): {title}{who}","uz-Latn":"Avvalgi muddat bildirishnomasi ({status}): {title}{who}","uz-Cyrl":"Аввалги муддат билдиришномаси ({status}): {title}{who}","ru":"Прежнее уведомление о сроке ({status}): {title}{who}"},
+    "task_evidence": {"en":"Evidence: {evidence}","uz-Latn":"Dalil: {evidence}","uz-Cyrl":"Далил: {evidence}","ru":"Подтверждение: {evidence}"},
+    "task_status_done": {"en":"done","uz-Latn":"bajarilgan","uz-Cyrl":"бажарилган","ru":"выполнено"},
+    "task_status_cancelled": {"en":"cancelled","uz-Latn":"bekor qilingan","uz-Cyrl":"бекор қилинган","ru":"отменено"},
+    "task_status_expired": {"en":"expired","uz-Latn":"muddati oʻtgan","uz-Cyrl":"муддати ўтган","ru":"срок истёк"}
+}

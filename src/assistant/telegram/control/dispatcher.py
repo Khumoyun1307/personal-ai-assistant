@@ -29,6 +29,7 @@ from assistant.actions import autonomy
 from assistant.agent.confirmations import TOOL_CONFIRM_CARD
 from assistant.conversations import read, visibility
 from assistant.core.clock import Clock
+from assistant.core.control_texts import text as operational_text
 from assistant.core.jobs import (
     CONNECTION_NOTIFY_TASK,
     OWNER_REQUEST_TASK,
@@ -45,6 +46,7 @@ from assistant.telegram.control.approvals import DRAFT_EDIT
 from assistant.telegram.control.handlers import HandlerResult, IncomingMessage
 from assistant.telegram.control.routes import ControlRoutes
 from assistant.telegram.gateway import ControlChat, OutboundGateway
+from assistant.telegram.render import escape
 
 logger = get_logger(__name__)
 
@@ -139,7 +141,7 @@ class ControlDispatcher:
                 source=autonomy.SOURCE_STOP_WORD,
             )
             await service.clear_pending_input(session, account_id=account.id)
-            self._acknowledge_after_commit(session, account, message, PAUSED_TEXT)
+            self._acknowledge_after_commit(session, account, message, "paused")
             return DispatchOutcome(HandlerResult(True, "pause", None, note="stop_word"), account.id)
 
         # Precedence rule 3: an open question consumes this message.
@@ -227,13 +229,14 @@ class ControlDispatcher:
         return DispatchOutcome(HandlerResult(True, "free_text", None, note=note), account.id)
 
     def _acknowledge_after_commit(
-        self, session: AsyncSession, account: Account, message: IncomingMessage, text: str
+        self, session: AsyncSession, account: Account, message: IncomingMessage, key: str
     ) -> None:
         """The kill switch's reply goes out only once its transaction has
         committed (ARCHITECTURE §9.4): "Paused" is never said for a pause a
         rollback undid (§6 invariant 11)."""
         target = ControlChat(account_id=account.id, chat_id=message.chat_id)
         gateway = self._gateway
+        text = operational_text(key, account.locale_pref)
 
         async def acknowledge(_: async_sessionmaker[AsyncSession]) -> None:
             await gateway.send_text(target, text)
@@ -410,7 +413,7 @@ class ControlDispatcher:
                     now=self._clock.now(),
                     source=autonomy.SOURCE_COMMAND,
                 )
-                self._acknowledge_after_commit(session, account, message, PAUSED_TEXT)
+                self._acknowledge_after_commit(session, account, message, "paused")
                 return HandlerResult(True, "pause", None)
             case "resume":
                 await autonomy.resume(
@@ -419,7 +422,7 @@ class ControlDispatcher:
                     now=self._clock.now(),
                     source=autonomy.SOURCE_COMMAND,
                 )
-                self._acknowledge_after_commit(session, account, message, RESUMED_TEXT)
+                self._acknowledge_after_commit(session, account, message, "resumed")
                 return HandlerResult(True, "resume", None)
             case _:
                 if handler := self._routes.commands.get(command):
@@ -434,6 +437,8 @@ class ControlDispatcher:
                     )
                 send = await self._gateway.send_text(
                     ControlChat(account_id=account.id, chat_id=message.chat_id),
-                    handlers.describe_unknown_command(command),
+                    operational_text(
+                        "unknown_command", account.locale_pref, command=escape(command)
+                    ),
                 )
                 return HandlerResult(False, command, send, note="unknown_command")

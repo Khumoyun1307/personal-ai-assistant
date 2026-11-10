@@ -40,8 +40,8 @@ M03 fix round C4 adds the language and the time zone (FR-ONB-01):
   the zone the same way;
 - /settings → Language… opens the same four options on a card of its own.
 
-These screens are in the owner's language (`onboarding_texts.py`); the rest
-of /settings stays English.
+These screens and operational settings use the owner's language through
+the shared locale resolver and `core/control_texts.json` (stabilization I28).
 """
 
 from __future__ import annotations
@@ -60,6 +60,9 @@ from assistant.agent.tools.modes import mode_change_text
 from assistant.conversations import modes, priority, visibility
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
+from assistant.core.control_texts import buttons as localized_buttons
+from assistant.core.control_texts import deletion_text
+from assistant.core.control_texts import text as operational_text
 from assistant.core.jobs import JobScheduler
 from assistant.db.uow import after_commit, transaction
 from assistant.inbox.notification_feedback import list_mutes, reset_mutes
@@ -69,10 +72,8 @@ from assistant.telegram.control import onboarding_texts as texts
 from assistant.telegram.control.cards import Rows, rows_keyboard
 from assistant.telegram.control.handlers import (
     AI_PROCESSORS,
-    CALLBACK_EXPIRED_TEXT,
     ONBOARDING_LANGUAGE_CARD,
     ONBOARDING_TIMEZONE_CARD,
-    PANEL_UNKNOWN,
     CardPress,
     HandlerResult,
     IncomingMessage,
@@ -139,34 +140,7 @@ IGNORE_DELETE_OPTION: tuple[str, str] | None = ("Ignore + delete data", "confirm
 
 MODE_LABELS = {"observe": "Observe", "ignore": "Ignore", "assist": "Assist"}
 
-#: The Ignore confirmation: this question, what Ignore does in the owner's
-#: locale (`owner_texts.ignore_effects`, C3), then `IGNORE_DELETE_TEXT`.
-IGNORE_CONFIRM_QUESTION = "<b>Ignore the chat with {name}?</b>"
-IGNORE_DELETE_TEXT = (
-    "<b>Ignore + delete data</b> also deletes what is stored from this chat now: its "
-    "messages, summary and raw updates, notes about this chat, and every note or turn "
-    "here that drew on this chat or on {name}. Other notes about {name} stay. That "
-    "cannot be undone. " + deletion.ARRIVING_NOTE + " " + deletion.BACKUP_NOTE
-)
-
 CANNOT_UNDO = "This cannot be undone."
-#: What stays follows M03 D79: per chat, a note goes when it is about the chat
-#: or was saved by a run that drew on the chat or its contact; per contact,
-#: also every note about the person (review items 8 and 10).
-DELETE_CHAT_TEXT = (
-    "<b>Delete what is stored from the chat with {name}?</b>\n\n"
-    "<b>Chat data</b>: its messages, summary and raw updates, notes about this chat, "
-    "and every note or turn here that drew on this chat or on {name}. Other notes "
-    "about {name} stay.\n"
-    "<b>Chat + notes</b>: also all notes saved about {name}. Your general notes "
-    "that only mention {name} stay.\n\n"
-    "The chat stays in its mode: new messages are stored as before. "
-    + CANNOT_UNDO
-    + " "
-    + deletion.ARRIVING_NOTE
-    + " "
-    + deletion.BACKUP_NOTE
-)
 DELETE_ALL_TEXT = (
     "<b>Delete everything?</b>\n\n"
     "This deletes all stored content: every message, name, summary and note (yours "
@@ -367,9 +341,9 @@ def ignore_confirm_text(account: Account, name: str) -> str:
     )
     return "\n\n".join(
         (
-            IGNORE_CONFIRM_QUESTION.format(name=name),
+            operational_text("ignore_question", account.locale_pref, name=name),
             "\n".join(effects),
-            IGNORE_DELETE_TEXT.format(name=name),
+            deletion_text("ignore_delete_body", account.locale_pref, name=name),
         )
     )
 
@@ -395,7 +369,9 @@ async def handle_panel_command(
     ids all get the same reply (AGENTS §6.7)."""
     target = ControlChat(account_id=account.id, chat_id=message.chat_id)
     if panel is None:
-        result = await gateway.send_text(target, PANEL_UNKNOWN)
+        result = await gateway.send_text(
+            target, operational_text("panel_unknown", account.locale_pref)
+        )
         return HandlerResult(True, "panel", result, note="unknown_chat")
     screen = await panel_screen(session, clock, account, panel)
     result = await _send_now(session, gateway, target, screen)
@@ -421,11 +397,23 @@ async def _press_panel(
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     panel = await _load_panel(session, clock, account, conversation_id)
     if panel is None or press.op not in (*modes.SETTABLE_MODES, OP_DELETE, *PRIORITY_OPS):
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="no_longer_active")
     if press.op in PRIORITY_OPS:
         if panel.is_bot or panel.contact_id is None:  # no buttons were offered
-            _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+            _after_press(
+                session,
+                gateway,
+                press,
+                target,
+                answer=operational_text("expired", account.locale_pref),
+            )
             return HandlerResult(False, "card", None, note="no_priority")
         try:
             saved = await priority.set_priority(
@@ -437,18 +425,43 @@ async def _press_panel(
                 clock=clock,
             )
         except LookupError:  # `NotInAccountError`: not this account's contact
-            _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+            _after_press(
+                session,
+                gateway,
+                press,
+                target,
+                answer=operational_text("expired", account.locale_pref),
+            )
             return HandlerResult(False, "card", None, note="no_longer_active")
         panel = await _load_panel(session, clock, account, conversation_id)
         if panel is None:
-            _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+            _after_press(
+                session,
+                gateway,
+                press,
+                target,
+                answer=operational_text("expired", account.locale_pref),
+            )
             return HandlerResult(False, "card", None, note="no_longer_active")
         screen = await panel_screen(session, clock, account, panel)
-        _after_press(session, gateway, press, target, answer="Saved", edit=screen)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("saved", account.locale_pref),
+            edit=screen,
+        )
         return HandlerResult(True, "card", None, note="priority" if saved.changed else "unchanged")
     if press.op == OP_DELETE:
         if panel.is_bot:  # a bot chat is purged already and has no buttons
-            _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+            _after_press(
+                session,
+                gateway,
+                press,
+                target,
+                answer=operational_text("expired", account.locale_pref),
+            )
             return HandlerResult(False, "card", None, note="bot_chat")
         # Ask first, in place: what goes, and that it cannot be undone.
         name = escape(panel.display_name or "this contact")
@@ -457,11 +470,27 @@ async def _press_panel(
             clock,
             account.id,
             DELETE_CARD,
-            DELETE_CHAT_TEXT.format(name=name),
-            [[("Chat data", "chat"), ("Chat + notes", "contact"), ("Cancel", "cancel")]],
+            deletion_text("delete_chat_body", account.locale_pref, name=name),
+            [
+                localized_buttons(
+                    [
+                        ("chat_data_button", "chat"),
+                        ("chat_notes_button", "contact"),
+                        ("cancel", "cancel"),
+                    ],
+                    account.locale_pref,
+                )
+            ],
             ref_id=conversation_id,
         )
-        _after_press(session, gateway, press, target, answer="Confirm to delete", edit=screen)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("confirm_delete", account.locale_pref),
+            edit=screen,
+        )
         return HandlerResult(True, "card", None, note="delete_asked")
     if press.op == modes.MODE_IGNORE and panel.mode != modes.MODE_IGNORE:
         # Ask first, in place of the panel (the owner's own tap still
@@ -473,10 +502,17 @@ async def _press_panel(
             account.id,
             IGNORE_CARD,
             ignore_confirm_text(account, name),
-            _ignore_confirm(),
+            _ignore_confirm(account.locale_pref),
             ref_id=conversation_id,
         )
-        _after_press(session, gateway, press, target, answer="Confirm to ignore", edit=screen)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("confirm_ignore", account.locale_pref),
+            edit=screen,
+        )
         return HandlerResult(True, "card", None, note="ignore_asked")
     change = (panel.mode, panel.mode)
     if press.op != panel.mode:
@@ -502,11 +538,11 @@ async def _press_panel(
     return HandlerResult(True, "card", None, note=press.op if moved else "unchanged")
 
 
-def _ignore_confirm() -> Rows:
-    row = [("Ignore", "confirm"), ("Cancel", "cancel")]
+def _ignore_confirm(locale: str | None = None) -> Rows:
+    row = [("ignore_button", "confirm"), ("cancel", "cancel")]
     if IGNORE_DELETE_OPTION is not None:  # S03.5
-        row.insert(1, IGNORE_DELETE_OPTION)
-    return [row]
+        row.insert(1, ("ignore_delete_button", IGNORE_DELETE_OPTION[1]))
+    return [localized_buttons(row, locale)]
 
 
 async def _queue_deletion(
@@ -534,7 +570,13 @@ async def _press_ignore(
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     delete_op = IGNORE_DELETE_OPTION[1] if IGNORE_DELETE_OPTION is not None else None
     if press.op not in ("confirm", "cancel", delete_op):
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="unknown_op")
     note = "cancelled"
     receipt = None
@@ -551,7 +593,13 @@ async def _press_ignore(
                 clock=clock,
             )
         except LookupError:
-            _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+            _after_press(
+                session,
+                gateway,
+                press,
+                target,
+                answer=operational_text("expired", account.locale_pref),
+            )
             return HandlerResult(False, "card", None, note="no_longer_active")
         change = (changed.previous, changed.current)
         if press.op == delete_op:
@@ -571,7 +619,13 @@ async def _press_ignore(
             note = "ignored_and_deleting" if changed.changed else "deleting"
     panel = await _load_panel(session, clock, account, conversation_id)
     if panel is None:
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="no_longer_active")
     screen = await panel_screen(
         session, clock, account, panel, deleting=receipt is not None, change=change
@@ -599,7 +653,13 @@ async def _press_delete(
     about the person, or Cancel (FR-PRV-04). The owner's own second tap."""
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     if press.op not in ("chat", "contact", "cancel"):
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="unknown_op")
     receipt = None
     try:
@@ -618,14 +678,28 @@ async def _press_delete(
                 session, scheduler, account.id, deletion.SCOPE_CONTACT, contact_id, card_id
             )
     except LookupError:
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="no_longer_active")
     panel = await _load_panel(session, clock, account, conversation_id)
     if panel is None:
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="no_longer_active")
     screen = await panel_screen(session, clock, account, panel, deleting=receipt is not None)
-    answer = "Deleting" if receipt is not None else "Nothing was deleted"
+    answer = operational_text(
+        "deleting" if receipt is not None else "nothing_deleted", account.locale_pref
+    )
     _after_press(session, gateway, press, target, answer=answer, edit=screen, send=receipt)
     return HandlerResult(True, "card", None, note=press.op if receipt else "cancelled")
 
@@ -636,33 +710,41 @@ async def settings_screen(session: AsyncSession, clock: Clock, account: Account)
     default = preferences.default_mode(account)
     now = preferences.current(account)
     keep = {key: retention_policy.days(account.settings, key) for key in retention_policy.CLASSES}
+
+    def wording(key: str, **values: object) -> str:
+        return operational_text(key, account.locale_pref, **values)
+
     text = (
-        "<b>Settings</b>\n\n"
-        f"Language: {escape(texts.language_label(account.locale_pref))}\n"
-        f"Timezone: {escape(account.timezone)}\n"
-        f"New chats start in: {MODE_LABELS[default]}\n"
-        f"Chats: {counts.get('observe', 0)} observed, {counts.get('ignore', 0)} ignored\n"
-        f"Replies: {_reply_summary(now)} (used for drafts from M04)\n"
-        f"Messages kept: {keep[retention_policy.MESSAGES]} days; this chat: "
-        f"{keep[retention_policy.CONTROL_CHAT]} days; raw updates: "
-        f"{keep[retention_policy.RAW_UPDATES]} days. Summaries and your notes are kept "
-        "until you delete them.\n\n"
-        "Send <code>/settings timezone Asia/Tashkent</code> or "
-        "<code>/settings language uz</code> to change one."
+        wording("settings_heading")
+        + "\n\n"
+        + wording(
+            "settings_body",
+            language=escape(texts.language_label(account.locale_pref)),
+            zone=escape(account.timezone),
+            mode=wording(default),
+            observed=counts.get("observe", 0),
+            ignored=counts.get("ignore", 0),
+            replies=_reply_summary(now, account.locale_pref),
+            messages=keep[retention_policy.MESSAGES],
+            control=keep[retention_policy.CONTROL_CHAT],
+            raw=keep[retention_policy.RAW_UPDATES],
+        )
     )
     rows: Rows = [
         [
-            ("New chats: " + MODE_LABELS[m] + (" ✓" if default == m else ""), f"d{m}")
-            # New chats never start in Assist (P2-T11): it is chosen per chat.
+            (_ticked(wording("new_chats", mode=wording(m)), default == m), f"d{m}")
             for m in preferences.SETTABLE_DEFAULT_MODES
         ],
         [
-            (f"Observed chats ({counts.get('observe', 0)})", "lobserve"),
-            (f"Ignored chats ({counts.get('ignore', 0)})", "lignore"),
+            (wording("observed", count=counts.get("observe", 0)), "lobserve"),
+            (wording("ignored", count=counts.get("ignore", 0)), "lignore"),
         ],
-        [("Language…", OP_LANGUAGE), ("Replies…", "replies"), ("Retention…", "retention")],
-        [("Alerts & digest…", "alerts")],
-        [("Delete everything…", "delall")],
+        localized_buttons(
+            [("language", OP_LANGUAGE), ("replies", "replies"), ("retention", "retention")],
+            account.locale_pref,
+        ),
+        localized_buttons([("alerts", "alerts")], account.locale_pref),
+        localized_buttons([("delete_all_more", "delall")], account.locale_pref),
     ]
     return await _screen(session, clock, account.id, SETTINGS_CARD, text, rows)
 
@@ -677,7 +759,10 @@ async def language_screen(session: AsyncSession, clock: Clock, account: Account)
     fixed order, the current one ticked."""
     chosen = texts.chosen_locale(account.locale_pref)
     order = texts.DEFAULT_ORDER
-    rows = [*texts.picker_rows(order, ticked=chosen), [("◀ Back", OP_BACK)]]
+    rows = [
+        *texts.picker_rows(order, ticked=chosen),
+        [(operational_text("back", account.locale_pref), OP_BACK)],
+    ]
     return await _screen(session, clock, account.id, LANGUAGE_CARD, texts.picker_text(order), rows)
 
 
@@ -702,11 +787,24 @@ async def _press_language(
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     if press.op == OP_BACK:
         screen = await settings_screen(session, clock, account)
-        _after_press(session, gateway, press, target, answer="Settings", edit=screen)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("settings", account.locale_pref),
+            edit=screen,
+        )
         return HandlerResult(True, "card", None, note="back")
     locale = await _save_language(session, clock, account, press.op)
     if locale is None:
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="unknown_op")
     screen = await settings_screen(session, clock, account)
     _after_press(session, gateway, press, target, answer=texts.LANGUAGE_LABELS[locale], edit=screen)
@@ -726,7 +824,13 @@ async def _press_onboarding_language(
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     locale = await _save_language(session, clock, account, press.op)
     if locale is None:
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="unknown_op")
     # Any other picker (an older /start) goes too: one language choice.
     await service.close_cards(session, account_id=account.id, kind=ONBOARDING_LANGUAGE_CARD)
@@ -765,7 +869,13 @@ async def _press_onboarding_timezone(
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     zone = texts.TIMEZONE_BY_OP.get(press.op)
     if zone is None:
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="unknown_op")
     await preferences.update(session, account, timezone=zone, actor="owner", clock=clock)
     locale = supported_locale(account.locale_pref)
@@ -785,12 +895,29 @@ TONE_LABELS = {"neutral": "Neutral", "friendly": "Friendly", "formal": "Formal"}
 STYLE_LABELS = {"brief": "Brief", "detailed": "Detailed"}
 
 
-def _reply_summary(values: dict[str, object]) -> str:
+def _reply_summary(values: dict[str, object], locale: str | None = None) -> str:
     language = values[preferences.FIELD_REPLY_LANGUAGE]
     shown = dict(REPLY_LANGUAGES).get(str(language), str(language))
     tone = TONE_LABELS.get(str(values[preferences.FIELD_REPLY_TONE]), "")
     style = STYLE_LABELS.get(str(values[preferences.FIELD_REPLY_STYLE]), "")
-    return f"{escape(shown)}, {tone.lower()}, {style.lower()}"
+    return ", ".join(
+        [
+            _reply_label(shown, locale),
+            *(_reply_label(label, locale).lower() for label in (tone, style)),
+        ]
+    )
+
+
+def _reply_label(label: str, locale: str | None) -> str:
+    key = {
+        "Same as chat": "same_chat",
+        "Uzbek": "uzbek",
+        "Russian": "russian",
+        "English": "english",
+        **{value: key for key, value in TONE_LABELS.items()},
+        **{value: key for key, value in STYLE_LABELS.items()},
+    }.get(label)
+    return operational_text(key, locale) if key else escape(label)
 
 
 def _ticked(label: str, chosen: bool) -> str:
@@ -799,26 +926,39 @@ def _ticked(label: str, chosen: bool) -> str:
 
 async def reply_screen(session: AsyncSession, clock: Clock, account: Account) -> Screen:
     now = preferences.current(account)
-    text = (
-        "<b>Replies</b>\n\n"
-        "The default language, tone and length of replies drafted for your contacts "
-        '(drafts arrive in a later version). Wishes in your own words ("short and '
-        'polite with colleagues") are notes: tell me to remember them.'
-    )
+    text = operational_text("reply_body", account.locale_pref)
     rows: Rows = [
         [
-            (_ticked(label, now[preferences.FIELD_REPLY_LANGUAGE] == code), f"l_{code}")
+            (
+                _ticked(
+                    _reply_label(label, account.locale_pref),
+                    now[preferences.FIELD_REPLY_LANGUAGE] == code,
+                ),
+                f"l_{code}",
+            )
             for code, label in REPLY_LANGUAGES
         ],
         [
-            (_ticked(label, now[preferences.FIELD_REPLY_TONE] == tone), f"t_{tone}")
+            (
+                _ticked(
+                    _reply_label(label, account.locale_pref),
+                    now[preferences.FIELD_REPLY_TONE] == tone,
+                ),
+                f"t_{tone}",
+            )
             for tone, label in TONE_LABELS.items()
         ],
         [
-            (_ticked(label, now[preferences.FIELD_REPLY_STYLE] == style), f"s_{style}")
+            (
+                _ticked(
+                    _reply_label(label, account.locale_pref),
+                    now[preferences.FIELD_REPLY_STYLE] == style,
+                ),
+                f"s_{style}",
+            )
             for style, label in STYLE_LABELS.items()
         ],
-        [("◀ Back", "back")],
+        [(operational_text("back", account.locale_pref), "back")],
     ]
     return await _screen(session, clock, account.id, REPLY_CARD, text, rows)
 
@@ -841,10 +981,23 @@ async def _press_reply(
         changes["reply_style"] = value
     elif press.op == "back":
         screen = await settings_screen(session, clock, account)
-        _after_press(session, gateway, press, target, answer="Settings", edit=screen)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("settings", account.locale_pref),
+            edit=screen,
+        )
         return HandlerResult(True, "card", None, note="back")
     else:
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="unknown_op")
     change = await preferences.update(
         session,
@@ -856,7 +1009,14 @@ async def _press_reply(
         clock=clock,
     )
     screen = await reply_screen(session, clock, account)
-    _after_press(session, gateway, press, target, answer="Saved", edit=screen)
+    _after_press(
+        session,
+        gateway,
+        press,
+        target,
+        answer=operational_text("saved", account.locale_pref),
+        edit=screen,
+    )
     return HandlerResult(True, "card", None, note="reply" if change.audit_id else "unchanged")
 
 
@@ -907,24 +1067,49 @@ async def alerts_screen(session: AsyncSession, clock: Clock, account: Account) -
     time and the hourly cap, each current value ticked. Only stored settings
     are shown; the digest itself follows the stored time (S05.3b)."""
     now = preferences.current(account)
+    locale = account.locale_pref
     quiet = now["quiet_hours"]
-    held = ""
-    if quiet != "off":  # with no quiet hours nothing waits
-        held = ' (urgent alerts wait too, unless "Urgent bypass" is on)'
+    held = operational_text("urgent_wait", locale) if quiet != "off" else ""
     text = (
-        "<b>Alerts & digest</b>\n\n"  # the gateway's `sanitize` escapes the &
-        f"Quiet hours: {escape(str(quiet))}{held}\n"
-        f"Urgent bypass: {'on' if now['urgent_bypass'] else 'off'}\n"
-        f"Daily digest: {escape(str(now['digest_time']))}\n"
-        f"Most alerts per hour: {now['alert_cap_per_hour']}\n"
-        f"Times are in your timezone ({escape(account.timezone)})."
+        operational_text("alerts_heading", locale)
+        + "\n\n"
+        + operational_text(
+            "alerts_body",
+            locale,
+            quiet=operational_text("off", locale) if quiet == "off" else escape(str(quiet)),
+            held=held,
+            bypass=operational_text("on" if now["urgent_bypass"] else "off", locale),
+            digest=(
+                operational_text("off", locale)
+                if now["digest_time"] == "off"
+                else escape(str(now["digest_time"]))
+            ),
+            cap=now["alert_cap_per_hour"],
+            zone=escape(account.timezone),
+        )
     )
+    label_keys = {"Off": "off_button", "Bypass on": "bypass_on", "Bypass off": "bypass_off"}
+
+    def label_for(field: str, label: str, value: str | int | bool) -> str:
+        if field == "alert_cap_per_hour":
+            return operational_text("hourly_cap", locale, count=value)
+        return operational_text(label_keys[label], locale) if label in label_keys else label
+
     rows: Rows = [
-        [(_ticked(label, value == now[field]), op) for label, op, value in choices]
+        [
+            (
+                _ticked(
+                    label_for(field, label, value),
+                    value == now[field],
+                ),
+                op,
+            )
+            for label, op, value in choices
+        ]
         for field, choices in ALERT_ROWS
     ]
-    rows.append([("Derived mutes…", "mutes")])
-    rows.append([("◀ Back", OP_BACK)])
+    rows.append([(operational_text("mutes_button", locale), "mutes")])
+    rows.append([(operational_text("back", locale), OP_BACK)])
     return await _screen(session, clock, account.id, ALERTS_CARD, text, rows)
 
 
@@ -938,19 +1123,46 @@ async def _press_alerts(
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     if press.op == "mutes":
         screen = await mutes_screen(session, clock, account)
-        _after_press(session, gateway, press, target, answer="Derived mutes", edit=screen)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("mutes_title", account.locale_pref),
+            edit=screen,
+        )
         return HandlerResult(True, "card", None, note="mutes")
     if press.op == OP_BACK:
         screen = await settings_screen(session, clock, account)
-        _after_press(session, gateway, press, target, answer="Settings", edit=screen)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("settings", account.locale_pref),
+            edit=screen,
+        )
         return HandlerResult(True, "card", None, note="back")
     change = ALERT_OPS.get(press.op)
     if change is None:
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="unknown_op")
     saved = await preferences.update(session, account, **change, actor="owner", clock=clock)
     screen = await alerts_screen(session, clock, account)
-    _after_press(session, gateway, press, target, answer="Saved", edit=screen)
+    _after_press(
+        session,
+        gateway,
+        press,
+        target,
+        answer=operational_text("saved", account.locale_pref),
+        edit=screen,
+    )
     return HandlerResult(True, "card", None, note="alerts" if saved.audit_id else "unchanged")
 
 
@@ -958,32 +1170,44 @@ async def mutes_screen(
     session: AsyncSession, clock: Clock, account: Account, page: int = 0
 ) -> Screen:
     mutes = await list_mutes(session, account_id=account.id, now=clock.now())
+    locale = account.locale_pref
     page = min(max(page, 0), max((len(mutes) - 1) // PAGE_SIZE, 0))
     lines = [
-        "<b>Derived mutes</b>",
-        "Two Not useful marks mute non-urgent alerts in the same scope for up to 30 days. "
-        "They remain available in /digest. Reset restores future delivery policy; "
-        "it does not replay old alerts.",
+        f"<b>{operational_text('mutes_title', locale)}</b>",
+        operational_text("mutes_body", locale),
     ]
     rows: Rows = []
     for mute in mutes[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]:
-        label = mute.kind.replace("_", " ")
-        scope = f"contact #{mute.contact_id}" if mute.contact_id is not None else "no contact"
+        label = operational_text(f"mute_kind_{mute.kind}", locale)
+        scope = (
+            operational_text("mute_contact", locale, id=mute.contact_id)
+            if mute.contact_id is not None
+            else operational_text("mute_no_contact", locale)
+        )
         if mute.monitor_id is not None:
-            scope += f", monitor #{mute.monitor_id}"
+            scope += ", " + operational_text("mute_monitor", locale, id=mute.monitor_id)
         lines.append(
             f"\n{escape(label)} ({scope})\n"
-            f"Why: Not useful feedback. Since: {local_time(mute.since, account.timezone)}."
+            + operational_text(
+                "mute_reason", locale, since=local_time(mute.since, account.timezone)
+            )
         )
-        rows.append([(f"Reset {label} ({scope})", f"r{mute.notification_id}")])
+        rows.append(
+            [
+                (
+                    operational_text("mute_reset", locale, label=label, scope=scope),
+                    f"r{mute.notification_id}",
+                )
+            ]
+        )
     if not mutes:
-        lines.append("\nNo current derived mutes.")
+        lines.append("\n" + operational_text("mutes_empty", locale))
     if page > 0:
-        rows.append([("Previous", f"p{page - 1}")])
+        rows.append([(operational_text("previous", locale), f"p{page - 1}")])
     if (page + 1) * PAGE_SIZE < len(mutes):
-        rows.append([("Next", f"p{page + 1}")])
-    rows.append([("Reset all feedback mutes", "all")])
-    rows.append([("◀ Back", OP_BACK)])
+        rows.append([(operational_text("next", locale), f"p{page + 1}")])
+    rows.append([(operational_text("mutes_reset_all", locale), "all")])
+    rows.append([(operational_text("back", locale), OP_BACK)])
     return await _screen(session, clock, account.id, MUTES_CARD, "\n".join(lines), rows)
 
 
@@ -997,24 +1221,36 @@ async def _press_mutes(
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     if press.op == OP_BACK:
         screen = await alerts_screen(session, clock, account)
-        answer = "Alerts & digest"
+        answer = operational_text("alerts_title", account.locale_pref)
     elif press.op == "all":
         await reset_mutes(session, account_id=account.id)
         screen = await mutes_screen(session, clock, account)
-        answer = "All feedback mutes reset"
+        answer = operational_text("mutes_all_reset", account.locale_pref)
     elif press.op[:1] in {"r", "p"} and press.op[1:].isdigit() and len(press.op[1:]) <= 18:
         value = int(press.op[1:])
         if press.op.startswith("r"):
             if not await reset_mutes(session, account_id=account.id, notification_id=value):
-                _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+                _after_press(
+                    session,
+                    gateway,
+                    press,
+                    target,
+                    answer=operational_text("expired", account.locale_pref),
+                )
                 return HandlerResult(False, "card", None, note="unknown_mute")
-            answer = "Feedback mute reset"
+            answer = operational_text("mute_reset_done", account.locale_pref)
             value = 0
         else:
-            answer = "Derived mutes"
+            answer = operational_text("mutes_title", account.locale_pref)
         screen = await mutes_screen(session, clock, account, value)
     else:
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="unknown_op")
     _after_press(session, gateway, press, target, answer=answer, edit=screen)
     return HandlerResult(True, "card", None, note="mutes")
@@ -1036,26 +1272,36 @@ RETENTION_WHAT = {
 
 
 async def retention_screen(session: AsyncSession, clock: Clock, account: Account) -> Screen:
-    text = (
-        "<b>How long things are kept</b>\n\n"
-        "Messages: text from your chats. This chat: our conversation here. Raw "
-        "updates: what Telegram delivers, kept briefly for recovery.\n\n"
-        "You can shorten each period; a shorter one deletes older data at the next "
-        "hourly cleanup. Going back to a longer one keeps new data longer; what was "
-        "already deleted does not come back. Summaries and your notes are kept until "
-        "you delete them."
-    )
+    text = operational_text("retention_body", account.locale_pref)
     rows: Rows = []
     for prefix, key in RETENTION_OPS.items():
         cls = retention_policy.CLASSES[key]
         chosen = retention_policy.days(account.settings, key)
         rows.append(
             [
-                (_ticked(f"{RETENTION_SHORT[prefix]} {days}d", days == chosen), f"{prefix}_{days}")
+                (
+                    _ticked(
+                        operational_text(
+                            "retention_days",
+                            account.locale_pref,
+                            label=operational_text(
+                                {
+                                    "m": "messages_short",
+                                    "c": "chat_short",
+                                    "r": "raw_short",
+                                }[prefix],
+                                account.locale_pref,
+                            ),
+                            days=days,
+                        ),
+                        days == chosen,
+                    ),
+                    f"{prefix}_{days}",
+                )
                 for days in cls.choices
             ]
         )
-    rows.append([("◀ Back", "back")])
+    rows.append([(operational_text("back", account.locale_pref), "back")])
     return await _screen(session, clock, account.id, RETENTION_CARD, text, rows)
 
 
@@ -1088,19 +1334,41 @@ async def _press_retention(
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     if press.op == "back":
         screen = await settings_screen(session, clock, account)
-        _after_press(session, gateway, press, target, answer="Settings", edit=screen)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("settings", account.locale_pref),
+            edit=screen,
+        )
         return HandlerResult(True, "card", None, note="back")
     choice = _retention_choice(press.op)
     if choice is None:
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="unknown_op")
     key, days = choice
     if days < retention_policy.days(account.settings, key):
         # Shorter: it deletes at the next sweep, so ask first (in place).
-        text = (
-            f"<b>Keep {RETENTION_WHAT[key].lower()} for {days} days?</b>\n\n"
-            f"Everything older than {days} days is deleted at the next hourly cleanup. "
-            + CANNOT_UNDO
+        text = operational_text(
+            "retention_confirm",
+            account.locale_pref,
+            what=operational_text(
+                {
+                    "messages": "messages_short",
+                    "control_chat": "chat_short",
+                    "raw_updates": "raw_short",
+                }[key],
+                account.locale_pref,
+            ),
+            days=days,
+            undo=operational_text("cannot_undo", account.locale_pref),
         )
         screen = await _screen(
             session,
@@ -1108,13 +1376,32 @@ async def _press_retention(
             account.id,
             RETENTION_CONFIRM_CARD,
             text,
-            [[(f"Keep {days} days", press.op), ("Cancel", "cancel")]],
+            [
+                [
+                    (operational_text("keep_days", account.locale_pref, days=days), press.op),
+                    (operational_text("cancel", account.locale_pref), "cancel"),
+                ],
+            ],
         )
-        _after_press(session, gateway, press, target, answer="Confirm first", edit=screen)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("confirm_first", account.locale_pref),
+            edit=screen,
+        )
         return HandlerResult(True, "card", None, note="asked")
     changed = await _apply_retention(session, clock, account, key, days)
     screen = await retention_screen(session, clock, account)
-    _after_press(session, gateway, press, target, answer="Saved", edit=screen)
+    _after_press(
+        session,
+        gateway,
+        press,
+        target,
+        answer=operational_text("saved", account.locale_pref),
+        edit=screen,
+    )
     return HandlerResult(True, "card", None, note="retention" if changed else "unchanged")
 
 
@@ -1130,12 +1417,20 @@ async def _press_retention_confirm(
     if press.op != "cancel":
         choice = _retention_choice(press.op)
         if choice is None:
-            _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+            _after_press(
+                session,
+                gateway,
+                press,
+                target,
+                answer=operational_text("expired", account.locale_pref),
+            )
             return HandlerResult(False, "card", None, note="unknown_op")
         await _apply_retention(session, clock, account, *choice)
         note = "retention"
     screen = await retention_screen(session, clock, account)
-    answer = "Saved: applies at the next cleanup" if note == "retention" else "Nothing changed"
+    answer = operational_text(
+        "saved_cleanup" if note == "retention" else "nothing_changed", account.locale_pref
+    )
     _after_press(session, gateway, press, target, answer=answer, edit=screen)
     return HandlerResult(True, "card", None, note=note)
 
@@ -1147,8 +1442,12 @@ async def delete_all_screen(session: AsyncSession, clock: Clock, account: Accoun
         clock,
         account.id,
         DELETE_ALL_CARD,
-        DELETE_ALL_TEXT,
-        [[("Delete everything", "everything"), ("Cancel", "cancel")]],
+        deletion_text("delete_all_body", account.locale_pref),
+        [
+            localized_buttons(
+                [("delete_all", "everything"), ("cancel", "cancel")], account.locale_pref
+            )
+        ],
     )
 
 
@@ -1177,7 +1476,13 @@ async def _press_delete_all(
 ) -> HandlerResult:
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     if press.op not in ("everything", "cancel"):
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="unknown_op")
     receipt = None
     if press.op == "everything":
@@ -1185,7 +1490,9 @@ async def _press_delete_all(
             session, scheduler, account.id, deletion.SCOPE_EVERYTHING, account.id, card_id
         )
     screen = await settings_screen(session, clock, account)
-    answer = "Deleting" if receipt is not None else "Nothing was deleted"
+    answer = operational_text(
+        "deleting" if receipt is not None else "nothing_deleted", account.locale_pref
+    )
     _after_press(session, gateway, press, target, answer=answer, edit=screen, send=receipt)
     return HandlerResult(True, "card", None, note="deleted" if receipt else "cancelled")
 
@@ -1250,7 +1557,11 @@ async def _press_settings(
             session, account, new_default_mode=op[1:], actor="owner", clock=clock
         )
         screen = await settings_screen(session, clock, account)
-        answer = f"New chats: {MODE_LABELS[op[1:]]}"
+        answer = operational_text(
+            "new_chats",
+            account.locale_pref,
+            mode=operational_text(op[1:], account.locale_pref),
+        )
         _after_press(session, gateway, press, target, answer=answer, edit=screen)
         return HandlerResult(
             True, "card", None, note="default_mode" if change.audit_id else "unchanged"
@@ -1269,9 +1580,22 @@ async def _press_settings(
     }
     if op in screens:
         screen = await screens[op](session, clock, account)
-        _after_press(session, gateway, press, target, answer="Settings", edit=screen)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("settings", account.locale_pref),
+            edit=screen,
+        )
         return HandlerResult(True, "card", None, note=op)
-    _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+    _after_press(
+        session,
+        gateway,
+        press,
+        target,
+        answer=operational_text("expired", account.locale_pref),
+    )
     return HandlerResult(False, "card", None, note="unknown_op")
 
 
@@ -1297,14 +1621,26 @@ async def _press_list(
     if len(parts) == 2 and parts[0] == "o" and parts[1].isdigit() and len(parts[1]) <= 18:
         panel = await _load_panel(session, clock, account, int(parts[1]))
         if panel is None:  # not this owner's chat: reveal nothing
-            _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+            _after_press(
+                session,
+                gateway,
+                press,
+                target,
+                answer=operational_text("expired", account.locale_pref),
+            )
             return HandlerResult(False, "card", None, note="unknown_chat")
         mode = panel.mode if panel.mode in modes.SETTABLE_MODES else modes.MODE_OBSERVE
         listing = await list_screen(session, clock, account, mode, 1)  # re-armed
         shown = await panel_screen(session, clock, account, panel)
         _after_press(session, gateway, press, target, answer="Opened", edit=listing, send=shown)
         return HandlerResult(True, "card", None, note="opened")
-    _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+    _after_press(
+        session,
+        gateway,
+        press,
+        target,
+        answer=operational_text("expired", account.locale_pref),
+    )
     return HandlerResult(False, "card", None, note="unknown_op")
 
 
@@ -1322,7 +1658,13 @@ async def handle_press(
     card = await service.claim_card(session, account_id=account.id, token=press.token, clock=clock)
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     if card is None or card.kind != press.kind:
-        _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "card", None, note="no_longer_active")
     if card.kind == PANEL_CARD and card.ref_id is not None:
         return await _press_panel(session, gateway, clock, account, press, card.ref_id)
@@ -1356,5 +1698,11 @@ async def handle_press(
         return await _press_onboarding_language(session, gateway, clock, account, press)
     if card.kind == ONBOARDING_TIMEZONE_CARD:
         return await _press_onboarding_timezone(session, gateway, clock, account, press)
-    _after_press(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+    _after_press(
+        session,
+        gateway,
+        press,
+        target,
+        answer=operational_text("expired", account.locale_pref),
+    )
     return HandlerResult(False, "card", None, note="no_longer_active")

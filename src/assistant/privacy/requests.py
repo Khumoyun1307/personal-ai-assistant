@@ -52,6 +52,7 @@ from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
 from assistant.actions.requests import SUGGESTION_SELECTED
 from assistant.core.channel import Button, ControlChannel, Delivery
 from assistant.core.clock import Clock
+from assistant.core.control_texts import text as operational_text
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.observability.logging import get_logger
@@ -212,14 +213,22 @@ UNCLEAR_TEXT = (
 )
 
 
-def failure_text(scope: str, outcome: str, *, card_offered: bool) -> str:
-    """What the owner is told when a deletion did not go through."""
+def failure_text(scope: str, outcome: str, *, card_offered: bool, locale: str | None = None) -> str:
+    """Distinguish definite failure from an unconfirmed deletion in every locale."""
     if scope == deletion.SCOPE_MANAGED and not card_offered:
-        ask_again = ASK_AGAIN_MANAGED_NO_CARD
+        retry = "retry_managed_no_card"
     else:
-        ask_again = ASK_AGAIN.get(scope, _ASK_AGAIN_UNKNOWN)
-    template = UNCLEAR_TEXT if outcome == OUTCOME_UNCLEAR else FAILED_TEXT
-    return template.format(ask_again=ask_again)
+        retry = {
+            deletion.SCOPE_CONVERSATION: "retry_panel",
+            deletion.SCOPE_CONTACT: "retry_panel",
+            deletion.SCOPE_EVERYTHING: "retry_everything",
+            deletion.SCOPE_MANAGED: "retry_managed",
+        }.get(scope, "retry_unknown")
+    return operational_text(
+        "delete_unclear" if outcome == OUTCOME_UNCLEAR else "delete_failed",
+        locale,
+        ask_again=operational_text(retry, locale),
+    )
 
 
 async def find_failure(
@@ -257,6 +266,7 @@ class _Attempt:
     """What the job knew when an error struck."""
 
     chat_id: int | None = None
+    locale: str | None = None
     #: Every statement of the deletion ran: an error now came from the
     #: commit, which may have gone through (fix round 3, C).
     committing: bool = False
@@ -313,7 +323,11 @@ class RequestedDeletions:
             raise  # the job ends failed: evidence, never a silent success
         if note in ("deleted", "not_found"):
             await self._tell(
-                account_id, attempt.chat_id, NOT_FOUND_TEXT if report is None else report.receipt()
+                account_id,
+                attempt.chat_id,
+                operational_text("delete_not_found", attempt.locale)
+                if report is None
+                else report.receipt(attempt.locale),
             )
             logger.info("requested_deletion_done", account_id=account_id, found=report is not None)
         return note
@@ -340,6 +354,7 @@ class RequestedDeletions:
             if account is None:
                 return "no_account", None
             attempt.chat_id = account.control_chat_id
+            attempt.locale = account.locale_pref
             if await deletion.find_deletion(session, account_id, request) is not None:
                 return "already_done", None  # its receipt went out (at most once)
             if await find_failure(session, account_id, request) is not None:
@@ -373,6 +388,7 @@ class RequestedDeletions:
                 if account is None:
                     return "no_account"
                 attempt.chat_id = account.control_chat_id
+                attempt.locale = account.locale_pref
                 done = await deletion.find_deletion(session, account_id, request)
                 if done is not None:
                     outcome = "deleted"
@@ -391,7 +407,7 @@ class RequestedDeletions:
                         )
                     )
                     if scope == deletion.SCOPE_MANAGED and attempt.chat_id is not None:
-                        offer = await self._retry_card(session, account_id, card_id)
+                        offer = await self._retry_card(session, account_id, card_id, attempt.locale)
         except Exception as error:
             # Nothing is on record: a re-run may still delete, which "either
             # all of it or none of it" allows.
@@ -402,13 +418,19 @@ class RequestedDeletions:
             )
             outcome, counts, offer = OUTCOME_UNCLEAR, None, None
         if counts is not None:
-            await self._tell(account_id, attempt.chat_id, deletion.receipt_text(counts))
+            await self._tell(
+                account_id, attempt.chat_id, deletion.receipt_text(counts, attempt.locale)
+            )
         else:
-            message = failure_text(scope, outcome, card_offered=offer is not None)
+            message = failure_text(
+                scope, outcome, card_offered=offer is not None, locale=attempt.locale
+            )
             await self._tell(account_id, attempt.chat_id, message, offer)
         return outcome
 
-    async def _retry_card(self, session: AsyncSession, account_id: int, card_id: int) -> _Offer:
+    async def _retry_card(
+        self, session: AsyncSession, account_id: int, card_id: int, locale: str | None = None
+    ) -> _Offer:
         """A fresh revocation card with Delete only (fix round 3, B)."""
         card = await service.create_card(
             session,
@@ -419,7 +441,7 @@ class RequestedDeletions:
         )
         assert card.token is not None
         data = callbacks.encode(MANAGED_DELETE_CARD, card.token, OP_DELETE_MANAGED)
-        return _Offer(card.id, (Button("Delete", data),))
+        return _Offer(card.id, (Button(operational_text("delete", locale), data),))
 
     async def _tell(
         self, account_id: int, chat_id: int | None, message: str, offer: _Offer | None = None

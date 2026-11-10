@@ -23,7 +23,9 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.accounts.models import Account
 from assistant.core.clock import Clock
+from assistant.core.control_texts import text as operational_text
 from assistant.core.routing import RouteDecision
 from assistant.inbox.models import InboundUpdate
 from assistant.observability.logging import get_logger
@@ -237,8 +239,10 @@ class ControlInboxHandlers:
             # A forwarded photo or document: its caption is the forwarded text.
             text = payload.get("caption")
         if not isinstance(text, str) or not text.strip():
+            account = await session.get(Account, row.account_id) if row.account_id else None
             await self._gateway.send_text(
-                ControlChat(account_id=row.account_id or 0, chat_id=chat_id), TEXT_ONLY
+                ControlChat(account_id=row.account_id or 0, chat_id=chat_id),
+                operational_text("text_only", account.locale_pref if account else None),
             )
             return
         await self._dispatcher.dispatch(

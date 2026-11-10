@@ -20,24 +20,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from assistant.accounts.models import Account, PendingInput
 from assistant.conversations import visibility
 from assistant.core.clock import Clock
+from assistant.core.control_texts import text as operational_text
 from assistant.core.jobs import JobScheduler
 from assistant.db.uow import after_commit, transaction
 from assistant.inbox.models import Notification
 from assistant.inbox.notification_feedback import feedback_rows, mark, monitor_id
 from assistant.inbox.notification_policy import feedback_scope, muted_pairs
 from assistant.inbox.notifications import NTF_CARD, OP_NOT_USEFUL, OP_OPEN_CHAT, OP_USEFUL
-from assistant.telegram.control.handlers import CALLBACK_EXPIRED_TEXT, CardPress, HandlerResult
+from assistant.telegram.control.handlers import CardPress, HandlerResult
 from assistant.telegram.control.panels import Screen, panel_screen
 from assistant.telegram.gateway import ControlChat, OutboundGateway
 
-NOT_USEFUL_TEXT = "Feedback saved; delivery is unchanged until two Not useful marks."
-MUTED_TEXT = (
-    "Muted this alert scope for up to 30 days, except urgent. "
-    "View/reset: /settings → Alerts & digest → Derived mutes."
-)
-USEFUL_TEXT = "Noted"
-OPENING_TEXT = "Opening the chat"
-_FEEDBACK = {OP_NOT_USEFUL: ("not_useful", NOT_USEFUL_TEXT), OP_USEFUL: ("useful", USEFUL_TEXT)}
+_FEEDBACK = {OP_NOT_USEFUL: "not_useful", OP_USEFUL: "useful"}
 
 
 async def handle_ntf_press(
@@ -51,10 +45,19 @@ async def handle_ntf_press(
     target = ControlChat(account_id=account.id, chat_id=press.chat_id)
     notification = await _notification(session, clock, account, press.token)
     if notification is None:
-        _after(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+        _after(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("expired", account.locale_pref),
+        )
         return HandlerResult(False, "ntf", None, note="no_longer_active")
     if press.op in _FEEDBACK:
-        feedback, answer = _FEEDBACK[press.op]
+        feedback = _FEEDBACK[press.op]
+        answer = operational_text(
+            "not_useful" if press.op == OP_NOT_USEFUL else "noted", account.locale_pref
+        )
         notification.feedback = feedback
         notification.updated_at = clock.now()  # when the mark was made (derived mute)
         await session.flush()
@@ -64,7 +67,7 @@ async def handle_ntf_press(
                 notification.kind, notification.contact_id, monitor_id(notification.refs)
             )
             if scope in muted_pairs((mark(row) for row in rows), clock.now()):
-                answer = MUTED_TEXT
+                answer = operational_text("feedback_muted", account.locale_pref)
         _after(session, gateway, press, target, answer=answer)
         return HandlerResult(True, "ntf", None, note=feedback)
     if press.op == OP_OPEN_CHAT:
@@ -77,12 +80,31 @@ async def handle_ntf_press(
                 now=clock.now(),
             )
         if panel is None:  # the chat's data is gone, or never was this owner's
-            _after(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+            _after(
+                session,
+                gateway,
+                press,
+                target,
+                answer=operational_text("expired", account.locale_pref),
+            )
             return HandlerResult(False, "ntf", None, note="no_longer_active")
         screen = await panel_screen(session, clock, account, panel)
-        _after(session, gateway, press, target, answer=OPENING_TEXT, send=screen)
+        _after(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("opening", account.locale_pref),
+            send=screen,
+        )
         return HandlerResult(True, "ntf", None, note="panel")
-    _after(session, gateway, press, target, answer=CALLBACK_EXPIRED_TEXT)
+    _after(
+        session,
+        gateway,
+        press,
+        target,
+        answer=operational_text("expired", account.locale_pref),
+    )
     return HandlerResult(False, "ntf", None, note="unknown_op")
 
 

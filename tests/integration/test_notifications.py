@@ -32,6 +32,7 @@ from assistant.accounts.callbacks import encode, parse
 from assistant.accounts.models import Account
 from assistant.accounts.service import create_card
 from assistant.conversations.models import Conversation, Message
+from assistant.core.control_texts import text as operational_text
 from assistant.core.jobs import NOTIFY_TASK
 from assistant.db.uow import transaction
 from assistant.inbox.models import ConversationTriage, Notification, NotificationSource
@@ -162,6 +163,133 @@ async def row(env: Env, notification_id: int) -> Notification:
         found = await session.get(Notification, notification_id)
         assert found is not None
         return found
+
+
+@pytest.mark.parametrize("locale", ["uz-Latn", "uz-Cyrl", "ru", "en"])
+@pytest.mark.parametrize("state", ["current", "historical", "unavailable"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        NotificationKind.TRIAGE_URGENT,
+        NotificationKind.TRIAGE_DECISION,
+        NotificationKind.TRIAGE_NEEDS_REPLY,
+        NotificationKind.TRIAGE_SUSPICIOUS,
+    ],
+)
+async def test_delivered_triage_body_follows_locale(
+    env: Env, locale: str, state: str, kind: NotificationKind
+) -> None:
+    env.clock.set(DAY)
+    where = await chat(env, name="Synthetic <name>", reasons=["Synthetic <reason>"])
+    notification_id = await add(env, where, kind=kind)
+    assert notification_id is not None
+    async with transaction(env.factory) as uow:
+        account = await uow.session.get(Account, where.account_id)
+        assert account is not None
+        account.locale_pref = locale
+        verdict = await uow.session.scalar(
+            select(ConversationTriage).where(
+                ConversationTriage.conversation_id == where.conversation_id
+            )
+        )
+        assert verdict is not None
+        if state == "historical":
+            verdict.reasons = ["Superseding synthetic reason"]
+        elif state == "unavailable":
+            await uow.session.execute(
+                delete(NotificationSource).where(
+                    NotificationSource.notification_id == notification_id
+                )
+            )
+    channel = FakeChannel()
+    result = await delivery(env, channel).deliver(notification_id)
+    assert result.status == "sent"
+    name = "Synthetic &lt;name&gt;"
+    if state == "current":
+        expected = operational_text(f"{kind.value}_headline", locale, name=name)
+        assert operational_text(f"{kind.value}_next", locale) in channel.sends[-1]
+    else:
+        expected = operational_text(
+            "triage_earlier",
+            locale,
+            name=name,
+            event=operational_text(f"{kind.value}_event", locale),
+        )
+        assert operational_text(f"triage_{state}", locale) in channel.sends[-1]
+    assert expected in channel.sends[-1]
+    if state != "unavailable":
+        assert "• Synthetic &lt;reason&gt;" in channel.sends[-1]
+    assert CANARY not in channel.sends[-1]
+    assert [button.label for button in channel.buttons[-1]] == [
+        operational_text(key, locale) for key in ("open_chat", "useful", "not_useful_button")
+    ]
+    if kind == NotificationKind.TRIAGE_URGENT and state == "current":
+        async with transaction(env.factory) as uow:
+            account = await uow.session.get(Account, where.account_id)
+            assert account is not None
+            account.locale_pref = "en"
+        second = await add(env, where, key="synthetic:after-language-switch")
+        assert second is not None
+        assert (await delivery(env, channel).deliver(second)).status == "sent"
+        assert operational_text("triage_urgent_headline", "en", name=name) in channel.sends[-1]
+
+
+@pytest.mark.parametrize("locale", ["uz-Latn", "uz-Cyrl", "ru", "en"])
+@pytest.mark.parametrize("status", ["open", "done", "cancelled", "expired", "closed"])
+async def test_delivered_task_body_follows_locale(env: Env, locale: str, status: str) -> None:
+    env.clock.set(DAY)
+    where = await chat(env)
+    async with transaction(env.factory) as uow:
+        account = await uow.session.get(Account, where.account_id)
+        assert account is not None
+        account.locale_pref = locale
+        task = await seed_task(
+            uow.session,
+            account_id=where.account_id,
+            conversation_id=where.conversation_id,
+            title="Synthetic <task>",
+            status="done" if status == "closed" else status,
+            details=(
+                '{"type":"task_resolution_evidence_v1","resolution_evidence_message_ids":[71]}'
+                if status == "closed"
+                else None
+            ),
+        )
+        notification_id = await enqueue(
+            uow.session,
+            account_id=where.account_id,
+            kind=(
+                NotificationKind.TASK_CLOSED
+                if status == "closed"
+                else NotificationKind.COMMITMENT_DUE
+            ),
+            priority=Priority.URGENT,
+            dedupe_key=f"synthetic:task:{status}",
+            refs=NotificationRefs(task_ids=(task.id,)),
+            clock=env.clock,
+            conversation_id=where.conversation_id,
+            contact_id=where.contact_id,
+        )
+    assert notification_id is not None
+    channel = FakeChannel()
+    assert (await delivery(env, channel).deliver(notification_id)).status == "sent"
+    values = {"title": "Synthetic &lt;task&gt;", "who": " (Kamola)"}
+    if status == "closed":
+        expected = operational_text("task_closed", locale, **values)
+        expected += "\n" + operational_text("task_evidence", locale, evidence="[msg:71]")
+    elif status == "open":
+        expected = operational_text("task_due", locale, **values)
+    else:
+        expected = operational_text(
+            "task_earlier",
+            locale,
+            status=operational_text(f"task_status_{status}", locale),
+            **values,
+        )
+    assert channel.sends[-1] == expected
+    assert [button.label for button in channel.buttons[-1]] == [
+        operational_text(key, locale) for key in ("open_chat", "useful", "not_useful_button")
+    ]
 
 
 async def notify_jobs(env: Env) -> list[tuple[int, str, datetime | None]]:

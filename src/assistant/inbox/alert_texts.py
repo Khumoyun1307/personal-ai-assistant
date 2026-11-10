@@ -8,7 +8,7 @@ source content produces an explicit content-free availability notice.
 Each alert says what happened, why (the verdict's reasons, as triage wrote
 them) and what the owner can do next (PRD §14). Never message text: only
 the names, reasons and task titles the product already shows elsewhere,
-HTML-escaped. English in P2 (P2-O11).
+HTML-escaped. Deterministic wording follows the saved owner locale (I28).
 """
 
 from __future__ import annotations
@@ -24,14 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts.models import Account
 from assistant.conversations.models import Contact, Conversation
 from assistant.core.channel import Button
+from assistant.core.control_texts import text
 from assistant.inbox.models import Notification, Task
-from assistant.inbox.notification_sources import explanation
+from assistant.inbox.notification_sources import UNAVAILABLE, explanation
 from assistant.inbox.notification_types import NotificationKind
 from assistant.inbox.tasks import resolution_ids
 from assistant.memory.summaries import preferred_name
-
-#: A contact without a usable name.
-UNNAMED = "A contact"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,30 +43,6 @@ class RenderedAlert:
 
 
 Renderer = Callable[[AsyncSession, Notification, Account], Awaitable[RenderedAlert | None]]
-
-_HEADLINES: Mapping[NotificationKind, str] = {
-    NotificationKind.TRIAGE_URGENT: "🚨 <b>{name}: urgent.</b>",
-    NotificationKind.TRIAGE_DECISION: "🔔 <b>{name} needs a decision from you.</b>",
-    NotificationKind.TRIAGE_NEEDS_REPLY: "💬 <b>{name} is waiting for a reply.</b>",
-    NotificationKind.TRIAGE_SUSPICIOUS: (
-        "⚠️ <b>{name}'s messages look like an attempt to instruct the assistant</b> — "
-        "I did not act on them."
-    ),
-}
-_NEXT_STEPS: Mapping[NotificationKind, str] = {
-    NotificationKind.TRIAGE_URGENT: "Urgent alerts reach you right away. Open the chat to reply.",
-    NotificationKind.TRIAGE_DECISION: "Open the chat to answer.",
-    NotificationKind.TRIAGE_NEEDS_REPLY: "Open the chat to reply.",
-    NotificationKind.TRIAGE_SUSPICIOUS: (
-        "Nothing was changed. You may want to look at the chat yourself."
-    ),
-}
-_EVENT_LABELS: Mapping[NotificationKind, str] = {
-    NotificationKind.TRIAGE_URGENT: "urgent request",
-    NotificationKind.TRIAGE_DECISION: "decision request",
-    NotificationKind.TRIAGE_NEEDS_REPLY: "reply request",
-    NotificationKind.TRIAGE_SUSPICIOUS: "suspicious instructions",
-}
 
 
 def _ids(refs: Mapping[str, Any], key: str) -> list[int]:
@@ -85,7 +59,9 @@ def _conversation_id(notification: Notification) -> int | None:
     return ids[0] if ids else None
 
 
-async def _contact_name(session: AsyncSession, account_id: int, conversation_id: int) -> str | None:
+async def _contact_name(
+    session: AsyncSession, account_id: int, conversation_id: int, locale: str | None = None
+) -> str | None:
     """The chat's contact name, escaped; None when the chat is gone."""
     row = (
         await session.execute(
@@ -98,7 +74,7 @@ async def _contact_name(session: AsyncSession, account_id: int, conversation_id:
     ).first()
     if row is None:
         return None
-    return html.escape(preferred_name(row[0], row[1]) or UNNAMED)
+    return html.escape(preferred_name(row[0], row[1]) or text("alert_unnamed", locale))
 
 
 def _reasons(reasons: Sequence[Any]) -> list[str]:
@@ -113,7 +89,7 @@ async def render_triage(
     conversation_id = _conversation_id(notification)
     if conversation_id is None:
         return None
-    name = await _contact_name(session, account.id, conversation_id)
+    name = await _contact_name(session, account.id, conversation_id, account.locale_pref)
     if name is None:
         return None
     event = await explanation(
@@ -125,17 +101,25 @@ async def render_triage(
     )
     if event.current:
         lines = [
-            _HEADLINES[kind].format(name=name),
+            text(f"{kind.value}_headline", account.locale_pref, name=name),
             *_reasons(event.reasons),
             "",
-            _NEXT_STEPS[kind],
+            text(f"{kind.value}_next", account.locale_pref),
         ]
     else:
         lines = [
-            f"<b>Earlier alert: {name} ({_EVENT_LABELS[kind]}).</b>",
+            text(
+                "triage_earlier",
+                account.locale_pref,
+                name=name,
+                event=text(f"{kind.value}_event", account.locale_pref),
+            ),
             *_reasons(event.reasons),
             "",
-            event.note or "",
+            text(
+                "triage_unavailable" if event.note == UNAVAILABLE else "triage_historical",
+                account.locale_pref,
+            ),
         ]
     return RenderedAlert("\n".join(lines), conversation_id)
 
@@ -158,24 +142,31 @@ async def render_task(
         return None
     title, conversation_id, status, details = task
     name = (
-        await _contact_name(session, account.id, conversation_id)
+        await _contact_name(session, account.id, conversation_id, account.locale_pref)
         if conversation_id is not None
         else None
     )
     who = f" ({name})" if name else ""
     if notification.kind == NotificationKind.TASK_CLOSED:
-        text = (
-            f"✅ Closed automatically: {html.escape(title)}{who}\n\n"
-            "A later message in the chat showed it done or answered."
-        )
+        body = text("task_closed", account.locale_pref, title=html.escape(title), who=who)
         evidence = resolution_ids(details)
         if evidence:
-            text += "\nEvidence: " + ", ".join(f"[msg:{value}]" for value in evidence)
+            body += "\n" + text(
+                "task_evidence",
+                account.locale_pref,
+                evidence=", ".join(f"[msg:{value}]" for value in evidence),
+            )
     elif status != "open":
-        text = f"Earlier due alert ({html.escape(status)}): {html.escape(title)}{who}"
+        body = text(
+            "task_earlier",
+            account.locale_pref,
+            title=html.escape(title),
+            who=who,
+            status=text(f"task_status_{status}", account.locale_pref),
+        )
     else:
-        text = f"⏰ Due: {html.escape(title)}{who}"
-    return RenderedAlert(text, conversation_id)
+        body = text("task_due", account.locale_pref, title=html.escape(title), who=who)
+    return RenderedAlert(body, conversation_id)
 
 
 #: The built-in renderers; S05.4 registers `MONITOR_MATCH` on the delivery

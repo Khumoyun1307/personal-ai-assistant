@@ -337,10 +337,40 @@ If the conversation mode is **Ignore**, steps 2–7 store only metadata needed f
 
 ### 6.7 Control-chat interface
 
+**Operational localization (stabilization I28, D-S12).** `accounts.locale_pref`
+selects Uzbek Latin, Uzbek Cyrillic, Russian or English through the shared
+`core/locales.supported_locale` resolver (`agent/locales.py` remains a compatibility
+export). Onboarding retains its existing locale tables. Fixed operational wording
+uses `core/control_texts.json` and `core/control_texts.text`: select the template
+before interpolating escaped values; never translate or replace substrings in
+owner/contact text. Unsupported tags and a missing locale entry fall back to
+English. Unknown keys fail visibly in development; completeness and placeholder
+parity are guarded by tests. This is a presentation change, with no new data,
+processor, consent scope, policy version or migration.
+
+Help, settings and their language/reply/retention/alert/delete-all screens,
+privacy and managed-consent questions/results, pause/resume, settings errors,
+expired operational buttons, system/connection/policy notices, and requested
+deletion progress/receipts/failures use the saved language. Background system
+notices resolve the current preference when composing delivery. Consent entry
+points share the same managed question and buttons; restoration warnings are
+localized too. Consent still names the same processor and scope, describes
+storage while processing is off, and retains the same opt-out. Callback
+operations, policy checks, transactions and at-most-once claims are unchanged.
+Per-chat deletion and Ignore/delete confirmation screens share the catalogue,
+including scope labels, irreversible-deletion, arriving-message and backup
+caveats. Standard triage/task alert bodies resolve the saved locale at delivery:
+headlines, next steps, historical/unavailable explanations, task status and
+evidence labels are deterministic translations; contact names, verdict reasons
+and task titles remain unchanged and HTML-escaped.
+Approval/draft rendering belongs to I27. Uzbek and Russian wording is **pending
+owner review**, with the review inventory and unrun validation gates in
+[the localization review](engineering/stabilization/LOCALIZATION.md).
+
 - **aiogram Router** for owner messages and callbacks: commands (`/start`, `/help`, `/status`, `/pause`, `/resume`, `/settings`, `/privacy`, `/activity`, `/export` (R2)), deep links (`/start bizChat<id>` → conversation panel, parsed defensively and verified against the owner's conversations — TF §4.2), callbacks, and free text.
 - **Free text** from the owner becomes a `control_turn` message row and a deferred `agent.owner_request` job (§7). The processor immediately sends a typing indicator.
 - A deterministic matcher, applied before any LLM call, treats a whole control-chat message from a short configurable stop-word list (e.g., stop / стоп / to'xta / тўхта) as /pause. It pauses first and lets the agent clarify afterwards.
-- **Deterministic wording (stabilization Q2):** `/help` lists `/pause` and `/resume` and explains that `/pause` or `stop` stops automatic replies; alerts, digest and owner-approved replies keep working. It directs the owner to disconnect the bot in Telegram's Chat Automation settings to stop everything. Approval-card headings use origin and `draft_flags["mode"]`: an owner-requested `new_message` says **New message**, a reply (including legacy cards without mode) says **Draft reply**. **Message you dictated**, **Message the assistant suggested**, **Assist draft** and **Automatic reply** retain their origin/source-specific labels. Recipient and exact text remain prominent; buttons and approval/send semantics are unchanged. These wording changes are English only; localization is a later stabilization unit.
+- **Deterministic wording (stabilization Q2):** `/help` lists `/pause` and `/resume` and explains that `/pause` or `stop` stops automatic replies; alerts, digest and owner-approved replies keep working. It directs the owner to disconnect the bot in Telegram's Chat Automation settings to stop everything. Approval-card headings use origin and `draft_flags["mode"]`: an owner-requested `new_message` says **New message**, a reply (including legacy cards without mode) says **Draft reply**. **Message you dictated**, **Message the assistant suggested**, **Assist draft** and **Automatic reply** retain their origin/source-specific labels. Recipient and exact text remain prominent; buttons and approval/send semantics are unchanged. Operational wording is localized by I28 above; approval-card localization and recovery remain I27.
 - **Alert status rendering (stabilization Q2):** `/status` renders `StatusReport.notifications_line` alongside reply counts: queued alerts, alerts held for quiet hours or the hourly cap, alerts waiting for the digest, and uncertain deliveries in the last 24 hours. This reuses the shared read model without loading or displaying alert content.
 - **UI state** (e.g., "waiting for edited draft text") is stored in Postgres (`pending_inputs`), not aiogram FSM memory — survives restarts and avoids FSM key pitfalls.
 - **Callback data** format: `<kind>:<token>:<op>` (≤ 64 bytes). `token` is a random 10-char base62 id stored on the target row (e.g., `actions.approval_token`). Handlers verify `from.id` is the owner of that row, the row state permits the op, and then answer the callback immediately (TF §5).
@@ -1612,7 +1642,7 @@ CI (GitHub Actions): ruff, mypy, import-linter and pip-audit in `lint`; unit + i
 
 **Stabilization I9 — explicit priority and feedback suppression (D-S8).** Reply alerts preserve all four triage urgencies as notification priorities: `low`/`normal` batch; `high`/`urgent` qualify for direct delivery and wait durably through quiet hours and the hourly cap under I7. A decision has a `high` floor; an urgent verdict or urgent decision is `urgent`. Suspicious alerts have a `normal` floor and preserve `high`/`urgent`; repeat and contact-priority adjustments still apply. A non-actionable FYI does not create a reply alert. Explicit monitor matches remain `high`, never demoted by a low-priority contact; their quiet-hours bypass applies only when configured, and the hourly cap still holds them. Effective urgent alerts bypass feedback suppression, but quiet hours still require the configured bypass.
 
-Monitor feedback is scoped by `(kind, contact_id, automation_id)` from the existing ids-only notification refs; other kinds keep `(kind, contact_id)`. Missing or ambiguous legacy monitor ids cannot establish a mute. The first negative mark acknowledges feedback without claiming a delivery change; once the threshold is reached the acknowledgment names the non-urgent suppression and its recovery path. `/settings` → **Alerts & digest** → **Derived mutes** lists all current scopes, paginated, using enum labels, contact/monitor ids, the feedback reason and the start time derived from retained marks (converted to the owner's timezone, with the timezone displayed). It supports resetting one scope or all feedback, including sub-threshold marks. Reset clears feedback only: it does not replay old batches or uncertain sends, alter delivery timestamps, or extend retention. Single-use owner-scoped `set_mutes` cards live in Postgres; the existing control dispatcher and gateway perform all UI effects. No migration, stored content, job or agent tool is added. **I28 TODO:** localize these English alert/settings texts and feedback receipts with the rest of the operational UI; these modules currently use English for these surfaces.
+Monitor feedback is scoped by `(kind, contact_id, automation_id)` from the existing ids-only notification refs; other kinds keep `(kind, contact_id)`. Missing or ambiguous legacy monitor ids cannot establish a mute. The first negative mark acknowledges feedback without claiming a delivery change; once the threshold is reached the acknowledgment names the non-urgent suppression and its recovery path. `/settings` → **Alerts & digest** → **Derived mutes** lists all current scopes, paginated, using enum labels, contact/monitor ids, the feedback reason and the start time derived from retained marks (converted to the owner's timezone, with the timezone displayed). It supports resetting one scope or all feedback, including sub-threshold marks. Reset clears feedback only: it does not replay old batches or uncertain sends, alter delivery timestamps, or extend retention. Single-use owner-scoped `set_mutes` cards live in Postgres; the existing control dispatcher and gateway perform all UI effects. No migration, stored content, job or agent tool is added. **I28 localization:** derived-mute screens, notification-kind/scope labels, pagination, reset controls/receipts and threshold-aware feedback acknowledgements use `core/control_texts.json` in all four locales. Owner-timezone timestamps and I9 suppression/reset behavior are preserved. I20 consent refusal and recovery status lines share this catalogue; both consent entry points retain the unresolved-recovery gate. Uzbek/Russian wording review and container validation remain pending ([inventory](engineering/stabilization/LOCALIZATION.md)).
 
 **I7 review fix: eligibility survives a hold.** A queued row whose reason is `quiet_hours`, `cap` or `not_delivered` (including an attempt-count suffix) has already qualified for direct delivery. Delivery derives `NotificationFacts.previously_important` from that reason and skips only the `low`/`normal` digest batching rule for it. Thus a repeated suspicious alert still reaches the owner when its earlier alert leaves the rolling 24-hour window during a hold, including with daily digest off and after a definite-failure retry. Effective priority is still recalculated; feedback muting, current quiet hours and bypass settings, the hourly cap, feature gating and source-deletion checks still apply. The committed claim and bounded retry rules are unchanged.
 

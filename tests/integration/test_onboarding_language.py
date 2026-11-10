@@ -35,6 +35,7 @@ from sqlalchemy import select
 from assistant.accounts import preferences, service
 from assistant.accounts.models import Account, AuditLogEntry, Consent, PendingInput
 from assistant.config import Settings
+from assistant.core.control_texts import text as operational_text
 from assistant.db.uow import transaction
 from assistant.observability.logging import configure_logging
 from assistant.telegram.control import onboarding_texts as texts
@@ -528,7 +529,8 @@ async def test_settings_has_a_language_button_that_saves_the_choice(env: Env) ->
         {"changes": {"preferred_language": ["en", "ru"]}},
     )
     settings = env.sender.edits[-1]
-    assert "Language: Русский" in settings["text"]
+    assert operational_text("settings_heading", "ru") in settings["text"]
+    assert texts.LANGUAGE_LABELS["ru"] in settings["text"]
     assert "lang" in ops(settings["reply_markup"])  # the settings card again
     assert await questions(env) == []  # no consent question from /settings
 

@@ -26,6 +26,9 @@ from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.conversations.coverage import STATUS_GAP_WINDOW
 from assistant.conversations.visibility import ConversationPanel
 from assistant.core.clock import Clock
+from assistant.core.control_texts import buttons as localized_buttons
+from assistant.core.control_texts import deletion_text
+from assistant.core.control_texts import text as operational_text
 from assistant.core.jobs import (
     APPLY_CONFIRMATION_TASK,
     DELETE_DATA_TASK,
@@ -33,13 +36,13 @@ from assistant.core.jobs import (
     owner_control_lock,
 )
 from assistant.db.uow import after_commit, transaction
-from assistant.inbox.connection_alerts import MANAGED_CONSENT_BUTTONS, MANAGED_CONSENT_QUESTION
+from assistant.inbox.connection_alerts import MANAGED_CONSENT_QUESTION
 from assistant.memory import undo
 from assistant.observability.logging import get_logger
 from assistant.observability.status import StatusReport
 from assistant.privacy import deletion
 from assistant.privacy.consent_prompts import render_consent_prompt
-from assistant.privacy.requests import MANAGED_DELETE_CARD, QUEUED_TEXT
+from assistant.privacy.requests import MANAGED_DELETE_CARD
 from assistant.telegram.control import onboarding_texts as texts
 from assistant.telegram.control.cards import card_keyboard, rows_keyboard
 from assistant.telegram.gateway import ControlChat, OutboundGateway, SendResult
@@ -388,14 +391,14 @@ async def handle_managed_consent_request(
     target = ControlChat(account_id=account.id, chat_id=message.chat_id)
     state = await service.active_consent(session, account.id, kind=service.CONSENT_AI_MANAGED)
     if state.granted:
-        result = await gateway.send_text(target, MANAGED_CONSENT_ALREADY_ON_TEXT)
+        result = await gateway.send_text(
+            target, operational_text("managed_already", account.locale_pref)
+        )
         return HandlerResult(True, "managed_consent", result, note="already_granted")
     if await connections.connection_for_account(session, account.id) is None:
         result = await gateway.send_text(
             target,
-            "I am not connected to your account yet. Connect me in your Telegram settings "
-            "(Chat Automation, or Telegram Business → Chatbots in older apps) first; "
-            "I will ask you then.",
+            operational_text("not_connected", account.locale_pref),
         )
         return HandlerResult(True, "managed_consent", result, note="not_connected")
     # A card, not a text question: only a tap on Turn on or Not now decides, so
@@ -409,7 +412,10 @@ async def handle_managed_consent_request(
     )
     assert card.token is not None
     prompt = render_consent_prompt(
-        account, MANAGED_CONSENT_TEXT.format(processors=", ".join(AI_PROCESSORS))
+        account,
+        operational_text(
+            "managed_prompt", account.locale_pref, processors=", ".join(AI_PROCESSORS)
+        ),
     )
     result = await gateway.send_text(
         target,
@@ -417,7 +423,7 @@ async def handle_managed_consent_request(
         keyboard=card_keyboard(
             service.MANAGED_CONSENT_CARD,
             card.token,
-            list(MANAGED_CONSENT_BUTTONS),
+            localized_buttons([("turn_on", "agree"), ("not_now", "decline")], account.locale_pref),
         ),
     )
     if result.ok:
@@ -453,7 +459,8 @@ async def handle_help(
     gateway: OutboundGateway, account: Account, message: IncomingMessage
 ) -> HandlerResult:
     result = await gateway.send_text(
-        ControlChat(account_id=account.id, chat_id=message.chat_id), HELP_TEXT
+        ControlChat(account_id=account.id, chat_id=message.chat_id),
+        operational_text("help", account.locale_pref),
     )
     return HandlerResult(True, "help", result)
 
@@ -471,38 +478,29 @@ async def handle_privacy(
     managed = await service.active_consent(session, account.id, kind=service.CONSENT_AI_MANAGED)
     connected = await connections.connection_for_account(session, account.id) is not None
 
+    def wording(key: str, **values: object) -> str:
+        return operational_text(key, account.locale_pref, **values)
+
     def describe(state: service.ConsentState) -> str:
         if not state.granted:
-            return "<b>not granted</b> — nothing is sent to an AI provider"
-        return (
-            f"granted (policy {state.policy_version}, "
-            f"processor: {', '.join(state.processors) or 'none named'})"
+            return wording("no_consent")
+        return wording(
+            "consent_state",
+            version=escape(state.policy_version or ""),
+            processors=escape(", ".join(state.processors)) or wording("none_named"),
         )
 
     text = (
-        "<b>Privacy</b>\n\n"
-        f"AI for this chat: {describe(consent)}\n"
-        f"AI for your chats with other people: {describe(managed)}\n\n"
-        "In this chat I store your messages and my replies (text kept for 90 days), "
-        "your settings, and a record of what I did that contains no message text "
-        "(kept for 1 year).\n\n"
-        "From the chats you connected, I save new messages (text kept up to 90 days), "
-        "whether or not AI is on. If someone else writes to me directly, I don't keep "
-        "their message. Notes you ask me to remember and summaries of your chats are "
-        "kept until you delete them. Everything is on a server in the US (Oracle, Ashburn) with "
-        "encrypted daily backups, also kept at Backblaze B2 in the EU, for up to 35 "
-        "days.\n\n"
-        "Your messages are never used to train a model.\n\n"
-        "To delete one chat's data, open its panel from /settings; "
-        "<code>/privacy delete</code> deletes everything (I ask first). /settings also "
-        "lets you keep messages for a shorter time."
+        wording("privacy_heading")
+        + "\n\n"
+        + wording("privacy_body", control=describe(consent), managed=describe(managed))
     )
     if connected and not managed.granted:
-        text += "\n\nSend <code>/privacy managed</code> to decide about your other chats."
+        text += "\n\n" + wording("privacy_managed_hint")
     if consent.granted or managed.granted:
-        text += "\n\nSend <code>/privacy revoke</code> to stop all AI processing."
+        text += "\n\n" + wording("privacy_revoke_hint")
     if policy_url:
-        text += f'\n\nFull policy: <a href="{escape(policy_url)}">{escape(policy_url)}</a>'
+        text += "\n\n" + wording("policy_link", url=escape(policy_url))
     result = await gateway.send_text(
         ControlChat(account_id=account.id, chat_id=message.chat_id), text
     )
@@ -541,12 +539,13 @@ async def handle_revoke(
         )
     target = ControlChat(account_id=account.id, chat_id=message.chat_id)
     if not revoked and not managed_revoked:
-        result = await gateway.send_text(target, "There was no AI consent to revoke.")
+        result = await gateway.send_text(
+            target, operational_text("nothing_to_revoke", account.locale_pref)
+        )
         return HandlerResult(True, "revoke", result, note="nothing_to_revoke")
     result = await gateway.send_text(
         target,
-        "AI consent revoked. Nothing more will be sent to an AI provider.\n"
-        "/settings, /status and /privacy still work. Send /start to agree again.",
+        operational_text("revoked", account.locale_pref),
     )
     if managed_revoked:
         await offer_managed_data_choices(session, gateway, clock, account, message.chat_id)
@@ -603,7 +602,8 @@ async def queue_deletion(
         lock=owner_control_lock(account_id),
         connection=raw.driver_connection,
     )
-    return QUEUED_TEXT
+    account = await session.get(Account, account_id)
+    return operational_text("queued_deletion", account.locale_pref if account else None)
 
 
 MODE_CARD_TEXT = (
@@ -642,8 +642,15 @@ async def offer_managed_data_choices(
     assert card.token is not None
     result = await gateway.send_text(
         ControlChat(account_id=account.id, chat_id=chat_id),
-        DELETE_CARD_TEXT,
-        keyboard=card_keyboard(MANAGED_DELETE_KIND, card.token, DELETE_CARD_BUTTONS),
+        deletion_text("managed_delete_body", account.locale_pref),
+        keyboard=card_keyboard(
+            MANAGED_DELETE_KIND,
+            card.token,
+            localized_buttons(
+                [("delete", "delete"), ("delete_all", "everything"), ("keep", "keep")],
+                account.locale_pref,
+            ),
+        ),
     )
     card.prompt_message_id = result.message_id
     await session.flush()
@@ -714,7 +721,16 @@ async def _delete_choice_card(
         session, account_id=account.id, kind=MANAGED_DELETE_KIND, clock=clock
     )
     assert card.token is not None
-    return (card.id, MANAGED_DELETE_KIND, card.token, DELETE_CARD_TEXT, DELETE_CARD_BUTTONS)
+    return (
+        card.id,
+        MANAGED_DELETE_KIND,
+        card.token,
+        deletion_text("managed_delete_body", account.locale_pref),
+        localized_buttons(
+            [("delete", "delete"), ("delete_all", "everything"), ("keep", "keep")],
+            account.locale_pref,
+        ),
+    )
 
 
 async def _mode_choice_card(
@@ -730,8 +746,10 @@ async def _mode_choice_card(
         card.id,
         MANAGED_MODE_KIND,
         card.token,
-        MODE_CARD_TEXT,
-        [("Without AI", "observe"), ("Stop observing", "stop")],
+        operational_text("mode_body", account.locale_pref),
+        localized_buttons(
+            [("without_ai", "observe"), ("stop_observing", "stop")], account.locale_pref
+        ),
     )
 
 
@@ -767,7 +785,12 @@ async def handle_card_press(
     message_id = press.message_id
     if card is None or card.kind != press.kind:
         _queue_settlement(
-            session, gateway, press, target, message_id, _Settlement(CALLBACK_EXPIRED_TEXT)
+            session,
+            gateway,
+            press,
+            target,
+            message_id,
+            _Settlement(operational_text("expired", account.locale_pref)),
         )
         return HandlerResult(False, "card", None, note="no_longer_active")
     if message_id is None:
@@ -780,15 +803,17 @@ async def handle_card_press(
         case (k, "agree") if k == service.MANAGED_CONSENT_CARD:
             granted = await _grant_managed_consent(session, clock, account)
             if granted is None:
-                blocked = texts.CONSENT_BLOCKED[supported_locale(account.locale_pref)]
+                blocked = operational_text("consent_blocked", account.locale_pref)
                 settlement = _Settlement(blocked, blocked, keep_body=in_notice)
                 note = "privacy_reconciliation_required"
             else:
                 settlement = _Settlement(
-                    "Turned on" if granted else "Already on",
-                    MANAGED_CONSENT_GRANTED_TEXT.format(processors=", ".join(AI_PROCESSORS))
+                    operational_text("turned_on" if granted else "already_on", account.locale_pref),
+                    operational_text(
+                        "managed_granted", account.locale_pref, processors=", ".join(AI_PROCESSORS)
+                    )
                     if granted
-                    else MANAGED_CONSENT_ALREADY_ON_TEXT,
+                    else operational_text("managed_already", account.locale_pref),
                     keep_body=in_notice,
                 )
                 note = "granted" if granted else "already_granted"
@@ -799,8 +824,8 @@ async def handle_card_press(
             if state.granted:
                 # Agreed meanwhile (another card): revoking is /privacy revoke.
                 settlement = _Settlement(
-                    "Already on",
-                    MANAGED_CONSENT_ALREADY_ON_TEXT,
+                    operational_text("already_on", account.locale_pref),
+                    operational_text("managed_already", account.locale_pref),
                     keep_body=in_notice,
                 )
                 note = "already_granted"
@@ -809,8 +834,8 @@ async def handle_card_press(
                     session, account_id=account.id, clock=clock
                 )
                 settlement = _Settlement(
-                    "Not now",
-                    MANAGED_CONSENT_DECLINED_TEXT,
+                    operational_text("not_now", account.locale_pref),
+                    operational_text("managed_declined", account.locale_pref),
                     await _delete_choice_card(session, clock, account),
                     keep_body=in_notice,
                 )
@@ -820,7 +845,7 @@ async def handle_card_press(
             # answer or a confirmed change in flight is recorded first and
             # then deleted with the rest. The revocation itself is inline.
             settlement = _Settlement(
-                "Deleting",
+                operational_text("deleting", account.locale_pref),
                 await queue_deletion(
                     session,
                     scheduler,
@@ -834,7 +859,7 @@ async def handle_card_press(
             note = "deleting"
         case (k, "everything") if k == MANAGED_DELETE_KIND:
             settlement = _Settlement(
-                "Deleting",
+                operational_text("deleting", account.locale_pref),
                 await queue_deletion(
                     session,
                     scheduler,
@@ -848,32 +873,33 @@ async def handle_card_press(
             note = "deleting_everything"
         case (k, "keep") if k == MANAGED_DELETE_KIND:
             settlement = _Settlement(
-                "Kept",
-                "Kept. Nothing was deleted.",
+                operational_text("kept", account.locale_pref),
+                operational_text("kept_body", account.locale_pref),
                 await _mode_choice_unless_retry(session, clock, account, card),
             )
             note = "kept"
         case (k, "observe") if k == MANAGED_MODE_KIND:
             await service.set_managed_mode(session, account, service.MANAGED_MODE_OBSERVE)
             settlement = _Settlement(
-                "Observing without AI",
-                "👀 I keep observing your included chats for coverage and visibility. "
-                "Nothing is sent to an AI provider. Send <code>/privacy managed</code> "
-                "to change that.",
+                operational_text("observing_without_ai", account.locale_pref),
+                operational_text("observing_body", account.locale_pref),
             )
             note = "observe"
         case (k, "stop") if k == MANAGED_MODE_KIND:
             await service.set_managed_mode(session, account, service.MANAGED_MODE_STOPPED)
             settlement = _Settlement(
-                "Stopped",
-                "⏹ Stopped. I store nothing further from your included chats. To "
-                "disconnect me completely, remove me under Settings → Chat Automation. "
-                "Send <code>/privacy managed</code> to start observing again.",
+                operational_text("stopped", account.locale_pref),
+                operational_text("stopped_body", account.locale_pref),
             )
             note = "stopped"
         case _:
             _queue_settlement(
-                session, gateway, press, target, message_id, _Settlement(CALLBACK_EXPIRED_TEXT)
+                session,
+                gateway,
+                press,
+                target,
+                message_id,
+                _Settlement(operational_text("expired", account.locale_pref)),
             )
             return HandlerResult(False, "card", None, note="unknown_op")
     _queue_settlement(session, gateway, press, target, message_id, settlement)
@@ -1034,7 +1060,7 @@ TIER_TEXT = {
 }
 
 
-def render_status(report: StatusReport, *, visibility: str) -> str:
+def render_status(report: StatusReport, *, visibility: str, locale: str | None = None) -> str:
     """The visibility report (FR-ONB-08): what I can see, and what is wrong.
 
     Every line comes from `StatusReport`, so the `get_status` tool and this
@@ -1095,10 +1121,10 @@ def render_status(report: StatusReport, *, visibility: str) -> str:
         f"  Included chats: {'granted' if consent.managed_chats else 'not granted'}",
     ]
     if consent.restore_pending:
-        lines.append("  restore_pending: recovery incomplete; AI processing blocked")
+        lines.append(operational_text("restore_pending", locale))
     if consent.restore_consent_pending:
         scopes = ", ".join(consent.restore_consent_pending)
-        lines.append(f"  restore_consent_pending: {scopes}; renew with /start or /privacy managed")
+        lines.append(operational_text("restore_consent_pending", locale, scopes=escape(scopes)))
     if report.autonomy.conversations_paused:
         detail = ", ".join(
             f"{count} {reason}"
@@ -1141,7 +1167,7 @@ async def handle_status(
     """`/status` — must work even when the model is unreachable."""
     result = await gateway.send_text(
         ControlChat(account_id=account.id, chat_id=message.chat_id),
-        render_status(report, visibility=visibility),
+        render_status(report, visibility=visibility, locale=account.locale_pref),
     )
     return HandlerResult(True, "status", result)
 
@@ -1202,11 +1228,11 @@ def render_panel(
         f"Reply window: {window} (approximate)",
     ]
     if panel.availability != "active":
-        lines.append("⚠️ The chat may be paused or excluded; my last action there failed.")
+        lines.append(operational_text("panel_unavailable", locale))
     if panel.autonomy_paused_reason == "ingest_error":
-        lines.append("⚠️ A message here could not be processed; automation is paused.")
+        lines.append(operational_text("panel_ingest_failed", locale))
     if panel.unresolved_gaps:
-        lines.append(f"⚠️ {panel.unresolved_gaps} coverage gap(s): some messages may be missing.")
+        lines.append(operational_text("panel_gaps", locale, count=panel.unresolved_gaps))
     if deleting:
         return "\n".join(lines)
     if panel.summary_overview:
@@ -1222,11 +1248,14 @@ async def handle_settings(
 ) -> HandlerResult:
     """`/settings` — deterministic, no model involved, so it always works."""
     text = (
-        "<b>Settings</b>\n\n"
-        f"Language: {escape(texts.language_label(account.locale_pref))}\n"
-        f"Timezone: {account.timezone}\n\n"
-        "Send <code>/settings timezone Asia/Tashkent</code> or "
-        "<code>/settings language uz</code> to change one."
+        operational_text("settings_heading", account.locale_pref)
+        + "\n\n"
+        + operational_text(
+            "settings_compact",
+            account.locale_pref,
+            language=escape(texts.language_label(account.locale_pref)),
+            zone=escape(account.timezone),
+        )
     )
     result = await gateway.send_text(
         ControlChat(account_id=account.id, chat_id=message.chat_id), text
@@ -1258,28 +1287,37 @@ async def apply_setting(
             )
         except preferences.PreferenceError:
             result = await gateway.send_text(
-                target, f"I do not know the timezone <code>{escape(value)}</code>."
+                target,
+                operational_text("invalid_timezone", account.locale_pref, value=escape(value)),
             )
             return HandlerResult(True, "settings", result, note="invalid_timezone")
         if not change.changes:
             # The zone it already had, named by the owner: chosen, so
             # onboarding does not ask for it (C4).
             await preferences.record_timezone_confirmed(session, account, clock)
-        result = await gateway.send_text(target, f"Timezone set to {escape(account.timezone)}.")
+        result = await gateway.send_text(
+            target,
+            operational_text("timezone_saved", account.locale_pref, zone=escape(account.timezone)),
+        )
         return HandlerResult(True, "settings", result, note="timezone")
 
     if key in {"language", "locale"}:
         try:
             await preferences.update(session, account, language=value, actor="owner", clock=clock)
         except preferences.PreferenceError:
-            result = await gateway.send_text(target, "That does not look like a language code.")
+            result = await gateway.send_text(
+                target, operational_text("invalid_language", account.locale_pref)
+            )
             return HandlerResult(True, "settings", result, note="invalid_language")
         result = await gateway.send_text(
-            target, f"Language set to {escape(account.locale_pref or value)}."
+            target,
+            operational_text(
+                "language_saved", account.locale_pref, language=escape(account.locale_pref or value)
+            ),
         )
         return HandlerResult(True, "settings", result, note="language")
 
-    result = await gateway.send_text(target, "I can set <b>timezone</b> or <b>language</b>.")
+    result = await gateway.send_text(target, operational_text("setting_keys", account.locale_pref))
     return HandlerResult(True, "settings", result, note="unknown_key")
 
 
