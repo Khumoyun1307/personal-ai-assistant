@@ -25,6 +25,9 @@ def test_every_production_migration_is_classified_exactly_once() -> None:
     assert graph["0005"].compatibility == "breaking"
     assert graph["0009"].compatibility == "breaking"
     assert graph["0015"].compatibility == "breaking"
+    assert LEGACY_COMPATIBILITY["0017"] == "expand"
+    assert graph["0017"].compatibility == "expand"
+    assert classify(graph, "0016", "0017") == "expand"
 
 
 def test_legacy_registry_classifies_immutable_migration(tmp_path: Path) -> None:
@@ -39,12 +42,12 @@ def test_in_file_marker_and_legacy_registry_cannot_both_classify_revision(tmp_pa
 
 
 def test_new_revision_uses_its_in_file_marker(tmp_path: Path) -> None:
-    revision(tmp_path, "0017", None, "breaking")
-    assert load_graph(tmp_path)["0017"].compatibility == "breaking"
+    revision(tmp_path, "0018", None, "breaking")
+    assert load_graph(tmp_path)["0018"].compatibility == "breaking"
 
 
 def test_new_revision_without_marker_is_refused(tmp_path: Path) -> None:
-    (tmp_path / "0017.py").write_text("revision = '0017'\ndown_revision = None\n", encoding="utf-8")
+    (tmp_path / "0018.py").write_text("revision = '0018'\ndown_revision = None\n", encoding="utf-8")
     with pytest.raises(ValueError, match="every migration must have"):
         load_graph(tmp_path)
 

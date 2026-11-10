@@ -109,11 +109,13 @@ will refuse migration. No Python test waits on real time.
 ### Migration compatibility and recovery (I23)
 
 New production migrations declare `COMPATIBILITY = "expand"` or `"breaking"`.
-Applied revisions 0001–0016 remain unchanged and are classified in
+Applied revisions 0001–0017 remain unchanged and are classified in
 `src/assistant/db/migration_compatibility.py::LEGACY_COMPATIBILITY`. The checker
 reads an in-file marker first, falling back to that legacy registry only when
 the marker is absent; duplicate sources or unclassified revisions are refused.
-Do not extend the legacy registry for new revisions (0017 and later).
+Revision 0017 merged on main before I23 and is included as an immutable legacy
+revision. New revisions (0018 and later) must declare their own marker instead
+of extending the legacy registry.
 This is reviewed release metadata. `expand` means previous code may run after the upgrade: additive
 tables, nullable/defaulted columns, indexes and constraints on new columns
 that leave old writes valid. Any destructive/data rewrite, existing-column
@@ -128,7 +130,11 @@ Reviewed legacy classifications: 0003 rewrites data, 0005 adds a foreign key on 
 existing inbound message link, 0009 changes the confirmation-state contract,
 and 0015 installs a trigger on existing actions: **breaking**. 0001/0002 create
 schemas/tables, 0004/0006/0007/0008/0010/0011/0012/0013/0014/0016 add compatible
-storage/indexes (constraints/FKs on new storage): **expand**. Initial schema
+storage/indexes (constraints/FKs on new storage): **expand**. 0017 adds only the
+notification snapshot table and its index, with FKs on new storage, leaving old
+reads and writes valid: **expand**. Its downgrade drops the snapshots; this
+classification permits old code on the upgraded schema, not a lossless downgrade.
+Initial schema
 creation still has no previous app to restart.
 
 On failure before migration, the existing app and backup containers are

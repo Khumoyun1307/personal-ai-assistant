@@ -30,6 +30,7 @@ LEGACY_COMPATIBILITY: dict[str, str] = {
     "0014": "expand",
     "0015": "breaking",
     "0016": "expand",
+    "0017": "expand",  # New notification snapshot table/index; old reads and writes remain valid.
 }
 
 
