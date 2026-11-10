@@ -150,8 +150,8 @@ class ToolExecutor:
         if outcome.status == CHAT_ACCESS_OFF:
             self.saw_chat_access_off = True
         if outcome.taints:
-            # This run's OWN input carried third-party text (D56): its reply
-            # will taint later runs, even if the run was already tainted.
+            # Taint is monotonic within this append-only run (D-S3), even
+            # across several calls in one batch or a later clean read.
             self.saw_untrusted = True
             if not self.context.tainted:
                 self.context = replace(self.context, tainted=True)

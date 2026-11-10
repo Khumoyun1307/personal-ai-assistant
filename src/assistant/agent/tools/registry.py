@@ -175,9 +175,12 @@ class OwnerTurn:
     @property
     def instruction(self) -> str | None:
         """The owner's words as an instruction for a draft, even in a tainted
-        run: only from a turn that carries nothing third-party alongside — not
-        forwarded, not quoting, no managed content (invariant 3b)."""
-        if self.third_party or self.quoted or self.contains_managed:
+        run. Classified quotes keep the owner's text separate from the quote
+        (D-S3); unknown managed/forwarded text has no instruction authority.
+        This supplies words, never approval or permission to change state."""
+        if self.quoted:
+            return self.own_words if self.third_party else None
+        if self.third_party or self.contains_managed:
             return None
         return self.own_words
 

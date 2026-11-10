@@ -162,12 +162,11 @@ async def test_a_forwarded_owner_turn_never_reaches_the_draft(denv: DraftEnv) ->
 @pytest.mark.parametrize(
     "flags",
     [
-        {"third_party": True, "quoted": True},  # quoting another chat's message
         {"contains_managed": True},  # carrying managed-chat content
         {"third_party": True},  # forwarded
     ],
 )
-async def test_a_quoting_forwarded_or_managed_turn_is_not_passed(
+async def test_an_unclassified_managed_or_forwarded_turn_is_not_passed(
     denv: DraftEnv, flags: dict[str, bool]
 ) -> None:
     account_id, conversation = await seed_chat(denv, mode="observe")
@@ -192,6 +191,29 @@ async def test_a_quoting_forwarded_or_managed_turn_is_not_passed(
     assert "SYNTH-NOT-PASSED-CANARY" not in prompt
     [line] = [entry for entry in logs if entry.get("tool") == "propose_reply" and "code" in entry]
     assert line["instruction_source"] == "dropped_quoted"
+
+
+async def test_a_classified_quotes_own_instruction_reaches_the_draft(denv: DraftEnv) -> None:
+    """D-S3, owner 2026-11-09: quotes do not discard the owner's own words."""
+    account_id, conversation = await seed_chat(denv, mode="observe")
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    denv.script(owner_output(text="SYNTH I must decline"))
+    result = await call(
+        context(
+            denv,
+            account_id,
+            run_id,
+            turn_id,
+            tainted=True,
+            turn=owner_turn(turn_id, "SYNTH-OWN decline politely", third_party=True, quoted=True),
+        ),
+        "propose_reply",
+        **reply_args(conversation),
+    )
+    assert result["status"] == "awaiting_approval"
+    assert result["owner_message_used"] is True
+    [prompt] = draft_prompts(denv)
+    assert "SYNTH-OWN decline politely" in prompt
 
 
 # ------------------------------------------------------------ PF-10: no veto, Assist unchanged

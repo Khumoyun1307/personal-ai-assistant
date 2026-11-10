@@ -292,7 +292,7 @@ async def test_managed_history_is_excluded_without_managed_consent(
     assert "Synthetic managed summary" not in texts
 
 
-async def test_managed_history_is_included_and_marked_with_managed_consent(
+async def test_stale_managed_history_is_omitted_even_with_managed_consent(
     factory: async_sessionmaker[AsyncSession], clock: FakeClock
 ) -> None:
     turn_id = await owner_turn(
@@ -306,9 +306,15 @@ async def test_managed_history_is_included_and_marked_with_managed_consent(
     await build(factory, clock, fake, FakeChannel()).run(turn_id)
 
     managed = [i for i in fake.requests[0].items if i.provenance is Provenance.MANAGED]
-    assert [i.text for i in managed if isinstance(i, TextItem)] == ["Synthetic managed summary"]
+    # D-S3 (2026-11-09): old managed prose must be explicitly reselected.
+    assert managed == []
+    assert all(
+        "Synthetic managed summary" not in i.text
+        for i in fake.requests[0].items
+        if isinstance(i, TextItem)
+    )
     reply = (await rows(factory, ControlTurn))[-1]
-    assert reply.contains_managed is True
+    assert reply.contains_managed is False
 
 
 # ----------------------------------------------------------------------- tools

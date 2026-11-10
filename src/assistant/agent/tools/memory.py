@@ -150,8 +150,8 @@ class RememberArgs(BaseModel):
 class Origin:
     """Where a note's words may come from (safety review V1, V2, S3)."""
 
-    #: The run saw other people's text — taint, or the untrusted context a
-    #: tainted-run reply or a managed turn brings even when D56 does not taint.
+    #: Taint or conservative legacy ancestry. D-S3's context selector omits
+    #: stale prose; old saved-memory provenance is never reset here (C8/H13).
     tainted: bool
     refs: ToolRefs
 
@@ -183,8 +183,10 @@ async def run_origin(session: AsyncSession, ctx: ToolContext) -> Origin:
     if run is None:
         return Origin(True, refs)
     tainted = ctx.tainted or ctx.held or run.tainted
-    # The turns this run's context was built from: the trigger and the
-    # history window before it (the same window as the context builder).
+    # Preserve conservative provenance for legacy D56 runs, which could show
+    # inherited untrusted prose while recording tainted=false. This is not
+    # the execution gate: the executor uses actual supplied-context taint.
+    # Exact owner-source preference capture belongs to C8/H13.
     turn_id = _trigger_turn(run.trigger_ref)
     if turn_id is not None:
         turns = (
@@ -482,8 +484,14 @@ class ListMemoriesArgs(BaseModel):
 
 def memory_view(item: MemoryView, timezone: str) -> dict[str, object]:
     """One item as the model sees it. The owner's words; wrapped as
-    untrusted when it was saved from a run with other people's text."""
-    content = wrap(item.content, Source.MEMORY_FROM_TAINTED_RUN) if item.tainted else item.content
+    untrusted when tainted or managed without proven owner-source authority."""
+    # Without C8 owner-source proof, a managed note's legacy tainted=false
+    # cannot establish instruction authority. Never rewrite its stored flags.
+    content = (
+        wrap(item.content, Source.MEMORY_FROM_TAINTED_RUN)
+        if item.tainted or item.managed
+        else item.content
+    )
     return {
         "memory_id": item.memory_id,
         "scope": item.scope,
@@ -563,7 +571,7 @@ async def list_memories_tool(ctx: ToolContext, args: ListMemoriesArgs) -> ToolOu
         contains_managed=any(item.managed for item in found),
         # Text that may be someone else's taints the run: a configure call
         # after it needs the owner's tap (invariant 3b, safety review V1).
-        untrusted=any(item.tainted for item in found),
+        untrusted=any(item.tainted or item.managed for item in found),
         # The chats and contacts the shown items are about or came from: the
         # reply and anything this run saves keep them, so deleting one of
         # those chats finds them (verification item 1).

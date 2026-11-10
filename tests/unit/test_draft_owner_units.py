@@ -313,10 +313,14 @@ def turn(**changes: Any) -> OwnerTurn:
     return OwnerTurn(**(values | changes))
 
 
-def test_only_a_turn_with_nothing_third_party_is_an_instruction() -> None:
+def test_only_proven_own_text_is_an_instruction_including_a_classified_quote() -> None:
     assert turn().instruction == "SYNTH write to them"
     assert turn(third_party=True).instruction is None  # forwarded
-    assert turn(third_party=True, quoted=True).instruction is None  # quoting
+    # D-S3, 2026-11-09: the separate quote never discards the owner's wishes.
+    assert turn(third_party=True, quoted=True).instruction == "SYNTH write to them"
+    assert turn(third_party=True, quoted=True, contains_managed=True).instruction == (
+        "SYNTH write to them"
+    )
     assert turn(quoted=True).instruction is None
     assert turn(contains_managed=True).instruction is None
     assert turn(text=None).instruction is None

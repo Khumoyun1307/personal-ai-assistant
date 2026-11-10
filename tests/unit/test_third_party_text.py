@@ -101,7 +101,12 @@ def test_a_forwarded_turn_is_wrapped_entirely_as_untrusted() -> None:
 
 def test_a_quoting_turn_keeps_the_owners_words_and_wraps_the_quote() -> None:
     shown = render_turn(
-        turn(text="What does this mean?", quoted_text="Synthetic", third_party=True)
+        turn(
+            text="What does this mean?",
+            quoted_text="Synthetic",
+            third_party=True,
+            owner_text_verified=True,
+        )
     )
     assert shown.startswith("What does this mean?")
     assert '<untrusted source="quoted" trust="untrusted">Synthetic</untrusted>' in shown
@@ -120,11 +125,10 @@ def test_third_party_or_managed_turns_taint() -> None:
     assert carries_third_party(turn(contains_managed=True))  # a managed forward
 
 
-def test_only_directly_tainted_replies_pass_the_taint_on() -> None:
-    """D56(b): inherited-only taint, or managed content read from history,
-    does not propagate through a reply."""
-    assert not carries_third_party(turn(role="assistant", from_tainted_run=True))
-    assert not carries_third_party(turn(role="assistant", contains_managed=True))
+def test_every_supplied_derived_reply_taints_regardless_of_third_party_flag() -> None:
+    """D-S3, owner 2026-11-09, supersedes D56(b)'s visible-but-clean reply."""
+    assert carries_third_party(turn(role="assistant", from_tainted_run=True))
+    assert carries_third_party(turn(role="assistant", contains_managed=True))
     assert carries_third_party(turn(role="assistant", third_party=True, from_tainted_run=True))
 
 

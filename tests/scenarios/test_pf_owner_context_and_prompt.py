@@ -242,7 +242,11 @@ async def test_the_working_context_does_not_change_taint(s: Scenario) -> None:
         )
     current = next(t for t in turns if t.text == "Synthetic follow-up about the draft.")
     history = [t for t in turns if t.id < current.id]
-    assert second.tainted == any(carries_third_party(t) for t in [*history, current])
+    # D-S3 (2026-11-09): the earlier reply is omitted; fixed card/refs facts
+    # neither inherit its prose nor confer instruction authority.
+    assert any(carries_third_party(t) for t in history)
+    assert not carries_third_party(current)
+    assert second.tainted is False
 
 
 async def test_an_edit_button_turn_names_its_card_in_the_next_run(s: Scenario) -> None:

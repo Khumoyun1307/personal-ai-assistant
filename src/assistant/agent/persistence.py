@@ -16,7 +16,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import ControlTurn, PendingInput
@@ -52,12 +52,24 @@ class ControlTurnRepository(AccountScopedRepository[ControlTurn]):
     ) -> list[ControlTurn]:
         """The `limit` turns before `turn_id`, oldest first.
 
-        Turns flagged `contains_managed` are dropped unless the caller has
-        established that `ai_managed` is active (ARCHITECTURE §14.3).
+        Managed turns are excluded without consent, except classified mixed
+        quotes: the context selector retains only their owner-text component.
+        Unknown legacy provenance never qualifies for that exception (D-S3).
         """
         statement = self._select().where(ControlTurn.id < turn_id)
         if not include_managed:
-            statement = statement.where(ControlTurn.contains_managed.is_(False))
+            statement = statement.where(
+                or_(
+                    ControlTurn.contains_managed.is_(False),
+                    and_(
+                        ControlTurn.role == "owner",
+                        ControlTurn.third_party.is_(True),
+                        ControlTurn.owner_text_verified.is_(True),
+                        ControlTurn.quoted_text.is_not(None),
+                        ControlTurn.from_tainted_run.is_(False),
+                    ),
+                )
+            )
         statement = statement.order_by(ControlTurn.id.desc()).limit(limit)
         result = await self.session.execute(statement)
         rows = cast("list[ControlTurn]", list(result.scalars().all()))

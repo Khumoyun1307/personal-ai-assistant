@@ -11,9 +11,9 @@ invariants 1, 2): a result says `awaiting_approval` (a card is on its way),
   the tool-less `draft_owner` prompt (PF-10). The owner asked, so it is
   never vetoed as "no reply needed" (owner decision D1, 2026-10-30). The
   application supplies the owner's own words: the current owner turn's text
-  reaches the draft whenever that turn carries nothing third-party (not
-  forwarded, not quoting, no managed content) — tainted run or not (PF-11,
-  owner decision D2). The model's own `guidance` still reaches it only from
+  reaches the draft from plain owner input or the separately classified
+  own-text component beside a quote — tainted run or not (PF-11, amended by
+  owner D-S3, 2026-11-09). The model's own `guidance` still reaches it only from
   an untainted run (decisions R2). `mode` is `reply` (answer the contact's
   message `answered_message_id`, or their newest) or `new_message` (a
   standalone message: no base message, nothing "answered"); a word range is
@@ -457,7 +457,7 @@ def owner_instruction(
 ) -> tuple[str | None, str | None, InstructionSource]:
     """What reaches an owner-requested draft as the owner's wishes: the
     current owner turn's own words (supplied by the application; any run,
-    tainted or not, when the turn carries nothing third-party), and the
+    tainted or not, including the own-text component of a classified quote), and the
     model's `guidance` from an untainted run only (decisions R2). Returns
     `(instruction, guidance, source)`; `source` is a content-free code."""
     turn = ctx.owner_turn
@@ -473,7 +473,7 @@ def owner_instruction(
         and turn.text
         and (turn.third_party or turn.quoted or turn.contains_managed)
     ):
-        # Forwarded, quoting or carrying managed content: never an instruction.
+        # Unclassified or forwarded text: never an owner instruction (D-S3).
         source = "dropped_quoted"
     elif guidance is not None:
         source = "dropped_tainted"

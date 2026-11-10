@@ -176,6 +176,8 @@ class ValidatedSource:
     untrusted: bool
     turn_id: int
     status: Literal["validated"] = "validated"
+    conversation_ids: tuple[int, ...] = ()
+    contact_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -311,7 +313,17 @@ async def load_source(
             or source.purpose == "quote"
         ),
         turn_id=turn.id,
+        conversation_ids=_source_ref_ids(turn, "conversation_ids"),
+        contact_ids=_source_ref_ids(turn, "contact_ids"),
     )
+
+
+def _source_ref_ids(turn: ControlTurn, key: str) -> tuple[int, ...]:
+    """Deletion links from the scoped source, never from source prose."""
+    values = (turn.refs or {}).get(key)
+    if not isinstance(values, list):
+        return ()
+    return tuple(value for value in values if type(value) is int and 0 < value <= 2**63 - 1)
 
 
 async def _sources(
