@@ -115,12 +115,16 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("foreign_connections", "connection_id"),
         ("control_turns", "role"),
         ("control_turns", "refs"),
+        # H2 refs add request/action/version integer lists and a content-free
+        # explicit_target_unavailable boolean after reply-target erasure.
+        # Reply ids and owner_text_verified are bigint/bool (outside this registry).
         ("pending_inputs", "kind"),
         ("pending_inputs", "token"),
         ("audit_log", "actor"),
         ("audit_log", "event"),
         ("audit_log", "subject_type"),
         ("audit_log", "details"),
+        # H2 card_presented: action/version/state/control-message/claim only.
         ("agent_runs", "run_type"),
         ("agent_runs", "trigger_ref"),
         ("agent_runs", "model"),

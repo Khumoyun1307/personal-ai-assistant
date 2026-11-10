@@ -41,6 +41,7 @@ RequestState = Literal[
     "expired",
 ]
 MissingSlot = Literal["recipient", "content", "target", "constraints"]
+ContinuationCode = Literal["not_available", "stale", "source_unavailable", "managed_access_off"]
 RequestReason = Literal[
     "owner_cancelled",
     "topic_switch",
@@ -220,7 +221,29 @@ class Continuation:
     action_id: int | None = None
     action_version: int | None = None
     request_ids: tuple[int, ...] = ()
-    code: Literal["not_available", "stale", "source_unavailable"] | None = None
+    code: ContinuationCode | None = None
+    basis: Literal["explicit_reply", "pending_question", "focused_request"] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerContinuation:
+    """Fresh request facts and separately validated text, in memory only."""
+
+    selection: Continuation
+    request: OwnerRequestView | None = None
+    sources: tuple[ValidatedSource, ...] = ()
+    question_input_id: int | None = None
+
+    def as_refs(self) -> dict[str, list[int]]:
+        """Structural linkage only; usable on owner and assistant turns."""
+        refs: dict[str, list[int]] = {}
+        if self.selection.status == "selected":
+            if self.selection.request_id is not None:
+                refs["owner_request_ids"] = [self.selection.request_id]
+            if self.selection.action_id is not None and self.selection.action_version is not None:
+                refs["continuation_action_ids"] = [self.selection.action_id]
+                refs["continuation_action_versions"] = [self.selection.action_version]
+        return refs
 
 
 async def lock_requests(session: AsyncSession, *, account_id: int) -> bool:
@@ -264,16 +287,25 @@ async def load_source(
     elif source.span.field == "text":
         if source.purpose == "suggestion":
             return SourceUnavailable()
-        # Mixed/forwarded legacy text has no component proof yet. H2 may
-        # supply classified outer owner text; H1 never promotes ambiguity.
-        if turn.third_party and source.purpose != "quote":
+        # Only ingress-classified outer text can be an owner source beside
+        # a quote. Legacy mixed turns and forwards remain untrusted.
+        if (
+            turn.third_party
+            and source.purpose != "quote"
+            and not (turn.owner_text_verified and turn.quoted_text is not None)
+        ):
             return SourceUnavailable()
     return ValidatedSource(
         text=field[source.span.start : source.span.end],
-        managed=turn.contains_managed,
+        managed=bool(
+            turn.contains_managed
+            and not (
+                turn.role == "owner" and turn.owner_text_verified and source.span.field == "text"
+            )
+        ),
         untrusted=(
             turn.role == "assistant"
-            or turn.third_party
+            or (turn.third_party and not (turn.owner_text_verified and source.span.field == "text"))
             or turn.from_tainted_run
             or source.span.field == "quoted_text"
             or source.purpose == "quote"
@@ -407,7 +439,11 @@ async def open_request(
         )
         .execution_options(populate_existing=True)
     )
-    if turn is None or turn.text is None or turn.third_party:
+    if (
+        turn is None
+        or turn.text is None
+        or (turn.third_party and not (turn.owner_text_verified and turn.quoted_text is not None))
+    ):
         raise NotInAccountError("request unavailable")
     if len(sources) > 64:
         raise ValueError("too many sources")
@@ -811,84 +847,14 @@ async def resolve_continuation(
     reply_to_message_id: int | None,
     now: datetime,
 ) -> Continuation:
+    """Resolve structural control artifacts before implicit request focus."""
+    from assistant.actions.continuations import resolve
+
     _check_time(now)
-    turn = await session.scalar(
-        select(ControlTurn)
-        .where(
-            ControlTurn.account_id == account_id,
-            ControlTurn.id == turn_id,
-            ControlTurn.role == "owner",
-            ControlTurn.third_party.is_(False),
-        )
-        .execution_options(populate_existing=True)
-    )
-    if turn is None:
-        return Continuation("unavailable", code="not_available")
-    if turn.text is None:
-        return Continuation("unavailable", code="source_unavailable")
-    statement = select(OwnerRequest).where(
-        OwnerRequest.account_id == account_id,
-        OwnerRequest.state.not_in(TERMINAL_REQUEST_STATES),
-        OwnerRequest.expires_at > now,
-    )
-    if reply_to_message_id is not None:
-        # H2/C3 later add retained presentation history. Unknown explicit
-        # replies fail closed today; never fall back to another live card.
-        statement = (
-            statement.outerjoin(PendingInput, PendingInput.id == OwnerRequest.question_input_id)
-            .outerjoin(Action, Action.id == OwnerRequest.action_id)
-            .where(
-                (
-                    (PendingInput.account_id == account_id)
-                    & (PendingInput.prompt_message_id == reply_to_message_id)
-                    & (PendingInput.expires_at > now)
-                )
-                | (
-                    (Action.account_id == account_id)
-                    & (Action.card_message_id == reply_to_message_id)
-                    & (Action.version == OwnerRequest.action_version)
-                )
-            )
-        )
-    rows = list(
-        await session.scalars(
-            statement.order_by(OwnerRequest.id).execution_options(populate_existing=True)
-        )
-    )
-    if reply_to_message_id is None:
-        valid_questions = set(
-            await session.scalars(
-                select(PendingInput.id).where(
-                    PendingInput.account_id == account_id,
-                    PendingInput.kind == "owner_request",
-                    PendingInput.expires_at > now,
-                )
-            )
-        )
-        questions = [row for row in rows if row.question_input_id in valid_questions]
-        focused = [row for row in rows if row.focused]
-        if len(questions) == 1:
-            rows = questions
-        elif questions:
-            rows = [row for row in questions if row.focused] or questions
-        else:
-            rows = focused
-    if not rows:
-        if reply_to_message_id is not None:
-            return Continuation("unavailable", code="not_available")
-        return Continuation("none")
-    if len(rows) > 1:
-        return Continuation("ambiguous", request_ids=tuple(row.id for row in rows))
-    row = rows[0]
-    for source in await _sources(session, account_id=account_id, request_id=row.id):
-        if isinstance(
-            await load_source(session, account_id=account_id, source=source), SourceUnavailable
-        ):
-            return Continuation("unavailable", code="source_unavailable")
-    return Continuation(
-        "selected",
-        request_id=row.id,
-        version=row.version,
-        action_id=row.action_id,
-        action_version=row.action_version,
+    return await resolve(
+        session,
+        account_id=account_id,
+        turn_id=turn_id,
+        reply_to_message_id=reply_to_message_id,
+        now=now,
     )

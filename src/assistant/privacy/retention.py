@@ -259,7 +259,14 @@ async def sweep_control_turns(
                 )
                 cleared += _count(
                     await uow.session.execute(
-                        update(ControlTurn).where(due).values(text=None, quoted_text=None)
+                        update(ControlTurn)
+                        .where(due)
+                        .values(
+                            text=None,
+                            quoted_text=None,
+                            reply_to_telegram_message_id=None,
+                            owner_text_verified=False,
+                        )
                     )
                 )
     return cleared

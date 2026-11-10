@@ -102,6 +102,8 @@ class IncomingMessage:
     #: control-chat message only. It orders the language picker's buttons
     #: and is never stored or logged as given (C4).
     language_hint: str | None = None
+    #: Only a reply in this control chat, never an external/business target.
+    reply_to_telegram_message_id: int | None = None
 
     @property
     def third_party(self) -> bool:

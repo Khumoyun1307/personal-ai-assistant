@@ -139,7 +139,8 @@ async def test_add_this_phrase_appends_to_the_same_card_without_a_model_call(
     assert len(draft_requests(s)) == drafts_before  # deterministic: no model call
     events = await s.events(row.id)
     assert "action_superseded" not in events
-    assert events[-2:] == ["action_revision_requested", "action_edited"]
+    lifecycle_events = [event for event in events if event != "card_presented"]
+    assert lifecycle_events[-2:] == ["action_revision_requested", "action_edited"]
     output = last_output(s)
     assert output["status"] == "revised"
     assert (output["action_id"], output["version"], output["changed"]) == (row.id, 2, "appended")

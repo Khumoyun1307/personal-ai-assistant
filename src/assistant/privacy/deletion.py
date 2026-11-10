@@ -249,7 +249,12 @@ async def delete_managed_data(
             .where(ControlTurn.contains_managed.is_(True))
             .where(_owner_turns_up_to(owner_turns_up_to))
             .where((ControlTurn.text.is_not(None)) | (ControlTurn.quoted_text.is_not(None)))
-            .values(text=None, quoted_text=None)
+            .values(
+                text=None,
+                quoted_text=None,
+                reply_to_telegram_message_id=None,
+                owner_text_verified=False,
+            )
         )
     )
     # Held tool calls may carry managed text in their arguments (S03.1).
@@ -451,7 +456,12 @@ async def redact_turns_referring_to(
         .where(ControlTurn.account_id == account_id)
         .where(refers)
         .where((ControlTurn.text.is_not(None)) | (ControlTurn.quoted_text.is_not(None)))
-        .values(text=None, quoted_text=None)
+        .values(
+            text=None,
+            quoted_text=None,
+            reply_to_telegram_message_id=None,
+            owner_text_verified=False,
+        )
         .returning(ControlTurn.run_id)
     )
     rows = redacted.all()
@@ -641,7 +651,12 @@ async def _redact_turns(
             .where(or_(*conditions))
             .where(_owner_turns_up_to(owner_turns_up_to))
             .where((ControlTurn.text.is_not(None)) | (ControlTurn.quoted_text.is_not(None)))
-            .values(text=None, quoted_text=None)
+            .values(
+                text=None,
+                quoted_text=None,
+                reply_to_telegram_message_id=None,
+                owner_text_verified=False,
+            )
             .returning(ControlTurn.run_id)
         )
     ).all()
@@ -1067,7 +1082,12 @@ async def delete_everything(
             .where(ControlTurn.account_id == account_id)
             .where(_owner_turns_up_to(owner_turns_up_to))
             .where((ControlTurn.text.is_not(None)) | (ControlTurn.quoted_text.is_not(None)))
-            .values(text=None, quoted_text=None)
+            .values(
+                text=None,
+                quoted_text=None,
+                reply_to_telegram_message_id=None,
+                owner_text_verified=False,
+            )
         )
     )
     held = _rows(

@@ -57,6 +57,23 @@ def _is_forwarded(payload: dict[str, Any]) -> bool:
     )
 
 
+def control_reply_id(payload: dict[str, Any]) -> int | None:
+    """Keep only same-chat reply metadata; copy no replied-to text or names."""
+    replied = payload.get("reply_to_message")
+    if not isinstance(replied, dict) or replied.get("business_connection_id") is not None:
+        return None
+    chat = payload.get("chat")
+    target_chat = replied.get("chat")
+    if not isinstance(chat, dict) or not isinstance(target_chat, dict):
+        return None
+    if chat.get("type") != "private" or target_chat.get("id") != chat.get("id"):
+        return None
+    message_id = replied.get("message_id")
+    if type(message_id) is not int or not 0 < message_id <= 2**63 - 1:
+        return None
+    return message_id
+
+
 def third_party_text(payload: dict[str, Any]) -> tuple[bool, str | None]:
     """`(forwarded, quoted_text)` of an owner's control-chat message (§7.1 taint).
 
@@ -239,6 +256,7 @@ class ControlInboxHandlers:
                 origin_chat_ids=frozenset(chats),
                 origin_names=frozenset(names),
                 language_hint=hint,
+                reply_to_telegram_message_id=control_reply_id(payload),
             ),
         )
 

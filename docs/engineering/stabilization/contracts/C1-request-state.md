@@ -6,6 +6,8 @@ Implements D-S2/D-S4; consumed by H3–H13, I13/I14 and A1. Existing `pending_in
 
 ## Domain model and persistence
 
+H2 implementation adds control reply/component metadata in revision `0016`, account-local card/turn/question selection in `actions/continuations.py`, and `agent.persistence.load_owner_continuation`. `ToolContext.continuation` exposes typed request facts and validated source spans separately from text-free rendered metadata. `Continuation.basis` reports `explicit_reply`, `pending_question` or `focused_request`; unavailable managed-associated facts use `managed_access_off`. A missing question row can be rebuilt without changing request/action versions or extending the TTL. Successful card associations use C3's `card_presented` audit event. H3/H4/H5/H6/H12 consume these seams; prompts and propose tools are unchanged in H2. Restricted-worktree tests/migrations/lint/type checks and manual reply-to checks remain unrun.
+
 ```python
 Operation = Literal["dictate", "compose", "reply", "revise"]
 RequestState = Literal[

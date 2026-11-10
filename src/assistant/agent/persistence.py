@@ -19,8 +19,22 @@ from typing import Any, cast
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from assistant.accounts.models import ControlTurn
+from assistant.accounts.models import ControlTurn, PendingInput
 from assistant.accounts.service import ConsentState, active_consent
+from assistant.actions.models import Action
+from assistant.actions.request_models import OwnerRequest
+from assistant.actions.requests import (
+    Continuation,
+    OwnerContinuation,
+    SetState,
+    SourceUnavailable,
+    ValidatedSource,
+    load_request,
+    load_source,
+    lock_requests,
+    resolve_continuation,
+    update_request,
+)
 from assistant.agent.models import AgentRun, AgentRunStep, LlmCall
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
@@ -49,6 +63,139 @@ class ControlTurnRepository(AccountScopedRepository[ControlTurn]):
         rows = cast("list[ControlTurn]", list(result.scalars().all()))
         rows.reverse()
         return rows
+
+
+async def load_owner_continuation(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    turn: ControlTurn,
+    now: datetime,
+    managed_allowed: bool,
+) -> OwnerContinuation:
+    """Reload durable state, including source spans outside recent history.
+
+    Caller commits before model I/O. Rebuilding a lost UI question changes
+    no source, request version, action version or original expiry.
+    """
+    if turn.account_id != account_id or not await lock_requests(session, account_id=account_id):
+        return OwnerContinuation(Continuation("unavailable", code="not_available"))
+    selection = await resolve_continuation(
+        session,
+        account_id=account_id,
+        turn_id=turn.id,
+        reply_to_message_id=turn.reply_to_telegram_message_id,
+        now=now,
+    )
+    if selection.status != "selected":
+        return OwnerContinuation(selection)
+    if selection.request_id is None:
+        if selection.action_id is not None and not managed_allowed:
+            return OwnerContinuation(Continuation("unavailable", code="managed_access_off"))
+        loaded = OwnerContinuation(selection)
+        turn.refs = {**(turn.refs or {}), **loaded.as_refs()}
+        action = await session.scalar(
+            select(Action).where(Action.account_id == account_id, Action.id == selection.action_id)
+        )
+        if action is not None:
+            turn.refs = {
+                **turn.refs,
+                "conversation_ids": sorted(
+                    {*turn.refs.get("conversation_ids", []), action.conversation_id}
+                ),
+            }
+        return loaded
+    request = await load_request(session, account_id=account_id, request_id=selection.request_id)
+    if request is None:
+        return OwnerContinuation(Continuation("unavailable", code="not_available"))
+    sources: list[ValidatedSource] = []
+    source_withheld = False
+    for source in request.sources:
+        value = await load_source(session, account_id=account_id, source=source)
+        if isinstance(value, SourceUnavailable):
+            return OwnerContinuation(Continuation("unavailable", code="source_unavailable"))
+        if not value.managed or managed_allowed:
+            sources.append(value)
+        else:
+            source_withheld = True
+    if source_withheld or (
+        (request.conversation_id is not None or selection.action_id is not None)
+        and not managed_allowed
+    ):
+        # Eligible owner-only words survive a closed managed gate, but none
+        # of the recipient/card facts or managed source text do.
+        return OwnerContinuation(
+            Continuation("unavailable", code="managed_access_off"), sources=tuple(sources)
+        )
+    row = await session.scalar(
+        select(OwnerRequest)
+        .where(OwnerRequest.account_id == account_id, OwnerRequest.id == request.request_id)
+        .with_for_update()
+    )
+    if (
+        row is not None
+        and row.state == "suspended"
+        and row.reason == "topic_switch"
+        and turn.reply_to_telegram_message_id is not None
+    ):
+        resumed = await update_request(
+            session,
+            account_id=account_id,
+            request_id=row.id,
+            expected_version=row.version,
+            update=SetState(state="collecting" if row.missing_slot else "ready", reason=None),
+            now=now,
+        )
+        if resumed.status != "applied":
+            return OwnerContinuation(Continuation("unavailable", code="not_available"))
+        request = resumed.view
+        selection = Continuation(
+            "selected",
+            request_id=request.request_id,
+            version=request.version,
+            action_id=request.action_id,
+            action_version=request.action_version,
+            basis="explicit_reply",
+        )
+    question_id = None
+    if row is not None and row.missing_slot is not None and row.state == "collecting":
+        question = await session.scalar(
+            select(PendingInput).where(
+                PendingInput.account_id == account_id,
+                PendingInput.id == row.question_input_id,
+                PendingInput.kind == "owner_request",
+                PendingInput.ref_id == row.id,
+                PendingInput.expires_at > now,
+            )
+        )
+        if question is None:
+            question = PendingInput(
+                account_id=account_id,
+                kind="owner_request",
+                ref_id=row.id,
+                expires_at=row.expires_at,
+                created_at=now,
+            )
+            session.add(question)
+            await session.flush()
+            row.question_input_id = question.id
+            # Autoflush is disabled. Persist the FK before a later pending
+            # input cleanup can delete the question and SET NULL this link.
+            await session.flush()
+        question_id = question.id
+    # Structural linkage makes a later explicit reply to either this owner
+    # turn or its delivered assistant answer select the same request.
+    loaded = OwnerContinuation(selection, request, tuple(sources), question_id)
+    turn.refs = {**(turn.refs or {}), **loaded.as_refs()}
+    if request.conversation_id is not None and request.contact_id is not None:
+        turn.refs = {
+            **turn.refs,
+            "conversation_ids": sorted(
+                {*turn.refs.get("conversation_ids", []), request.conversation_id}
+            ),
+            "contact_ids": sorted({*turn.refs.get("contact_ids", []), request.contact_id}),
+        }
+    return loaded
 
 
 class AgentRunRepository(AccountScopedRepository[AgentRun]):

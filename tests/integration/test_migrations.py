@@ -488,7 +488,34 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0015"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0016"]
+
+
+def test_0016_control_reply_metadata_round_trip(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    assert {"reply_to_telegram_message_id", "owner_text_verified"} <= _columns(
+        scratch_url, "control_turns"
+    )
+    run_alembic(scratch_url, "0015", down=True)
+    assert "reply_to_telegram_message_id" not in _columns(scratch_url, "control_turns")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account, _ = _phase_conversation(conn, 81016)
+        turn = conn.execute(
+            "INSERT INTO app.control_turns (account_id, role, text) "
+            "VALUES (%s, 'owner', 'Synthetic legacy mixed turn') "
+            "RETURNING id",
+            (account,),
+        ).fetchone()
+        assert turn is not None
+        turn_id = turn[0]
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url)) as conn:
+        metadata = conn.execute(
+            "SELECT owner_text_verified, reply_to_telegram_message_id "
+            "FROM app.control_turns WHERE id = %s",
+            (turn_id,),
+        ).fetchone()
+        assert metadata == (False, None)
 
 
 def test_0015_owner_requests_reverse(scratch_url: str) -> None:

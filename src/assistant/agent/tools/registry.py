@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from assistant.actions.requests import OwnerContinuation
 from assistant.agent.citations import CitableMessage
 from assistant.core.channel import ControlChannel
 from assistant.core.clock import Clock
@@ -155,6 +156,8 @@ class OwnerTurn:
     #: The owner quoted or replied to someone else's message alongside their
     #: own words (`control_turns.quoted_text` is set).
     quoted: bool
+    #: H2 ingress component proof for a mixed turn; legacy rows stay false.
+    owner_text_verified: bool = False
 
     @property
     def forwarded(self) -> bool:
@@ -211,6 +214,9 @@ class ToolContext:
     #: That turn's words and flags (PF-11): None outside an owner run (a held
     #: call applied after the owner's tap, a unit test).
     owner_turn: OwnerTurn | None = None
+    #: H2: application-selected request/card and exact validated sources.
+    #: No model-selected recipient or execution authority is implied.
+    continuation: OwnerContinuation | None = None
 
 
 @dataclass(frozen=True, slots=True)

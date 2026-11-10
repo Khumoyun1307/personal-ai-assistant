@@ -160,6 +160,8 @@ Also fixed without a product decision (P2 fixes):
 - PF-05: attention `next_actions` follow P2-O20.
 - PF-06: the card line "Sendable until" (the approval expiry) now reads "Approve by".
 
+**PF-13 continuation amendment (owner D-S2/D-S4, 2026-11-09; stabilization H2):** a Telegram reply to a specific card or retained control turn selects that account-local artifact before a pending clarification or implicit focused request. The selected action/version and original owner source spans are runtime facts; an unknown, stale or foreign reply target never chooses a newer card. Topic switches suspend old focus without transferring its body, and an explicit return may resume it while its sources remain available. This amends target selection only; H2 does not change proposal/revision tools or the used prompts. H3/H4/H6 own source consumption and main-model routing/writing under D-S6. Manual Telegram verification remains unrun.
+
 ## C. Interface-change log
 
 *Append one row per approved interface change request after CP1 (ORG §5). Format: date · requester · contract section · change · affected WUs · TL decision.*

@@ -289,6 +289,8 @@ async def record_control_turn(
     created_at: datetime | None = None,
     third_party: bool = False,
     quoted_text: str | None = None,
+    reply_to_telegram_message_id: int | None = None,
+    owner_text_verified: bool = False,
     refs: dict[str, list[int]] | None = None,
 ) -> ControlTurn:
     """Append a turn to the owner's conversation with the assistant.
@@ -304,6 +306,8 @@ async def record_control_turn(
         contains_managed=contains_managed,
         third_party=third_party or quoted_text is not None,
         quoted_text=quoted_text,
+        reply_to_telegram_message_id=reply_to_telegram_message_id,
+        owner_text_verified=owner_text_verified,
         refs=refs or {},
     )
     if created_at is not None:
