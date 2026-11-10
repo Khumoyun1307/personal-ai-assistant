@@ -43,7 +43,7 @@ from assistant.telegram.control.routes import ControlRoutes
 from assistant.telegram.gateway import OutboundGateway
 from assistant.telegram.ingress.writer import write_batch
 from assistant.telegram.routing import route_update
-from tests.fakes.clock import FakeClock, FakeSleep
+from tests.fakes.clock import FakeClock, FakeGatewayClock
 from tests.fakes.sender import FakeTelegramSender
 
 OWNER = 7000000001
@@ -217,7 +217,8 @@ async def environment(
     factory = build_session_factory(engine)
     clock = FakeClock(NOW)
     sender = FakeTelegramSender()
-    gateway = OutboundGateway(sender, clock, sleep=FakeSleep())
+    gateway_clock = FakeGatewayClock(clock)
+    gateway = OutboundGateway(sender, gateway_clock, sleep=gateway_clock.sleep)
     app = build_app(migrated_url)
 
     @app.task(name="agent.owner_request", queue="llm")

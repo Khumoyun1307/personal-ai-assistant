@@ -62,7 +62,7 @@ from assistant.telegram.control.digest import (
 from assistant.telegram.control.routes import ControlRoutes
 from assistant.telegram.gateway import MAX_THROTTLE_WAIT_SECONDS, ControlChat, OutboundGateway
 from tests.fakes.channel import FakeChannel
-from tests.fakes.clock import FakeClock, FakeSleep
+from tests.fakes.clock import FakeClock, FakeGatewayClock
 from tests.fakes.sender import FakeTelegramSender, telegram_error
 from tests.integration.business_env import (
     CONTACT,
@@ -755,7 +755,8 @@ def production_channel(refuse_send: int) -> tuple[FakeTelegramSender, GatewayCon
             sender.fail_with = telegram_error("Bad Request: synthetic refusal", status_code=400)
 
     sender.on_call = refuse
-    return sender, GatewayControlChannel(OutboundGateway(sender, FakeClock(), sleep=FakeSleep()))
+    clock = FakeGatewayClock(FakeClock())
+    return sender, GatewayControlChannel(OutboundGateway(sender, clock, sleep=clock.sleep))
 
 
 async def test_a_digest_cut_off_after_its_first_part_is_uncertain_and_keeps_its_alerts(

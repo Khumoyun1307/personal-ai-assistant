@@ -33,10 +33,17 @@ TOKEN = "8123456789:AAH1bQ7xKqY-ZZ_pLm3nOpQrStUvWxYz012"
 
 
 def gateway_for(env: Env, sender: FakeTelegramSender, sleep: FakeSleep | None = None) -> Any:
+    clock = FakeClock(NOW)
+
+    async def wait(seconds: float) -> None:
+        if sleep is not None:
+            await sleep(seconds)
+        clock.advance(seconds=seconds)
+
     return OutboundGateway(
         sender,
-        FakeClock(NOW),
-        sleep=sleep or FakeSleep(),
+        clock,
+        sleep=wait,
         targets=BusinessTargetResolver(env.factory),
     )
 
@@ -343,7 +350,7 @@ async def test_global_throttle_spaces_sends(env: Env) -> None:
             account_id=chat.account_id, conversation_id=chat.conversation_id, text="Synthetic"
         )
 
-    assert sleep.waits == [pytest.approx(0.04), pytest.approx(1.0)]
+    assert sleep.waits == [pytest.approx(0.04), pytest.approx(0.96)]
     assert len(sender.plain_sends) == 3
 
 

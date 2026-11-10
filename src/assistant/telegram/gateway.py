@@ -169,8 +169,12 @@ class OutboundGateway:
         #: None: no business target resolves, so every business call is
         #: refused locally (a process or test that never sends as the owner).
         self._targets = targets
-        self._last_send_at: dict[int, float] = {}
-        self._last_any_send_at: float | None = None
+        # Reservations are queue positions, not request starts. In particular,
+        # a send must never conflict with its own newly reserved slot.
+        self._last_reserved_at: dict[int, datetime] = {}
+        self._last_any_reserved_at: datetime | None = None
+        self._last_dispatch_at: dict[int, datetime] = {}
+        self._last_any_dispatch_at: datetime | None = None
 
     def _dispatch_deadline(self) -> datetime:
         return self._clock.now() + timedelta(seconds=MAX_THROTTLE_WAIT_SECONDS)
@@ -187,24 +191,53 @@ class OutboundGateway:
         Both the sleep and a late wake-up are bounded before dispatch.
         """
         deadline = deadline or self._dispatch_deadline()
-        now = self._clock.now().timestamp()
+        now = self._clock.now()
         due = now
-        previous = self._last_send_at.get(chat_id)
+        chat_spacing = timedelta(seconds=MIN_SECONDS_BETWEEN_SENDS)
+        global_spacing = timedelta(seconds=MIN_SECONDS_BETWEEN_ANY_SENDS)
+        previous = self._last_reserved_at.get(chat_id)
         if previous is not None:
-            due = max(due, previous + MIN_SECONDS_BETWEEN_SENDS)
-        if self._last_any_send_at is not None:
-            due = max(due, self._last_any_send_at + MIN_SECONDS_BETWEEN_ANY_SENDS)
-        if due > deadline.timestamp():
+            due = max(due, previous + chat_spacing)
+        dispatched = self._last_dispatch_at.get(chat_id)
+        if dispatched is not None:
+            due = max(due, dispatched + chat_spacing)
+        if self._last_any_reserved_at is not None:
+            due = max(due, self._last_any_reserved_at + global_spacing)
+        if self._last_any_dispatch_at is not None:
+            due = max(due, self._last_any_dispatch_at + global_spacing)
+        if due > deadline:
             return False
-        self._last_any_send_at = due
-        self._last_send_at[chat_id] = due
+        self._last_any_reserved_at = due
+        self._last_reserved_at[chat_id] = due
         if due > now:
             try:
-                async with asyncio.timeout(max(0.0, deadline.timestamp() - now)):
-                    await self._sleep(due - now)
+                async with asyncio.timeout(max(0.0, (deadline - now).total_seconds())):
+                    await self._sleep((due - now).total_seconds())
             except TimeoutError:
                 return False
         return self._clock.now() <= deadline
+
+    def _start_dispatch(self, chat_id: int, *, deadline: datetime) -> bool:
+        """Atomically check and record request-start spacing, without waiting.
+
+        Slots can converge after a slow claim, target read or wake-up. A
+        conflicting slot is definitely not started; waiting again would
+        separate the request from the executor's fresh policy claim.
+        No await may separate this check from starting the sender call.
+        """
+        now = self._clock.now()
+        if now > deadline:
+            return False
+        previous = self._last_dispatch_at.get(chat_id)
+        if previous is not None and now < previous + timedelta(seconds=MIN_SECONDS_BETWEEN_SENDS):
+            return False
+        if self._last_any_dispatch_at is not None and now < self._last_any_dispatch_at + timedelta(
+            seconds=MIN_SECONDS_BETWEEN_ANY_SENDS
+        ):
+            return False
+        self._last_dispatch_at[chat_id] = now
+        self._last_any_dispatch_at = now
+        return True
 
     async def send_text(
         self,
@@ -238,7 +271,10 @@ class OutboundGateway:
         return result
 
     async def _send_one(self, target: ControlChat, text: str, keyboard: Any | None) -> SendResult:
-        if not await self._throttle(target.chat_id):
+        deadline = self._dispatch_deadline()
+        if not await self._throttle(target.chat_id, deadline=deadline):
+            return self._not_started()
+        if not self._start_dispatch(target.chat_id, deadline=deadline):
             return self._not_started()
         try:
             message = await self._sender.send_message(
@@ -413,7 +449,9 @@ class OutboundGateway:
         if target is None:
             refused = self._refused("send", account_id=account_id, conversation_id=conversation_id)
             return refused, None
-        if target.chat_id != reservation.chat_id or self._clock.now() > reservation.expires_at:
+        if target.chat_id != reservation.chat_id:
+            return self._not_started(), None
+        if not self._start_dispatch(target.chat_id, deadline=reservation.expires_at):
             return self._not_started(), None
         try:
             message = await self._sender.send_plain_message(

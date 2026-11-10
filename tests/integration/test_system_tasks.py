@@ -42,7 +42,7 @@ from assistant.telegram.control.agent_channel import GatewayControlChannel
 from assistant.telegram.gateway import OutboundGateway
 from assistant.telegram.ingress.writer import write_state
 from tests.fakes.channel import FakeChannel
-from tests.fakes.clock import FakeClock, FakeSleep
+from tests.fakes.clock import FakeClock, FakeGatewayClock
 from tests.fakes.sender import FakeTelegramSender, telegram_error
 
 pytestmark = pytest.mark.integration
@@ -122,8 +122,11 @@ async def test_recorded_partial_alert_is_not_replayed_on_retrigger(
             sender.fail_with = telegram_error("Too Many Requests", status_code=429, retry_after=3)
 
     sender.on_call = fail_second_chunk
+    gateway_clock = FakeGatewayClock(clock)
     alerts = OwnerAlerts(
-        factory, GatewayControlChannel(OutboundGateway(sender, clock, sleep=FakeSleep())), clock
+        factory,
+        GatewayControlChannel(OutboundGateway(sender, gateway_clock, sleep=gateway_clock.sleep)),
+        clock,
     )
     values = {"body": "synthetic " * 1000}
     first = await alerts.notify_owner(

@@ -36,7 +36,7 @@ from assistant.telegram.gateway import OutboundGateway, Sleep
 from assistant.telegram.ingress.writer import write_state
 from tests.fakes.approvals import RecordingApprovalPresenter
 from tests.fakes.channel import FakeChannel
-from tests.fakes.clock import FakeSleep
+from tests.fakes.clock import FakeGatewayClock
 from tests.fakes.sender import FakeTelegramSender
 from tests.integration.actions_env import CONFIG, DRAFT_TEXT, Chat, request, seed_chat
 from tests.integration.business_env import (
@@ -86,7 +86,7 @@ class RecordingScheduler:
 class Harness:
     env: Env
     sender: FakeTelegramSender
-    sleep: FakeSleep
+    sleep: FakeGatewayClock
     presenter: RecordingApprovalPresenter
     channel: FakeChannel
     scheduler: RecordingScheduler
@@ -105,11 +105,11 @@ def harness(
     **overrides: Any,
 ) -> Harness:
     sender = FakeTelegramSender()
-    sleep = FakeSleep()
+    sleep = FakeGatewayClock(env.clock)
     gateway = OutboundGateway(
         sender,
-        env.clock,
-        sleep=gateway_sleep or sleep,
+        env.clock if gateway_sleep is not None else sleep,
+        sleep=gateway_sleep or sleep.sleep,
         targets=BusinessTargetResolver(env.factory),
     )
     presenter = RecordingApprovalPresenter()

@@ -37,7 +37,8 @@ def sender() -> FakeTelegramSender:
 
 @pytest.fixture
 def gateway(sender: FakeTelegramSender) -> OutboundGateway:
-    return OutboundGateway(sender, FakeClock(), sleep=FakeSleep())
+    clock = FakeClock()
+    return OutboundGateway(sender, clock, sleep=FakeSleep(clock))
 
 
 async def test_sends_to_one_chat_are_spaced_by_the_injected_sleep(
@@ -47,7 +48,7 @@ async def test_sends_to_one_chat_are_spaced_by_the_injected_sleep(
     injected sleep: the first send never waits, and another chat's send waits
     only the global spacing of any two sends (< 25 msg/s, S04.4)."""
     clock = FakeClock()
-    sleep = FakeSleep()
+    sleep = FakeSleep(clock)
     gateway = OutboundGateway(sender, clock, sleep=sleep)
     other = ControlChat(account_id=2, chat_id=584113993)
 
@@ -56,11 +57,11 @@ async def test_sends_to_one_chat_are_spaced_by_the_injected_sleep(
     assert sleep.waits == [pytest.approx(0.04)]
 
     await gateway.send_text(CONTROL, "second")
-    assert sleep.waits == [pytest.approx(0.04), 1.0]
+    assert sleep.waits == [pytest.approx(0.04), pytest.approx(0.96)]
 
     clock.advance(seconds=5)
     await gateway.send_text(CONTROL, "later")
-    assert sleep.waits == [pytest.approx(0.04), 1.0]
+    assert sleep.waits == [pytest.approx(0.04), pytest.approx(0.96)]
 
 
 @pytest.mark.parametrize(

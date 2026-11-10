@@ -114,7 +114,8 @@ async def test_partial_control_reply_is_reported_uncertain_without_replay(error:
             sender.fail_with = error
 
     sender.on_call = fail_second_chunk
-    channel = GatewayControlChannel(OutboundGateway(sender, FakeClock(), sleep=FakeSleep()))
+    clock = FakeClock()
+    channel = GatewayControlChannel(OutboundGateway(sender, clock, sleep=FakeSleep(clock)))
     delivery = await channel.send(account_id=1, chat_id=55, text="word " * 2000)
     assert (delivery.ok, delivery.uncertain, delivery.error) == (False, True, "ambiguous")
     assert delivery.message_id is None

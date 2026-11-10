@@ -47,7 +47,7 @@ from assistant.telegram.control.approvals import (
 )
 from assistant.telegram.control.handlers import CALLBACK_EXPIRED_TEXT
 from assistant.telegram.gateway import OutboundGateway
-from tests.fakes.clock import FakeSleep
+from tests.fakes.clock import FakeGatewayClock
 from tests.fakes.sender import telegram_error
 from tests.integration.business_env import (
     OTHER_CONTACT,
@@ -127,10 +127,11 @@ async def run_execute_jobs(s: Scenario) -> int:
     """The queued `actions.execute` jobs, run once each by S04.4's executor
     over a gateway that resolves business targets (the scenario harness's
     gateway refuses every business send locally)."""
+    gateway_clock = FakeGatewayClock(s.env.clock)
     gateway = OutboundGateway(
         s.env.sender,
-        s.env.clock,
-        sleep=FakeSleep(),
+        gateway_clock,
+        sleep=gateway_clock.sleep,
         targets=BusinessTargetResolver(s.env.factory),
     )
     config = s.wiring.actions_config
@@ -557,9 +558,10 @@ async def test_a_long_revision_is_approvable_only_after_its_full_text_reached_th
 def fresh_cards(s: Scenario) -> ApprovalCards:
     config = s.wiring.actions_config
     assert config is not None
+    gateway_clock = FakeGatewayClock(s.env.clock)
     return ApprovalCards(
         session_factory=s.env.factory,
-        gateway=OutboundGateway(s.env.sender, s.env.clock, sleep=FakeSleep()),
+        gateway=OutboundGateway(s.env.sender, gateway_clock, sleep=gateway_clock.sleep),
         clock=s.env.clock,
         config=config,
     )

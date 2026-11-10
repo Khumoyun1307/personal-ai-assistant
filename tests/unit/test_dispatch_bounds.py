@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from assistant.telegram.gateway import (
+    DISPATCH_NOT_STARTED,
     MAX_THROTTLE_WAIT_SECONDS,
+    MIN_SECONDS_BETWEEN_ANY_SENDS,
     MIN_SECONDS_BETWEEN_SENDS,
     ControlChat,
     OutboundGateway,
@@ -15,6 +19,42 @@ from tests.fakes.clock import FakeClock, FakeGatewayClock, FakeSleep
 from tests.fakes.sender import FakeTelegramSender, network_error
 
 TARGET = ControlChat(account_id=1, chat_id=584113992)
+
+
+@pytest.mark.parametrize("microsecond", [0, 1, 123456, 999999])
+@pytest.mark.parametrize("same_chat", [False, True])
+async def test_first_send_and_exactly_spaced_following_send_dispatch(
+    microsecond: int, same_chat: bool
+) -> None:
+    clock = FakeClock()
+    clock.advance(microseconds=microsecond)
+    started = clock.now()
+    sender = FakeTelegramSender()
+    sleep = FakeSleep(clock)
+    gateway = OutboundGateway(sender, clock, sleep=sleep)
+    following = TARGET if same_chat else ControlChat(account_id=1, chat_id=TARGET.chat_id + 1)
+
+    assert (await gateway.send_text(TARGET, "Synthetic first send")).ok
+    assert sleep.waits == []
+    assert (await gateway.send_text(following, "Synthetic following send")).ok
+
+    spacing = MIN_SECONDS_BETWEEN_SENDS if same_chat else MIN_SECONDS_BETWEEN_ANY_SENDS
+    assert (clock.now() - started).total_seconds() == spacing
+    assert sleep.waits == [spacing]
+    assert len(sender.sends) == 2
+
+
+async def test_a_noop_wait_cannot_replace_elapsed_dispatch_spacing() -> None:
+    clock = FakeClock()
+    sender = FakeTelegramSender()
+    gateway = OutboundGateway(sender, clock, sleep=FakeSleep())
+
+    assert (await gateway.send_text(TARGET, "Synthetic first send")).ok
+    refused = await gateway.send_text(TARGET, "Synthetic premature send")
+
+    assert refused.error_code == DISPATCH_NOT_STARTED
+    assert not refused.delivery_uncertain
+    assert len(sender.sends) == 1
 
 
 async def test_gateway_waits_preserve_scenario_time_and_follow_explicit_advances() -> None:
@@ -64,20 +104,32 @@ async def test_backlog_beyond_the_dispatch_bound_is_not_started() -> None:
     clock = FakeClock()
     sender = FakeTelegramSender()
     sleep = FakeSleep()
-    gateway = OutboundGateway(sender, clock, sleep=sleep)
-    for _ in range(MAX_THROTTLE_WAIT_SECONDS + 1):
-        assert (await gateway.send_text(TARGET, "Synthetic")).ok
+    complete_waits = False
+
+    async def wait(seconds: float) -> None:
+        await sleep(seconds)
+        if complete_waits:
+            clock.advance(seconds=seconds)
+
+    gateway = OutboundGateway(sender, clock, sleep=wait)
+    assert (await gateway.send_text(TARGET, "Synthetic")).ok
+    # Slots held by other callers have not started requests yet.
+    for _ in range(MAX_THROTTLE_WAIT_SECONDS):
+        assert await gateway._throttle(TARGET.chat_id)
 
     refused = await gateway.send_text(TARGET, "Too late")
 
     assert not refused.ok
     assert not refused.delivery_uncertain
     assert refused.error_code == "dispatch_not_started"
-    assert len(sender.sends) == MAX_THROTTLE_WAIT_SECONDS + 1
+    assert len(sender.sends) == 1
     assert max(sleep.waits) == MAX_THROTTLE_WAIT_SECONDS
     # Refusal must not extend the backlog's reserved tail.
     clock.advance(seconds=1)
+    complete_waits = True
     assert (await gateway.send_text(TARGET, "Synthetic retry")).ok
+    assert sleep.waits[-1] == MAX_THROTTLE_WAIT_SECONDS
+    assert len(sender.sends) == 2
 
 
 async def test_overslept_reservation_never_dispatches_but_a_network_error_is_uncertain() -> None:
@@ -131,14 +183,48 @@ async def test_waiting_sends_do_not_hold_a_lock_that_can_hide_the_backlog() -> N
     assert len(sender.sends) == 1
 
 
+async def test_concurrent_late_control_wakeups_cannot_dispatch_together() -> None:
+    clock = FakeClock()
+    sender = FakeTelegramSender()
+    waiting: asyncio.Queue[float] = asyncio.Queue()
+    release = asyncio.Event()
+
+    async def hold(seconds: float) -> None:
+        waiting.put_nowait(seconds)
+        await release.wait()
+
+    gateway = OutboundGateway(sender, clock, sleep=hold)
+    assert (await gateway.send_text(TARGET, "Synthetic first send")).ok
+    tasks = []
+    try:
+        for _ in range(2):
+            tasks.append(asyncio.create_task(gateway.send_text(TARGET, "Synthetic queued send")))
+            async with asyncio.timeout(5):
+                await waiting.get()
+        # Both sleeps return within their deadlines, but at the same instant.
+        clock.advance(seconds=5)
+    finally:
+        release.set()
+        results = await asyncio.gather(*tasks)
+
+    assert sum(result.ok for result in results) == 1
+    [refused] = [result for result in results if not result.ok]
+    assert refused.error_code == "dispatch_not_started"
+    assert not refused.delivery_uncertain
+    assert len(sender.sends) == 2
+
+
 async def test_partial_control_delivery_is_not_retried_as_not_started() -> None:
     sender = FakeTelegramSender()
-    gateway = OutboundGateway(sender, FakeClock(), sleep=FakeSleep())
-    for _ in range(MAX_THROTTLE_WAIT_SECONDS):
-        assert (await gateway.send_text(TARGET, "Synthetic")).ok
+    clock = FakeClock()
+
+    async def oversleep(seconds: float) -> None:
+        clock.advance(seconds=MAX_THROTTLE_WAIT_SECONDS + seconds)
+
+    gateway = OutboundGateway(sender, clock, sleep=oversleep)
 
     result = await gateway.send_text(TARGET, "x" * (MAX_MESSAGE_CHARS + 1))
 
     assert result.delivery_uncertain
     assert result.error_code == "partial_delivery"
-    assert len(sender.sends) == MAX_THROTTLE_WAIT_SECONDS + 1
+    assert len(sender.sends) == 1

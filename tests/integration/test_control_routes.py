@@ -15,7 +15,7 @@ from assistant.telegram.control.dispatcher import ControlDispatcher
 from assistant.telegram.control.handlers import CardPress, HandlerResult, IncomingMessage
 from assistant.telegram.control.routes import ControlRoutes
 from assistant.telegram.gateway import OutboundGateway
-from tests.fakes.clock import FakeClock, FakeSleep
+from tests.fakes.clock import FakeClock, FakeGatewayClock
 from tests.fakes.sender import FakeTelegramSender
 from tests.integration.business_env import OWNER, business_message, connect, deliver, environment
 from tests.integration.test_control_chat import CHAT, message, onboard
@@ -68,7 +68,8 @@ class Recorder:
 
 def dispatcher(recorder: Recorder) -> ControlDispatcher:
     clock = FakeClock()
-    gateway = OutboundGateway(FakeTelegramSender(), clock, sleep=FakeSleep())
+    gateway_clock = FakeGatewayClock(clock)
+    gateway = OutboundGateway(FakeTelegramSender(), gateway_clock, sleep=gateway_clock.sleep)
     return ControlDispatcher(
         gateway,
         clock,

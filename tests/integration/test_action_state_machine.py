@@ -126,6 +126,9 @@ class ActionMachine(RuleBasedStateMachine):
         # Telegram scripted per attempt.
         self.sender = FakeTelegramSender()
         self.message_ids = 4_000_000
+        # A completed throttle wait must advance the same time read by the
+        # policy claim and the request-start spacing check.
+        self.gateway_sleep = FakeSleep(self.clock)
         self.executor = ActionExecutor(
             session_factory=self.factory,
             clock=self.clock,
@@ -133,7 +136,7 @@ class ActionMachine(RuleBasedStateMachine):
             sender=OutboundGateway(
                 self.sender,
                 self.clock,
-                sleep=FakeSleep(),
+                sleep=self.gateway_sleep,
                 targets=BusinessTargetResolver(self.factory),
             ),
             alerts=OwnerAlerts(self.factory, FakeChannel(), self.clock),
@@ -475,6 +478,27 @@ class ActionMachine(RuleBasedStateMachine):
                     assert action_id not in uncertain, "an uncertain action was claimed again"
 
         self.run(check())
+
+
+@pytest.mark.parametrize("dictated", [False, True])
+def test_state_machine_dispatches_first_and_following_approved_sends(
+    migrated_url: str, dictated: bool
+) -> None:
+    ActionMachine.url = migrated_url
+    machine = ActionMachine()
+    try:
+        machine.seed()
+        for expected in (1, 2):
+            machine.propose_and_approve(dictated=dictated)
+            machine.execute_sends(outcome="ok")
+            assert len(machine.sender.plain_sends) == expected
+            assert len(machine.sends) == expected
+            machine.never_twice_never_unapproved_never_stale()
+            machine.no_uncertain_action_is_ever_sent_again()
+        assert len(machine.gateway_sleep.waits) == 1
+        assert machine.clock.now() > START
+    finally:
+        machine.teardown()
 
 
 def test_no_event_sequence_sends_twice_or_sends_unapproved_text(migrated_url: str) -> None:

@@ -48,7 +48,7 @@ from assistant.telegram.gateway import OutboundGateway
 from assistant.telegram.ingress.poller import Poller
 from assistant.telegram.ingress.ports import TelegramTransientError
 from tests.fakes.channel import FakeChannel
-from tests.fakes.clock import FakeClock, FakeSleep
+from tests.fakes.clock import FakeClock, FakeGatewayClock
 from tests.fakes.llm import FakeLLM, text_response, tool_response
 from tests.fakes.sender import network_error, telegram_error
 from tests.fakes.telegram import FakeUpdateSource
@@ -437,9 +437,12 @@ async def test_a_failed_alert_delivery_logs_no_content(
             escalation_category="urgent_decision",
             reasons=[f"reason {CANARY}"],
         )
+    gateway_clock = FakeGatewayClock(env.clock)
     delivery = NotificationDelivery(
         session_factory=env.factory,
-        channel=GatewayControlChannel(OutboundGateway(env.sender, env.clock, sleep=FakeSleep())),
+        channel=GatewayControlChannel(
+            OutboundGateway(env.sender, gateway_clock, sleep=gateway_clock.sleep)
+        ),
         clock=env.clock,
         scheduler=env.scheduler,  # type: ignore[arg-type]
         enabled=True,
