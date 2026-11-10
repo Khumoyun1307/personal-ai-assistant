@@ -3,6 +3,8 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 DUMP_FILE = "20261109T000000Z.dump.age"
 COMPLETED_AT = "2026-11-09T00:00:05Z"
@@ -76,3 +78,61 @@ def test_failed_dump_preserves_both_success_markers(tmp_path: Path) -> None:
     assert (tmp_path / "last_success").read_text("utf-8") == "2026-11-08T00:00:05Z\n"
     assert (tmp_path / "last_success_file").read_text("utf-8") == "20261108T000000Z.dump.age\n"
     assert not list((tmp_path / "daily").iterdir())
+
+
+@pytest.mark.parametrize("recovery_blocked", [False, True])
+def test_journal_shipping_depends_on_recovery_state_without_a_publication_gate(
+    tmp_path: Path, recovery_blocked: bool
+) -> None:
+    harness = r"""
+set -euo pipefail
+psql() {
+  case "$*" in
+    *'-c '*)
+      printf '%s\n' "$*" > "$WORK/readiness.sql"
+      # Simulate the old policy/notice state: any publication check fails.
+      if [[ "$*" == *policy* ]]; then printf 'f\n'; else printf '%s\n' "$READY"; fi ;;
+    *'-f '*) printf '%s\n' synthetic-journal ;;
+    *) return 1 ;;
+  esac
+}
+age() { cat; }
+rclone() { printf '%s\n' "$*" >> "$WORK/uploads"; }
+export -f psql age rclone
+bash "$JOURNAL_SCRIPT" ship force
+"""
+    script = tmp_path / "journal-harness.sh"
+    script.write_text(harness, encoding="utf-8")
+    result = subprocess.run(  # noqa: S603 — real shipping script; fake DB/encryption/remote
+        ["/bin/bash", str(script)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "WORK": str(tmp_path),
+            "BACKUP_DIR": str(tmp_path),
+            "JOURNAL_SCRIPT": str(ROOT / "deploy/backup/privacy-journal.sh"),
+            "AGE_RECIPIENT": "synthetic-recipient",
+            "BACKUP_REMOTE": "synthetic:/backups",
+            "BACKUP_TEST_NOW": "2026-11-10T12:00:00Z",
+            "READY": "f" if recovery_blocked else "t",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    query = (tmp_path / "readiness.sql").read_text("utf-8")
+    assert "policy" not in query
+    assert "restore_pending" in query
+    assert "privacy_journal_upload_blocked" in query
+    status = (tmp_path / "journal_status").read_text("utf-8").strip()
+    if recovery_blocked:
+        assert status == "recovery_blocked"
+        assert not (tmp_path / "uploads").exists()
+        assert not (tmp_path / "last_journal_upload_success").exists()
+    else:
+        assert status == "acknowledged"
+        uploads = (tmp_path / "uploads").read_text("utf-8").splitlines()
+        assert len(uploads) == 2
+        assert "/privacy-journal/segments/" in uploads[0]
+        assert uploads[1].endswith("/privacy-journal/head.age --quiet")
+        assert (tmp_path / "last_journal_upload_success").exists()

@@ -138,6 +138,12 @@ storage/indexes (constraints/FKs on new storage): **expand**. 0017 adds only the
 notification snapshot table and its index, with FKs on new storage, leaving old
 reads and writes valid: **expand**. Its downgrade drops the snapshots; this
 classification permits old code on the upgraded schema, not a lossless downgrade.
+Revision 0019 declares **breaking** in-file: its new journal tables and UUID
+columns (with `gen_random_uuid()` server defaults) are additive, but its triggers
+on existing tables make old account, consent, audit, message, memory and snapshot
+writes depend on atomic journal writes and their constraints. A column default
+does not remove that contract change; retain the privacy guarantees and use
+the breaking-path forward-fix/restore procedure rather than old-image recovery.
 Initial schema
 creation still has no previous app to restart.
 

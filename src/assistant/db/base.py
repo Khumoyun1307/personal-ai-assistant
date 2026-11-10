@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Annotated, Any
+from uuid import UUID
 
 from sqlalchemy import BigInteger, MetaData, text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
@@ -49,6 +50,11 @@ CreatedAt = Annotated[
 ]
 
 JsonDict = Annotated[dict[str, Any], mapped_column(JSONB)]
+
+# Stable across snapshots and integer sequence reuse; never a Telegram ID.
+RecoveryId = Annotated[
+    UUID, mapped_column(nullable=False, unique=True, server_default=text("gen_random_uuid()"))
+]
 
 
 class Base(DeclarativeBase):

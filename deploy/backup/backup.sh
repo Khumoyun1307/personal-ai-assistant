@@ -84,7 +84,10 @@ dump() {
   # pipeline status (pipefail) is checked explicitly so a failed or truncated
   # pg_dump can never be recorded as a success.
   # --no-owner/--no-acl: restores into any role; custom format for pg_restore.
-  if ! pg_dump --format=custom --no-owner --no-acl | age -r "$AGE_RECIPIENT" > "$tmp"; then
+  # Decisions ship through the independent journal path, with separate
+  # continuity/retention. The dump keeps its exact head as the replay anchor.
+  if ! pg_dump --format=custom --no-owner --no-acl \
+      --exclude-table-data=app.privacy_journal | age -r "$AGE_RECIPIENT" > "$tmp"; then
     rm -f -- "$tmp"
     log "dump failed (pg_dump or age exited non-zero); no backup recorded"
     return 1
@@ -196,6 +199,9 @@ loop() {
   fi
   log "scheduled daily at ${hour}:00 UTC"
   while true; do
+    # Independent of the daily dump/upload schedule; its retry marker lives
+    # on the persistent backup volume, so a restart never loses pending work.
+    privacy-journal.sh ship || log "privacy journal pending (see journal_status)"
     current="$(now +%s)"
     scheduled="$(date -u -d "$(now +%F) ${hour}:00:00Z" +%s)"
     last_dump="$(marker_epoch last_success)"

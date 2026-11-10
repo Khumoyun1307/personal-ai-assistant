@@ -44,7 +44,7 @@ just prod-restore-test <ip>
 `deploy/server.sh restore-test` takes the newest dump in `/backups/daily`,
 creates `restore_test`, pipes the identity into
 `dc run --rm --no-deps -T restore <dump> restore_test`, reapplies grants using
-`db-roles ... setup --database restore_test`, runs `post-restore`
+`db-roles ... setup --database restore_test`, runs `post-restore` and the explicit scratch-only `privacy-purge` fallback
 against the scratch database in a one-off app container (`--no-deps`; the
 scratch URL is derived **inside** the container from its own `DATABASE_URL`,
 so the password never passes through the operator's shell), prints the dump
@@ -53,7 +53,7 @@ It also runs the P2 release and action views (actions since two days before
 the dump), followed by a read-only restore gate. All verifier mounts are
 read-only and all commands derive the scratch URL inside the container.
 The scratch database is dropped on success **and on failure**.
-All four commands use `tools.acceptance.scratch_restore`: SQLAlchemy replaces
+All scratch commands use `tools.acceptance.scratch_restore`: SQLAlchemy replaces
 only the URL's database component with `restore_test`, preserving driver,
 credentials and query options even when query values contain slashes. URLs
 with alternate `dbname`/`database` query selectors or unsupported shapes are
@@ -61,7 +61,7 @@ rejected before post-restore can run. The launcher never prints the URL.
 
 Pass requires `pending_actions=0` (proposed, awaiting approval, revising,
 approved, scheduled and executing), `pending_jobs=0` (todo and doing),
-`restore_notice_pending=yes`, `restore_notice_valid=yes`, and
+`privacy_recovery_pending=no`, `restore_notice_pending=yes`, `restore_notice_valid=yes`, and
 `restore_verification=PASS`. A nonzero count or a missing/malformed notice
 exits 1. Empty action tables and notices with no affected actions are valid.
 The output groups fixed `state_reason` codes (`restored_from_backup` for
@@ -79,54 +79,91 @@ live acceptance requirement.
 
 ## B. A real restore
 
-1. `just prod <ip> app-stop` — nothing may send while the database is being
-   replaced.
-2. Decide the dump (`dc exec backup ls /backups/daily`, or the off-site copy:
-   `just prod <ip> offsite-list`, then on the server
-   `dc exec backup bash -c 'rclone copy "$BACKUP_REMOTE/daily/<file>" /backups/daily/'`).
-3. `just prod-restore <ip> <file>` (e.g. `20261022T020000Z.dump.age`):
-   refuses while the app runs, drops and recreates the `assistant` database,
-   creates it owned by `assistant_migrate`, streams the identity into the
-   one-off `restore` service, reapplies grants and prints the `post-restore`
-   timestamp. The restore sets `system_state.restore_pending`;
-   `assistant run` refuses to start roles while it is set.
-4. `just prod <ip> post-restore <ts>` (the dump name is the UTC time, e.g.
-   `20261022T020000Z` → `2026-10-22T02:00:00Z`): the restore gate is committed
-   first. The recovery transaction revokes both restored AI consent scopes
-   for every account, sets per-scope quarantine and invalidates restored
-   pending questions/cards. Autonomy is paused for active accounts,
-   open actions cancelled (`restored_from_backup`)
-   and executing ones moved to `delivery_uncertain`, queued jobs deleted
-   (reconcilers re-create valid work), schedules recomputed, a `possible`
-   coverage gap recorded for [backup_taken_at, now]. The retention sweep
-   runs afterwards in separate transactions. Only after every step succeeds
-   is the notice published and `restore_pending` cleared. It prints counts
-   and states only. A failure leaves the gate closed; healthcheck fails with
-   `restore_pending` by name only. Fix the cause and rerun this step with the
-   same backup timestamp; never manually delete the gate. A sweep may have
-   partially committed: that does not authorize starting the app. The
-   original action notice receipt is retained across sweep retries.
-5. `just prod <ip> app-start`. The owner receives the restore notice listing
-   what to re-apply. AI is still quarantined; starting the app does not
-   restore authorization. Before agreeing again, the owner reviews privacy:
-   deletions and consent revocations made after the backup time may have
-   been undone. Redo deletions in `/settings` → Delete data (or
-   `/privacy delete` for everything), and redo revocations with
-   `/privacy revoke`. Review settings and pauses too. Then use `/start`
-   for a deterministic control-chat consent prompt, and `/privacy managed`
-   only if AI should read connected chats again. Each scope requires fresh
-   agreement; renewing one account or scope never renews another. The
-   warning is repeated at every consent prompt if the restore notice was
-   missed, including after choosing a language and on connection-triggered
-   or owner-request-triggered managed-consent cards. For control consent,
-   send a new answer after the newly delivered question. Restored inbox
-   replies that predate that prompt are ignored and leave the question
-   open; replaying an old `/start` followed by an old `yes` cannot renew
-   consent. `/status` names any scopes still in `restore_consent_pending`.
-   Automatic replay of privacy decisions outside the snapshot is a later
-   I20 design; this procedure does not recover or prove those decisions.
-6. The owner deletes `var/cloud/age-identity.txt` from the laptop again.
+1. Obtain the owner's authorization for the recovery window. Run
+   `just prod <ip> app-stop`; review settings and pause state separately.
+2. Choose the encrypted dump. Preserve the off-site journal and head: never
+   sync an empty/recovered local journal over B2. The existing offline age
+   identity is needed; no new encryption key or processor is introduced.
+   Fence/retire an old host before a replacement can publish: there must be
+   only one journal writer. No database lock is held during age/B2 calls.
+3. `just prod-restore <ip> <file>` refuses a running app, waits for in-flight
+   journal commits using a short database barrier, then records the database
+   clock in the same transaction as its independent recovery cutoff (UTC, six
+   fractional digits). After releasing the barrier it requests a final source
+   journal upload, stops the sidecar, then restores and reapplies service grants.
+   A failed final upload cannot be certified by an earlier scheduled snapshot,
+   including one from the same second; replay reports `journal_stale_tail` and
+   keeps quarantine closed. On a lost source, the cutoff includes the whole unknown
+   loss interval, not the time of the last available head. Do not move it
+   backwards to make an old head pass. Pre-0019 snapshots require migration
+   to the current schema and manual/purge fallback (`journal_supported=false`).
+4. Run `just prod <ip> post-restore <dump timestamp>`. It revokes both restored
+   AI scopes, clears stale cards/questions, pauses autonomy, cancels pending
+   actions, settles executing actions as uncertain, deletes queued jobs,
+   skips/reschedules restored occurrences, records the gap and runs retention.
+   **The startup gate remains closed after this step.** Failures leave it
+   closed; fix and retry the same timestamp. Never delete the marker by hand.
+5. `just prod <ip> privacy-status` prints the restore UUID and fixed state codes.
+   Try `just prod-privacy-replay <ip>` with the same offline-identity stdin procedure used by
+   `restore` (the server action is `deploy/server.sh privacy-replay`). It fetches
+   encrypted B2 head/segment, verifies SHA-256, fully authenticates both with
+   age, then pipes only ids/enums/timestamps into the offline replay command.
+   Source UUIDs scope every lookup; a complete contiguous chain must include
+   the dump anchor and cover the independent cutoff. Only then does replay
+   atomically reapply deletions/withdrawals and open the gate. Decrypt failure,
+   missing head/segment/prefix/suffix, unknown key, stale head or checksum error
+   leaves it closed. No provider or Telegram call is made. The identity and
+   decrypted metadata are never written to server disk or printed.
+   Migration 0019 includes I8 notification snapshots in recovery: independent
+   snapshot expiry and notification cascades are replayed by recovery UUID.
+   Complete purge also removes their reasons; a remaining registered content
+   column keeps the gate closed.
+   Explicit message deletions invalidate covering summaries even if maintenance
+   already expired the restored payload. Routine message expiry is recorded
+   separately as `purge`; replay preserves its covering rolling summaries.
+   A later explicit deletion records `delete` and removes those summaries
+   before quarantine opens.
+   A `journal_retention_review_required` reason means a retention setting
+   changed after the backup: review/reissue the owner's latest period choices
+   before completing manual reconciliation, or choose complete purge.
+6. If continuity cannot be proven, choose one explicit fallback:
 
+   - **Complete content purge:** `just prod <ip> privacy-purge <restore UUID>`.
+     This clears all accounts' content through existing cascades, all raw
+     payloads (including queued/unrouted ones), then runs retention. It records
+     a restore/account-scoped receipt and opens only after success. Retrying
+     after interruption is safe; a sweep failure leaves quarantine closed.
+   - **Manual selective reconciliation:** only if the owner knows every
+     relevant deletion in the interval. Reissue each with
+     `privacy-delete --restore-id <UUID> --account-id <id> --scope
+     <conversation|contact|managed|everything> [--subject-id <id>]`.
+     The CLI validates tenant ownership and never prints content. Retain
+     counts/IDs-only receipts, verify retention and cancelled/uncertain action
+     receipts. To reissue known retention choices while startup is closed, use
+     `privacy-retention --restore-id <UUID> --account-id <id>` with the needed
+     `--messages-days`, `--control-chat-days` or `--raw-updates-days` options;
+     existing policy bounds apply and no consent is granted. Then attest using
+     `privacy-manual-complete --restore-id <UUID> --account-id <id>`
+     (repeat the account option for **every** restored account)
+     `--owner-confirmed`. Cancellation or an unknown selective history cannot
+     certify reconciliation: keep quarantine or select complete purge.
+     If a decision cannot be reissued through these supported scopes, use
+     complete purge; never attest to selective completion while omitting it.
+
+   Both fallbacks leave journal shipping blocked: an unknown independent tail
+   cannot be overwritten by the restored chain. Retire the old-copy inventory
+   under §D before resetting the journal. This does not block ordinary new
+   backups or the separately authorized processing of freshly consented data.
+7. After successful reconciliation, start the backup service (`dc up -d backup`)
+   and app. The restore notice lists cancelled/uncertain actions and the gap.
+   AI remains blocked until fresh deterministic `/start` and `/privacy managed`
+   grants, separately per scope/account. Reconciliation never renews consent;
+   consent alone cannot reconcile a restore. Restored pending/failed raw
+   updates were discarded to prevent erased text or old consent replies being
+   reprocessed. Review settings, pauses and coverage gaps with the owner.
+8. Remove the temporary laptop identity copy using the established owner
+   procedure. Record replay RPO/RTO and manual/purge RPO/RTO separately in A4;
+   no unattended-recovery claim follows from a maintenance-only rehearsal.
 ## C. Rebuilding a lost host
 
 Provision a fresh host (`provision.md` B2–B5), then, **before starting the
@@ -190,3 +227,49 @@ rebuilt host with an empty `/backups`, the case above), check with
 `just prod <ip> offsite-list` that the remote holds only older dumps than the
 local `daily/`, then run the one-off override above; the next scheduled sync
 is back to normal.
+
+## D. Journal retention and final erasure
+
+The journal is retained privacy enforcement metadata. It is not covered by the
+14-daily/4-weekly dump deletion glob, and a nominal 35-day expiry is never enough
+proof. Do not delete tombstones while any restorable copy can resurrect data.
+Inventory local daily/weekly dumps, B2 daily/weekly objects, offline copies,
+provider snapshots and any copied scratch/recovery databases **weekly**. Keep
+counts, UUID receipts and timestamps only, never content. Unknown copy inventory
+blocks pruning. Existing B2 hard-delete configuration must remain in force.
+
+This implementation uses conservative whole-epoch pruning, not guessed
+per-record expiry. Within 7 days after independently verifying destruction of
+the last restorable copy of an old epoch:
+
+1. Stop app and backup. Ensure the restore/privacy gate is already reconciled.
+2. Verify **all** old restore points (including late/offline copies, retained B2
+   versions and snapshots of journal tables) have been destroyed. This step
+   sacrifices those recovery points; do not attest based only on their age.
+   Retain an external, content-free inventory receipt UUID.
+3. Remove that epoch's local encrypted `privacy-journal/segments/`, `head.age`
+   and corresponding B2 `privacy-journal/segments/` and `head.age`. Use scoped
+   rclone deletion only after inspecting the inventory; never broad bucket
+   deletion. Remove obsolete local journal success/attempt markers too.
+4. Run `just prod <ip> privacy-journal-reset --inventory-receipt <receipt UUID>
+   --copies-destroyed`. It refuses a running app/sidecar or unresolved restore.
+   It deletes local decisions, removes erased-account heads, resets surviving
+   heads and records the receipt under existing one-year audit retention.
+   No processor grant is renewed. Final account erasure includes this cleanup
+   once its last restorable copy is destroyed.
+5. Restart, take a new backup and verify acknowledgements. Never reset a live
+   epoch while keeping a restorable old
+   copy; unknown inventory means keep tombstones and shipping quarantine.
+
+`last_journal_upload_success` means both the immutable ciphertext and encrypted
+head were acknowledged by the existing B2 remote. `journal_status` is a fixed,
+content-free state; missing/stale acknowledgement means independent durability
+is pending. Shipping retries on each backup-loop check independently of the
+once-daily dump, using `privacy-journal/last_attempt` on the persistent volume;
+a restart cannot lose the outbox or pretend a failed head upload succeeded.
+Journal segments upload normally once written, without checking policy versions,
+publication or owner notices (owner decision, 2026-11-10). The owner handles the
+privacy policy personally; recovery does not wait for it. `recovery_blocked`
+means a restore or unresolved old-copy inventory prevents a rewound chain from
+overwriting the independent head. Resolve that state through replay or the
+fallback/epoch-retirement steps above; never clear its markers to force shipping.

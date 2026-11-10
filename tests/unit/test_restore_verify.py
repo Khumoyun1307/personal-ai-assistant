@@ -1,17 +1,34 @@
 """Scratch restore gates and content-free notice projections."""
 
 from contextlib import nullcontext
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
 from tools.acceptance import restore_verify
 
 
+@dataclass
+class Gate:
+    pending: bool
+
+    def fetchone(self) -> tuple[bool]:
+        return (self.pending,)
+
+
 class Database:
-    def __init__(self, *, actions: int = 0, jobs: int = 0, notice: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        actions: int = 0,
+        jobs: int = 0,
+        notice: Any = None,
+        privacy_pending: bool = False,
+    ) -> None:
         self.actions = actions
         self.jobs = jobs
         self.notice = {"actions": {}} if notice is None else notice
+        self.privacy_pending = privacy_pending
 
     def execute(self, sql: str, params: Any = None) -> Any:
         assert "text" not in sql
@@ -22,11 +39,17 @@ class Database:
             return [("approved", self.actions)]
         if "procrastinate_jobs" in sql:
             return [("todo", self.jobs)]
+        if "restore_pending" in str(params):
+            return Gate(self.privacy_pending)
         assert "restore_notice_pending" in str(params)
         return self
 
     def fetchone(self) -> Any:
         return None if self.notice is False else (self.notice,)
+
+
+def test_unresolved_privacy_gate_fails_even_with_an_old_valid_notice() -> None:
+    assert restore_verify.verify(Database(privacy_pending=True)) == 1
 
 
 @pytest.mark.parametrize(

@@ -49,3 +49,15 @@ def test_child_exit_status_is_not_caught_or_reported_as_success(
     with pytest.raises(SystemExit) as error:
         scratch_restore.main(["restore-check"])
     assert error.value.code == 7
+
+
+def test_internal_purge_refuses_a_non_scratch_database(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://synthetic:private-canary@db/original")
+    # The internal child must refuse before constructing an engine, even
+    # though the outer launcher normally rewrites this URL for it.
+    assert scratch_restore.main(["privacy-purge", "--execute"]) == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == "scratch_restore_failed type=ValueError\n"

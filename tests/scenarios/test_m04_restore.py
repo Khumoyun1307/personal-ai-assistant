@@ -6,6 +6,7 @@ import pytest
 
 from assistant.db.models import SystemState
 from assistant.privacy.post_restore import KEY_RESTORE_NOTICE, post_restore
+from tests.integration.privacy_recovery_helpers import reconcile_known_test_history
 from tests.scenarios.p2_drive import Scenario, run_queued
 
 pytestmark = pytest.mark.integration
@@ -19,6 +20,7 @@ async def test_a_restored_database_with_an_approved_action_sends_nothing(p2: Sce
     )
     assert (await p2.action(approved.id)).state == "cancelled"
     assert (await p2.action(executing.id)).state == "delivery_uncertain"
+    await reconcile_known_test_history(p2.env)
     async with p2.env.factory() as session:
         notice = await session.get(SystemState, KEY_RESTORE_NOTICE)
         assert notice is not None

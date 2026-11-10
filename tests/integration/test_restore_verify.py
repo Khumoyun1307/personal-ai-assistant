@@ -9,6 +9,7 @@ from tools.acceptance.restore_verify import verify
 
 from assistant.privacy.post_restore import post_restore
 from tests.integration.business_env import Env
+from tests.integration.privacy_recovery_helpers import reconcile_known_test_history
 from tests.integration.test_action_lifecycle_bulk import seed_actions
 
 pytestmark = pytest.mark.integration
@@ -26,6 +27,9 @@ async def test_restore_gate_fails_before_post_restore_and_reports_its_notice_aft
     assert await asyncio.to_thread(check) == 1
     capsys.readouterr()
     await post_restore(env.factory, env.clock, backup_taken_at=env.clock.now() - timedelta(hours=1))
+    assert await asyncio.to_thread(check) == 1
+    capsys.readouterr()
+    await reconcile_known_test_history(env)
     assert await asyncio.to_thread(check) == 0
     output = capsys.readouterr().out
     assert "pending_actions=0" in output

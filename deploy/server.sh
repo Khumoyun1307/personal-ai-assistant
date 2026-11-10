@@ -74,6 +74,15 @@ require_data_volume() {
   fi
 }
 
+require_app_stopped() {
+  local running
+  running="$(compose ps --status running -q app)" || return 1
+  if [ -n "$running" ]; then
+    echo "ERROR: stop the app before privacy recovery" >&2
+    return 1
+  fi
+}
+
 action="${1:-}"
 shift || true
 case "$action" in
@@ -118,8 +127,9 @@ case "$action" in
     release_status
     printf 'data dir: %s (sentinel present)\n' "$(findmnt -no SOURCE,TARGET --target "$data_dir/postgres")"
     compose ps
-    compose exec -T app python -m assistant healthcheck
-    for marker in last_success last_upload_success; do
+    compose run --rm --no-deps -T app python -m assistant.privacy.recovery_cli status
+    compose exec -T app python -m assistant healthcheck || true
+    for marker in last_success last_upload_success last_journal_upload_success journal_status; do
       printf '%s: %s\n' "$marker" \
         "$(compose exec -T backup cat "/backups/$marker" 2> /dev/null || echo never)"
     done
@@ -172,6 +182,9 @@ case "$action" in
       -v "$(pwd)/tools/acceptance:/app/tools/acceptance:ro" \
       app python -m tools.acceptance.scratch_restore post-restore \
       "$taken_at"
+    compose run --rm --no-deps -T \
+      -v "$(pwd)/tools/acceptance:/app/tools/acceptance:ro" \
+      app python -m tools.acceptance.scratch_restore privacy-purge
     since="$(date -u -d "$taken_at 2 days ago" +%Y-%m-%dT%H:%M:%SZ)"
     # Only read-only verification code is mounted. No app/poller/worker starts;
     # every URL is derived inside the one-off container and targets scratch.
@@ -212,6 +225,31 @@ case "$action" in
     fi
     compose exec -T backup test -f "/backups/daily/$file" \
       || { echo "ERROR: /backups/daily/$file not found" >&2; exit 1; }
+    # Wait for any COMMIT already handed to Postgres before the app exited.
+    # Only then capture the database clock at full precision. A sidecar
+    # snapshot taken while waiting must not cover this boundary if the final
+    # upload fails, even when both timestamps fall within the same second.
+    # Release the barrier before age/B2 I/O; the read-only backup role needs
+    # no new write or lock privileges. No source writer may restart here.
+    # shellcheck disable=SC2016  # expanded inside the db container
+    recovery_cutoff="$(compose exec -T db sh -c \
+      'exec psql -XqAt -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' <<'SQL'
+BEGIN;
+DO $$ BEGIN
+  IF to_regclass('app.privacy_journal_heads') IS NOT NULL THEN
+    EXECUTE 'LOCK TABLE app.privacy_journal_heads IN SHARE MODE';
+  END IF;
+END $$;
+SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"');
+COMMIT;
+SQL
+    )"
+    recovery_cutoff="${recovery_cutoff//$'\r'/}"
+    [ -n "$recovery_cutoff" ] || { echo "ERROR: recovery cutoff unavailable" >&2; exit 1; }
+    compose exec -T backup privacy-journal.sh ship force \
+      || echo "privacy journal pending; restored processing will require fallback" >&2
+    # A rewound DB must never overwrite the independent head while restoring.
+    compose stop backup
     # The production database is the one the server .env names: $POSTGRES_DB
     # in the db container, $PGDATABASE (the same value) in the backup one.
     # shellcheck disable=SC2016  # expanded inside the db container
@@ -219,7 +257,7 @@ case "$action" in
       'dropdb -U "$POSTGRES_USER" --if-exists --force "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" -O assistant_migrate "$POSTGRES_DB"'
     # shellcheck disable=SC2016  # expanded inside the restore container
     printf '%s\n' "$identity" \
-      | compose run --rm --no-deps -T --entrypoint sh restore \
+      | compose run --rm --no-deps -T -e "RESTORE_RECOVERY_CUTOFF=$recovery_cutoff" --entrypoint sh restore \
         -c 'exec restore.sh "$1" "$PGDATABASE"' sh "/backups/daily/$file"
     unset identity
     compose run --rm --no-deps -T db-roles \
@@ -229,7 +267,50 @@ case "$action" in
     ;;
   post-restore)
     require_data_volume
+    require_app_stopped
     compose run --rm --no-deps -T app python -m assistant post-restore --backup-taken-at "${1:?timestamp}"
+    ;;
+  privacy-replay)
+    require_data_volume
+    # Capture before any Docker command can consume stdin; never persist it.
+    identity="$(cat)"
+    case "$identity" in
+      *AGE-SECRET-KEY-1*) ;;
+      *) echo "ERROR: pipe the offline age identity on stdin" >&2; exit 2 ;;
+    esac
+    require_app_stopped
+    # Age identity enters on stdin; the plaintext metadata is piped directly
+    # into the app container and is never printed to the operator or logs.
+    printf '%s\n' "$identity" \
+      | compose run --rm --no-deps -T --entrypoint privacy-journal.sh backup fetch \
+      | compose run --rm --no-deps -T app python -m assistant.privacy.recovery_cli replay
+    unset identity
+    ;;
+  privacy-purge)
+    require_data_volume
+    require_app_stopped
+    compose run --rm --no-deps -T app python -m assistant.privacy.recovery_cli purge \
+      --restore-id "${1:?current restore UUID required (privacy status)}"
+    ;;
+  privacy-status)
+    require_data_volume
+    compose run --rm --no-deps -T app python -m assistant.privacy.recovery_cli status
+    ;;
+  privacy-delete|privacy-manual-complete|privacy-retention)
+    require_data_volume
+    require_app_stopped
+    command=delete
+    if [ "$action" = privacy-manual-complete ]; then command=manual-complete; fi
+    if [ "$action" = privacy-retention ]; then command=retention; fi
+    compose run --rm --no-deps -T app python -m assistant.privacy.recovery_cli "$command" "$@"
+    ;;
+  privacy-journal-reset)
+    require_data_volume
+    if [ -n "$(compose ps --status running -q app backup)" ]; then
+      echo "ERROR: stop app and backup before journal pruning" >&2
+      exit 1
+    fi
+    compose run --rm --no-deps -T app python -m assistant.privacy.recovery_cli reset-after-prune "$@"
     ;;
   reindex-search)
     require_data_volume

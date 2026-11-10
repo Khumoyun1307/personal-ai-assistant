@@ -10,6 +10,8 @@ import importlib
 import sys
 import assistant.__main__
 import assistant.privacy.post_restore
+import assistant.privacy.journal
+import assistant.privacy.recovery_cli
 import tools.acceptance.p2_verify
 import tools.acceptance.restore_verify
 import tools.acceptance.scratch_restore

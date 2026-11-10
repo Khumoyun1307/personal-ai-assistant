@@ -26,7 +26,7 @@ from functools import cache
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account, AuditLogEntry
@@ -329,6 +329,11 @@ async def update(
     changes = {f: (before[f], v) for f, v in wanted.items() if before[f] != v}
     if not changes:
         return PreferenceChange({}, None)
+    if changes_retention(changes):
+        await session.execute(
+            text("SELECT set_config('app.privacy_decided_at', :at, true)"),
+            {"at": clock.now().isoformat()},
+        )
     for field, (_, value) in changes.items():
         _apply(account, field, value)
     entry = AuditLogEntry(

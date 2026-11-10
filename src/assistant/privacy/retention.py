@@ -40,6 +40,7 @@ from typing import Any
 from sqlalchemy import BigInteger, column, delete, func, select, text, update, values
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.sql.elements import ColumnElement
 
 from assistant.accounts.models import (
     Account,
@@ -610,73 +611,89 @@ async def _purge_messages(
     period: timedelta,
     account_ids: list[int],
 ) -> int:
-    now = clock.now()
-    cutoff = now - period
+    cutoff = clock.now() - period
     async with transaction(session_factory) as uow:
-        due = (
-            Message.account_id.in_(account_ids)
-            & (func.coalesce(Message.edited_at, Message.sent_at) < cutoff)
-            & ((Message.text.is_not(None)) | (Message.media.is_not(None)))
+        return await purge_message_content(
+            uow.session,
+            clock,
+            account_ids=account_ids,
+            message_filter=func.coalesce(Message.edited_at, Message.sent_at) < cutoff,
         )
-        for account_id in sorted(account_ids):
-            await lock_requests(uow.session, account_id=account_id)
-            await purge_request_sources(
-                uow.session,
-                account_id=account_id,
-                now=now,
-                locked=True,
-                message_ids=tuple(
-                    await uow.session.scalars(
-                        select(Message.id).where(due, Message.account_id == account_id)
-                    )
-                ),
-            )
-        # §9.4 lock order: the conversations first, then their messages —
-        # as ingestion and deletion do — so the sweep cannot deadlock with
-        # them on the same chat.
-        await uow.session.execute(
-            select(Conversation.id)
-            .where(Conversation.id.in_(select(Message.conversation_id).where(due)))
-            .order_by(Conversation.id)
-            .with_for_update()
-        )
-        purged = await uow.session.execute(
-            update(Message)
-            .where(due)
-            .values(
-                text=None,
-                media=None,
-                search_key=None,
-                script=None,
-                lang_guess=None,
-                content_hash=None,
-                purged_at=now,
-                updated_at=now,
-            )
-            .returning(Message.conversation_id, Message.id, Message.sent_at)
-        )
-        rows = purged.all()
-        covers = await covered_through(uow.session, {int(row[0]) for row in rows})
-        newest: dict[int, datetime] = {}
-        for conversation_id, message_id, sent_at in rows:
-            covered = covers.get(conversation_id)
-            if covered is not None and message_id <= covered:
-                continue  # the rolling summary keeps it (the rollup ran)
-            if sent_at is not None and (
-                conversation_id not in newest or sent_at > newest[conversation_id]
-            ):
-                newest[conversation_id] = sent_at
-        for conversation_id, sent_at in newest.items():
-            await uow.session.execute(
-                update(Conversation)
-                .where(Conversation.id == conversation_id)
-                .where(
-                    (Conversation.summary_gap_before.is_(None))
-                    | (Conversation.summary_gap_before < sent_at)
+
+
+async def purge_message_content(
+    session: AsyncSession,
+    clock: Clock,
+    *,
+    account_ids: list[int],
+    message_filter: ColumnElement[bool],
+) -> int:
+    """Apply expiry effects for a sweep or journal replay in its transaction."""
+    now = clock.now()
+    due = (
+        Message.account_id.in_(account_ids)
+        & message_filter
+        & ((Message.text.is_not(None)) | (Message.media.is_not(None)))
+    )
+    for account_id in sorted(account_ids):
+        await lock_requests(session, account_id=account_id)
+        await purge_request_sources(
+            session,
+            account_id=account_id,
+            now=now,
+            locked=True,
+            message_ids=tuple(
+                await session.scalars(
+                    select(Message.id).where(due, Message.account_id == account_id)
                 )
-                .values(summary_gap_before=sent_at, updated_at=now)
+            ),
+        )
+    # §9.4 lock order: the conversations first, then their messages —
+    # as ingestion and deletion do — so the sweep cannot deadlock with
+    # them on the same chat.
+    await session.execute(
+        select(Conversation.id)
+        .where(Conversation.id.in_(select(Message.conversation_id).where(due)))
+        .order_by(Conversation.id)
+        .with_for_update()
+    )
+    purged = await session.execute(
+        update(Message)
+        .where(due)
+        .values(
+            text=None,
+            media=None,
+            search_key=None,
+            script=None,
+            lang_guess=None,
+            content_hash=None,
+            purged_at=now,
+            updated_at=now,
+        )
+        .returning(Message.conversation_id, Message.id, Message.sent_at)
+    )
+    rows = purged.all()
+    covers = await covered_through(session, {int(row[0]) for row in rows})
+    newest: dict[int, datetime] = {}
+    for conversation_id, message_id, sent_at in rows:
+        covered = covers.get(conversation_id)
+        if covered is not None and message_id <= covered:
+            continue  # the rolling summary keeps it (the rollup ran)
+        if sent_at is not None and (
+            conversation_id not in newest or sent_at > newest[conversation_id]
+        ):
+            newest[conversation_id] = sent_at
+    for conversation_id, sent_at in newest.items():
+        await session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .where(
+                (Conversation.summary_gap_before.is_(None))
+                | (Conversation.summary_gap_before < sent_at)
             )
-        return len(rows)
+            .values(summary_gap_before=sent_at, updated_at=now)
+        )
+    return len(rows)
 
 
 async def sweep_contact_names(

@@ -142,6 +142,9 @@ async def export_owner_requests(
         }
         for row in presentations
     ]
+    from assistant.privacy.journal import export_account
+
+    result["privacy_journal"] = await export_account(session, account_id=account_id)
     return result
 
 

@@ -121,12 +121,17 @@ async def grant_consent(
     policy_version: str,
     processors: list[str],
     clock: Clock,
-) -> Consent:
+) -> Consent | None:
     """Record a grant. Append-only: a re-grant inserts, never updates.
 
     The history of what was agreed to, and when, has to survive — that is the
     whole point of keeping consent rather than a boolean.
+
+    None is a blocked grant during unresolved restore recovery. This expected
+    owner-flow outcome writes nothing and must never be announced as success.
     """
+    if await session.get(SystemState, KEY_RESTORE_PENDING, populate_existing=True) is not None:
+        return None
     consent = Consent(
         account_id=account.id,
         kind=kind,

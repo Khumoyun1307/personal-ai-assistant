@@ -51,6 +51,8 @@ EVENT_MANAGED_DATA_DELETED = "managed_data_deleted"
 #: up to 35 days; safety review item 6).
 BACKUP_NOTE = (
     "Encrypted backups made before now still contain it until they are rotated out (up to 35 days)."
+    " The local privacy decision is recorded; off-site recovery protection is pending "
+    "until the encrypted journal is acknowledged."
 )
 #: Said on every deletion card: a pending inbound row is left to the inbox
 #: (M03 D79), so a message arriving at that moment may be stored after the
@@ -168,6 +170,7 @@ async def delete_managed_data(
     hold no content and keep the coverage record honest. `request` keys the
     audit row so a repeated job deletes once (the revocation card's Delete
     runs as `privacy.delete_data`, M03 D83)."""
+    await _journal_time(session, clock)
     # FOR NO KEY UPDATE, not FOR UPDATE: ingestion holds a conversation and
     # then inserts a message, which takes a key share on the account through
     # the foreign key; FOR UPDATE would block that while this waits for the
@@ -330,6 +333,8 @@ async def purge_conversation(
     (FR-OBS-04, §6.5). Raw updates are matched by jsonb containment, never by
     casting a value that may not be a number."""
 
+    await _journal_time(session, clock)
+
     def _count(result: object) -> int:
         return int(getattr(result, "rowcount", 0) or 0)
 
@@ -417,6 +422,16 @@ async def purge_conversation(
         scope="scoped",
         now=clock.now(),
         actions_affected=actions_affected,
+    )
+    await session.execute(
+        text(
+            "SELECT app.append_privacy_decision(:account_id, "
+            "(SELECT recovery_id FROM app.accounts WHERE id = :account_id), "
+            "'conversation', (SELECT recovery_id FROM app.conversations "
+            "WHERE account_id = :account_id AND id = :conversation_id), "
+            "'delete', NULL, :at)"
+        ),
+        {"account_id": account_id, "conversation_id": conversation_id, "at": clock.now()},
     )
     return DeletionReport(messages, contacts, payloads, turns, summaries, notes, **p2)
 
@@ -912,6 +927,7 @@ async def delete_conversation_data(
     the chat). The owner's notes about the person (contact scope) stay;
     `delete_contact_data` takes those too (M03 D79). NotInAccountError: not this
     account's conversation."""
+    await _journal_time(session, clock)
     chats = await _lock_chats(session, account_id, Conversation.id == conversation_id)
     if not chats:
         raise NotInAccountError("conversation not found in this account")
@@ -953,6 +969,7 @@ async def delete_contact_data(
     naming them, their names. The contact row stays, content-free (ids, bot
     flag), and so do their chats' modes (M03 D79). NotInAccountError: not this
     account's contact."""
+    await _journal_time(session, clock)
     found = (
         await session.execute(
             select(Contact.id)
@@ -1037,6 +1054,7 @@ async def delete_everything(
     usable: its settings, consents, connection, conversation
     modes, coverage record, audit log and run accounting are kept, and new
     messages are stored as before (M03 D78)."""
+    await _journal_time(session, clock)
     # §9.4: the account first (FOR NO KEY UPDATE, as managed-data deletion:
     # compatible with ingestion's foreign-key share), then its conversations.
     account = await session.get(Account, account_id, with_for_update={"key_share": True})
@@ -1129,3 +1147,11 @@ async def delete_everything(
     )
     await session.flush()
     return report
+
+
+async def _journal_time(session: AsyncSession, clock: Clock) -> None:
+    """The transaction's deterministic erasure time, also used by SQL triggers."""
+    await session.execute(
+        text("SELECT set_config('app.privacy_decided_at', :at, true)"),
+        {"at": clock.now().isoformat()},
+    )

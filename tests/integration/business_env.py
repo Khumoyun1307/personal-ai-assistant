@@ -57,7 +57,7 @@ NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 T_BASE = 1792354000
 RESET = (
     "TRUNCATE app.accounts, app.inbound_updates, app.system_state, "
-    "app.foreign_connections CASCADE; "
+    "app.foreign_connections, app.privacy_journal, app.privacy_journal_heads CASCADE; "
     "TRUNCATE procrastinate.procrastinate_jobs CASCADE"
 )
 

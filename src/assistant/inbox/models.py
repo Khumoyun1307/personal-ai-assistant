@@ -29,7 +29,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
-from assistant.db.base import Base, CreatedAt, IdPk
+from assistant.db.base import Base, CreatedAt, IdPk, RecoveryId
 
 INBOUND_STATUSES = ("pending", "processed", "ignored", "rejected", "failed")
 
@@ -182,6 +182,7 @@ class NotificationSource(Base):
 
     __tablename__ = "notification_sources"
 
+    recovery_id: Mapped[RecoveryId]
     notification_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("app.notifications.id", ondelete="CASCADE"), primary_key=True
     )

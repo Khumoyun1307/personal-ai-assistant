@@ -185,6 +185,10 @@ prod-restore-test ip:
 prod-restore ip file:
     {{ _ops }} -e SSH_STDIN_FILE=/cloud/age-identity.txt --entrypoint bash {{ oci_image }} deploy/oci/ssh.sh {{ ip }} restore {{ file }}
 
+# Replay the independent privacy journal with the same offline age identity (I20).
+prod-privacy-replay ip:
+    {{ _ops }} -e SSH_STDIN_FILE=/cloud/age-identity.txt --entrypoint bash {{ oci_image }} deploy/oci/ssh.sh {{ ip }} privacy-replay
+
 # Any other deploy/server.sh action: offsite-list, post-restore <ts>, app-stop, app-start, restart-timing, reboot, reindex-search, nfr04 [days], nfr05 [days].
 prod ip +args:
     {{ ops }} deploy/oci/ssh.sh {{ ip }} {{ args }}

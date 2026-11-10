@@ -1,5 +1,23 @@
 # Provision production: Oracle Cloud + Backblaze B2 + Healthchecks.io (M02 S02.6)
 
+**I20 backup/journal amendment (candidate, unverified).** The existing B2
+remote and age recipient also serve the independent ids-only privacy journal;
+there is no new processor or key. Journal segments upload normally without a
+policy-version or notice check (owner decision, 2026-11-10); the owner handles
+the privacy policy personally. Ordinary dumps include the journal head as an
+exact backup anchor but exclude independently retained outbox decision rows.
+The sidecar retries encrypted segment/head acknowledgement independently
+of daily backups using persistent markers. Preserve the independent journal
+when rebuilding a host; never sync a rewound head over it. See
+[restore runbook](restore.md) for cutoff verification, manual/purge fallback,
+weekly copy inventory and final account erasure. Offline candidate tests and
+owner-authorized A4 recovery evidence remain required.
+
+Restore captures its full-precision database cutoff after the in-flight commit
+barrier and before final shipping. If that upload fails, an earlier scheduled
+snapshot cannot establish continuity, even within the same second; retain
+quarantine and use the documented manual/purge fallback.
+
 One small ARM VM runs the whole stack (ARCHITECTURE §15.4–§15.5). Owner
 decisions of 2026-10-22:
 

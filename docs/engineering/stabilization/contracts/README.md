@@ -12,7 +12,7 @@ Specification baseline: owner decisions **2026-11-09**, current M02–M05 interf
 | [C6 — Freshness and precedence](C6-freshness-and-precedence.md) | H10 merged → H8/H11/I2/I4/I3 |
 | [C7 — Coverage and budgets](C7-coverage-and-budgets.md) | I2/I4/I6/I15/I16; shared call boundaries |
 | [C8 — Trusted preferences](C8-preferences.md) | Q1; H13 → H6; scoped Assist loaders |
-| [C9 — Privacy recovery](C9-privacy-recovery-options.md) | D-S15 Option C decided; I19/I21 → I20 hybrid journal/fallback → A4; I32 policy/notice check |
+| [C9 — Privacy recovery](C9-privacy-recovery-options.md) | D-S15 Option C decided; I19/I21 → I20 hybrid journal/fallback → A4; owner handles policy separately (2026-11-10); no publication gate |
 | [Acceptance cases](../cases/README.md) | A1 executable evaluator; A2/A3 evidence |
 | [Unit specifications](../specs/README.md) | H1–H13 and Q4, merged in PLAN lane order |
 
@@ -41,4 +41,4 @@ Specification baseline: owner decisions **2026-11-09**, current M02–M05 interf
 | `memory_items.provenance` | Backward-compatible source-verified owner preference addition; no blanket trust upgrade (C8). |
 | `LLMRequest`, `ToolServices`, `ToolExecutor` | Shared operation allowance and account-wide admission at every provider attempt (C7). |
 
-C9's recovery choice is settled by D-S15: Option C in existing B2 backup storage, with manual/purge fallback. I20 implementation details and I32's privacy-metadata policy/notice check remain required. Wording approval and run-specific paid/live authorizations remain acceptance requirements, not permission inferred by these contracts.
+C9's recovery choice is settled by D-S15: Option C in existing B2 backup storage, with manual/purge fallback. I20 implementation details remain required. Per the owner's 2026-11-10 amendment, the owner handles policy work personally and journal use does not wait on version, publication or notice checks. Wording approval and run-specific paid/live authorizations remain acceptance requirements, not permission inferred by these contracts.

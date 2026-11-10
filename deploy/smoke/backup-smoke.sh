@@ -279,4 +279,125 @@ out="$(bk "export BACKUP_DIR=/backups/newest-smoke BACKUP_HOUR_UTC=02 BACKUP_TES
 bk 'test -s /backups/newest-remote/daily/20261109T083000Z.dump.age' || fail "newest dump not uploaded"
 ok "completed files recover an upload without an attempt marker (including upgrades)"
 
+step "I20 privacy journal ships with v5 notices and retries head acknowledgement"
+# Fake metadata only. Shipping must not depend on policy publication/notices.
+psql_db assistant "INSERT INTO app.accounts (telegram_user_id, policy_notice_version)
+  VALUES (7000099999, 'v5');
+  INSERT INTO app.consents (account_id, kind, policy_version, processors)
+  SELECT id, 'ai_control', 'v5', '[\"OpenAI\"]'::jsonb FROM app.accounts;
+  UPDATE app.consents SET revoked_at = CURRENT_TIMESTAMP;" > /dev/null
+journal_env=(-e BACKUP_DIR=/backups/journal-smoke -e BACKUP_TEST_NOW=2026-11-09T12:00:00Z "${remote_env[@]}")
+# Fail only head advancement, after the immutable ciphertext was uploaded.
+bk 'mkdir -p /backups/journal-smoke/bin
+    cat > /backups/journal-smoke/bin/rclone << '\''STUB'\''
+#!/usr/bin/env bash
+case "$*" in *head.age*) exit 1 ;; esac
+exec /usr/bin/rclone "$@"
+STUB
+    chmod +x /backups/journal-smoke/bin/rclone'
+rc=0
+dc run --rm --no-deps -T "${journal_env[@]}" \
+  -e PATH=/backups/journal-smoke/bin:/usr/local/bin:/usr/bin:/bin \
+  --entrypoint privacy-journal.sh backup ship force > /dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "head failure reported success"
+# shellcheck disable=SC2016  # expanded by the container's shell
+bk 'test -s /backups/journal-smoke/privacy-journal/last_attempt &&
+    test "$(cat /backups/journal-smoke/journal_status)" = head_upload_failed &&
+    test ! -e /backups/journal-smoke/last_journal_upload_success &&
+    test ! -e /backups/remote/privacy-journal/head.age' || fail "failed head was acknowledged"
+# A new process retains the throttle. Advance only the synthetic marker, no sleep.
+dc run --rm --no-deps -T "${journal_env[@]}" --entrypoint privacy-journal.sh backup ship
+bk 'test ! -e /backups/remote/privacy-journal/head.age' || fail "restart forgot retry throttle"
+bk 'printf "0\n" > /backups/journal-smoke/privacy-journal/last_attempt'
+dc run --rm --no-deps -T "${journal_env[@]}" --entrypoint privacy-journal.sh backup ship
+bk 'test -s /backups/remote/privacy-journal/head.age &&
+    test -s /backups/journal-smoke/last_journal_upload_success' || fail "pending journal did not recover"
+bytes="$(dc run --rm --no-deps -T "${journal_env[@]}" --entrypoint privacy-journal.sh backup fetch \
+  < "$tmp/identity.txt" | wc -c)"
+[ "$bytes" -gt 0 ] || fail "authenticated journal round-trip failed"
+step "failed final journal upload cannot certify an earlier snapshot"
+# Leave the acknowledged head in place, then commit another privacy decision.
+# The server captures this full-precision database boundary only after waiting
+# for in-flight commits; the preceding snapshot cannot cover it.
+head_before="$(bk 'sha256sum /backups/remote/privacy-journal/head.age | cut -d" " -f1')"
+psql_db assistant "INSERT INTO app.consents (account_id, kind, policy_version, processors)
+  SELECT id, 'ai_managed', 'v6', '[\"OpenAI\"]'::jsonb FROM app.accounts;
+  UPDATE app.consents SET revoked_at = CURRENT_TIMESTAMP WHERE kind = 'ai_managed';" > /dev/null
+journal_cutoff="$(dc exec -T db psql -XqAt -U assistant -d assistant -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+LOCK TABLE app.privacy_journal_heads IN SHARE MODE;
+SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"');
+COMMIT;
+SQL
+)"
+journal_cutoff="${journal_cutoff//$'\r'/}"
+[ "${#journal_cutoff}" -eq 27 ] || fail "recovery cutoff lost database precision"
+rc=0
+dc run --rm --no-deps -T "${journal_env[@]}" \
+  -e PATH=/backups/journal-smoke/bin:/usr/local/bin:/usr/bin:/bin \
+  --entrypoint privacy-journal.sh backup ship force > /dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "failed final upload reported success"
+head_after="$(bk 'sha256sum /backups/remote/privacy-journal/head.age | cut -d" " -f1')"
+[ "$head_before" = "$head_after" ] || fail "failed final upload advanced the independent head"
+dc run --rm --no-deps -T "${journal_env[@]}" --entrypoint privacy-journal.sh backup fetch \
+  < "$tmp/identity.txt" \
+  | dc run --rm --no-deps -T --entrypoint python app -c '
+import sys
+from datetime import datetime
+from assistant.privacy.journal import JournalRecoveryError, JournalSegment, verify_segment
+segment = JournalSegment.model_validate_json(sys.stdin.read())
+try:
+    verify_segment(segment, backup_heads=(), cutoff=datetime.fromisoformat(sys.argv[1]))
+except JournalRecoveryError as error:
+    if str(error) != "journal_stale_tail":
+        raise SystemExit("unexpected journal failure") from None
+else:
+    raise SystemExit("earlier snapshot certified missing decision")
+' "$journal_cutoff" || fail "earlier head bypassed recovery cutoff"
+ok "post-barrier cutoff rejects old evidence after failed final shipping"
+step "ordinary backups retain exact anchors for the independently shipped journal"
+bk 'mkdir -p /backups/journal-dump-smoke'
+dc run --rm --no-deps -T -e BACKUP_DIR=/backups/journal-dump-smoke -e BACKUP_REMOTE= backup once
+journal_dump="$(bk 'ls -1 /backups/journal-dump-smoke/daily | tail -n 1')"
+dc exec -T db createdb -U assistant -O assistant_migrate restore_journal
+dc run --rm --no-deps -T -e PGUSER=assistant_migrate \
+  -e "RESTORE_RECOVERY_CUTOFF=$journal_cutoff" \
+  -e "PGPASSWORD=$(printf 'a%.0s' {1..64})" restore \
+  "/backups/journal-dump-smoke/daily/$journal_dump" restore_journal < "$tmp/identity.txt"
+[ "$(psql_db restore_journal "SELECT to_char((value->>'recovery_cutoff')::timestamptz AT TIME ZONE 'UTC',
+  'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') FROM app.system_state WHERE key = 'restore_pending'")" = "$journal_cutoff" ] \
+  || fail "restore marker lost the full-precision source cutoff"
+[ "$(psql_db restore_journal 'SELECT count(*) FROM app.privacy_journal')" -eq 0 ] \
+  || fail "ordinary dump included independent journal decisions"
+[ "$(psql_db restore_journal 'SELECT count(*) FROM app.privacy_journal_heads WHERE sequence > 0')" -gt 0 ] \
+  || fail "ordinary dump lost its exact journal head anchor"
+# An unusable key and corrupted ciphertext never release plaintext to replay.
+rc=0
+printf 'synthetic-invalid-key\n' | dc run --rm --no-deps -T "${journal_env[@]}" \
+  --entrypoint privacy-journal.sh backup fetch > "$tmp/journal-output" 2> /dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "invalid journal key accepted"
+[ ! -s "$tmp/journal-output" ] || fail "failed decrypt released plaintext"
+bk 'mkdir -p /backups/journal-smoke/age-bin
+    cat > /backups/journal-smoke/age-bin/age << '\''STUB'\''
+#!/usr/bin/env bash
+case "$*" in */segment.age*) printf "{\"version\":1}\n"; exit 1 ;; esac
+exec /usr/bin/age "$@"
+STUB
+    chmod +x /backups/journal-smoke/age-bin/age'
+rc=0
+dc run --rm --no-deps -T "${journal_env[@]}" \
+  -e PATH=/backups/journal-smoke/age-bin:/usr/local/bin:/usr/bin:/bin \
+  --entrypoint privacy-journal.sh backup fetch < "$tmp/identity.txt" \
+  > "$tmp/journal-output" 2> /dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "late authentication failure reported success"
+[ ! -s "$tmp/journal-output" ] || fail "late authentication failure released partial plaintext"
+# shellcheck disable=SC2016  # expanded by the container's shell
+bk 'for file in /backups/remote/privacy-journal/segments/*.age; do printf corrupt >> "$file"; done'
+rc=0
+dc run --rm --no-deps -T "${journal_env[@]}" --entrypoint privacy-journal.sh backup fetch \
+  < "$tmp/identity.txt" > "$tmp/journal-output" 2> /dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "corrupted journal accepted"
+[ ! -s "$tmp/journal-output" ] || fail "checksum failure released plaintext"
+ok "shipping without publication gate, independent acknowledgement, restart retry, decrypt and checksum failures"
+
 printf '\nSMOKE OK\n'
