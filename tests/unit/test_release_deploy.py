@@ -67,7 +67,10 @@ compose() {
       else echo "${WORKERS_READY:-t}"; fi ;;
     *'app timeout 25 python'*)
       [ "${FAIL_HEALTH:-0}" = 0 ] || [[ "$ASSISTANT_IMAGE" = assistant:aaaaaaaaaaaa ]] ;;
-    *'cat /backups/last_success'*) echo 2026-11-09T00:00:00Z ;;
+    *'cat /backups/last_success_file'*)
+      if [ "${FAIL_BACKUP_REFERENCE:-0}" = 1 ]; then echo partial; return 1; fi
+      echo 20261109T000000Z.dump.age ;;
+    *'cat /backups/last_success'*) echo 2026-11-09T00:00:05Z ;;
     'run --rm --no-deps -T backup once') [ "${FAIL_BACKUP:-0}" = 0 ] ;;
     'run --rm --no-deps -T migrate')
       [ "${FAIL_MIGRATE:-0}" = 0 ] || return 1
@@ -472,11 +475,28 @@ def test_breaking_failure_stops_safely_and_preserves_backup(tmp_path: Path, fail
     assert "restore" in result.stderr
     assert (tmp_path / "deploy/release-state").read_text("utf-8") == before
     assert (tmp_path / "deploy/release-in-progress").exists()
-    assert (tmp_path / "deploy/pre-deploy-backup").read_text("utf-8") == "2026-11-09T00:00:00Z\n"
+    assert (tmp_path / "deploy/pre-deploy-backup").read_text("utf-8") == (
+        "20261109T000000Z.dump.age\n"
+    )
     calls = (tmp_path / "calls").read_text("utf-8")
     assert "compose stop app backup" in calls
     assert f"--remove-orphans app image=assistant:{OLD[:12]}" not in calls
     assert "downgrade" not in calls
+    assert "cat /backups/last_success_file" in calls
+
+
+def test_unavailable_backup_reference_preserves_previous_reference_and_prevents_migration(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path, current=OLD)
+    reference = tmp_path / "deploy/pre-deploy-backup"
+    reference.write_text("20261108T000000Z.dump.age\n", encoding="utf-8")
+    result = run_release(tmp_path, f"release_load\nFAIL_BACKUP_REFERENCE=1\nrelease_up {NEW}\n")
+
+    assert result.returncode != 0
+    assert "completed pre-deploy backup file unavailable" in result.stderr
+    assert reference.read_text("utf-8") == "20261108T000000Z.dump.age\n"
+    assert " migrate" not in (tmp_path / "calls").read_text("utf-8")
 
 
 def test_rollback_across_expand_heads_preserves_actual_database_head(tmp_path: Path) -> None:

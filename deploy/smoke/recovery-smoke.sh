@@ -97,8 +97,10 @@ DOCKER
 #!/bin/sh
 set -eu
 if [ "$1" = once ]; then
-  mkdir -p /backups
-  date -u +%FT%TZ > /backups/last_success
+  mkdir -p /backups/daily
+  printf '%s\n' synthetic-dump > /backups/daily/20261109T000000Z.dump.age
+  printf '%s\n' 20261109T000000Z.dump.age > /backups/last_success_file
+  printf '%s\n' 2026-11-09T00:00:05Z > /backups/last_success
 else
   trap 'exit 0' TERM
   while :; do sleep 1 & wait $!; done
@@ -135,7 +137,7 @@ BACKUP
     compose exec -T app python -c 'import urllib.request; assert urllib.request.urlopen("http://127.0.0.1:8080").read() == b"synthetic previous image serving"'
   else
     [ -e deploy/release-in-progress ] || release_error 'breaking failure lost marker'
-    [ -s deploy/pre-deploy-backup ] || release_error 'recovery marker missing'
+    [ "$(cat deploy/pre-deploy-backup)" = 20261109T000000Z.dump.age ] || release_error 'wrong recovery filename'
     [ -z "$(compose ps --status running -q app backup)" ] || release_error 'unsafe services running'
     grep -q 'Forward-fix:' rehearsal.log || release_error 'forward procedure missing'
   fi

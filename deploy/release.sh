@@ -255,7 +255,14 @@ release_up() {
   compose stop backup
   if [ "$release_up_incomplete" = false ]; then
     compose run --rm --no-deps -T backup once
-    compose run --rm --no-deps -T --entrypoint sh backup -c 'cat /backups/last_success' > deploy/pre-deploy-backup
+    # Completion time can differ from the dump's filename timestamp. Retain
+    # the exact completed file, publishing only after the read/check succeeds.
+    # shellcheck disable=SC2016 # expanded by the container shell
+    compose run --rm --no-deps -T --entrypoint sh backup -c \
+      'file=$(cat /backups/last_success_file) && test -n "$file" && test -s "/backups/daily/$file" && printf "%s\n" "$file"' \
+      > deploy/pre-deploy-backup.part \
+      || release_error "completed pre-deploy backup file unavailable; migration refused"
+    mv -- deploy/pre-deploy-backup.part deploy/pre-deploy-backup
   fi
   # Persist before any possible migration. Failed/interrupted transitions
   # cannot use an older, apparently compatible pair to authorize rollback.

@@ -76,10 +76,14 @@ still apply to work interrupted at a deadline. Compose's outer grace is now
 180 seconds, covering the supervisor's sequential budgets (up to 145 seconds).
 
 Deploy stops the backup sidecar, takes a pre-deploy encrypted backup using the
-selected backup image, and records its UTC `last_success` timestamp in
-`deploy/pre-deploy-backup`. A backup failure (including off-site failure) stops
-the release before migration. The corresponding filename is
-`/backups/daily/<timestamp-without-punctuation>.dump.age`. The old sidecar stays
+selected backup image, and atomically records the exact completed dump basename
+from `/backups/last_success_file` in `deploy/pre-deploy-backup`, after checking
+that `/backups/daily/<recorded-filename>` exists and is nonempty. The sidecar
+publishes `last_success_file` by rename only after completing the local dump;
+`last_success` remains its UTC completion time for status and catch-up readers.
+The dump's name uses its **start** time: never derive a filename from
+`last_success`. A backup failure (including off-site failure), missing filename
+marker or missing dump stops the release before migration. The old sidecar stays
 stopped during a failed breaking transition, so automatic rotation cannot
 remove the recovery dump. It remains subject to normal 14-daily/4-weekly
 retention once backup operation resumes; this is not an indefinite archive.
@@ -179,9 +183,15 @@ status and migration errors in the approved operations window. Either:
    current schema, wait for exact-SHA CI, then `just deploy <ip> <fixed-sha>`.
    The existing incomplete marker disables fallback to old code; only a
    successfully migrated and healthy release clears it.
-2. **Restore:** use the backup timestamp in `deploy/pre-deploy-backup` and the
+2. **Restore:** use the exact dump basename in `deploy/pre-deploy-backup` and the
    owner's offline age identity with [restore.md section B](restore.md#b-a-real-restore).
-   Stop both services first, restore the named pre-deploy dump, and follow
+   The dump is `/backups/daily/<recorded-filename>`; pass the basename to
+   `just prod-restore <ip> <file>`. For example, `20261109T000000Z.dump.age`
+   identifies that file even if `last_success` is `2026-11-09T00:00:05Z`.
+   A legacy recovery record containing only a completion timestamp does not
+   reliably identify a dump: resolve the exact filename from backup logs and
+   the retained dump listing before restoring; do not convert that timestamp
+   into a filename. Stop both services first, restore the named dump, and follow
    post-restore quarantine/privacy reconciliation before any processing resumes.
    Select code compatible with the restored heads and deploy it through the
    exact-SHA gate. The runbook's restore/reconciliation steps remain mandatory.
@@ -319,8 +329,10 @@ it. Failed dumps retry on the next check. Off-site uploads remain pending
 when the newest completed dump or `last_success` is newer than
 `last_upload_success`. `last_upload_attempt` persists the hourly retry
 interval across restarts; a failed upload keeps the local dump. All three
-markers live in the backups volume. `BACKUP_TEST_NOW` is a smoke-test clock
-override; leave it unset in production. A rebuilt host needs the recovery
+timestamp markers live in the backups volume, alongside the atomic
+`last_success_file` dump-basename marker used for deployment recovery.
+`BACKUP_TEST_NOW` is a smoke-test clock override; leave it unset in production.
+A rebuilt host needs the recovery
 order in [restore.md §C](restore.md#c-rebuilding-a-lost-host) before starting
 the sidecar, because an empty volume now causes an immediate backup.
 

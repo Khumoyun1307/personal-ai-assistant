@@ -20,6 +20,8 @@
 #   /backups/last_upload_success  — the last complete off-site sync
 #   /backups/last_upload_attempt  — the last off-site attempt (retry throttle)
 # Success markers are only written after the recorded step succeeded.
+# /backups/last_success_file is the exact completed daily dump basename, not
+# a timestamp. It is published atomically before the completion-time marker.
 #
 # Exit codes of `once`: 0 dump (and sync) ok; 1 dump failed; 3 dump ok but the
 # off-site sync failed (the local copy is kept; `loop` retries hourly).
@@ -101,6 +103,8 @@ dump() {
   fi
   rotate "$DAILY" "$KEEP_DAILY"
   rotate "$WEEKLY" "$KEEP_WEEKLY"
+  printf '%s\n' "$stamp.dump.age" > "$BACKUP_DIR/last_success_file.part"
+  mv "$BACKUP_DIR/last_success_file.part" "$BACKUP_DIR/last_success_file"
   write_marker last_success
 }
 
