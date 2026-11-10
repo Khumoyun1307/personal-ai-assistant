@@ -10,6 +10,9 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 ${imports if imports else ""}
+# Fail closed until the author reviews compatibility with the previous image.
+COMPATIBILITY = "breaking"
+
 revision = ${repr(up_revision)}
 down_revision = ${repr(down_revision)}
 branch_labels = ${repr(branch_labels)}

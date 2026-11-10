@@ -105,7 +105,7 @@ services:
         condition: service_started
     restart: unless-stopped
     # Inside Compose's grace period: workers finish in-flight sends (§4.3).
-    stop_grace_period: 90s
+    stop_grace_period: 180s
     healthcheck:
       test: ["CMD", "python", "-m", "assistant", "healthcheck"]
       interval: 60s

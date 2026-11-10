@@ -12,7 +12,7 @@ never rebuilt; a conflicting full-SHA image label refuses the operation.
 ```powershell
 just deploy <ip>          # fetch main on laptop, print selected SHA, verify CI, deploy exactly it
 just deploy <ip> <sha>    # select a specific main ancestor (7–40 hex; resolved to full SHA)
-just prod-rollback <ip>   # previous recorded images/SHA; no build or migration; identical heads only
+just prod-rollback <ip>   # previous recorded images/SHA; no build or migration; expand-only head differences allowed
 just prod-status <ip>     # current/previous SHA, image tags, heads; containers, health, backup markers
 just prod-logs <ip>       # last 200 app log lines, content-free (AGENTS §9)
 just prod-backup <ip>     # a backup now (exit 3: dump ok, off-site upload failed)
@@ -61,53 +61,151 @@ the I24 upgrade below. Compose `run` has no `--no-build` option: the explicit
 image inspection guards against an implicit build if a selected image is
 missing. Only `up` uses `--no-build`.
 
-After this preflight, deploy stops the app with its existing grace period,
-records a content-free `deploy/release-in-progress` marker and runs the
-migration container once. A failure after stopping but before invoking migration
-automatically starts the existing app container on its original image and
-restores the shell's recorded image selection, clearing the new marker if
-recovery succeeds. Release arrays and image exports remain in the calling
-shell after a successful deploy. Recovery flags remain in shell scope so the
-EXIT handler can read them under `set -u` even after function locals unwind.
-Recovery failures are reported;
-the deploy still fails. An already-present incomplete marker disables this
-automatic recovery, because an earlier attempt may have changed the database.
-Once migration is invoked, any failure keeps the marker and requires a forward
-fix; no old app is automatically restarted. Only successful migration completion
-permits app startup. Backup starts first to initialize shared-volume ownership.
-After Compose accepts startup, an atomic rename writes `deploy/release-state`:
-one tab-separated row for current, then an optional row for previous, each
-holding full SHA, app tag, backup tag and sorted Alembic image heads. The
-marker is then removed. These local files are git-ignored and are parsed as
-data, never sourced as shell commands. Re-deploying the current SHA preserves
-the previous release. `prod-status` prints both records and flags an incomplete
-transition; these records describe the last completed script transition, not
-proof of app health. Verify the healthcheck and owner checks below separately.
+After preflight, deploy sends SIGTERM and waits up to 180 seconds for the app
+container to exit cleanly. The supervisor cancels the poller first (no new
+Telegram ingestion), finishes the inbox batch in hand, then stops the system,
+outbound and LLM workers in order. Workers finish in-flight jobs within their
+existing 20/30/45-second grace periods; while earlier roles stop, later workers
+can still claim queued work. This is not an atomic freeze of all queues or an
+empty-backlog guarantee. Pending updates/jobs remain in PostgreSQL. A forced
+kill or non-zero exit of a process running at drain start refuses migration.
+An already stopped/crashed container has no in-flight work; a forward fix can
+proceed from it after schema checks, with automatic fallback disabled when an
+incomplete marker exists. Existing claim/uncertain-send rules
+still apply to work interrupted at a deadline. Compose's outer grace is now
+180 seconds, covering the supervisor's sequential budgets (up to 145 seconds).
 
-Rollback is deliberately narrow: the previous release must be recorded,
-its two labeled images must still exist, its image heads must match the
-record, current and previous recorded heads must be identical, and the previous
-Compose must use the service-specific environment files (pre-I24 releases are
-incompatible with the new settings format and require a forward fix). An
-incomplete transition blocks rollback even if the old recorded pair matches.
-Rollback stops the app, checks out the recorded previous SHA and recreates
-backup/app with `--no-build --no-deps`, so it never runs migration or rebuilds.
-It swaps the records only after Compose startup succeeds. The first release
-has no recorded previous artifact; rollback becomes available after a second
-distinct release. Settings and secrets are not versioned or restored by this
-command; review any configuration change for compatibility before rollback.
+Deploy stops the backup sidecar, takes a pre-deploy encrypted backup using the
+selected backup image, and records its UTC `last_success` timestamp in
+`deploy/pre-deploy-backup`. A backup failure (including off-site failure) stops
+the release before migration. The corresponding filename is
+`/backups/daily/<timestamp-without-punctuation>.dump.age`. The old sidecar stays
+stopped during a failed breaking transition, so automatic rotation cannot
+remove the recovery dump. It remains subject to normal 14-daily/4-weekly
+retention once backup operation resumes; this is not an indefinite archive.
+An interrupted transition preserves its original backup reference; retrying
+must not replace it with a snapshot of an uncertain schema.
 
-If rollback refuses because heads differ, artifacts are missing, or a release
-was interrupted, **forward-fix**: keep the app stopped if compatibility is
-uncertain (`just prod <ip> app-stop`), inspect content-free status and migration
-failure evidence in the approved operations window, create a reviewed fix on
-`main` compatible with the current schema, wait for its exact-SHA CI, then
-`just deploy <ip> <fixed-sha>`. Do not delete the incomplete marker to bypass
-the gate, run a downgrade, or start an old image against a changed schema.
-I22 compares recorded image heads only; compatibility/drain design, actual
-database-head reconciliation, app health waits, recovery after migration and a
-schema-changing failure rehearsal remain **I23**. No schema rollback or live
-recovery verification is claimed here.
+Before migration, a content-free `deploy/release-in-progress` marker is written.
+Migration must exit zero **and** live database heads must equal the selected
+image heads. Startup alone cannot complete a release: the script waits for
+`python -m assistant healthcheck` inside the app container and at least three
+fresh worker registrations (system/outbound/LLM), newer than this start attempt
+and no more than 30 seconds old. This checks the current fixed three-worker
+topology; it does not test a real Telegram reply, provider call or queue journey.
+Only readiness success allows the atomic `deploy/release-state` update and
+marker removal. Every failure exits non-zero, even when recovery succeeds.
+
+Server-shell controls (not application/dotenv settings):
+`RELEASE_HEALTH_TIMEOUT_SECONDS=180`, `RELEASE_POLL_SECONDS=2`, and
+`RELEASE_DRAIN_SECONDS=180`. Set these in the environment when invoking the
+server script in an approved maintenance window. Each probe is separately
+bounded (SQL 10 seconds, healthcheck 25 seconds); at defaults a final probe/poll
+can extend the overall deadline by up to 37 seconds. This assumes the Docker
+daemon/exec transport returns; a wedged daemon requires host recovery. Use positive integer values;
+shrinking the drain timeout below the supervisor budgets can force a stop and
+will refuse migration. No Python test waits on real time.
+
+### Migration compatibility and recovery (I23)
+
+New production migrations declare `COMPATIBILITY = "expand"` or `"breaking"`.
+Applied revisions 0001–0016 remain unchanged and are classified in
+`src/assistant/db/migration_compatibility.py::LEGACY_COMPATIBILITY`. The checker
+reads an in-file marker first, falling back to that legacy registry only when
+the marker is absent; duplicate sources or unclassified revisions are refused.
+Do not extend the legacy registry for new revisions (0017 and later).
+This is reviewed release metadata. `expand` means previous code may run after the upgrade: additive
+tables, nullable/defaulted columns, indexes and constraints on new columns
+that leave old writes valid. Any destructive/data rewrite, existing-column
+constraint change, trigger with effects on existing tables, or incompatible
+stored state is conservatively `breaking`. The template defaults to breaking;
+reviewers must check old reads **and writes** before choosing expand. The
+AST-based classifier never imports/executes migration code. It includes every
+new branch, excludes already-applied ancestors, and rejects unknown metadata,
+cycles, unsupported dependencies and reverse/divergent paths.
+
+Reviewed legacy classifications: 0003 rewrites data, 0005 adds a foreign key on the
+existing inbound message link, 0009 changes the confirmation-state contract,
+and 0015 installs a trigger on existing actions: **breaking**. 0001/0002 create
+schemas/tables, 0004/0006/0007/0008/0010/0011/0012/0013/0014/0016 add compatible
+storage/indexes (constraints/FKs on new storage): **expand**. Initial schema
+creation still has no previous app to restart.
+
+On failure before migration, the existing app and backup containers are
+restarted. After migration was invoked, automatic recovery is allowed only
+when the whole attempted path was expand-only, the prior release is recorded,
+and the observed post-failure heads are a known expand path from that record.
+The candidate is stopped first, the previous checkout/image is selected, and
+its health/worker readiness must pass. A failed migration can have left the
+old schema; a successful migration followed by startup/health failure can have
+left the new one. Neither case runs a downgrade. Recovery records the previous
+SHA with the **actual live schema heads**, keeps the older previous artifact,
+and clears the marker only on successful recovery. The failed candidate is
+never recorded as a successful release. Unknown heads, schema drift from the
+record, a pre-existing incomplete transition, a breaking path, missing previous
+image, or failed recovery leaves services stopped and the marker intact.
+
+The four state fields remain SHA, app image, backup image and heads; in I23
+heads denote the live schema at completion, which can be newer than the app's
+own migration graph after a compatible rollback. State is data, never sourced
+as shell code. A re-deploy of the current SHA preserves the previous artifact.
+`prod-status` shows the last completed transition and any incomplete marker;
+after a breaking failure its recorded current image is not necessarily running.
+
+`just prod-rollback <ip>` requires retained labeled previous images, compatible
+service environment files, no incomplete/settings marker, and live database
+heads matching the current record. It reads the target image's heads and uses
+the retained images' migration graphs to prove that every revision between
+the target and database is expand-only. Identical heads are the empty expand
+path. It drains, checks out the target and starts without building/migrating,
+then waits for the same health/worker gate before swapping records. It retains
+the live schema head; it never downgrades. A missing marker in an older image
+can prevent graph classification; an available complete newer graph can prove
+the path. Missing/unknown/breaking paths refuse **before stopping** the app.
+A failed rollback startup/health stops services and preserves the marker.
+Settings/secrets are not restored: configuration compatibility remains an
+operator responsibility. The first recorded release has no previous artifact.
+
+For breaking/unknown failure, keep app and backup stopped. Read content-free
+status and migration errors in the approved operations window. Either:
+
+1. **Forward-fix:** create a reviewed repair on main compatible with the actual
+   current schema, wait for exact-SHA CI, then `just deploy <ip> <fixed-sha>`.
+   The existing incomplete marker disables fallback to old code; only a
+   successfully migrated and healthy release clears it.
+2. **Restore:** use the backup timestamp in `deploy/pre-deploy-backup` and the
+   owner's offline age identity with [restore.md section B](restore.md#b-a-real-restore).
+   Stop both services first, restore the named pre-deploy dump, and follow
+   post-restore quarantine/privacy reconciliation before any processing resumes.
+   Select code compatible with the restored heads and deploy it through the
+   exact-SHA gate. The runbook's restore/reconciliation steps remain mandatory.
+
+Do not remove the incomplete marker to bypass recovery, auto-downgrade, or
+start an old image against a breaking schema. Backups and restore privacy
+reconciliation are separate operations; an image rollback cannot restore data.
+
+### Placeholder recovery rehearsal
+
+Run `just smoke-recovery` (or `bash deploy/smoke/recovery-smoke.sh`) locally or
+in CI. It uses a separate Compose project, placeholder database password,
+throwaway release images, a synthetic HTTP app and three synthetic worker
+heartbeats; no Telegram/OpenAI clients or real settings are loaded. It exercises
+the real release helper's drain, compatibility, live-head, health-timeout and
+recovery paths. An expand upgrade followed by health failure must leave the
+previous image answering HTTP on the new schema; a breaking upgrade followed
+by health failure must stop app/backup, preserve the recovery marker and print
+the forward/restore procedure. Containers/volumes and generated image tags are
+removed; the reusable `assistant:i23-rehearsal-base` image remains cached.
+
+Limitations: source selection/build reuse is stubbed; the fixture supplies image
+heads, migrations, worker registrations and a placeholder backup marker. It
+does not prove real Alembic DDL compatibility, procrastinate task draining,
+encrypted backup/restore correctness, real app health, production configuration,
+privacy reconciliation or a provider/Telegram round trip. Existing migration
+integration tests and `smoke-backup` cover their separate paths. The lead must
+run the rehearsal and relevant tests; no successful run or live deployment is
+claimed by this implementation. Owner-approved production validation remains
+required.
 
 ### 2026-11-09 Compose run incident
 
@@ -197,11 +295,13 @@ server locking, immutable tags, mount protection and the migration exit status.
 The flag does not authorize a deployment without the owner's go-ahead.
 
 Verification for this implementation remains offline: the lead runs
-`docker compose -f compose.dev.yml run --rm app uv run pytest tests/unit/test_release_deploy.py tests/unit/test_server_sh.py`
-and `pwsh -NoProfile -File deploy/smoke/release-smoke.ps1`. CI runs those
+`docker compose -f compose.dev.yml run --rm app uv run pytest tests/unit/test_migration_compatibility.py tests/unit/test_release_deploy.py tests/unit/test_server_sh.py`
+and `just smoke-recovery`, plus `pwsh -NoProfile -File deploy/smoke/release-smoke.ps1`. CI runs those
 tests in the test shards, ShellCheck on the shell scripts, the fake-only
 PowerShell smoke in `deploy-scripts`, the production backup smoke, and the
-two-architecture image builds. The implementation agent did not run Docker,
+two-architecture image builds. The Docker recovery rehearsal runs only when
+`deploy/**`, `migrations/**`, `src/assistant/db/**` or `justfile` changes;
+the other CI jobs and checks retain their existing gates. The implementation agent did not run Docker,
 pytest, SSH, gh/network calls, migrations or a production deployment. An
 owner-approved live deploy/rollback rehearsal is still required.
 

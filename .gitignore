@@ -9,6 +9,7 @@ var/
 # Content-free server release records and locks (never deploy configuration).
 /deploy/release-state
 /deploy/release-in-progress
+/deploy/pre-deploy-backup
 /deploy/.release-lock
 /deploy/.release-state.*
 
