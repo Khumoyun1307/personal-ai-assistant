@@ -3,6 +3,7 @@
 import pytest
 from sqlalchemy import select, update
 
+from assistant.actions.authorship import generated_authorship
 from assistant.actions.models import Action
 from assistant.actions.states import PENDING
 from assistant.privacy.deletion import delete_conversation_data
@@ -10,6 +11,27 @@ from tests.integration.business_env import Env
 from tests.integration.test_action_lifecycle_bulk import seed_actions
 
 pytestmark = pytest.mark.integration
+
+
+async def test_deletion_counts_terminal_authorship_even_after_body_retention(env: Env) -> None:
+    account_id, conversation_id, ids = await seed_actions(env)
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            update(Action)
+            .where(Action.account_id == account_id)
+            .values(text=None, authorship=generated_authorship(1).model_dump(mode="json"))
+        )
+        report = await delete_conversation_data(
+            session,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            actor="owner",
+            clock=env.clock,
+        )
+    assert report.actions == len(ids)
+    async with env.factory() as session:
+        stored = await session.scalars(select(Action).where(Action.account_id == account_id))
+        assert all(row.authorship is None for row in stored)
 
 
 async def test_deletion_counts_each_affected_action_once_across_cancellation_and_redaction(

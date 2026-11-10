@@ -123,22 +123,30 @@ source copying, but runtime request/source classification is still absent: the
 only production `open_request` occurrence is its service definition. None of the
 six formerly `needs H3` marked trajectories would XPASS merely from this baseline
 fixture repair, so none was unmarked. Their reasons now name the remaining
-dependencies: dictation and normalization need H6 classification and H9 authorship;
+dependencies: dictation and normalization need H6 classification (H9 authorship is implemented);
 J01 continuation, unique-contact binding and lost-source replay need H6
 classification; foreign proposal references need H6, with the generated-fence
 variant also needing H4. Contract helpers retain their missing-foundation
 assertions and do not use baseline setup to bypass these requirements. Generated
 proposal/revision cases still need H4. The adaptive scripts must follow their
-final APIs. The baseline revision adapter selects C2 arguments when that schema lands. I27's
+final APIs. H9 removes J12's sole `needs H9` marker and extends the baseline
+revision adapter to H3's nested literal-source schema, explicitly classifying
+the retained append turn as `dictate` does. J12 now exercises rewrite, mixed
+append, stale token and managed-consent cancellation without an expected failure;
+execution is pending lead/CI validation. Combined H6/H9 markers remain because
+they still require H6 runtime classification. The adapter also selects flat C2
+arguments when that schema lands. The card authorship-label journey is unmarked
+for English after H9; non-English locales retain the strict I27 expected failure.
+I27's
 recovery command needs its final spelling wired into its marked case; `/current` is a test assumption,
 not an implemented or approved product command.
 
 | Cases | Family / coverage | Pending dependencies |
 |---|---|---|
-| I01 / J01 | `test_dictation`, `test_continuations`: real question, restart, source Unicode, double tap | H3 copy seam implemented; H6 classification/H9 authorship |
+| I01 / J01 | `test_dictation`, `test_continuations`: real question, restart, source Unicode, double tap | H3/H9 copy/authorship implemented; H6 classification |
 | I02 / J03–J05 | `test_missing_content`: missing substance, standalone topic, mixed quote | H4/H6/H10/H12 |
 | I03 / J02 | `test_contact_resolution`: real/weak/ambiguous/capped verdict; cross-turn binding | Verdict unmarked; binding H6 classification |
-| I04 / J06/J11/J12 | `test_card_facts`: two actual cards, reply, version/token, terminal read, rewrite/revoke | Reads and H2 reply selection in `test_runner` unmarked; H4/H7/H9 |
+| I04 / J06/J11/J12 | `test_card_facts`: two actual cards, reply, version/token, terminal read, rewrite/revoke | Reads, H2 reply selection and H9 rewrite/revoke unmarked; H4/H7 |
 | J07–J10 | `test_interleavings`: older target; arrival/base/non-base edit/delete; same-second takeover; late Assist | H4/H10/H11 |
 | J13/J14 | `test_interleavings`: queued selection; two interruptions/restarts | I13/I14 + request/proposal foundations |
 | J15 | `test_alerts_and_tasks`: digest off, quiet/cap holds, one-shot identity, uncertain no replay | Unmarked current behavior |

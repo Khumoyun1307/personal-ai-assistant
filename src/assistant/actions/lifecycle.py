@@ -18,11 +18,12 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.callbacks import new_token
 from assistant.accounts.models import AuditLogEntry
+from assistant.actions.authorship import VersionAuthorship, generated_authorship, is_ai_generated
 from assistant.actions.models import Action
 from assistant.actions.states import (
     LIVE_CARD,
@@ -47,20 +48,45 @@ async def _change_pending(
     reason: StateReason,
     now: datetime,
     origins: frozenset[ActionOrigin] | None = None,
+    generated_only: bool = False,
 ) -> list[int]:
-    previous = select(Action.id.label("old_id"), Action.state.label("old_state")).where(
-        Action.account_id == account_id, Action.state.in_(states)
-    )
+    previous = select(
+        Action.id.label("old_id"),
+        Action.state.label("old_state"),
+        Action.version.label("old_version"),
+    ).where(Action.account_id == account_id, Action.state.in_(states))
     if conversation_ids is not None:
         previous = previous.where(Action.conversation_id.in_(conversation_ids))
     if origins is not None:
         previous = previous.where(Action.origin.in_([origin.value for origin in origins]))
+    if generated_only:
+        candidates = (
+            await session.execute(
+                select(Action.id, Action.version, Action.authorship).where(
+                    Action.account_id == account_id, Action.state.in_(states)
+                )
+            )
+        ).all()
+        # The caller holds the account/conversation locks. Keep a version fence
+        # too, so classification can never cancel a newer literal replacement.
+        generated = [
+            (row.id, row.version)
+            for row in candidates
+            if is_ai_generated(row.authorship, version=row.version)
+        ]
+        if not generated:
+            return []
+        previous = previous.where(tuple_(Action.id, Action.version).in_(generated))
     source = previous.cte("previous_actions")
     rows = (
         await session.execute(
             update(Action)
             .where(Action.account_id == account_id)
-            .where(Action.id == source.c.old_id, Action.state == source.c.old_state)
+            .where(
+                Action.id == source.c.old_id,
+                Action.state == source.c.old_state,
+                Action.version == source.c.old_version,
+            )
             .values(
                 state=target.value, state_reason=reason.value, updated_at=now, approval_token=None
             )
@@ -179,8 +205,7 @@ async def outdate_pending_for_account(
 async def cancel_pending_ai_generated(
     session: AsyncSession, *, account_id: int, reason: StateReason, now: datetime
 ) -> list[int]:
-    """`ai_managed` revoked: pending AI drafts are cancelled; texts the owner
-    dictated are the owner's own words, not AI content, and stay."""
+    """Cancel current generated/unknown versions, regardless of their trigger."""
     return await _change_pending(
         session,
         account_id=account_id,
@@ -189,7 +214,7 @@ async def cancel_pending_ai_generated(
         target=ActionState.CANCELLED,
         reason=reason,
         now=now,
-        origins=frozenset({ActionOrigin.AGENT_PROPOSAL}),
+        generated_only=True,
     )
 
 
@@ -197,11 +222,69 @@ async def clear_texts(
     session: AsyncSession, *, account_id: int, conversation_ids: Sequence[int] | None
 ) -> int:
     """Erase retained action text without changing delivery state."""
-    statement = update(Action).where(Action.account_id == account_id, Action.text.is_not(None))
+    statement = update(Action).where(
+        Action.account_id == account_id,
+        (Action.text.is_not(None)) | (Action.authorship.is_not(None)),
+    )
     if conversation_ids is not None:
         statement = statement.where(Action.conversation_id.in_(conversation_ids))
-    result = await session.execute(statement.values(text=None).returning(Action.id))
+    # Scoped purges must not leave source links in either current proof or
+    # historical action events. Unknown proof remains conservative afterward.
+    action_ids = select(Action.id).where(Action.account_id == account_id)
+    if conversation_ids is not None:
+        action_ids = action_ids.where(Action.conversation_id.in_(conversation_ids))
+    await session.execute(
+        update(AuditLogEntry)
+        .where(
+            AuditLogEntry.account_id == account_id,
+            AuditLogEntry.subject_type == "action",
+            AuditLogEntry.subject_id.in_(action_ids),
+            AuditLogEntry.details.has_key("authorship"),
+        )
+        .values(details=AuditLogEntry.details.op("-")("authorship"))
+        .execution_options(synchronize_session=False)
+    )
+    result = await session.execute(
+        statement.values(text=None, authorship=None).returning(Action.id)
+    )
     return len(result.all())
+
+
+async def clear_authorship_sources(
+    session: AsyncSession, *, account_id: int, source_ids: Sequence[int]
+) -> None:
+    """C1 source deletion hook; no source text is pinned by an action.
+
+    The source owner calls this in its purge transaction, before deleting
+    source rows. Preserve generated safety by removing proof, never by
+    upgrading a partial owner proof or reconstructing deleted spans.
+    """
+    if not source_ids:
+        return
+    await session.execute(
+        update(Action)
+        .where(
+            Action.account_id == account_id,
+            or_(*(Action.authorship.contains({"source_ids": [sid]}) for sid in source_ids)),
+        )
+        .values(authorship=None)
+        .execution_options(synchronize_session=False)
+    )
+    await session.execute(
+        update(AuditLogEntry)
+        .where(
+            AuditLogEntry.account_id == account_id,
+            AuditLogEntry.subject_type == "action",
+            or_(
+                *(
+                    AuditLogEntry.details["authorship"].contains({"source_ids": [sid]})
+                    for sid in source_ids
+                )
+            ),
+        )
+        .values(details=AuditLogEntry.details.op("-")("authorship"))
+        .execution_options(synchronize_session=False)
+    )
 
 
 # ------------------------------------------------------- single-action changes
@@ -702,6 +785,7 @@ async def apply_new_version(
     shown_through_message_id: int | None,
     base_message_id: int | None,
     now: datetime,
+    authorship: VersionAuthorship | None = None,
 ) -> NewVersion:
     """A revised text becomes version + 1 with a new token.
 
@@ -728,6 +812,9 @@ async def apply_new_version(
         return NewVersion(VersionStatus.EMPTY)
     if length > MAX_TEXT_LENGTH:
         return NewVersion(VersionStatus.TOO_LONG)
+    proof = authorship or generated_authorship(expected_version + 1)
+    if proof.version != expected_version + 1:
+        raise ValueError("authorship must describe the new version")
     expires_at: Any = Action.expires_at
     if window_bounds(origin):
         anchor = await session.scalar(
@@ -751,6 +838,8 @@ async def apply_new_version(
         values={
             "version": expected_version + 1,
             "text": text,
+            "authorship": proof.model_dump(mode="json"),
+            "approved_text_hash": None,
             "draft_run_id": draft_run_id,
             "draft_flags": None if draft_flags is None else dict(draft_flags),
             "shown_through_message_id": shown_through_message_id,
@@ -759,6 +848,7 @@ async def apply_new_version(
             "revision_turn_id": None,
             "expires_at": expires_at,
         },
+        details={"authorship": proof.model_dump(mode="json")},
     )
     if not applied:
         return NewVersion(VersionStatus.STALE)

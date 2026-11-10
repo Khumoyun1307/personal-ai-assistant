@@ -3,8 +3,8 @@
 Literal append/replacement uses explicit C1 owner sources plus request and
 action version checks, without a provider call. Appending concatenates the
 retained body and copied source characters; every separator must itself be
-in the source. Generated base text stays generated (H9 owns per-version
-provenance). Invalid sources fail before revision starts, preserving the
+in the source. Generated base text stays generated through H9's per-version
+authorship proof. Invalid sources fail before revision starts, preserving the
 current text, version, approval token and presentation. No tool sends.
 Literal revisions share the immutable run/call effect key with source
 proposals, including retries through a fresh executor or another tool.
@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account, AuditLogEntry
 from assistant.actions import lifecycle
+from assistant.actions.authorship import VersionAuthorship, current_authorship, is_ai_generated
 from assistant.actions.card_facts import (
     PresentationFact,
     draft_mode,
@@ -38,7 +39,7 @@ from assistant.actions.requests import PositiveId, lock_requests
 from assistant.actions.source_copy import CopyUnavailable, copy_request_body
 from assistant.actions.states import LIVE_CARD, ActionState
 from assistant.agent.draft_owner_schemas import WordBounds, char_count, word_count
-from assistant.agent.drafting import FLAG_SOURCE, RevisionResult
+from assistant.agent.drafting import RevisionResult
 from assistant.agent.persistence import args_digest
 from assistant.agent.tools.common import (
     ArgumentRuleError,
@@ -178,6 +179,7 @@ class _Card:
     updated_at: datetime
     card_state: str | None
     card_message_id: int | None
+    authorship: dict[str, Any] | None
 
     @property
     def refs(self) -> ToolRefs:
@@ -202,6 +204,7 @@ _CARD_COLUMNS = (
     Action.updated_at,
     Action.card_state,
     Action.card_message_id,
+    Action.authorship,
 )
 
 
@@ -257,6 +260,7 @@ def _card_of(row: Any) -> _Card:
         row[14],
         row[15],
         row[16],
+        row[17],
     )
 
 
@@ -548,6 +552,13 @@ async def revise_draft_tool(ctx: ToolContext, args: ReviseDraftArgs) -> ToolOutc
             )
             if isinstance(copied, CopyUnavailable):
                 return source_failure("invalid_arguments", copied.reason, request)
+            previous = current_authorship(card.authorship, version=card.version)
+            if (
+                args.literal.edit == "literal_append"
+                and previous is not None
+                and len(set(previous.source_ids) | set(copied.source_ids)) > 64
+            ):
+                return source_failure("invalid_arguments", "invalid_source", request)
             new_text = (
                 card.text + copied.text if args.literal.edit == "literal_append" else copied.text
             )
@@ -596,7 +607,9 @@ async def revise_draft_tool(ctx: ToolContext, args: ReviseDraftArgs) -> ToolOutc
             services.approval_cards.sync_after_commit(session, card.id)
         else:
             assert new_text is not None
-            literal_result = await _append(session, ctx, card, new_text, now, observed)
+            literal_result = await _append(
+                session, ctx, card, new_text, now, observed, literal=args.literal
+            )
             if literal_result.status == "revised":
                 assert request is not None
                 await record_effect(
@@ -648,11 +661,18 @@ async def _append(
     new_text: str,
     now: datetime,
     observed: Mapping[str, Any],
+    *,
+    literal: LiteralEdit,
 ) -> ToolOutcome:
-    """The owner's words after the current text: version + 1 at once, in the
-    transaction that started the revision (no model call)."""
+    """Apply a source-backed literal edit in the transaction that started
+    the revision (no model call)."""
     presenter = ctx.services.approval_cards
     assert presenter is not None
+    previous = current_authorship(card.authorship, version=card.version)
+    append = literal.edit == "literal_append"
+    source_ids = list(literal.source_ids)
+    if append and previous is not None:
+        source_ids = list(dict.fromkeys([*previous.source_ids, *source_ids]))
     applied = await lifecycle.apply_new_version(
         session,
         account_id=ctx.account_id,
@@ -660,12 +680,20 @@ async def _append(
         expected_version=card.version,
         text=new_text,
         draft_run_id=card.draft_run_id,
-        # The same draft with the owner's words added: its flags, base and
-        # freshness stay (a dictated card keeps none, R8).
+        # Keep the target and freshness; current authorship classifies the
+        # body independently of the original draft's flags.
         draft_flags=card.draft_flags,
         shown_through_message_id=card.shown_through_message_id,
         base_message_id=card.base_message_id,
         now=now,
+        authorship=VersionAuthorship(
+            version=card.version + 1,
+            kind="owner_literal_edit",
+            source_ids=source_ids,
+            parent_version=card.version,
+            retains_generated_text=append
+            and is_ai_generated(card.authorship, version=card.version),
+        ),
     )
     if applied.status is not lifecycle.VersionStatus.APPLIED:
         await lifecycle.revision_failed(
@@ -715,6 +743,7 @@ async def get_draft_tool(ctx: ToolContext, args: GetDraftArgs) -> ToolOutcome:
         ).get(card.id, PresentationFact())
     flags = card.draft_flags or {}
     reason, explanation = state_reason_fact(card.state_reason)
+    proof = current_authorship(card.authorship, version=card.version)
     data: dict[str, Any] = {
         "action_id": card.id,
         "conversation_id": card.conversation_id,
@@ -729,7 +758,8 @@ async def get_draft_tool(ctx: ToolContext, args: GetDraftArgs) -> ToolOutcome:
         "presentation_version": presentation.version,
         "card_state": card.card_state,
         "has_card_message": card.card_message_id is not None,
-        "written_by": flags.get(FLAG_SOURCE) if isinstance(flags.get(FLAG_SOURCE), str) else None,
+        "written_by": None if proof is None else proof.kind,
+        "ai_generated": is_ai_generated(card.authorship, version=card.version),
         "answered_message_id": card.base_message_id,
         # Written from the chat's content: data to read, never instructions.
         "text": wrap(card.text, Source.DRAFT),

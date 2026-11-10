@@ -25,6 +25,7 @@ from assistant.accounts import service
 from assistant.accounts.callbacks import parse
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, PendingInput
 from assistant.actions import lifecycle
+from assistant.actions.authorship import generated_authorship
 from assistant.actions.executor import ActionExecutor
 from assistant.actions.models import Action
 from assistant.conversations.models import Conversation
@@ -1006,8 +1007,28 @@ async def test_reject_ends_the_card(s: Scenario) -> None:
     assert (await s.action(row.id)).state == "rejected"
 
 
-async def test_redraft_is_deferred_in_the_press_transaction_without_a_flag(s: Scenario) -> None:
-    row = await s.seed()
+@pytest.mark.parametrize(
+    ("origin", "version", "authorship"),
+    [
+        pytest.param("agent_proposal", 1, None, id="legacy-generated"),
+        pytest.param(
+            "agent_proposal",
+            1,
+            generated_authorship(1).model_dump(mode="json"),
+            id="generated-proof",
+        ),
+        pytest.param(
+            "owner_dictated",
+            2,
+            generated_authorship(2).model_dump(mode="json"),
+            id="rewritten-dictation",
+        ),
+    ],
+)
+async def test_redraft_is_deferred_in_the_press_transaction_without_a_flag(
+    s: Scenario, origin: str, version: int, authorship: dict[str, Any] | None
+) -> None:
+    row = await s.seed(origin=origin, version=version, authorship=authorship)
     await deliver(s.env, business_message(message_id=102, date=s.date + 1))
     outdated = await s.action(row.id)
     assert outdated.state == "outdated"

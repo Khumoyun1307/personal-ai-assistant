@@ -88,6 +88,9 @@ class Action(Base):
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default=sql_text("'proposed'"))
     state_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sql_text("1"))
+    authorship: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
     approved_text_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     sent_text_hash: Mapped[str | None] = mapped_column(Text, nullable=True)

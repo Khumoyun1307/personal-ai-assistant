@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from assistant.accounts.callbacks import MAX_CALLBACK_DATA_BYTES, new_token, parse
+from assistant.actions.authorship import VersionAuthorship, generated_authorship
 from assistant.actions.states import ActionOrigin, ActionState, StateReason
 from assistant.telegram.control.approvals import (
     CARD_BUDGET,
@@ -70,6 +71,14 @@ def view(**changes: Any) -> ApprovalCardView:
         sending_enabled=True,
         card_token="CardTok123",
     )
+    if changes.get("origin") is ActionOrigin.OWNER_DICTATED and "authorship" not in changes:
+        changes["authorship"] = VersionAuthorship(
+            version=1,
+            kind="owner_dictated",
+            source_ids=[],
+            parent_version=None,
+            retains_generated_text=False,
+        ).model_dump(mode="json")
     return replace(base, **changes)
 
 
@@ -448,6 +457,57 @@ def test_a_picked_assistant_suggestion_is_labelled_as_the_assistants_never_as_di
     owner_draft = {"source": "draft_owner", "mode": "reply", "target": "newest"}
     requested = shown(render_card(view(draft_flags=owner_draft)).text)
     assert "Draft reply" in requested
+
+
+@pytest.mark.parametrize("mixed_append", [False, True])
+def test_ai_rewrite_and_mixed_append_of_dictation_show_current_generated_authorship(
+    mixed_append: bool,
+) -> None:
+    proof = generated_authorship(2)
+    if mixed_append:
+        proof = proof.model_copy(update={"kind": "owner_literal_edit"})
+    text = shown(
+        render_card(
+            view(
+                origin=ActionOrigin.OWNER_DICTATED,
+                version=2,
+                authorship=proof.model_dump(mode="json"),
+                draft_flags={"makes_commitment": True},
+            )
+        ).text
+    )
+    assert "Written by the assistant" in text
+    assert "Message you dictated" not in text
+    assert "Contains a commitment" in text
+    assert ("with your addition" in text) is mixed_append
+
+
+def test_legacy_dictation_never_claims_current_owner_authorship() -> None:
+    text = shown(render_card(view(origin=ActionOrigin.OWNER_DICTATED, authorship=None)).text)
+    assert "Written by the assistant" in text
+    assert "Your words" not in text
+
+
+def test_literal_whole_replacement_has_owner_label_even_after_an_assistant_original() -> None:
+    proof = VersionAuthorship(
+        version=2,
+        kind="owner_literal_edit",
+        source_ids=[],
+        parent_version=1,
+        retains_generated_text=False,
+    )
+    text = shown(
+        render_card(
+            view(
+                version=2,
+                authorship=proof.model_dump(mode="json"),
+                draft_flags={"makes_commitment": True},
+            )
+        ).text
+    )
+    assert "Your words" in text
+    assert "Written by the assistant" not in text
+    assert "Contains a commitment" not in text
 
 
 # ------------------------------------------------- P2-O20: Telegram decides

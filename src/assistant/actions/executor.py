@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import connections
 from assistant.accounts.models import Account, AuditLogEntry
+from assistant.actions.authorship import is_ai_generated
 from assistant.actions.config import ActionsConfig
 from assistant.actions.lifecycle import sendable_length, text_hash, transition
 from assistant.actions.models import Action
@@ -404,7 +405,7 @@ class ActionExecutor:
             phase=Phase.EXECUTION,
             now=now,
             config=self._config,
-            ai_generated=origin is ActionOrigin.AGENT_PROPOSAL,
+            ai_generated=is_ai_generated(action.authorship, version=action.version),
             process_run_id=self._config.process_run_id,
         )
         return decide(context)

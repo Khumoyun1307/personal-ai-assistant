@@ -7,7 +7,8 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from assistant.accounts.models import Account, ControlTurn
+from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
+from assistant.actions.authorship import VersionAuthorship, generated_authorship
 from assistant.actions.models import Action
 from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
 from assistant.actions.requests import LinkAction, update_request
@@ -101,15 +102,62 @@ async def test_action_sweep_unlinks_both_request_action_columns(env: Env) -> Non
 
 
 async def test_request_metadata_has_a_one_year_ceiling(env: Env) -> None:
-    _, _, _, request_id = await seed_request(env)
+    account_id, conversation_id, _, request_id = await seed_request(env)
     async with env.factory() as session, session.begin():
         request = await session.get(OwnerRequest, request_id)
         assert request is not None
         request.requested_at = env.clock.now() - timedelta(days=365)
+        source_id = await session.scalar(
+            select(OwnerRequestSource.id).where(
+                OwnerRequestSource.account_id == account_id,
+                OwnerRequestSource.request_id == request_id,
+            )
+        )
+        assert source_id is not None
+        proof = VersionAuthorship(
+            version=1,
+            kind="owner_dictated",
+            source_ids=[source_id],
+            parent_version=None,
+            retains_generated_text=False,
+        ).model_dump(mode="json")
+        # Historical artifacts can outlive the request's current action link.
+        action = Action(
+            account_id=account_id,
+            conversation_id=conversation_id,
+            kind="send_message",
+            origin="owner_dictated",
+            state="rejected",
+            text="Synthetic historical draft",
+            authorship=proof,
+            created_at=env.clock.now(),
+        )
+        session.add(action)
+        await session.flush()
+        action_id = action.id
+        audit = AuditLogEntry(
+            account_id=account_id,
+            actor="system",
+            event="action_proposed",
+            subject_type="action",
+            subject_id=action_id,
+            details={"version": 1, "authorship": proof},
+            at=env.clock.now(),
+        )
+        session.add(audit)
+        await session.flush()
+        audit_id = audit.id
     assert (await sweep_all(env.factory, env.clock)).owner_requests == 1
     async with env.factory() as session:
         assert await session.get(OwnerRequest, request_id) is None
         assert list(await session.scalars(select(OwnerRequestSource))) == []
+        retained = await session.get(Action, action_id)
+        assert retained is not None
+        assert retained.text == "Synthetic historical draft"
+        assert retained.authorship is None
+        retained_audit = await session.get(AuditLogEntry, audit_id)
+        assert retained_audit is not None
+        assert "authorship" not in retained_audit.details
 
 
 async def test_action_text_retention_uses_account_period_and_keeps_executing(env: Env) -> None:
@@ -139,6 +187,7 @@ async def test_action_rows_expire_after_a_year_only_if_settled(env: Env) -> None
     async with env.factory() as session, session.begin():
         for action in await session.scalars(select(Action).where(Action.account_id == account_id)):
             action.created_at = env.clock.now() - timedelta(days=366)
+            action.authorship = generated_authorship(action.version).model_dump(mode="json")
     report = await sweep_all(env.factory, env.clock)
     assert report.actions == 8  # seven terminal states plus delivery_uncertain
     async with env.factory() as session:
@@ -147,6 +196,9 @@ async def test_action_rows_expire_after_a_year_only_if_settled(env: Env) -> None
         )
     assert remaining == {"proposed", "awaiting_approval", "approved", "scheduled", "executing"}
     assert len(ids) == len(remaining) + report.actions
+    async with env.factory() as session:
+        for action in await session.scalars(select(Action).where(Action.account_id == account_id)):
+            assert action.authorship == generated_authorship(action.version).model_dump(mode="json")
 
 
 async def test_tasks_keep_open_rows_and_delete_old_closed_rows(env: Env) -> None:

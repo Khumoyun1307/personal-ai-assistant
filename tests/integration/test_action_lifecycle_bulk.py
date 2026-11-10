@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from assistant.accounts.models import Account, AuditLogEntry
-from assistant.actions.lifecycle import cancel_pending, clear_texts, outdate_pending
+from assistant.actions.authorship import VersionAuthorship, is_ai_generated
+from assistant.actions.lifecycle import (
+    cancel_pending,
+    clear_authorship_sources,
+    clear_texts,
+    outdate_pending,
+)
 from assistant.actions.models import Action
 from assistant.actions.states import ActionState, StateReason
 from assistant.conversations.models import Contact, Conversation
@@ -144,6 +150,88 @@ async def test_clear_texts_never_crosses_accounts(env: Env) -> None:
     assert all(
         row.text == "synthetic action text" for row in (await rows(env, other_account)).values()
     )
+
+
+@pytest.mark.parametrize("source_only", [False, True])
+async def test_authorship_source_links_are_purged_without_crossing_accounts(
+    env: Env, source_only: bool
+) -> None:
+    account_id, conversation_id, ids = await seed_actions(env)
+    other_account, _, other_ids = await seed_actions(env, user_id=7000080002)
+    proof = VersionAuthorship(
+        version=1,
+        kind="owner_dictated",
+        source_ids=[37],
+        parent_version=None,
+        retains_generated_text=False,
+    ).model_dump(mode="json")
+    async with env.factory() as session, session.begin():
+        await session.execute(update(Action).values(authorship=proof))
+        for owner, subject in (
+            (account_id, ids["awaiting_approval"]),
+            (other_account, other_ids["awaiting_approval"]),
+        ):
+            session.add(
+                AuditLogEntry(
+                    account_id=owner,
+                    actor="system",
+                    event="action_proposed",
+                    subject_type="action",
+                    subject_id=subject,
+                    details={"version": 1, "authorship": proof},
+                )
+            )
+        await session.flush()
+        if source_only:
+            await clear_authorship_sources(session, account_id=account_id, source_ids=[37])
+        else:
+            await clear_texts(session, account_id=account_id, conversation_ids=[conversation_id])
+    own_rows = await rows(env, account_id)
+    assert all(row.authorship is None for row in own_rows.values())
+    assert all(is_ai_generated(row.authorship, version=row.version) for row in own_rows.values())
+    assert all(row.authorship == proof for row in (await rows(env, other_account)).values())
+    async with env.factory() as session:
+        entries = list(await session.scalars(select(AuditLogEntry)))
+    for entry in entries:
+        if entry.account_id == account_id:
+            assert "authorship" not in entry.details
+        else:
+            assert entry.details["authorship"] == proof
+
+
+async def test_account_deletion_cascades_current_and_audited_authorship(env: Env) -> None:
+    account_id, _, ids = await seed_actions(env)
+    other_account, _, other_ids = await seed_actions(env, user_id=7000080002)
+    proof = VersionAuthorship(
+        version=1,
+        kind="owner_dictated",
+        source_ids=[37],
+        parent_version=None,
+        retains_generated_text=False,
+    ).model_dump(mode="json")
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            update(Action).where(Action.account_id == account_id).values(authorship=proof)
+        )
+        session.add(
+            AuditLogEntry(
+                account_id=account_id,
+                actor="system",
+                event="action_proposed",
+                subject_type="action",
+                subject_id=ids["awaiting_approval"],
+                details={"version": 1, "authorship": proof},
+            )
+        )
+        await session.flush()
+        await session.execute(delete(Account).where(Account.id == account_id))
+    assert await rows(env, account_id) == {}
+    assert len(await rows(env, other_account)) == len(other_ids)
+    async with env.factory() as session:
+        remaining = await session.scalars(
+            select(AuditLogEntry).where(AuditLogEntry.account_id == account_id)
+        )
+        assert list(remaining) == []
 
 
 async def test_bulk_helpers_clear_the_approval_token(env: Env) -> None:

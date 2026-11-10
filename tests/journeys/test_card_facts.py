@@ -147,7 +147,6 @@ async def test_i04_j06_reply_selects_k_revision_and_rejected_v2_content(
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-@pytest.mark.xfail(strict=True, reason="needs H9", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("literal_append", [False, True])
 async def test_j12_rewrite_has_generated_authorship_and_revocation_cancels(
@@ -372,8 +371,18 @@ async def test_ambiguous_business_send_has_committed_claim_and_is_never_retried(
     )
 
 
-@pytest.mark.xfail(strict=True, reason="needs I27", raises=AssertionError)
-@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize(
+    "locale",
+    [
+        pytest.param(
+            locale,
+            marks=pytest.mark.xfail(strict=True, reason="needs I27", raises=AssertionError)
+            if locale != "en"
+            else (),
+        )
+        for locale in LOCALES
+    ],
+)
 async def test_card_authorship_label_is_localized_without_changing_exact_body(
     journey: Journey, locale: Locale
 ) -> None:

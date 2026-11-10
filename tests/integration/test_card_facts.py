@@ -6,6 +6,7 @@ import pytest
 
 from assistant.accounts.models import AuditLogEntry
 from assistant.actions.activity import live_cards
+from assistant.actions.authorship import VersionAuthorship
 from assistant.actions.card_facts import presentation_facts
 from assistant.agent.tools.activity import GetActivityArgs, get_activity_tool
 from assistant.agent.tools.drafts import GetDraftArgs, get_draft_tool
@@ -22,6 +23,37 @@ from tests.integration.business_env import Env
 from tests.integration.p2_factories import NOW, seed_account, seed_action, seed_conversation
 
 pytestmark = pytest.mark.integration
+
+
+async def test_current_authorship_is_shared_by_draft_reads_and_live_card_facts(env: Env) -> None:
+    proof = VersionAuthorship(
+        version=2,
+        kind="owner_literal_edit",
+        source_ids=[],
+        parent_version=1,
+        retains_generated_text=True,
+    )
+    async with env.factory() as session, session.begin():
+        account = await seed_account(session)
+        conv = await seed_conversation(session, account_id=account.id)
+        row = await seed_action(
+            session,
+            account_id=account.id,
+            conversation_id=conv.id,
+            version=2,
+            origin="owner_dictated",
+            state="awaiting_approval",
+            authorship=proof.model_dump(mode="json"),
+        )
+    result = await get_draft_tool(
+        context(env, account.id), GetDraftArgs(action_id=row.id, conversation_id=None)
+    )
+    assert result.data["written_by"] == "owner_literal_edit"
+    assert result.data["ai_generated"] is True
+    async with env.factory() as session:
+        [fact] = await live_cards(session, account_id=account.id)
+    assert fact.authorship_kind == "owner_literal_edit"
+    assert fact.ai_generated is True
 
 
 def context(env: Env, account_id: int) -> ToolContext:

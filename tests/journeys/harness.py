@@ -23,6 +23,7 @@ from assistant.actions.card_facts import presentation_facts
 from assistant.actions.models import Action
 from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
 from assistant.actions.requests import (
+    AddSources,
     OwnerRequestView,
     RequestApplied,
     RequestSource,
@@ -80,7 +81,7 @@ from tests.journeys.models import (
     Revoke,
     Tap,
 )
-from tests.scenarios.p2_drive import Scenario, entered_or_finished, run_queued
+from tests.scenarios.p2_drive import Scenario, entered_or_finished, revision_result, run_queued
 
 JOURNEY_FLAGS = PRODUCTION_FLAGS | {
     "actions.send",
@@ -367,9 +368,63 @@ class Journey:
                     source_ids=sources,
                     context_fence_id=None if append else fences[-1],
                 )
+            if "literal" in tool.args_model.model_fields:
+                literal: dict[str, Any] | None = None
+                if append:
+                    # As dictate() does for baseline H3, classify this fixture's
+                    # entire owner turn explicitly; its leading space is source
+                    # text too. H6 owns natural-language span classification.
+                    request = await self.request()
+                    async with transaction(self.s.env.factory) as uow:
+                        turn = await uow.session.scalar(
+                            select(ControlTurn).where(
+                                ControlTurn.account_id == self.s.account_id,
+                                ControlTurn.id == self.turns[-1],
+                                ControlTurn.role == "owner",
+                            )
+                        )
+                        assert turn is not None
+                        assert turn.text is not None
+                        added = await update_request(
+                            uow.session,
+                            account_id=self.s.account_id,
+                            request_id=request.request_id,
+                            expected_version=request.version,
+                            update=AddSources(
+                                sources=(
+                                    RequestSource(
+                                        span=SourceSpan(
+                                            turn_id=turn.id,
+                                            field="text",
+                                            start=0,
+                                            end=len(turn.text),
+                                            field_sha256=self.text_hash(turn.text),
+                                        ),
+                                        purpose="literal_body",
+                                    ),
+                                )
+                            ),
+                            now=self.s.env.clock.now(),
+                        )
+                        assert isinstance(added, RequestApplied)
+                        literal = {
+                            "request_id": added.view.request_id,
+                            "request_version": added.view.version,
+                            "expected_version": row.version,
+                            "edit": "literal_append",
+                            "source_ids": [added.view.source_ids[-1]],
+                        }
+                else:
+                    self.s.fake.parsed.append(revision_result(text=text))
+                return call(
+                    "revise_draft",
+                    conversation_id=None,
+                    action_id=row.id,
+                    literal=literal,
+                    min_words=None,
+                    max_words=None if append else 10,
+                )
             if not append:
-                from tests.scenarios.p2_drive import revision_result
-
                 self.s.fake.parsed.append(revision_result(text=text))
             return call(
                 "revise_draft",

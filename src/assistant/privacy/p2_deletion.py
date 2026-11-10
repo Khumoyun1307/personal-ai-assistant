@@ -24,7 +24,7 @@ async def count_actions_for_purge(
     """Count before request invalidation can cancel and clear a derived action."""
     affected = select(func.count(Action.id)).where(
         Action.account_id == account_id,
-        or_(Action.state.in_(PENDING), Action.text.is_not(None)),
+        or_(Action.state.in_(PENDING), Action.text.is_not(None), Action.authorship.is_not(None)),
     )
     if conversation_ids is not None:
         affected = affected.where(Action.conversation_id.in_(conversation_ids))

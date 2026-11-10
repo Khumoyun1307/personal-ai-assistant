@@ -38,6 +38,7 @@ from assistant.accounts.service import (
     ConsentMissingError,
     active_consent,
 )
+from assistant.actions.authorship import VersionAuthorship
 from assistant.actions.config import ActionsConfig
 from assistant.actions.drafts import FLAGGED_REASONS, JOB_REASONS, redraft_queueing_lock
 from assistant.actions.models import Action
@@ -928,6 +929,7 @@ async def propose_draft(
     dictated_text: str | None = None,
     suggested_text: str | None = None,
     answered_message_id: int | None = None,
+    authorship: VersionAuthorship | None = None,
 ) -> ProposalResult | Stale:
     """One proposal, in the caller's transaction (§3.4).
 
@@ -1002,6 +1004,7 @@ async def propose_draft(
             trigger_turn_id=trigger_turn_id,
             draft_run_id=outcome.run_id,
             draft_flags=flags,
+            authorship=authorship,
         ),
         clock=clock,
         config=config,

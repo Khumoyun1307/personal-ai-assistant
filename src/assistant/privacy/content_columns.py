@@ -54,6 +54,7 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("owner_request_sources", "field_sha256"),
         ("actions", "kind"),
         ("actions", "origin"),
+        ("actions", "authorship"),
         ("actions", "state"),
         ("actions", "state_reason"),
         ("actions", "policy_decision"),

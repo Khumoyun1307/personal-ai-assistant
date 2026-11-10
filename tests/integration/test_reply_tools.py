@@ -21,6 +21,7 @@ from sqlalchemy import func, select, text, update
 from structlog.testing import capture_logs
 
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
+from assistant.actions.authorship import current_authorship, is_ai_generated
 from assistant.actions.models import Action
 from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
 from assistant.actions.requests import (
@@ -557,6 +558,11 @@ async def test_suggestion_selection_cannot_copy_an_unselected_retained_source(
     [card] = await actions_of(denv.env, conversation)
     assert card.text == "SYNTH option 2"
     assert card.origin == "agent_proposal"
+    proof = current_authorship(card.authorship, version=card.version)
+    assert proof is not None
+    assert proof.kind == "agent_proposal_selected"
+    assert proof.source_ids == [selected_id]
+    assert is_ai_generated(card.authorship, version=card.version)
     async with denv.env.factory() as session, session.begin():
         exported = await export_owner_requests(session, account_id=account_id)
         [selection] = exported["suggestion_selections"]
@@ -570,6 +576,19 @@ async def test_suggestion_selection_cannot_copy_an_unselected_retained_source(
         )
         erased = await export_owner_requests(session, account_id=account_id)
         assert erased["suggestion_selections"] == []
+    [erased_card] = await actions_of(denv.env, conversation)
+    assert erased_card.authorship is None
+    async with denv.env.factory() as session:
+        details = list(
+            await session.scalars(
+                select(AuditLogEntry.details).where(
+                    AuditLogEntry.account_id == account_id,
+                    AuditLogEntry.subject_type == "action",
+                    AuditLogEntry.subject_id == card.id,
+                )
+            )
+        )
+    assert all("authorship" not in entry for entry in details)
 
 
 async def test_source_retry_returns_current_artifact_without_copying_again(denv: DraftEnv) -> None:
@@ -599,6 +618,11 @@ async def test_source_retry_returns_current_artifact_without_copying_again(denv:
     assert retry["requested_change_applied"] is False
     [card] = await actions_of(denv.env, conversation)
     assert card.version == 1
+    proof = current_authorship(card.authorship, version=card.version)
+    assert proof is not None
+    assert proof.kind == "owner_dictated"
+    assert proof.source_ids == args["source_ids"]
+    assert not is_ai_generated(card.authorship, version=card.version)
     assert len(denv.presenter.presented) == 1
     async with denv.env.factory() as session, session.begin():
         await session.execute(update(Action).where(Action.id == card.id).values(text=None))

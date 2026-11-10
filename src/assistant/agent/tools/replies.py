@@ -23,8 +23,8 @@ Nothing here sends: the owner must tap the current card and execution must
 pass policy again. Logs and receipts never contain the copied body.
 
 The legacy `propose_reply` writer is retained until H4/H6 cutover. H3 changes
-no used prompt and implements no model-written proposal tool. H9 owns the
-per-version authorship/retained-generated-text integration.
+no used prompt and implements no model-written proposal tool. H9 records
+per-version authorship/source ids and preserves generated-text classification.
 
 The application supplies the owner's own current words to that writer even
 in a tainted run, including the classified own-text component beside a quote
@@ -45,6 +45,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
+from assistant.actions.authorship import VersionAuthorship, current_authorship, is_ai_generated
 from assistant.actions.models import Action
 from assistant.actions.proposals import ProposalRefused
 from assistant.actions.request_models import OwnerRequest
@@ -700,7 +701,14 @@ async def _source_receipt(
     # Transitional facts for existing card consumers. The nullable action
     # union above is authoritative; a no-action result never contains these.
     if staged or exact:
-        written_by = "owner" if action.origin == "owner_dictated" else "assistant_suggestion"
+        proof = current_authorship(action.authorship, version=action.version)
+        written_by = (
+            "owner"
+            if not is_ai_generated(action.authorship, version=action.version)
+            else "assistant_suggestion"
+            if proof is not None and proof.kind == "agent_proposal_selected"
+            else "assistant"
+        )
         facts = await _result(
             session,
             ctx.account_id,
@@ -856,6 +864,13 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
                 dictated_text=copied.text if dictated else None,
                 suggested_text=None if dictated else copied.text,
                 answered_message_id=answered,
+                authorship=VersionAuthorship(
+                    version=1,
+                    kind="owner_dictated" if dictated else "agent_proposal_selected",
+                    source_ids=list(copied.source_ids),
+                    parent_version=None,
+                    retains_generated_text=not dictated,
+                ),
             )
         except ProposalRefused as refused:
             return source_failure("not_available", refused.code, request)
