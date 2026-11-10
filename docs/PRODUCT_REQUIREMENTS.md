@@ -406,6 +406,8 @@ In a managed chat, the owner taps **Manage Bot** in Telegram's action bar → th
 | FR-TRI-06 | Monitors from natural language (contact replies, keywords/topics, decision requests), one-shot or standing, confirmed before activation. | Must | R2 |
 | FR-TRI-07 | Noise control: deduplicate alerts, batch related alerts, cap alerts per hour, accept feedback ("fewer alerts like this"). | Should | R2 |
 
+**Owner decision D-S9, 2026-11-09 (stabilization I10/I11):** minimal task governance is pulled forward: list open commitments/tasks including no-due-date and overdue states, complete, cancel, correct title/due date, and review tasks older than a requested N days. Age is never evidence of fulfilment and never silently closes an open task. State changes use the existing account scoping, audit, Undo and tainted-run confirmation rules. Full reminders, snooze, reopen and conditional follow-ups remain M07 scope.
+
 ### 10.9 Follow-ups, reminders, and automation (FUP)
 
 | ID | Requirement | Priority | Release |

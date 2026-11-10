@@ -22,6 +22,7 @@ from assistant.accounts import preferences
 from assistant.accounts.models import Account, AuditLogEntry
 from assistant.conversations import modes, priority
 from assistant.core.clock import Clock
+from assistant.inbox import task_controls
 from assistant.memory import items
 
 UNDO_CARD = "undo"
@@ -36,6 +37,7 @@ UNDOABLE_EVENTS = frozenset(
         modes.EVENT_MODE_CHANGED,
         preferences.EVENT_PREFERENCES_CHANGED,
         priority.EVENT_PRIORITY_CHANGED,
+        task_controls.EVENT_TASK_UPDATED,
     }
 )
 
@@ -114,6 +116,8 @@ async def undo(
         done = await _undo_mode(session, account_id, entry, clock)
     elif entry.event == priority.EVENT_PRIORITY_CHANGED:
         done = await _undo_priority(session, account_id, entry, clock)
+    elif entry.event == task_controls.EVENT_TASK_UPDATED:
+        done = await task_controls.undo(session, account_id=account_id, entry=entry, clock=clock)
     elif entry.event == preferences.EVENT_PREFERENCES_CHANGED:
         account = await session.get(Account, account_id)
         if account is not None:

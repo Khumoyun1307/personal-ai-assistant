@@ -102,7 +102,7 @@ class TriageJob:
         return outcome
 
     async def expire_tasks(self) -> int:
-        """`system.expire_tasks` (hourly): silent expiry of stale open tasks."""
+        """Compatibility trigger; D-S9 keeps aged tasks open for owner review."""
         async with transaction(self.session_factory) as uow:
             expired = await tasks.expire_due(uow.session, clock=self.clock)
         if expired:

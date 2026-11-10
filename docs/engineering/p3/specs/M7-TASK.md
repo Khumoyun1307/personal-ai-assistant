@@ -1,5 +1,7 @@
 # M7-TASK — Owner tasks: complete, snooze, cancel, owner-only reopen
 
+**Scope moved (D-S9, owner 2026-11-09):** stabilization I10/I11 owns minimal list/complete/cancel/correct/review-stale controls and stops age-based expiry; M07 must reuse/adapt those controls rather than duplicate them. Snooze, reopen, task creation, reminders and follow-ups remain future scope.
+
 | | |
 |---|---|
 | **Unit** | M7-TASK — owner task functions in `inbox/tasks.py`, the `update_task` tool, the `TaskControls` port, snooze filters, expiry changes |

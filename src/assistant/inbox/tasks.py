@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Boolean, Row, func, literal_column, select, text, update
@@ -47,13 +47,6 @@ _CLOSED_STATUS = {
 
 EVENT_TASK_CREATED = "task_created"
 EVENT_TASK_CLOSED = "task_closed"
-
-#: Expiry (S05.1 §3.8, TL decision): a question or decision 14 days after its
-#: newest source message; a commitment 7 days after it was due, or 30 days
-#: after it was found when it has no due date. Silent: no alert, no digest line.
-QUESTION_EXPIRY = timedelta(days=14)
-COMMITMENT_EXPIRY_AFTER_DUE = timedelta(days=7)
-COMMITMENT_EXPIRY_UNDATED = timedelta(days=30)
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,58 +340,10 @@ async def closed_between(
     return [_view(row) for row in rows.scalars()]
 
 
-_EXPIRABLE = text(
-    """
-    SELECT t.id
-    FROM app.tasks AS t
-    WHERE t.account_id = :account_id
-      AND t.status = 'open'
-      AND t.created_by = 'agent'
-      AND (
-        (t.kind IN ('open_question', 'decision') AND coalesce((
-            SELECT max(m.sent_at)
-            FROM app.messages AS m
-            WHERE m.account_id = t.account_id
-              AND m.id IN (
-                  SELECT CAST(value AS bigint)
-                  FROM jsonb_array_elements_text(t.source_message_ids)
-              )
-        ), t.created_at) < :question_before)
-        OR (t.kind IN ('owner_commitment', 'contact_commitment') AND (
-            (t.due_at IS NOT NULL AND t.due_at < :due_before)
-            OR (t.due_at IS NULL AND t.created_at < :undated_before)
-        ))
-      )
-    ORDER BY t.id
-    """
-)
-
-
 async def expire_due(session: AsyncSession, *, clock: Clock) -> int:
-    """`system.expire_tasks`: expire the open agent tasks past their time, for
-    every account, one account at a time (every statement scoped). Silent:
-    content-free audit rows, no alert."""
-    now = clock.now()
-    accounts = (
-        await session.execute(
-            select(Task.account_id).where(Task.status == "open").group_by(Task.account_id)
-        )
-    ).scalars()
-    expired = 0
-    for account_id in list(accounts):
-        ids = (
-            await session.execute(
-                _EXPIRABLE,
-                {
-                    "account_id": account_id,
-                    "question_before": now - QUESTION_EXPIRY,
-                    "due_before": now - COMMITMENT_EXPIRY_AFTER_DUE,
-                    "undated_before": now - COMMITMENT_EXPIRY_UNDATED,
-                },
-            )
-        ).scalars()
-        for task_id in list(ids):
-            expired += await close(
-                session, account_id=account_id, task_id=int(task_id), reason=EXPIRED, clock=clock
-            )
-    return expired
+    """Compatibility hook for the hourly job: age is never resolution (D-S9).
+
+    Open tasks remain visible until evidence or an explicit owner decision
+    closes them. `list_tasks` marks old tasks for review without mutating them.
+    """
+    return 0

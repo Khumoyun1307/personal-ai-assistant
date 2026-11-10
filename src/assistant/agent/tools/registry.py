@@ -407,6 +407,7 @@ def default_registry() -> ToolRegistry:
     from assistant.agent.tools.search import SEARCH_MESSAGES
     from assistant.agent.tools.status import GET_STATUS
     from assistant.agent.tools.summaries import GET_ATTENTION_LIST, SUMMARIZE_PERIOD
+    from assistant.agent.tools.tasks import LIST_TASKS, UPDATE_TASK
 
     return ToolRegistry(
         [
@@ -437,6 +438,8 @@ def default_registry() -> ToolRegistry:
             GET_DRAFT,
             PAUSE_AUTONOMY,
             RESUME_AUTONOMY,
+            LIST_TASKS,
+            UPDATE_TASK,
         ]
     )
 

@@ -1,5 +1,5 @@
-"""S05.1 §3.7: the hourly `system.expire_tasks` sweep — one test per rule,
-over real Postgres. Synthetic titles only.
+"""I11/D-S9: age never closes open tasks. The hourly compatibility hook is
+a no-op over real Postgres. Synthetic titles only.
 
 Required test, findable by name: `test_done_tasks_never_expire`.
 """
@@ -107,40 +107,40 @@ async def status(env: Env, task_id: int) -> tuple[str, str | None]:
         return row.status, row.closed_reason
 
 
-async def test_a_question_expires_14_days_after_its_newest_source_message(env: Env) -> None:
+async def test_age_never_closes_a_question(env: Env) -> None:
     ids = await chat(env)
-    # Created later than the message: the message's time is what counts.
+    # Neither the source message's age nor the task's age closes it.
     question = await add_task(env, ids, "open_question", created_at=NOW + timedelta(days=3))
     assert await sweep_at(env, SENT + timedelta(days=14) - timedelta(minutes=1)) == 0
     assert await status(env, question) == ("open", None)
-    assert await sweep_at(env, SENT + timedelta(days=14, minutes=1)) == 1
-    assert await status(env, question) == ("expired", tasks.EXPIRED)
+    assert await sweep_at(env, SENT + timedelta(days=400)) == 0
+    assert await status(env, question) == ("open", None)
 
 
-async def test_a_decision_without_sources_expires_14_days_after_creation(env: Env) -> None:
+async def test_age_never_closes_a_decision_without_sources(env: Env) -> None:
     ids = await chat(env)
     decision = await add_task(env, ids, "decision", sources=False)
     assert await sweep_at(env, NOW + timedelta(days=13)) == 0
-    assert await sweep_at(env, NOW + timedelta(days=14, minutes=1)) == 1
-    assert (await status(env, decision))[0] == "expired"
+    assert await sweep_at(env, NOW + timedelta(days=400)) == 0
+    assert await status(env, decision) == ("open", None)
 
 
-async def test_a_dated_commitment_expires_7_days_after_its_due_time(env: Env) -> None:
+async def test_age_never_fulfils_an_overdue_commitment(env: Env) -> None:
     ids = await chat(env)
     due = NOW + timedelta(days=2)
     commitment = await add_task(env, ids, "owner_commitment", due_at=due)
-    # Undated rule (30 days) does not apply to a dated commitment.
+    # Passing the former seven-day grace period cannot fulfil a promise.
     assert await sweep_at(env, due + timedelta(days=6)) == 0
-    assert await sweep_at(env, due + timedelta(days=7, minutes=1)) == 1
-    assert (await status(env, commitment))[0] == "expired"
+    assert await sweep_at(env, due + timedelta(days=400)) == 0
+    assert await status(env, commitment) == ("open", None)
 
 
-async def test_an_undated_commitment_expires_30_days_after_creation(env: Env) -> None:
+async def test_age_never_fulfils_an_undated_commitment(env: Env) -> None:
     ids = await chat(env)
     commitment = await add_task(env, ids, "contact_commitment")
     assert await sweep_at(env, NOW + timedelta(days=29)) == 0
-    assert await sweep_at(env, NOW + timedelta(days=30, minutes=1)) == 1
-    assert (await status(env, commitment))[0] == "expired"
+    assert await sweep_at(env, NOW + timedelta(days=400)) == 0
+    assert await status(env, commitment) == ("open", None)
 
 
 async def test_done_tasks_never_expire(env: Env) -> None:
@@ -162,6 +162,6 @@ async def test_owner_created_tasks_and_reminders_never_expire(env: Env) -> None:
 async def test_expiry_is_silent(env: Env) -> None:
     ids = await chat(env)
     await add_task(env, ids, "contact_commitment")
-    assert await sweep_at(env, NOW + timedelta(days=31)) == 1
+    assert await sweep_at(env, NOW + timedelta(days=31)) == 0
     async with env.factory() as session:
         assert (await session.execute(select(Notification))).scalars().all() == []
