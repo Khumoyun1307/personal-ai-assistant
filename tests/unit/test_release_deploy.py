@@ -1,5 +1,6 @@
 """Release selection and rollback use synthetic infrastructure only."""
 
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 OLD = "a" * 40
 NEW = "b" * 40
+OLDER = "c" * 40
 
 
 def run_release(tmp_path: Path, script: str) -> subprocess.CompletedProcess[str]:
@@ -35,15 +37,21 @@ docker() {
         *assistant-backup:aaaaaaaaaaaa|*assistant:aaaaaaaaaaaa) printf 'a%.0s' {1..40}; echo ;;
         *) printf 'b%.0s' {1..40}; echo ;;
       esac ;;
-    build*) cat >/dev/null ;;
+    build*) cat >/dev/null; [ "${FAIL_BUILD:-0}" = 0 ] ;;
+    'image inspect '*) [ "${FAIL_INSPECT:-0}" = 0 ] ;;
     run*) echo "${HEADS:-0042} (head)"; [ "${FAIL_HEADS:-0}" = 0 ] ;;
   esac
 }
 compose() {
   printf 'compose %s image=%s backup=%s\n' "$*" "$ASSISTANT_IMAGE" "$BACKUP_IMAGE" >> calls
   case "$*" in
-    'run --rm --no-deps -T --no-build db-roles') [ "${FAIL_ROLES:-0}" = 0 ] ;;
-    'run --rm --no-deps -T --no-build migrate') [ "${FAIL_MIGRATE:-0}" = 0 ] ;;
+    'up -d --wait --no-build db') [ "${FAIL_DB:-0}" = 0 ] ;;
+    'run --rm --no-deps -T db-roles') [ "${FAIL_ROLES:-0}" = 0 ] ;;
+    'stop app')
+      [ "${FAIL_MARKER:-0}" = 0 ] || ln -s /dev/full deploy/release-in-progress
+      [ "${FAIL_STOP:-0}" = 0 ] ;;
+    'start app') [ "${FAIL_RECOVERY:-0}" = 0 ] ;;
+    'run --rm --no-deps -T migrate') [ "${FAIL_MIGRATE:-0}" = 0 ] ;;
     *'--remove-orphans app') [ "${FAIL_STARTUP:-0}" = 0 ] ;;
   esac
 }
@@ -74,9 +82,88 @@ def seed(tmp_path: Path, current: str = NEW, previous: str = OLD, heads: str = "
     (deploy / "release-state").write_text(state(current, heads) + state(previous), encoding="utf-8")
 
 
+def test_compose_run_never_uses_unsupported_no_build_flag() -> None:
+    paths = sorted((ROOT / "deploy").glob("*.sh"))
+    paths.extend(sorted((ROOT / "deploy/runbooks").glob("*.md")))
+    paths.extend(sorted((ROOT / "deploy/smoke").glob("*.sh")))
+    for path in paths:
+        source = path.read_text("utf-8").replace("\\\n", " ")
+        for line in source.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            if "--no-build" not in line:
+                continue
+            tokens = shlex.split(line)
+            if "run" in tokens:
+                assert "--no-build" not in tokens, f"{path.relative_to(ROOT)}: {line}"
+
+
+@pytest.mark.parametrize("failure", ["FAIL_BUILD=1", "FAIL_INSPECT=1", "FAIL_HEADS=1", "FAIL_DB=1"])
+def test_preparation_failure_keeps_the_old_app_running(tmp_path: Path, failure: str) -> None:
+    seed(tmp_path, current=OLD)
+    result = run_release(tmp_path, f"release_load\n{failure}\nrelease_up {NEW}\n")
+    assert result.returncode != 0
+    calls = (tmp_path / "calls").read_text("utf-8")
+    assert "stop app" not in calls
+    assert " migrate" not in calls
+    assert not (tmp_path / "deploy/release-in-progress").exists()
+    assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(OLD) + state(OLD)
+
+
+@pytest.mark.parametrize("failure", ["FAIL_STOP=1", "FAIL_MARKER=1"])
+def test_failure_before_migration_restarts_existing_app(tmp_path: Path, failure: str) -> None:
+    seed(tmp_path, current=OLD, previous=OLDER)
+    result = run_release(tmp_path, f"release_load\n{failure}\nrelease_up {NEW}\n")
+    assert result.returncode != 0
+    assert "unbound variable" not in result.stderr
+    calls = (tmp_path / "calls").read_text("utf-8")
+    assert (
+        f"compose start app image=assistant:{OLD[:12]} backup=assistant-backup:{OLD[:12]}" in calls
+    )
+    assert " migrate" not in calls
+    assert "--remove-orphans app" not in calls
+    assert not (tmp_path / "deploy/release-in-progress").exists()
+    assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(OLD) + state(OLDER)
+
+
+def test_preexisting_incomplete_transition_never_auto_restarts_old_app(tmp_path: Path) -> None:
+    seed(tmp_path)
+    marker = tmp_path / "deploy/release-in-progress"
+    marker.write_text(OLD + "\n", encoding="utf-8")
+    result = run_release(tmp_path, f"release_load\nFAIL_STOP=1\nrelease_up {NEW}\n")
+    assert result.returncode != 0
+    calls = (tmp_path / "calls").read_text("utf-8")
+    assert "compose start app" not in calls
+    assert marker.read_text("utf-8") == OLD + "\n"
+
+
+def test_recovery_failure_is_reported_and_deploy_still_fails(tmp_path: Path) -> None:
+    seed(tmp_path)
+    result = run_release(
+        tmp_path, f"release_load\nFAIL_STOP=1\nFAIL_RECOVERY=1\nrelease_up {NEW}\n"
+    )
+    assert result.returncode != 0
+    assert "unbound variable" not in result.stderr
+    assert "could not restart existing app" in result.stderr
+    assert " migrate" not in (tmp_path / "calls").read_text("utf-8")
+
+
+def test_successful_deploy_clears_an_existing_incomplete_marker(tmp_path: Path) -> None:
+    seed(tmp_path)
+    (tmp_path / "deploy/release-in-progress").write_text(OLD + "\n", encoding="utf-8")
+    result = run_release(tmp_path, f"release_load\nrelease_up {NEW}\n")
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "deploy/release-in-progress").exists()
+
+
 def test_deploy_pins_checkout_and_keeps_both_release_images(tmp_path: Path) -> None:
-    seed(tmp_path, current=OLD, previous=OLD)
-    result = run_release(tmp_path, f"release_load\nrelease_select {NEW}\nrelease_up {NEW}\n")
+    seed(tmp_path, current=OLD, previous=OLDER)
+    # Persist again from the caller: a subshell can write the right file while
+    # leaving stale arrays and image exports behind in the parent shell.
+    result = run_release(
+        tmp_path,
+        f"release_load\nrelease_select {NEW}\nrelease_up {NEW}\nrelease_write\ncompose ps\n",
+    )
     assert result.returncode == 0, result.stderr
     calls = (tmp_path / "calls").read_text("utf-8")
     assert f"checkout --detach {NEW}" in calls
@@ -87,10 +174,34 @@ def test_deploy_pins_checkout_and_keeps_both_release_images(tmp_path: Path) -> N
     assert "prune" not in calls
     assert "--network none" in calls
     assert "stop app" in calls
-    assert calls.index("--no-build db-roles") < calls.index("stop app")
-    assert calls.index("stop app") < calls.index("run --rm --no-deps -T --no-build migrate")
+    assert calls.index(f"docker image inspect assistant:{NEW[:12]}") < calls.index("stop app")
+    assert calls.index(f"docker image inspect assistant-backup:{NEW[:12]}") < calls.index(
+        "stop app"
+    )
+    assert calls.index("--network none") < calls.index("stop app")
+    assert calls.index("run --rm --no-deps -T db-roles") < calls.index("stop app")
+    assert calls.index("stop app") < calls.index("run --rm --no-deps -T migrate")
+    assert calls.count("compose up -d --wait --no-build db") == 1
+    assert calls.splitlines()[-1] == (
+        f"compose ps image=assistant:{NEW[:12]} backup=assistant-backup:{NEW[:12]}"
+    )
     assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(NEW) + state(OLD)
     assert not (tmp_path / "deploy/release-in-progress").exists()
+
+
+@pytest.mark.parametrize("next_command", ["true", "false"])
+def test_successful_deploy_restores_the_callers_exit_trap(
+    tmp_path: Path, next_command: str
+) -> None:
+    seed(tmp_path, current=OLD, previous=OLDER)
+    result = run_release(
+        tmp_path,
+        f"release_load\ntrap 'echo caller-exit' EXIT\nrelease_up {NEW}\n{next_command}\n",
+    )
+    assert result.returncode == (0 if next_command == "true" else 1), result.stderr
+    assert result.stdout.endswith("caller-exit\n")
+    assert "compose start app" not in (tmp_path / "calls").read_text("utf-8")
+    assert (tmp_path / "deploy/release-state").read_text("utf-8") == state(NEW) + state(OLD)
 
 
 @pytest.mark.parametrize("sha", ["", "main", "-bad", "f" * 39])
@@ -119,6 +230,7 @@ def test_failed_transition_keeps_old_state_and_blocks_rollback(
     assert result.returncode != 0
     assert (tmp_path / "deploy/release-state").read_text("utf-8") == before
     assert (tmp_path / "deploy/release-in-progress").exists()
+    assert "compose start app" not in (tmp_path / "calls").read_text("utf-8")
     blocked = run_release(tmp_path, "release_load\nrelease_rollback\n")
     assert blocked.returncode != 0
     assert "forward-fix" in blocked.stderr

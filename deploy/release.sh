@@ -86,26 +86,56 @@ release_heads() {
   [[ "$heads" =~ ^[a-zA-Z0-9_]+(,[a-zA-Z0-9_]+)*$ ]] || release_error "cannot determine migration heads"
   printf '%s\n' "$heads"
 }
+release_require_image() {
+  # Compose run has no --no-build flag. Inspect first so a missing selected
+  # image cannot trigger an implicit build (notably for the migrate service).
+  docker image inspect "$1" > /dev/null 2>&1 || release_error "required image missing: $1"
+}
 release_up() {
-  local sha="$1" heads
+  # Keep release arrays and image exports in the caller's shell. Save its EXIT
+  # trap so a successful transition does not leave our recovery handler behind.
+  local sha="$1" heads exit_trap
+  # Bash may unwind function locals before running EXIT on an errexit failure.
+  # Keep every recovery flag in shell scope, initialized before the trap exists.
+  release_up_migration_started=false
+  release_up_incomplete=false
   release_sha "$sha"
   [ ! -e .env.pending ] || release_error "incomplete settings push; repeat prod-env-push before deploying"
   [ "$(git rev-parse HEAD)" = "$sha" ] || release_error "checkout is not the selected release"
   export ASSISTANT_IMAGE="assistant:${sha:0:12}" BACKUP_IMAGE="assistant-backup:${sha:0:12}"
   release_build "$sha" "$ASSISTANT_IMAGE" app
   release_build "$sha" "$BACKUP_IMAGE" backup
+  release_require_image "$ASSISTANT_IMAGE"
+  release_require_image "$BACKUP_IMAGE"
   heads="$(release_heads "$ASSISTANT_IMAGE")"
   # Authenticate the restricted roles before stopping the old poller. Setup
   # is an explicit operator step; a deploy never silently changes passwords.
   compose up -d --wait --no-build db
-  compose run --rm --no-deps -T --no-build db-roles \
+  compose run --rm --no-deps -T db-roles \
     || release_error "database roles missing/outdated; follow runbooks/deploy.md I24 role upgrade"
+  [ ! -e deploy/release-in-progress ] || release_up_incomplete=true
+  # Before migration, the existing container is still schema-compatible. Start
+  # that container rather than recreating from the candidate checkout/images.
+  # An older incomplete transition may have changed the DB: never auto-recover it.
+  exit_trap="$(trap -p EXIT)"
+  trap '
+    if [ "$?" != 0 ] && [ "$release_up_migration_started" = false ] && [ "$release_up_incomplete" = false ]; then
+      echo "ERROR: deploy failed before migration; restarting existing app container" >&2
+      # Restore both recorded current images before Compose sees the selection.
+      release_load
+      if compose start app; then
+        rm -f -- deploy/release-in-progress
+      else
+        echo "ERROR: could not restart existing app; operator recovery required" >&2
+      fi
+    fi
+  ' EXIT
+  compose stop app
   # Persist before any possible migration. Failed/interrupted transitions
   # cannot use an older, apparently compatible pair to authorize rollback.
   printf '%s\n' "$sha" > deploy/release-in-progress
-  compose stop app
-  compose up -d --wait --no-build db
-  compose run --rm --no-deps -T --no-build migrate
+  release_up_migration_started=true
+  compose run --rm --no-deps -T migrate
   # The backup image initializes ownership of the shared backups volume.
   compose up -d --no-deps --no-build --remove-orphans backup
   compose up -d --no-deps --no-build --remove-orphans app
@@ -117,6 +147,11 @@ release_up() {
   release_write
   rm -- deploy/release-in-progress
   release_status
+  trap - EXIT
+  if [ -n "$exit_trap" ]; then
+    # This is shell-generated trap output, never release-state data.
+    eval "$exit_trap"
+  fi
 }
 release_rollback() {
   local sha image revision old_current=()
