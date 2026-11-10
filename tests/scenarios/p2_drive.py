@@ -456,7 +456,13 @@ async def run_queued(s: Scenario, task_name: str, *, limit: int | None = None) -
         if task_name not in s.app.tasks:
             raise RuntimeError(f"queued task has no production registration: {task_name}")
         try:
-            await s.app.tasks[task_name].func(**payload)
+            if task_name == "agent.owner_request":
+                # A journey may replace the owner runtime to model a worker
+                # restart. Use the current handler bundle, just as a freshly
+                # registered job wrapper would; keep the same production body.
+                await s.handlers.owner_request(**payload)
+            else:
+                await s.app.tasks[task_name].func(**payload)
         except BaseException:
             async with transaction(s.env.factory) as uow:
                 await uow.session.execute(

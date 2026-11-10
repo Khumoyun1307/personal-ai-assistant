@@ -1,0 +1,198 @@
+[
+    {
+        "id":  "J01",
+        "uz-Latn":  "Kamolaga aynan yoz: X1 tayyor. → Kamola Ziyo.",
+        "uz-Cyrl":  "Камолага айнан ёз: X1 тайёр. → Камола Зиё.",
+        "ru":  "Камоле дословно: X1 готов. → Камола Зиё.",
+        "en":  "Tell Kamola exactly: X1 is ready. → Kamola Ziyo."
+    },
+    {
+        "id":  "J02",
+        "uz-Latn":  "Kamolaga yoz: X1.",
+        "uz-Cyrl":  "Камолага ёз: X1.",
+        "ru":  "Камоле: X1.",
+        "en":  "Tell Kamola: X1."
+    },
+    {
+        "id":  "J03",
+        "uz-Latn":  "Kamolaga yoz. → Kitobni soʻra.",
+        "uz-Cyrl":  "Камолага ёз. → Китобни сўра.",
+        "ru":  "Напиши Камоле. → Спроси о книге.",
+        "en":  "Write to Kamola. → Ask about the book."
+    },
+    {
+        "id":  "J04",
+        "uz-Latn":  "Kamolaga yangi xabar yoz: juma kitob keladimi, soʻra.",
+        "uz-Cyrl":  "Камолага янги хабар ёз: жума китоб келадими, сўра.",
+        "ru":  "Новое сообщение Камоле: спроси, придёт ли книга в пятницу.",
+        "en":  "New message to Kamola: ask if the book arrives Friday."
+    },
+    {
+        "id":  "J05",
+        "uz-Latn":  "Muloyim rad et; dushanbani taklif qil.",
+        "uz-Cyrl":  "Мулойим рад эт; душанбани таклиф қил.",
+        "ru":  "Вежливо откажи; предложи понедельник.",
+        "en":  "Decline politely; suggest Monday."
+    },
+    {
+        "id":  "J06",
+        "uz-Latn":  "Buni qisqartir. → 10 soʻz.",
+        "uz-Cyrl":  "Буни қисқартир. → 10 сўз.",
+        "ru":  "Сделай это короче. → 10 слов.",
+        "en":  "Shorten this. → 10 words."
+    },
+    {
+        "id":  "J07",
+        "uz-Latn":  "Oldingi kitob savoliga javob yoz.",
+        "uz-Cyrl":  "Олдинги китоб саволига жавоб ёз.",
+        "ru":  "Ответь на прежний вопрос о книге.",
+        "en":  "Reply to the older book question."
+    },
+    {
+        "id":  "J08",
+        "uz-Latn":  "Kamolaning savoliga javob tayyorla.",
+        "uz-Cyrl":  "Камоланинг саволига жавоб тайёрла.",
+        "ru":  "Подготовь ответ Камоле.",
+        "en":  "Prepare a reply to Kamola."
+    },
+    {
+        "id":  "J09",
+        "uz-Latn":  "Same J08",
+        "uz-Cyrl":  "Same J08",
+        "ru":  "Same J08",
+        "en":  "Same J08"
+    },
+    {
+        "id":  "J10",
+        "uz-Latn":  "Kamolaga aynan yoz: X1 bekor.",
+        "uz-Cyrl":  "Камолага айнан ёз: X1 бекор.",
+        "ru":  "Камоле дословно: X1 отменён.",
+        "en":  "Tell Kamola exactly: X1 cancelled."
+    },
+    {
+        "id":  "J11",
+        "uz-Latn":  "Oʻsha xabar nima boʻldi?",
+        "uz-Cyrl":  "Ўша хабар нима бўлди?",
+        "ru":  "Что стало с тем сообщением?",
+        "en":  "What happened to that message?"
+    },
+    {
+        "id":  "J12",
+        "uz-Latn":  "Buni muloyimroq yoz.",
+        "uz-Cyrl":  "Буни мулойимроқ ёз.",
+        "ru":  "Перепиши это вежливее.",
+        "en":  "Rewrite this more politely."
+    },
+    {
+        "id":  "J13",
+        "uz-Latn":  "Ikki variant ayt. → Ikkinchisini ishlat.",
+        "uz-Cyrl":  "Икки вариант айт. → Иккинчисини ишлат.",
+        "ru":  "Предложи два варианта. → Используй второй.",
+        "en":  "Suggest two versions. → Use the second."
+    },
+    {
+        "id":  "J14",
+        "uz-Latn":  "Kamolaga kitob haqida yoz.",
+        "uz-Cyrl":  "Камолага китоб ҳақида ёз.",
+        "ru":  "Напиши Камоле о книге.",
+        "en":  "Write to Kamola about the book."
+    },
+    {
+        "id":  "J15",
+        "uz-Latn":  "Kamola javob bersa, menga ayt.",
+        "uz-Cyrl":  "Камола жавоб берса, менга айт.",
+        "ru":  "Сообщи, когда Камола ответит.",
+        "en":  "Tell me when Kamola replies."
+    },
+    {
+        "id":  "J16",
+        "uz-Latn":  "Kamoladan nima kutilyapti?",
+        "uz-Cyrl":  "Камоладан нима кутиляпти?",
+        "ru":  "Что ожидается от Камолы?",
+        "en":  "What is still pending with Kamola?"
+    },
+    {
+        "id":  "J17",
+        "uz-Latn":  "Ochiq vazifalarni koʻrsat.",
+        "uz-Cyrl":  "Очиқ вазифаларни кўрсат.",
+        "ru":  "Покажи открытые задачи.",
+        "en":  "Show open tasks."
+    },
+    {
+        "id":  "J18",
+        "uz-Latn":  "Maxfiylikni tiklash holatini koʻrsat.",
+        "uz-Cyrl":  "Махфийликни тиклаш ҳолатини кўрсат.",
+        "ru":  "Покажи состояние восстановления приватности.",
+        "en":  "Show privacy recovery status."
+    },
+    {
+        "id":  "J19",
+        "uz-Latn":  "Kamolaga yoz: X1. → Buni bekor qil. Noradan kitobni soʻra.",
+        "uz-Cyrl":  "Камолага ёз: X1. → Буни бекор қил. Норадан китобни сўра.",
+        "ru":  "Камоле: X1. → Отмени это. Спроси Нору о книге.",
+        "en":  "Tell Kamola: X1. → Cancel that. Ask Nora about the book."
+    },
+    {
+        "id":  "J20",
+        "uz-Latn":  "Eslab qol: javoblarim qisqa, emojisiz boʻlsin.",
+        "uz-Cyrl":  "Эслаб қол: жавобларим қисқа, эмодзисиз бўлсин.",
+        "ru":  "Запомни: мои ответы короткие, без эмодзи.",
+        "en":  "Remember: keep my replies short, without emoji."
+    },
+    {
+        "id":  "J21",
+        "uz-Latn":  "Oʻsha xabarni qayta tayyorla.",
+        "uz-Cyrl":  "Ўша хабарни қайта тайёрла.",
+        "ru":  "Подготовь то сообщение заново.",
+        "en":  "Re-draft that message."
+    },
+    {
+        "id":  "J22",
+        "uz-Latn":  "Unda juma yozilganmi?",
+        "uz-Cyrl":  "Унда жума ёзилганми?",
+        "ru":  "Там написано про пятницу?",
+        "en":  "Does it mention Friday?"
+    },
+    {
+        "id":  "J23",
+        "uz-Latn":  "Joriy tasdiqlash kartasini koʻrsat.",
+        "uz-Cyrl":  "Жорий тасдиқлаш картасини кўрсат.",
+        "ru":  "Покажи текущую карточку подтверждения.",
+        "en":  "Show the current approval card."
+    },
+    {
+        "id":  "J24",
+        "uz-Latn":  "Kamola va Nora suhbatlarini umumlashtir.",
+        "uz-Cyrl":  "Камола ва Нора суҳбатларини умумлаштир.",
+        "ru":  "Подведи итоги чатов с Камолой и Норой.",
+        "en":  "Summarize the chats with Kamola and Nora."
+    },
+    {
+        "id":  "J25",
+        "uz-Latn":  "Roʻyxatni qisqartir, hech kimga xabar yozma.",
+        "uz-Cyrl":  "Рўйхатни қисқартир, ҳеч кимга хабар ёзма.",
+        "ru":  "Сократи список, никому не пиши.",
+        "en":  "Shorten the list; do not write to anyone."
+    },
+    {
+        "id":  "J26",
+        "uz-Latn":  "Kamolaga aynan yoz: X1.",
+        "uz-Cyrl":  "Камолага айнан ёз: X1.",
+        "ru":  "Камоле дословно: X1.",
+        "en":  "Tell Kamola exactly: X1."
+    },
+    {
+        "id":  "J27",
+        "uz-Latn":  "Digest vaqtini oʻzgartir.",
+        "uz-Cyrl":  "Дайжест вақтини ўзгартир.",
+        "ru":  "Измени время дайджеста.",
+        "en":  "Change the digest time."
+    },
+    {
+        "id":  "J28",
+        "uz-Latn":  "Faqat Kamolaning kitobi haqida yoz.",
+        "uz-Cyrl":  "Фақат Камоланинг китоби ҳақида ёз.",
+        "ru":  "Напиши только о книге Камолы.",
+        "en":  "Write only about Kamola\u0027s book."
+    }
+]

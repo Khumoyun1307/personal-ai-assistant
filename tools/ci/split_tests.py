@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TESTS = ROOT / "tests"
 #: Directories whose tests use the database (`TEST_DATABASE_URL`).
-DB_DIRS = frozenset({"integration", "scenarios", "contract"})
+DB_DIRS = frozenset({"integration", "scenarios", "contract", "journeys"})
 DB_TEST_WEIGHT = 10
 TEST_FUNCTION = re.compile(r"^\s*(?:async\s+)?def\s+test_", re.MULTILINE)
 

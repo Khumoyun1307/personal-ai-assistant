@@ -51,6 +51,13 @@ def test_the_split_is_the_same_on_every_run_and_balanced() -> None:
     assert max(loads) - min(loads) <= heaviest_file
 
 
+def test_journeys_are_collected_and_weighted_as_database_tests() -> None:
+    journey = split_tests.TESTS / "journeys" / "test_runner.py"
+    assert journey in split_tests.collected_files()
+    assert "journeys" in split_tests.DB_DIRS
+    assert split_tests.weight(journey) == split_tests.DB_TEST_WEIGHT
+
+
 def test_the_command_prints_one_shard_and_refuses_a_bad_index(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

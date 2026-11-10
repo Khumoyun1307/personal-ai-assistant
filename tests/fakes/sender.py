@@ -36,6 +36,10 @@ class FakeTelegramSender:
     def __init__(self) -> None:
         self.sends: list[dict[str, Any]] = []
         self.edits: list[dict[str, Any]] = []
+        #: Successful control delivery evidence, separate from attempted calls.
+        #: A failed/uncertain send or edit cannot support "the owner saw it".
+        self.delivered_control_sends: list[dict[str, Any]] = []
+        self.delivered_control_edits: list[dict[str, Any]] = []
         self.deletes: list[dict[str, Any]] = []
         #: `editMessageReplyMarkup` calls (a card's buttons removed, text kept).
         self.keyboard_edits: list[dict[str, Any]] = []
@@ -54,6 +58,9 @@ class FakeTelegramSender:
         #: `fail_with` applies: an exception is raised, an int is returned as
         #: the message id (0 = Telegram's "pending identity").
         self.plain_script: list[Exception | int] = []
+        #: One-shot failures for control sends. Unlike `fail_with`, a failed
+        #: card presentation must not also break the owner's final reply.
+        self.control_script: list[Exception] = []
 
     async def _observe(self) -> None:
         if self.on_call is not None:
@@ -113,9 +120,13 @@ class FakeTelegramSender:
             "business_connection_id": business_connection_id,
         }
         self.sends.append(call)
+        if business_connection_id is None and self.control_script:
+            raise self.control_script.pop(0)
         if self.fail_with is not None:
             raise self.fail_with
         self._next_message_id += 1
+        if business_connection_id is None:
+            self.delivered_control_sends.append({**call, "message_id": self._next_message_id})
         return {"message_id": self._next_message_id, "chat": {"id": chat_id}}
 
     async def edit_message_text(
@@ -139,6 +150,8 @@ class FakeTelegramSender:
         )
         if self.fail_with is not None:
             raise self.fail_with
+        if business_connection_id is None:
+            self.delivered_control_edits.append(self.edits[-1].copy())
         return {"message_id": message_id}
 
     async def edit_message_reply_markup(
