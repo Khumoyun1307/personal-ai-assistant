@@ -7,9 +7,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from assistant.automation.models import AutomationOccurrence
+from assistant.core.channel import Button
 from assistant.db.uow import transaction
 from assistant.inbox.models import Digest
 from assistant.inbox.notify import AlertKind
+from assistant.telegram.gateway import MAX_THROTTLE_WAIT_SECONDS
 from tests.integration.business_env import OWNER, deliver, private_message
 from tests.integration.p2_factories import seed_automation
 from tests.scenarios.m05_drive import M05Scenario, advance, run_queued
@@ -83,6 +85,31 @@ async def test_a_digest_built_twice_for_one_period_is_delivered_once(m05: M05Sce
     [row] = await m05.rows(Digest)
     assert row.status == "sent"
     assert len(m05.env.sender.sends) == 1
+
+
+async def test_control_notifications_preserve_the_digest_period(m05: M05Scenario) -> None:
+    started = m05.env.clock.now()
+    count = MAX_THROTTLE_WAIT_SECONDS + 3
+    for number in range(count):
+        result = await m05.handlers.alerts.notify_owner(
+            m05.account_id,
+            AlertKind.CONNECTION_CHANGE,
+            dedupe_key=f"synthetic-control-clock:{number}",
+            body="Synthetic control notification.",
+            buttons=(Button("Synthetic button", "synthetic:clock"),),
+        )
+        assert result.sent
+        assert m05.env.clock.now() == started
+    assert all(call["reply_markup"] is not None for call in m05.env.sender.sends)
+
+    for _ in range(2):
+        await m05.job("digest.build", account_id=m05.account_id, period_end=m05.date)
+
+    [row] = await m05.rows(Digest)
+    assert row.status == "sent"
+    assert row.period_end == started
+    assert m05.env.clock.now() == started
+    assert len(m05.env.sender.sends) == count + 1
 
 
 async def test_the_digest_fires_at_local_time_across_dst(m05: M05Scenario) -> None:

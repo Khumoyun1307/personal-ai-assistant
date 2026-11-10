@@ -42,7 +42,7 @@ from assistant.telegram.control.inbox_handlers import ControlInboxHandlers, Refu
 from assistant.telegram.gateway import OutboundGateway
 from assistant.telegram.ingress.writer import write_state
 from assistant.telegram.routing import route_update
-from tests.fakes.clock import FakeSleep
+from tests.fakes.clock import FakeGatewayClock
 from tests.fakes.llm import FakeLLM, text_response, tool_response
 from tests.fakes.sender import FakeTelegramSender
 from tests.integration.agent_env import READ_FLAGS, args, ask, gated
@@ -353,7 +353,8 @@ async def m05_environment(url: str, *, flags: frozenset[str] = FLAGS) -> AsyncIt
         fake = FakeLLM()
         app = build_app(url)
         scheduler = ProcrastinateScheduler(app)
-        gateway = OutboundGateway(env.sender, env.clock, sleep=FakeSleep())
+        gateway_clock = FakeGatewayClock(env.clock)
+        gateway = OutboundGateway(env.sender, gateway_clock, sleep=gateway_clock.sleep)
         channel = GatewayControlChannel(gateway)
         settings = Settings(
             _env_file=None,
