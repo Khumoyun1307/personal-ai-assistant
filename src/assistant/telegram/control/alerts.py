@@ -23,12 +23,18 @@ from assistant.core.clock import Clock
 from assistant.core.jobs import JobScheduler
 from assistant.db.uow import after_commit, transaction
 from assistant.inbox.models import Notification
+from assistant.inbox.notification_feedback import feedback_rows, mark, monitor_id
+from assistant.inbox.notification_policy import feedback_scope, muted_pairs
 from assistant.inbox.notifications import NTF_CARD, OP_NOT_USEFUL, OP_OPEN_CHAT, OP_USEFUL
 from assistant.telegram.control.handlers import CALLBACK_EXPIRED_TEXT, CardPress, HandlerResult
 from assistant.telegram.control.panels import Screen, panel_screen
 from assistant.telegram.gateway import ControlChat, OutboundGateway
 
-NOT_USEFUL_TEXT = "Noted — fewer alerts like this"
+NOT_USEFUL_TEXT = "Feedback saved; delivery is unchanged until two Not useful marks."
+MUTED_TEXT = (
+    "Muted this alert scope for up to 30 days, except urgent. "
+    "View/reset: /settings → Alerts & digest → Derived mutes."
+)
 USEFUL_TEXT = "Noted"
 OPENING_TEXT = "Opening the chat"
 _FEEDBACK = {OP_NOT_USEFUL: ("not_useful", NOT_USEFUL_TEXT), OP_USEFUL: ("useful", USEFUL_TEXT)}
@@ -51,6 +57,14 @@ async def handle_ntf_press(
         feedback, answer = _FEEDBACK[press.op]
         notification.feedback = feedback
         notification.updated_at = clock.now()  # when the mark was made (derived mute)
+        await session.flush()
+        if feedback == "not_useful":
+            rows = await feedback_rows(session, account_id=account.id, now=clock.now())
+            scope = feedback_scope(
+                notification.kind, notification.contact_id, monitor_id(notification.refs)
+            )
+            if scope in muted_pairs((mark(row) for row in rows), clock.now()):
+                answer = MUTED_TEXT
         _after(session, gateway, press, target, answer=answer)
         return HandlerResult(True, "ntf", None, note=feedback)
     if press.op == OP_OPEN_CHAT:

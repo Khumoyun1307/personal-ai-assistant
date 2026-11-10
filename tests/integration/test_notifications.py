@@ -1095,7 +1095,7 @@ async def test_feedback_buttons_record_and_answer(routed: Env) -> None:
     await deliver(routed, callback(buttons["us"]))  # the card stays: the last press wins
     assert (await row(routed, notification)).feedback == "useful"
     assert [a["text"] for a in routed.sender.answered_callbacks][-2:] == [
-        "Noted — fewer alerts like this",
+        "Feedback saved; delivery is unchanged until two Not useful marks.",
         "Noted",
     ]
 

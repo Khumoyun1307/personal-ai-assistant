@@ -270,9 +270,12 @@ def verdict_alerts(verdict: TriageVerdict) -> tuple[_Alert, ...]:
     elif verdict.requests_decision:
         alerts.append(_Alert(NotificationKind.TRIAGE_DECISION, Priority.HIGH))
     elif verdict.needs_reply:
-        alerts.append(_Alert(NotificationKind.TRIAGE_NEEDS_REPLY, Priority.NORMAL))
+        alerts.append(_Alert(NotificationKind.TRIAGE_NEEDS_REPLY, Priority(verdict.urgency)))
     if verdict.escalation_category == "suspicious":
-        alerts.append(_Alert(NotificationKind.TRIAGE_SUSPICIOUS, Priority.NORMAL))
+        priority = (
+            Priority(verdict.urgency) if verdict.urgency in ("high", "urgent") else Priority.NORMAL
+        )
+        alerts.append(_Alert(NotificationKind.TRIAGE_SUSPICIOUS, priority))
     return tuple(alerts)
 
 

@@ -80,6 +80,7 @@ ALERTS_OPS = [
     "c_6",
     "c_10",
     "c_20",
+    "mutes",
     "back",
 ]
 KAMOLA = "Kamola"
@@ -217,6 +218,7 @@ async def test_alerts_screen_shows_the_defaults(env: Env) -> None:
         "6/h ✓",
         "10/h",
         "20/h",
+        "Derived mutes…",
         "◀ Back",
     ]
     # Telegram's hard limit on callback data, and short ops.

@@ -41,9 +41,8 @@ from assistant.core.jobs import NOTIFY_TASK, JobScheduler, notification_queueing
 from assistant.db.uow import after_commit, transaction
 from assistant.inbox.alert_texts import RENDERERS, RenderedAlert, Renderer
 from assistant.inbox.models import Notification
+from assistant.inbox.notification_feedback import feedback_rows, mark, monitor_id
 from assistant.inbox.notification_policy import (
-    MUTE_WINDOW,
-    FeedbackMark,
     NotificationFacts,
     OwnerAlertSettings,
     RecentLoad,
@@ -444,38 +443,20 @@ class NotificationDelivery:
             contact_priority=contact_priority,
             bypass_quiet_hours=notification.bypass_quiet_hours,
             previously_important=previous_reason in (_QUIET_HOURS, "cap", _NOT_DELIVERED),
+            monitor_id=monitor_id(notification.refs),
         )
 
     async def _settings(
         self, session: AsyncSession, account: Account, now: datetime
     ) -> OwnerAlertSettings:
         values = preferences.current(account)
-        marks = (
-            await session.execute(
-                select(
-                    Notification.kind,
-                    Notification.contact_id,
-                    Notification.feedback,
-                    Notification.updated_at,
-                )
-                .where(Notification.account_id == account.id)
-                .where(Notification.feedback.is_not(None))
-                .where(Notification.updated_at >= now - MUTE_WINDOW)
-            )
-        ).all()
+        rows = await feedback_rows(session, account_id=account.id, now=now)
         return OwnerAlertSettings(
             timezone=account.timezone,
             quiet_hours=quiet_hours(values["quiet_hours"]),
             urgent_bypass=bool(values["urgent_bypass"]),
             cap_per_hour=int(values["alert_cap_per_hour"]),
-            muted=muted_pairs(
-                (
-                    FeedbackMark(kind, contact, feedback, at)
-                    for kind, contact, feedback, at in marks
-                    if feedback is not None
-                ),
-                now,
-            ),
+            muted=muted_pairs((mark(row) for row in rows), now),
         )
 
     async def _load(
