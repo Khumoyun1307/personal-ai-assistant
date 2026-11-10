@@ -2,7 +2,7 @@
 
 [Owner decisions](DECISIONS.md) amend [review §5](review-2026-11-09.md#5-implementation-plan). Unit IDs and acceptance criteria are retained below; D-S6 replaces the separate owner-requested writer with composition/revision by the main chat model. This is approved repair scope across M02–M05, not authorization to start P3.
 
-**Status, 2026-11-09 (owner-provided merge/review record):** P0-1 merged **#240**; Q1 merged **#236**; I19 merged **#238**; I21 merged **#237**; I7 in review **#239**; **P0-2 in progress**. All other units are approved scope awaiting dependencies/dispatch. A unit merge does not mark any milestone done. Each unit has one implementation agent and one PR to `main`.
+**Status, 2026-11-09 (owner-provided merge/review record):** P0-1 merged **#240**; Q1 merged **#236**; I19 merged **#238**; I21 merged **#237**; I7 in review **#239**; **P0-2 in progress**. **A1 started early (owner, 2026-11-09, D-S16)**; its contract dependencies remain. All other units are approved scope awaiting dependencies/dispatch. A unit merge does not mark any milestone done. Each unit has one implementation agent and one PR to `main`.
 
 ### Contract and implementation index
 
@@ -24,7 +24,7 @@ Allocate each migration's next free revision from merged main at implementation 
 
 ### Execution rules for every work unit
 
-Owner approval is recorded in D-S1–D-S15 (2026-11-09). The lead reviews, tests and merges; implementation agents hand off uncommitted work. CI is the full-suite gate (docs-only PRs use the existing skip rule). Deploys need the owner's go-ahead.
+Owner approval is recorded in D-S1–D-S16 (2026-11-09). The lead reviews, tests and merges; implementation agents hand off uncommitted work. CI is the full-suite gate (docs-only PRs use the existing skip rule). Deploys need the owner's go-ahead.
 
 - One work unit means **one focused PR**, owned by one implementation agent.
 - Use branches such as `stabilize/h03-source-spans`; PRs target `main`. Sequence dependent PRs through merged foundations.
