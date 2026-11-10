@@ -1,5 +1,5 @@
 """PF-10, PF-11, PF-12 units: the `draft_owner` schema, context, word range,
-owner-turn rules and the provenance normaliser. Synthetic text only."""
+owner-turn rules and exact source integrity. Synthetic text only."""
 
 import hashlib
 import json
@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from assistant.accounts.models import Account
+from assistant.actions.requests import RequestSource, SourceSpan, copy_source_text
 from assistant.agent import prompt_registry
 from assistant.agent.draft_context import DraftContext, OwnerDraftInputs, build_draft_owner
 from assistant.agent.draft_owner_schemas import (
@@ -23,7 +24,6 @@ from assistant.agent.draft_owner_schemas import (
 )
 from assistant.agent.drafting import SUGGESTION_FLAGS, owner_draft_flags
 from assistant.agent.tools.registry import OwnerTurn
-from assistant.agent.tools.replies import normalise_for_match, text_occurs_in
 from assistant.llm.port import Provenance
 from assistant.memory.summaries import SourceMessage
 
@@ -334,27 +334,28 @@ def test_the_owner_own_words_exclude_a_forward_but_not_a_quoting_turn() -> None:
     assert not turn(third_party=True, quoted=True).forwarded
 
 
-# ------------------------------------------------------------ provenance (PF-12)
-def test_normalising_folds_case_quotes_apostrophes_whitespace_and_uzbek_x_h() -> None:
-    assert normalise_for_match("  Ertaga  SOAT\n5 da ") == "ertaga soat 5 da"
-    assert normalise_for_match("o‘zim gʼalaba") == normalise_for_match("o'zim g'alaba")
-    assert normalise_for_match("«Salom»") == normalise_for_match('"Salom"')
-    assert normalise_for_match("Xursand") == normalise_for_match("hursand")
-    assert normalise_for_match("ҳам") == normalise_for_match("хам")
-
-
+# D-S2 (2026-11-09): fuzzy provenance was superseded by exact C1 source copies.
 @pytest.mark.parametrize(
-    ("text", "source", "found"),
+    ("original", "changed"),
     [
-        ("Ertaga kelaman", 'Rustamga yoz: "ertaga kelaman"', True),
-        ('"Ertaga kelaman."', "Rustamga yoz: ertaga kelaman", True),
-        ("Xop, ko’rishamiz", "unga yoz hop, ko'rishamiz deb", True),
-        ("Write a new message", "Compose something friendly for Rustam", False),
-        ("...", "anything at all", False),
-        ("SYNTH", None, False),
+        ("Max X1", "Mah x1"),
+        ("Ertaga kelaman", "ertaga kelaman"),
+        ("o‘zim", "o'zim"),
+        ("Ertaga kelaman", "Ertaga kelaman."),
+        ("one  two", "one two"),
+        ("é", "e\u0301"),
     ],
 )
-def test_a_text_occurs_in_its_source_after_normalising(
-    text: str, source: str | None, found: bool
-) -> None:
-    assert text_occurs_in(text, source) is found
+def test_fuzzy_similarity_never_authorizes_owner_words(original: str, changed: str) -> None:
+    source = RequestSource(
+        span=SourceSpan(
+            turn_id=1,
+            field="text",
+            start=0,
+            end=len(original),
+            field_sha256=hashlib.sha256(original.encode()).hexdigest(),
+        ),
+        purpose="literal_body",
+    )
+    assert copy_source_text(original, source) == original
+    assert copy_source_text(changed, source) is None

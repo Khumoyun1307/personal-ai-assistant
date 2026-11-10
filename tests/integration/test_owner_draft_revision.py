@@ -10,17 +10,329 @@ job; only the clock, the transport and the model are fake. Synthetic text.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
+from assistant.accounts.models import AuditLogEntry, ControlTurn
+from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
+from assistant.agent.tools.drafts import ReviseDraftArgs, revise_draft_tool
+from assistant.agent.tools.registry import OwnerTurn, ToolContext, ToolServices
 from assistant.conversations.models import Message
+from tests.integration.actions_env import seed_run
+from tests.integration.agent_env import ask
 from tests.integration.business_env import business_message, deliver
+from tests.integration.p2_factories import seed_action, seed_conversation
 from tests.integration.test_approvals import start_edit
+from tests.integration.test_reply_tools import call, source_message_args
 from tests.scenarios.p2_drive import Scenario, m04_environment, revision_result, run_queued
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.parametrize("tainted", [False, True])
+async def test_proposal_and_literal_revision_share_durable_call_identity(
+    s: Scenario, tainted: bool
+) -> None:
+    async with s.env.factory() as session, session.begin():
+        run_id = await seed_run(session, s.account_id)
+    turn_id = await ask(s.env, "SYNTH copy the selected words")
+    ctx = ToolContext(
+        account_id=s.account_id,
+        run_id=run_id,
+        run_type="owner_request",
+        tainted=tainted,
+        services=ToolServices(
+            s.env.factory,
+            s.env.clock,
+            None,
+            approval_cards=s.wiring.approval_cards,
+            actions_config=s.wiring.actions_config,
+        ),
+        turn_id=turn_id,
+        owner_turn=OwnerTurn(turn_id, "SYNTH copy the selected words", False, False, False),
+        managed_ok=True,
+    )
+    proposal_args = await source_message_args(ctx, s.account_id, s.conversation_id, "SYNTH X1!")
+    flags = frozenset({"tool.propose_message", "tool.revise_draft"})
+    staged = await call(ctx, "propose_message", flags=flags, **proposal_args)
+    assert staged["proposal_status"] == "staged"
+    original = await s.action(staged["action_id"])
+    revision_args = {
+        "conversation_id": None,
+        "action_id": original.id,
+        "min_words": None,
+        "max_words": None,
+        "literal": {
+            "request_id": proposal_args["request_id"],
+            "request_version": staged["request_version"],
+            "expected_version": original.version,
+            "edit": "literal_append",
+            "source_ids": proposal_args["source_ids"],
+        },
+    }
+    # call() constructs a fresh executor each time: no in-memory digest can help.
+    conflict = await call(ctx, "revise_draft", flags=flags, **revision_args)
+    assert conflict["proposal_status"] == "idempotency_conflict"
+    assert conflict["effect_version"] is None
+    assert conflict["requested_change_applied"] is False
+    unchanged = await s.action(original.id)
+    assert unchanged.version == original.version
+    assert unchanged.text == original.text
+    assert unchanged.approval_token == original.approval_token
+    assert "action_revision_requested" not in await s.events(original.id)
+
+    revised = await call(ctx, "revise_draft", call_id="c2", flags=flags, **revision_args)
+    assert revised["proposal_status"] == "revised"
+    conflict = await call(ctx, "propose_message", call_id="c2", flags=flags, **proposal_args)
+    assert conflict["proposal_status"] == "idempotency_conflict"
+    assert conflict["effect_version"] is None
+    assert conflict["requested_change_applied"] is False
+    replay = await call(ctx, "revise_draft", call_id="c2", flags=flags, **revision_args)
+    assert replay["proposal_status"] == "reused_exact"
+    assert replay["effect_version"] == original.version + 1
+    proposal_replay = await call(ctx, "propose_message", flags=flags, **proposal_args)
+    assert proposal_replay["proposal_status"] == "reused_exact"
+    assert proposal_replay["effect_version"] == original.version
+    assert proposal_replay["action"]["version"] == original.version + 1
+    async with s.env.factory() as session:
+        effects = list(
+            await session.scalars(
+                select(AuditLogEntry).where(
+                    AuditLogEntry.account_id == s.account_id,
+                    AuditLogEntry.event == "tool_effect_recorded",
+                    AuditLogEntry.subject_id == original.id,
+                )
+            )
+        )
+    assert len(effects) == 2
+    assert {effect.details["tool_call_id"] for effect in effects} == {"c1", "c2"}
+    final = await s.action(original.id)
+    assert final.version == original.version + 1
+    assert final.text == original.text + "SYNTH X1!"
+
+
+@pytest.mark.parametrize("fresh_run", [False, True])
+async def test_literal_revision_retry_conflicts_when_another_card_is_selected(
+    s: Scenario, fresh_run: bool
+) -> None:
+    first = await s.seed(text="SYNTH first card")
+    async with s.env.factory() as session, session.begin():
+        chat = await seed_conversation(session, account_id=s.account_id)
+        second = await seed_action(
+            session,
+            account_id=s.account_id,
+            conversation_id=chat.id,
+            state="awaiting_approval",
+            version=first.version,
+            text="SYNTH second card",
+            approval_token="QAseed5678",
+            expires_at=first.expires_at,
+            created_at=s.env.clock.now(),
+            updated_at=s.env.clock.now(),
+        )
+        run_id = await seed_run(session, s.account_id)
+        retry_run_id = await seed_run(session, s.account_id) if fresh_run else run_id
+    turn_id = await ask(s.env, "SYNTH append the selected words")
+    ctx = ToolContext(
+        account_id=s.account_id,
+        run_id=run_id,
+        run_type="owner_request",
+        tainted=False,
+        services=ToolServices(
+            s.env.factory, s.env.clock, None, approval_cards=s.wiring.approval_cards
+        ),
+        turn_id=turn_id,
+        owner_turn=OwnerTurn(turn_id, "SYNTH append the selected words", False, False, False),
+        managed_ok=True,
+    )
+    arguments: list[dict[str, Any]] = []
+    for card in (first, second):
+        selected = await source_message_args(ctx, s.account_id, card.conversation_id, " X1 x/h!")
+        async with s.env.factory() as session, session.begin():
+            request = await session.get(OwnerRequest, selected["request_id"])
+            assert request is not None
+            request.operation = "revise"
+            request.action_id = card.id
+            request.action_version = card.version
+        arguments.append(
+            {
+                "conversation_id": None,
+                "action_id": card.id,
+                "min_words": None,
+                "max_words": None,
+                "literal": {
+                    "request_id": selected["request_id"],
+                    "request_version": selected["request_version"],
+                    "expected_version": card.version,
+                    "edit": "literal_append",
+                    "source_ids": selected["source_ids"],
+                },
+            }
+        )
+    # Both requests remain eligible; changing focus must not hide a prior effect.
+    async with s.env.factory() as session, session.begin():
+        for args in arguments:
+            request = await session.get(OwnerRequest, args["literal"]["request_id"])
+            assert request is not None
+            request.state = "ready"
+            args["literal"]["request_version"] = request.version
+    flags = frozenset({"tool.revise_draft"})
+    applied = await call(ctx, "revise_draft", flags=flags, **arguments[0])
+    assert applied["proposal_status"] == "revised"
+    retry_ctx = replace(ctx, run_id=retry_run_id)
+    retry_call_id = "retry" if fresh_run else "c1"
+    replay = await call(
+        retry_ctx, "revise_draft", call_id=retry_call_id, flags=flags, **arguments[0]
+    )
+    assert replay["proposal_status"] == "reused_exact"
+    assert replay["effect_version"] == first.version + 1
+    conflict = await call(
+        retry_ctx, "revise_draft", call_id=retry_call_id, flags=flags, **arguments[1]
+    )
+    assert conflict["status"] == "not_drafted"
+    assert conflict["proposal_status"] == (
+        "proposal_conflict" if fresh_run else "idempotency_conflict"
+    )
+    assert conflict["action"]["action_id"] == first.id
+    assert conflict["effect_version"] is None
+    assert conflict["requested_change_applied"] is False
+    # Scenario.action scopes reads to its conversation; this card is in the other chat.
+    untouched = await replace(s, conversation_id=second.conversation_id).action(second.id)
+    assert untouched.text == second.text
+    assert untouched.version == second.version
+    assert untouched.approval_token == second.approval_token
+    assert "action_revision_requested" not in await s.events(second.id)
+
+
+@pytest.mark.parametrize("state", ["cancelled", "revising"])
+async def test_literal_revision_unavailable_states_use_c2_results(s: Scenario, state: str) -> None:
+    card = await s.seed(state=state, text="SYNTH retained card")
+    turn_id = await ask(s.env, "SYNTH add X1")
+    ctx = ToolContext(
+        account_id=s.account_id,
+        run_id=1,
+        run_type="owner_request",
+        tainted=False,
+        services=ToolServices(
+            s.env.factory, s.env.clock, None, approval_cards=s.wiring.approval_cards
+        ),
+        turn_id=turn_id,
+        owner_turn=OwnerTurn(turn_id, "SYNTH add X1", False, False, False),
+        managed_ok=True,
+    )
+    selected = await source_message_args(ctx, s.account_id, card.conversation_id, " X1")
+    async with s.env.factory() as session, session.begin():
+        request = await session.get(OwnerRequest, selected["request_id"])
+        assert request is not None
+        request.operation = "revise"
+        request.action_id = card.id
+        request.action_version = card.version
+    result = await call(
+        ctx,
+        "revise_draft",
+        flags=frozenset({"tool.revise_draft"}),
+        conversation_id=None,
+        action_id=card.id,
+        min_words=None,
+        max_words=None,
+        literal={
+            "request_id": selected["request_id"],
+            "request_version": selected["request_version"],
+            "expected_version": card.version,
+            "edit": "literal_append",
+            "source_ids": selected["source_ids"],
+        },
+    )
+    assert result["status"] == "not_drafted"
+    assert result["proposal_status"] == "not_available"
+    assert result["action"]["action_id"] == card.id
+    assert result["action"]["state"] == state
+    assert result["effect_version"] is None
+    assert result["requested_change_applied"] is False
+    untouched = await s.action(card.id)
+    assert untouched.text == card.text
+    assert untouched.version == card.version
+    assert untouched.approval_token == card.approval_token
+    assert "action_revision_requested" not in await s.events(card.id)
+
+
+@pytest.mark.parametrize("edit", ["literal_append", "literal_replace"])
+@pytest.mark.parametrize("source_lost", [False, True])
+async def test_literal_revision_copies_sources_without_normalizing_or_adding_spaces(
+    s: Scenario,
+    edit: str,
+    source_lost: bool,
+) -> None:
+    row = await s.seed(text="SYNTH generated body  ")
+    addition = "\n  X1 x/h, O‘g‘il e\u0301! 👍  "
+    turn_id = await ask(s.env, "write it")
+    services = ToolServices(
+        s.env.factory,
+        s.env.clock,
+        None,
+        approval_cards=s.wiring.approval_cards,
+    )
+    ctx = ToolContext(
+        account_id=s.account_id,
+        run_id=1,
+        run_type="owner_request",
+        tainted=False,
+        services=services,
+        call_id="literal-revision",
+        turn_id=turn_id,
+        owner_turn=OwnerTurn(turn_id, "write it", False, False, False),
+    )
+    selected = await source_message_args(ctx, s.account_id, s.conversation_id, addition)
+    async with s.env.factory() as session, session.begin():
+        request = await session.get(OwnerRequest, selected["request_id"])
+        assert request is not None
+        request.operation = "revise"
+        request.action_id = row.id
+        request.action_version = row.version
+        if source_lost:
+            source = await session.get(OwnerRequestSource, selected["source_ids"][0])
+            assert source is not None
+            await session.execute(
+                update(ControlTurn).where(ControlTurn.id == source.turn_id).values(text=None)
+            )
+    args = ReviseDraftArgs.model_validate(
+        {
+            "conversation_id": None,
+            "action_id": row.id,
+            "min_words": None,
+            "max_words": None,
+            "literal": {
+                "request_id": selected["request_id"],
+                "request_version": selected["request_version"],
+                "expected_version": row.version,
+                "edit": edit,
+                "source_ids": selected["source_ids"],
+            },
+        }
+    )
+    outcome = await revise_draft_tool(ctx, args)
+    if source_lost:
+        assert outcome.status == "not_drafted"
+        assert outcome.data["proposal_status"] == "invalid_arguments"
+        assert outcome.data["action"] is None
+        assert outcome.data["effect_version"] is None
+        assert outcome.data["requested_change_applied"] is False
+        unchanged = await s.action(row.id)
+        assert unchanged.version == row.version
+        assert unchanged.text == row.text
+        assert unchanged.approval_token == row.approval_token
+        assert "action_revision_requested" not in await s.events(row.id)
+        return
+    assert outcome.status == "revised"
+    revised = await s.action(row.id)
+    assert revised.version == row.version + 1
+    assert revised.text == (row.text + addition if edit == "literal_append" else addition)
+    assert revised.approval_token != row.approval_token
+    assert revised.origin == row.origin
+    assert s.fake.requests == []
 
 
 @pytest.fixture

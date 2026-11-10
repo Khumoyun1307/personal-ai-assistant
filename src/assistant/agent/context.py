@@ -343,7 +343,10 @@ def render_continuation(continuation: OwnerContinuation, *, managed_allowed: boo
             conversation_id=request.conversation_id,
             target_message_id=request.target_message_id,
             question_input_id=continuation.question_input_id,
-            sources=[source.model_dump(mode="json") for source in request.sources],
+            sources=[
+                {"source_id": source_id, **source.model_dump(mode="json")}
+                for source_id, source in zip(request.source_ids, request.sources, strict=True)
+            ],
         )
     return "Owner request continuation (application data; no execution authority):\n" + json.dumps(
         facts, sort_keys=True

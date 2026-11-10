@@ -4,6 +4,8 @@
 
 ## Strict model-facing APIs
 
+H3 implementation note (2026-11-09): `propose_message` adopts the source API below under its existing flag. Revision 0018 (after I8's 0017) adds the unique audit-effect key index and declares `COMPATIBILITY = "breaking"` under I23's existing-field constraint rule; source proposals and literal revisions share the immutable run/call effect identity independently of mutable draft flags, including cross-tool retries through fresh executors. Until H4/H8 activate the final flat revision API, `revise_draft` retains its one-card selector and legacy word-bound/instruction fields, replacing `append_text` with nullable `literal={request_id, request_version, expected_version, edit, source_ids}` (`edit=literal_append|literal_replace`). Both literal operations use the same C1 copy service; this seam does not implement model-written proposal/rewrite or change a used prompt. H6 must activate the next unused prompt with the current strict schemas. Lead/CI validation, including migration up/down, is pending.
+
 ```python
 class ProposeOwnerMessageArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -87,6 +89,8 @@ Lookup order: validate schema/account scope and existing effect key/digest first
 
 `ProposalReceipt` contains an **optional** [C3 ActionReceipt](C3-receipts-and-card-facts.md); it does not inherit mandatory action fields:
 
+**H3 wire compatibility (owner fix-round instruction, 2026-11-09):** the C2 status below is exposed as the additional `proposal_status` field. The top-level tool `status` retains active `owner_request.v10` rule 19 vocabulary: a created approval card is `awaiting_approval` with top-level `action_id`; an exact reuse reports the current artifact status and `reused=true`; blocked cards remain `blocked` with their reason. Source validation failures, missing input, unavailable/stale artifacts and conflicts are `not_drafted` with a fixed reason and applied=false, preserving the nullable artifact requirements below. Literal revisions keep `revised` on success/exact reuse and `not_drafted` on failure. Neither tool emits a new C2 status word as its top-level status before prompt cutover. The executor logs approval-card results as `agent_tool_call_succeeded`, never `agent_tool_call_not_run`. This compatibility mapping changes no effect, conflict or approval semantics.
+
 ```python
 @dataclass(frozen=True)
 class ProposalReceipt:
@@ -122,6 +126,8 @@ Applied means an effect committed **in this call**. No-action failures create no
 
 ## Authorship is per version (H9)
 
+**H3 effect-row compatibility repair (2026-11-09):** effect identities remain in the existing indexed audit storage with `subject_type=tool_effect`, separate from the action lifecycle's `subject_type=action`. Lookups retain compatibility with older identity rows. A changed source-proposal retry includes the original scoped action receipt rather than returning a null artifact; it stages no new text/version. Shared run/call uniqueness and cross-tool conflict checks remain enforced. Deterministic literal edits still record `action_revision_requested` before `action_edited`, with no additional action lifecycle event for the identity row.
+
 ```python
 AuthorshipKind = Literal[
     "owner_dictated", "owner_literal_edit", "assistant_written", "agent_proposal_selected"
@@ -149,6 +155,8 @@ H9 adds `actions.authorship jsonb NULL` (strict sketch above; structural, curren
 | Owner explicitly selects retained assistant suggestion | agent_proposal_selected / true | **Written by the assistant** |
 
 Suggestion copying requires an explicit owner selection source plus the exact scoped assistant artifact/span (C1 purpose suggestion); the application copies it; no arbitrary historical fuzzy substring. If suggestion inherited managed/untrusted prose, preserve provenance/consent, never upgrade it to owner wording.
+
+**H3 review repair (2026-11-09):** C1's `SelectSuggestion` binds the validated owner instruction source to the exact ordered suggestion-source IDs; only the latest retained binding is accepted. Merely occurring after a suggestion is insufficient selection proof. Literal-revision replay resolves the original account/call or retried owner-turn effect before selecting any requested card; changing cards/requests returns a conflict about the original artifact. Terminal and already-revising literal targets use the same C2 compatibility result union (`not_drafted`, `proposal_status=not_available`, an actual relevant action or NULL, NULL effect_version, applied=false).
 
 `ai_generated = retains_generated_text OR kind in {assistant_written, agent_proposal_selected} OR legacy_unknown`. Rendering, consent-revocation cancellation, policy loading and execution use this **current-version** predicate, not immutable action origin. Keep `ActionOrigin` as original trigger classification; owner-requested status comes from request linkage. `apply_new_version` receives authorship/fence atomically. Cancel/failed revision preserves old text/authorship/version/expiry and rotates only the approval token; successful rewrite clears prior approval hash and rotates token. Old token cannot approve new text. No used prompt edit.
 

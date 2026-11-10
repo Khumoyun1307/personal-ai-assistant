@@ -54,6 +54,7 @@ class OwnerRequestView:
     sources: tuple[RequestSource, ...]
     requested_at: datetime
     expires_at: datetime
+    source_ids: tuple[int, ...]  # same order as sources; scoped database IDs
 ```
 
 `owner_requests` (H1; all columns structural):
@@ -123,7 +124,9 @@ async def load_source(
 ) -> ValidatedSource | SourceUnavailable: ...
 ```
 
-`RequestUpdate` is a discriminated union of `AddSources(sources)`, `SelectRecipient(contact_id, conversation_id, basis)`, `SetQuestion(slot, input_id)`, `SetTarget(message_id)`, `SetConstraints(constraints)`, `LinkAction(action_id, version)`, `SetState(state, reason)`. Every variant carries only typed fields above. `RequestUpdateResult = applied(view) | stale(current_version) | unavailable(code)`. `Continuation = selected(request_id, version, action_id?, action_version?) | ambiguous(request_ids) | none | unavailable(code)`. No model-provided account id.
+`RequestUpdate` is a discriminated union of `AddSources(sources)`, `SelectRecipient(contact_id, conversation_id, basis)`, `SelectSuggestion(instruction_source_id, source_ids)`, `SetQuestion(slot, input_id)`, `SetTarget(message_id)`, `SetConstraints(constraints)`, `LinkAction(action_id, version)`, `SetState(state, reason)`. Every variant carries only typed fields above. `RequestUpdateResult = applied(view) | stale(current_version) | unavailable(code)`. `Continuation = selected(request_id, version, action_id?, action_version?) | ambiguous(request_ids) | none | unavailable(code)`. No model-provided account id.
+
+**H3 review repair (2026-11-09):** each source rendered in continuation metadata includes its scoped `source_id` beside its span/purpose, so proposal calls can use only model-visible references. `SelectSuggestion` is internal request bookkeeping, not a new agent tool: it records a classified owner selection of an exact ordered suggestion-source list. All referenced sources must be in this account/request, live, hash/bounds/role-valid; the instruction must be owner `text` classified as `instruction`, later than the selected assistant artifacts. Its strict content-free audit event `owner_request_suggestion_selected` uses subject `owner_request` and details `{kind: "select_suggestion", instruction_source_id, source_ids}`. The latest binding alone applies; chronology or a retained instruction without that binding is insufficient. Copying revalidates the binding's instruction and artifacts. No new table, column or prompt version is introduced.
 
 Focus changes take account `FOR NO KEY UPDATE` **first**, then the normal conversation/request order, to serialize clearing old focus and setting new focus. Do not upgrade an account SHARE lock after acquiring conversation/request locks. Non-focus reads/settlement retain the shared conventions. If several unexpired questions are possible and neither explicit reply nor focused request identifies one, return ambiguous rather than picking newest arbitrarily.
 
@@ -157,6 +160,7 @@ The 24 h request TTL bounds abandoned clarification metadata, not Telegram's rep
 |---|---|---|
 | owner_requests (all structural columns) | Unfinished TTL above; terminal metadata ≤1 year from requested_at, hourly sweep. | Account/everything deletes rows. Conversation/contact/managed deletion cancels affected requests and removes source/link metadata; no executing action reset. Control deletion invalidates source-dependent requests. Metadata alone needs ai_control to enter a model; linked managed target reads need ai_managed. |
 | owner_request_sources (all structural columns) | Until source loses text or request is deleted, ≤1 year; never pins source text. | Account/request/source row cascade; **text clearing** also invalidates/removes source refs in same privacy transaction/sweep. Quotes retain original managed/third-party consent class. |
+| audit_log suggestion-selection binding (structural IDs/enums only) | Existing audit ceiling of 1 year; removed earlier with request/source purge or request sweep. | Account/everything deletion applies; scoped source/request erasure removes the binding in the same transaction. Account-scoped structural export includes `suggestion_selections`. No source text is copied or retained. |
 | control_turns.reply_to_telegram_message_id | Same as control turn row; clear on control/all deletion and relevant scope redaction. | IDs only; ai_control, plus existing managed withholding when applicable. |
 | Derived actions.text (existing content column) | Existing action-text retention, never extended by continuation. | Source deletion/clearing removes derived body and cancels pending action; executing state preserved. Explicit copied preference persistence is governed separately by C8. |
 

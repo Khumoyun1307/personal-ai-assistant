@@ -1,36 +1,16 @@
-"""`revise_draft`, `get_draft`: the live card from the owner's chat (PF-13).
+"""Live-card revisions and reads (PF-13; H3 literal-source seam).
 
-Owner decision D3 of 2026-10-30: the owner edits and asks about the draft
-they are looking at in plain words, and the agent acts on that card instead
-of writing a new one.
+Literal append/replacement uses explicit C1 owner sources plus request and
+action version checks, without a provider call. Appending concatenates the
+retained body and copied source characters; every separator must itself be
+in the source. Generated base text stays generated (H9 owns per-version
+provenance). Invalid sources fail before revision starts, preserving the
+current text, version, approval token and presentation. No tool sends.
+Literal revisions share the immutable run/call effect key with source
+proposals, including retries through a fresh executor or another tool.
 
-- `revise_draft` is `propose`: it changes a card that still needs the
-  owner's Approve, and it never sends (§6 invariants 1, 2). It acts only on a
-  card `awaiting_approval` in the run's account and reuses the card's Edit
-  machinery: the action moves to `revising` with the current owner turn as
-  its revision message (`lifecycle.start_revision`), and the **same** action
-  gets version + 1 and a new approval token — never a supersede. With
-  `append_text` the new version is the current text, a space and those
-  words, deterministically and without a model call; the words must be the
-  owner's own, found in the current turn by `propose_message`'s provenance
-  check (so words the owner addressed to the assistant are left out by the
-  model, and anything else is refused). Otherwise the owner's own message is
-  the revision instruction for `draft_owner` mode `revise`, through
-  `RevisionJob` (`CardReviser`) exactly as after Edit (A18), with an optional
-  word range counted as for `propose_reply`; a forwarded or quoting turn is
-  never an instruction (invariant 3b). Not gated by taint: the card is the
-  gate (§7.1). Idempotent on `(run_id, tool_call_id)` and on a retried owner
-  turn, through the `action_revision_requested` audit row's ids, so a retry
-  never bumps the version twice. Results are facts — never the text, never
-  "sent".
-- `get_draft` is `read`: the chat's live card, or else its latest action,
-  with the text wrapped as untrusted (`source="draft"`: written from contact
-  content; it taints the run and needs `ai_managed`) and facts counted by
-  the application (`word_count` split on whitespace, `char_count`), so the
-  model never counts or remembers a draft itself.
-
-Ids are resolved within the account; a foreign or unknown id reads "not
-found" (§8.3). Content-free observability: fixed codes and booleans only.
+The legacy instruction revision path remains until H4/H8 cutover. Reads
+wrap draft text as untrusted; receipt/log metadata is content-free.
 """
 
 from __future__ import annotations
@@ -41,7 +21,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account, AuditLogEntry
@@ -53,15 +33,19 @@ from assistant.actions.card_facts import (
     state_reason_fact,
 )
 from assistant.actions.models import Action
+from assistant.actions.request_models import OwnerRequest
+from assistant.actions.requests import PositiveId, lock_requests
+from assistant.actions.source_copy import CopyUnavailable, copy_request_body
 from assistant.actions.states import LIVE_CARD, ActionState
 from assistant.agent.draft_owner_schemas import WordBounds, char_count, word_count
 from assistant.agent.drafting import FLAG_SOURCE, RevisionResult
+from assistant.agent.persistence import args_digest
 from assistant.agent.tools.common import (
     ArgumentRuleError,
-    OptionalId,
     local_time,
     require_conversations,
 )
+from assistant.agent.tools.effects import find_effect, record_effect
 from assistant.agent.tools.registry import (
     CapabilityClass,
     ToolContext,
@@ -70,11 +54,11 @@ from assistant.agent.tools.registry import (
     ToolRefs,
 )
 from assistant.agent.tools.replies import (
+    EFFECT_KEY_CHARS,
     MAX_WORDS,
     WORDS_ORDER_RULE,
     WORDS_RULE,
-    argument_error,
-    text_occurs_in,
+    source_failure,
 )
 from assistant.agent.untrusted import Source, wrap
 from assistant.conversations.models import Conversation
@@ -88,14 +72,9 @@ GET_DRAFT_FLAG = "tool.get_draft"
 REVISION_REQUESTED = "action_revision_requested"
 
 ONE_CARD_RULE = "give exactly one of conversation_id or action_id; set the other to null"
-APPEND_RULE = (
-    "append_text must be words the owner wrote in their message, exactly, without words they "
-    "addressed to you; for any other change set append_text to null (the owner's message is "
-    "then the instruction)"
-)
 APPEND_AND_LENGTH_RULE = (
-    "append_text adds exactly the owner's words and cannot meet a length: give either "
-    "append_text or min_words/max_words"
+    "literal edits copy exactly the owner's source spans: give either "
+    "literal or min_words/max_words"
 )
 #: What every result says about the card: it still needs the owner.
 CARD_NOTE = "the owner's card shows it; it still needs the owner's Approve"
@@ -103,15 +82,6 @@ CARD_NOTE = "the owner's card shows it; it still needs the owner's Approve"
 ReviseStatus = Literal[
     "revised", "revising", "not_revised", "no_live_card", "already_being_revised"
 ]
-
-
-def _appended_words(value: str | None) -> str | None:
-    if value is None:
-        return None
-    stripped = value.strip()
-    if not 1 <= len(stripped) <= MAX_TEXT_LENGTH:
-        raise ArgumentRuleError(f"append_text must be 1 to {MAX_TEXT_LENGTH} characters, or null")
-    return stripped
 
 
 def _words(value: int | None) -> int | None:
@@ -123,10 +93,10 @@ def _words(value: int | None) -> int | None:
 class _OneCard(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    conversation_id: OptionalId = Field(
+    conversation_id: PositiveId | None = Field(
         description="The chat whose draft it is, or null to use action_id."
     )
-    action_id: OptionalId = Field(
+    action_id: PositiveId | None = Field(
         description="The draft's action id (from a propose or get_draft result), or null."
     )
 
@@ -137,12 +107,22 @@ class _OneCard(BaseModel):
         return self
 
 
+class LiteralEdit(BaseModel):
+    """H3 literal seam; H4 owns the generated-rewrite API cutover."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: PositiveId
+    request_version: PositiveId
+    expected_version: PositiveId
+    edit: Literal["literal_append", "literal_replace"]
+    source_ids: Annotated[list[PositiveId], Field(min_length=1, max_length=64)]
+
+
 class ReviseDraftArgs(_OneCard):
-    append_text: Annotated[str | None, AfterValidator(_appended_words)] = Field(
+    literal: LiteralEdit | None = Field(
         description=(
-            "Words the owner asked to add at the end of the draft, exactly as the owner "
-            "wrote them in their message (not their words to you), or null to revise as "
-            "the owner's message says."
+            "Exact source-backed append/replacement, or null for the legacy revision instruction."
         )
     )
     min_words: Annotated[int | None, AfterValidator(_words)] = Field(
@@ -154,9 +134,7 @@ class ReviseDraftArgs(_OneCard):
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
-        if self.append_text is not None and (
-            self.min_words is not None or self.max_words is not None
-        ):
+        if self.literal is not None and (self.min_words is not None or self.max_words is not None):
             raise ArgumentRuleError(APPEND_AND_LENGTH_RULE)
         if (
             self.min_words is not None
@@ -302,34 +280,30 @@ async def _lock(session: AsyncSession, account_id: int, conversation_id: int) ->
 
 
 # ------------------------------------------------------------ revise_draft
-async def _requested_before(session: AsyncSession, ctx: ToolContext, action_id: int) -> int | None:
-    """The version this call (or a retry of this owner turn in an earlier
-    run) already sent into revision, from the audit row `start_revision`
-    wrote; None when it did not. So a retry never revises twice."""
+async def _requested_before(session: AsyncSession, ctx: ToolContext) -> AuditLogEntry | None:
+    """Resolve this call/owner-turn effect before consulting a requested card.
+
+    The durable identity survives a fresh executor and a different card
+    selection. Its original subject is the relevant replay/conflict artifact.
+    """
     if not ctx.call_id and ctx.turn_id is None:
         return None
-    statement = select(AuditLogEntry.details).where(
+    effect = await find_effect(session, ctx)
+    if effect is not None:
+        return effect
+    statement = select(AuditLogEntry).where(
         AuditLogEntry.account_id == ctx.account_id,
         AuditLogEntry.event == REVISION_REQUESTED,
         AuditLogEntry.subject_type == "action",
-        AuditLogEntry.subject_id == action_id,
         AuditLogEntry.details["tool"].astext == REVISE_DRAFT.name,
+        or_(
+            (AuditLogEntry.details["run_id"].astext == str(ctx.run_id))
+            & (AuditLogEntry.details["call_id"].astext == ctx.call_id),
+            (AuditLogEntry.details["turn_id"].astext == str(ctx.turn_id))
+            & (AuditLogEntry.details["run_id"].astext != str(ctx.run_id)),
+        ),
     )
-    for details in await session.scalars(statement.order_by(AuditLogEntry.id.desc())):
-        same_call = (
-            bool(ctx.call_id)
-            and details.get("run_id") == ctx.run_id
-            and details.get("call_id") == ctx.call_id
-        )
-        retried_turn = (
-            ctx.turn_id is not None
-            and details.get("turn_id") == ctx.turn_id
-            and details.get("run_id") != ctx.run_id
-        )
-        if same_call or retried_turn:
-            version = details.get("version")
-            return version if isinstance(version, int) else None
-    return None
+    return await session.scalar(statement.order_by(AuditLogEntry.id.desc()).limit(1))
 
 
 def _revise_outcome(
@@ -391,6 +365,53 @@ def _replayed(card: _Card, requested: int) -> ToolOutcome:
     )
 
 
+async def _literal_receipt(
+    session: AsyncSession,
+    ctx: ToolContext,
+    request: OwnerRequest,
+    card: _Card,
+    outcome: ToolOutcome,
+    *,
+    applied: bool = False,
+    effect_version: int | None = None,
+) -> ToolOutcome:
+    action = await session.scalar(
+        select(Action)
+        .where(Action.account_id == ctx.account_id, Action.id == card.id)
+        .execution_options(populate_existing=True)
+    )
+    if action is None or action.text is None:
+        return source_failure("not_available", "artifact_unavailable", request)
+    proposal_status = outcome.data.get("proposal_status", outcome.status)
+    if proposal_status == "revised" and not applied:
+        proposal_status = "reused_exact"
+    elif proposal_status not in {"revised", "proposal_conflict", "idempotency_conflict"}:
+        proposal_status = "not_available"
+    status = "revised" if outcome.status == "revised" else "not_drafted"
+    return ToolOutcome(
+        status,
+        {
+            **outcome.data,
+            "proposal_status": proposal_status,
+            "reason": outcome.data.get("reason"),
+            "request_id": request.id,
+            "request_version": request.version,
+            "action": {
+                "action_id": action.id,
+                "conversation_id": action.conversation_id,
+                "version": action.version,
+                "state": action.state,
+            },
+            "effect_version": effect_version,
+            "requested_change_applied": applied,
+        },
+        contains_managed=True,
+        untrusted=False,
+        refs=card.refs,
+        log_detail=outcome.log_detail,
+    )
+
+
 async def revise_draft_tool(ctx: ToolContext, args: ReviseDraftArgs) -> ToolOutcome:
     services = ctx.services
     turn = ctx.owner_turn
@@ -399,45 +420,145 @@ async def revise_draft_tool(ctx: ToolContext, args: ReviseDraftArgs) -> ToolOutc
         turn is None
         or ctx.turn_id is None
         or services.approval_cards is None
-        or (args.append_text is None and reviser is None)
+        or (args.literal is None and reviser is None)
     ):
+        if args.literal is not None:
+            return source_failure("not_available", "not_available")
         return ToolOutcome("error", {"reason": "not available"}, log_code="not_available")
-    appending = args.append_text is not None
     observed: dict[str, Any] = {
-        "mode": "append" if appending else "instruction",
+        "mode": args.literal.edit if args.literal is not None else "instruction",
         "has_bounds": args.bounds is not None,
     }
+    if args.literal is not None and (not ctx.call_id or len(ctx.call_id) > EFFECT_KEY_CHARS):
+        return source_failure("invalid_arguments", "invalid_effect_key")
     async with transaction(services.session_factory) as uow:
         session = uow.session
-        card = await _card(session, ctx, args, live_only=True)
+        if args.literal is not None and not await lock_requests(session, account_id=ctx.account_id):
+            return source_failure("not_available", "not_found")
+        prior = await _requested_before(session, ctx)
+        if args.literal is None and prior is not None and prior.event == "tool_effect_recorded":
+            return source_failure("idempotency_conflict", "existing_draft_conflict")
+        selected_card: _OneCard = args
+        if args.literal is not None and prior is not None:
+            if prior.subject_id is None:
+                return source_failure("not_available", "artifact_unavailable")
+            selected_card = GetDraftArgs(conversation_id=None, action_id=prior.subject_id)
+        try:
+            card = await _card(session, ctx, selected_card, live_only=True)
+        except NotInAccountError:
+            if args.literal is not None:
+                return source_failure("not_available", "not_found")
+            raise
         if card is None:
+            if args.literal is not None:
+                return source_failure("not_available", "artifact_unavailable")
             return ToolOutcome(
                 "no_live_card",
                 {"conversation_id": args.conversation_id, "reason": "no_card_awaiting_approval"},
                 log_code="no_live_card:none",
             )
-        requested = await _requested_before(session, ctx, card.id)
-        if requested is not None:
-            return _replayed(card, requested)
+        request: OwnerRequest | None = None
+        if args.literal is not None:
+            request = await session.scalar(
+                select(OwnerRequest)
+                .where(
+                    OwnerRequest.account_id == ctx.account_id,
+                    OwnerRequest.id == args.literal.request_id,
+                )
+                .with_for_update()
+            )
+            if request is None:
+                return source_failure("not_available", "not_found")
+            if prior is not None and prior.details.get("semantic_digest") != args_digest(
+                args.model_dump()
+            ):
+                same_call = prior.details.get("run_id") == ctx.run_id
+                conflict = source_failure(
+                    "idempotency_conflict" if same_call else "proposal_conflict",
+                    "existing_draft_conflict",
+                    request,
+                )
+                return await _literal_receipt(session, ctx, request, card, conflict)
+        requested = None
+        if prior is not None and prior.subject_id == card.id:
+            if prior.event == "tool_effect_recorded":
+                effect_version = prior.details.get("effect_version")
+                if isinstance(effect_version, int):
+                    requested = effect_version - 1
+            else:
+                requested = prior.details.get("version")
+        if isinstance(requested, int):
+            replay = _replayed(card, requested)
+            if request is not None:
+                return await _literal_receipt(
+                    session,
+                    ctx,
+                    request,
+                    card,
+                    replay,
+                    effect_version=requested + 1 if replay.status == "revised" else None,
+                )
+            return replay
         if card.state not in LIVE_CARD:
-            return _revise_outcome(
+            outcome = _revise_outcome(
                 "no_live_card",
                 card,
                 reason="no_longer_pending",
                 facts={"state": card.state.value},
                 log=observed,
             )
+            if request is not None:
+                return await _literal_receipt(session, ctx, request, card, outcome)
+            return outcome
         if card.state is ActionState.REVISING:
             # The owner is editing it with the card's Edit button, or another
             # revision is running: that one decides this version.
-            return _revise_outcome("already_being_revised", card, reason="revising", log=observed)
+            outcome = _revise_outcome(
+                "already_being_revised", card, reason="revising", log=observed
+            )
+            if request is not None:
+                return await _literal_receipt(session, ctx, request, card, outcome)
+            return outcome
         if card.text is None:
+            if args.literal is not None:
+                return source_failure("not_available", "source_unavailable", request)
             return _revise_outcome("not_revised", card, reason="text_removed", log=observed)
         new_text: str | None = None
-        if args.append_text is not None:
-            if not text_occurs_in(args.append_text, turn.own_words):
-                return argument_error("append_text", APPEND_RULE, "append_not_owner_words")
-            new_text = f"{card.text.rstrip()} {args.append_text}"
+        if args.literal is not None:
+            assert request is not None
+            if (
+                request.version != args.literal.request_version
+                or card.version != args.literal.expected_version
+            ):
+                return source_failure("stale", "request_changed", request)
+            if (
+                request.state not in ("ready", "preparing", "awaiting_approval")
+                or request.expires_at <= services.clock.now()
+                or request.conversation_id != card.conversation_id
+                or request.action_id != card.id
+            ):
+                return source_failure("not_available", "request_unavailable", request)
+            copied = await copy_request_body(
+                session,
+                account_id=ctx.account_id,
+                request_id=request.id,
+                source_ids=args.literal.source_ids,
+                allow_suggestion=False,
+            )
+            if isinstance(copied, CopyUnavailable):
+                return source_failure("invalid_arguments", copied.reason, request)
+            new_text = (
+                card.text + copied.text if args.literal.edit == "literal_append" else copied.text
+            )
+            if not 1 <= lifecycle.sendable_length(new_text) <= MAX_TEXT_LENGTH:
+                return source_failure("invalid_arguments", "length_not_met", request)
+            words = word_count(new_text)
+            minimum = request.constraints.get("min_words")
+            maximum = request.constraints.get("max_words")
+            if (isinstance(minimum, int) and words < minimum) or (
+                isinstance(maximum, int) and words > maximum
+            ):
+                return source_failure("invalid_arguments", "length_not_met", request)
         elif turn.instruction is None:
             # Forwarded, quoting or carrying managed content: never an
             # instruction to the draft writer (invariant 3b).
@@ -459,18 +580,48 @@ async def revise_draft_tool(ctx: ToolContext, args: ReviseDraftArgs) -> ToolOutc
                 "run_id": ctx.run_id,
                 "call_id": ctx.call_id,
                 "turn_id": ctx.turn_id,
+                "semantic_digest": args_digest(args.model_dump()),
             },
         )
         if started is not lifecycle.RevisionStart.STARTED:
             services.approval_cards.sync_after_commit(session, card.id)
             reason = "expired" if started is lifecycle.RevisionStart.EXPIRED else "changed"
-            return _revise_outcome("no_live_card", card, reason=reason, log=observed)
-        if args.append_text is None:
+            outcome = _revise_outcome("no_live_card", card, reason=reason, log=observed)
+            if request is not None:
+                return await _literal_receipt(session, ctx, request, card, outcome)
+            return outcome
+        if args.literal is None:
             # The card shows "Revising…" while the draft writer works.
             services.approval_cards.sync_after_commit(session, card.id)
         else:
             assert new_text is not None
-            return await _append(session, ctx, card, new_text, now, observed)
+            literal_result = await _append(session, ctx, card, new_text, now, observed)
+            if literal_result.status == "revised":
+                assert request is not None
+                await record_effect(
+                    session,
+                    ctx,
+                    action_id=card.id,
+                    version=card.version + 1,
+                    semantic_digest=args_digest(args.model_dump()),
+                )
+                request.action_version = card.version + 1
+                request.state = "awaiting_approval"
+                request.missing_slot = None
+                if card.expires_at is not None:
+                    request.expires_at = card.expires_at
+                request.version += 1
+                request.updated_at = now
+            assert request is not None
+            return await _literal_receipt(
+                session,
+                ctx,
+                request,
+                card,
+                literal_result,
+                applied=literal_result.status == "revised",
+                effect_version=card.version + 1 if literal_result.status == "revised" else None,
+            )
     assert reviser is not None
     result = await reviser.revise_from_chat(card.id, ctx.turn_id, bounds=args.bounds)
     observed |= {"bounds_retry": result.bounds_retry, "bounds_met": result.bounds_met}
@@ -539,7 +690,7 @@ async def _append(
         card,
         version=applied.version,
         facts={
-            "changed": "appended",
+            "changed": "replaced" if observed.get("mode") == "literal_replace" else "appended",
             "word_count": word_count(new_text),
             "char_count": char_count(new_text),
         },
@@ -614,10 +765,11 @@ REVISE_DRAFT = ToolDefinition(
         "Change the draft the owner is looking at: the chat's live card awaiting approval "
         "gets a new version (it never sends and never makes a second card). Use it, not "
         "propose_reply, whenever the owner wants that draft changed: add words, shorter, "
-        "longer, another tone, a length in words. To add the owner's own words at the end, "
-        "pass them as append_text exactly as the owner wrote them (not the words they "
-        "addressed to you); otherwise leave append_text null and the owner's own message is "
-        "the instruction. Pass any length in words as min_words/max_words; the result "
+        "longer, another tone, a length in words. For literal edits supply literal with "
+        "request_id/request_version, expected_version, edit (literal_append or "
+        "literal_replace) and source_ids from that request. Separators must be in those "
+        "owner sources. Otherwise leave literal null for the legacy owner instruction "
+        "revision. Pass any length in words as min_words/max_words; the result "
         "reports the real count. " + _REVISE_RESULT_RULE
     ),
     args_model=ReviseDraftArgs,

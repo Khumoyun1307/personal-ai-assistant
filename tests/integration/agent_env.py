@@ -56,7 +56,8 @@ NOTE_FLAG = "tool.test_set_note"
 #: The S05.4 monitor tools (P2-T41).
 MONITOR_FLAGS = frozenset({"tool.create_monitor", "tool.list_monitors", "tool.stop_monitor"})
 
-#: The S04.2 propose tools (P2-T41).
+#: The S04.2 propose tools (P2-T41). H3 changes only propose_message's source
+#: schema: keep its existing flag in both catalogues; no new tool/flag.
 PROPOSE_FLAGS = frozenset({"tool.propose_reply", "tool.propose_message"})
 #: The S04.4 kill-switch tools (P2-T41): control tools that never read chats.
 AUTONOMY_FLAGS = frozenset({"tool.pause_autonomy", "tool.resume_autonomy"})

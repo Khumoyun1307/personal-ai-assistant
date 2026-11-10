@@ -1,48 +1,41 @@
-"""`propose_reply`, `propose_message` (ARCHITECTURE §8.2; S04.2 §3.5; P2-T09; PF-10-12).
+"""Owner reply proposals and character-exact source copying (H3 / C1 / C2).
 
-Both are `propose` tools: they create an action through S04.1's proposal
-service and the owner decides on its card. **Nothing here sends** (§6
-invariants 1, 2): a result says `awaiting_approval` (a card is on its way),
-`blocked` (the card offers copy-ready text), `not_drafted` or
-`declined_by_provider` — never "sent" (RG-20), and never the draft's text
-(the owner reads it on the card).
+`propose_message` takes request/version/recipient and retained source ids;
+application code validates account, request membership, purpose, role, whole
+field SHA-256 and Unicode code-point offsets before copying the slices in
+order. Dictation may come from earlier turns of the active request (D-S2,
+2026-11-09). No model-supplied text, fuzzy match, normalization, punctuation
+repair, strip or invented separator can establish authorship. A selected
+assistant artifact needs its own source and a separate owner selection
+instruction explicitly bound to those ordered source ids; chronology alone
+does not select it. It remains generated. Scoped ids accompany source spans
+in continuation context. Quotes/forwards never become owner words.
 
-- `propose_reply` drafts synchronously inside the owner run (P2-T09) with
-  the tool-less `draft_owner` prompt (PF-10). The owner asked, so it is
-  never vetoed as "no reply needed" (owner decision D1, 2026-10-30). The
-  application supplies the owner's own words: the current owner turn's text
-  reaches the draft from plain owner input or the separately classified
-  own-text component beside a quote — tainted run or not (PF-11, amended by
-  owner D-S3, 2026-11-09). The model's own `guidance` still reaches it only from
-  an untainted run (decisions R2). `mode` is `reply` (answer the contact's
-  message `answered_message_id`, or their newest) or `new_message` (a
-  standalone message: no base message, nothing "answered"); a word range is
-  checked by counting (one retry, then the honest count). With no
-  `answered_message_id`, the draft writer picks the shown contact message
-  the owner's words point at, if any (PF-F; checked by the Drafter).
-- `propose_message` proposes a given text with no model run (decisions R3)
-  after a deterministic provenance check (PF-12): text found in the owner's
-  own words of the current turn is `owner_dictated` (R-05, FR-DRF-08); text
-  found in one of the last assistant replies is the assistant's suggestion
-  the owner picked (`agent_proposal`, labelled so on the card); anything
-  else is refused, pointing at `propose_reply` `mode='new_message'`. It may
-  name the message the text answers (`answered_message_id`, PF-F: checked as
-  `propose_reply`'s; the card quotes it).
+Invalid or unavailable sources return C2's nullable no-action result with
+the v10 wire status `not_drafted`; `proposal_status` carries the C2 outcome.
+Created cards keep `awaiting_approval` and `action_id` on the wire. Exact
+retries reuse the artifact; changed requests conflict honestly (Q4),
+including changed source ids and answered target. Proposals and literal
+revisions share the durable run/call effect key across fresh executors.
+Changed retries retain the original action receipt without staging text;
+effect identity rows are separate from the action's lifecycle history.
+Nothing here sends: the owner must tap the current card and execution must
+pass policy again. Logs and receipts never contain the copied body.
 
-Not gated by taint: the approval card is the gate (§7.1). Idempotent on
-`(run_id, tool_call_id)`, and an identical request in a retried owner turn
-reuses its live card without drafting again. Different requests conflict
-explicitly; they never claim the new text was staged. Ids are resolved within
-the account; a foreign or unknown id reads "not found". Content-free observability (PF-04): the
-executor's log line carries `instruction_source`, `mode`,
-`has_answered_target`, `answered_by`, `bounds_retry`, `bounds_met` (and
-`provenance`, `has_answered_target` for `propose_message`) — fixed codes and
-booleans, never text.
+The legacy `propose_reply` writer is retained until H4/H6 cutover. H3 changes
+no used prompt and implements no model-written proposal tool. H9 owns the
+per-version authorship/retained-generated-text integration.
+
+The application supplies the owner's own current words to that writer even
+in a tainted run, including the classified own-text component beside a quote
+(D-S3). Model-written guidance is passed only from an untainted run. Source
+copying likewise keeps validated owner words available while tainted; its
+approval card remains the gate. Results containing contact names are
+untrusted; content-free receipts do not introduce taint.
 """
 
 from __future__ import annotations
 
-import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Self
@@ -51,9 +44,12 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts.models import Account, ControlTurn
+from assistant.accounts.models import Account
 from assistant.actions.models import Action
 from assistant.actions.proposals import ProposalRefused
+from assistant.actions.request_models import OwnerRequest
+from assistant.actions.requests import PositiveId, lock_requests
+from assistant.actions.source_copy import CopyUnavailable, copy_request_body
 from assistant.actions.states import LIVE_CARD, ActionOrigin, ActionState
 from assistant.agent.draft_owner_schemas import WordBounds
 from assistant.agent.drafting import DraftOutcome, DraftStatus, Stale, propose_draft
@@ -67,6 +63,7 @@ from assistant.agent.tools.common import (
     require_contacts,
     require_conversations,
 )
+from assistant.agent.tools.effects import find_effect, record_effect
 from assistant.agent.tools.registry import (
     CapabilityClass,
     ToolContext,
@@ -76,7 +73,6 @@ from assistant.agent.tools.registry import (
 )
 from assistant.conversations import modes
 from assistant.conversations.models import Contact, Conversation
-from assistant.core.delivery import MAX_TEXT_LENGTH
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 
@@ -89,13 +85,12 @@ MAX_WORDS = 1000
 #: What every created proposal's result says about the card.
 CARD_NOTE = "queued for the owner"
 REQUEST_DIGEST = "proposal_request_digest"
+EFFECT_KEY_CHARS = 256
 CONFLICT_RULE = (
     "The existing draft was not changed and this request was not staged. "
     "Use revise_draft when offered, or ask the owner how to proceed."
 )
 GUIDANCE_IGNORED = "tainted_run"
-#: How many recent assistant replies a picked suggestion is looked up in.
-SUGGESTION_TURNS = 6
 
 #: Where the draft's instruction came from (PF-04, content-free).
 InstructionSource = Literal["owner_turn", "model", "none", "dropped_tainted", "dropped_quoted"]
@@ -107,10 +102,6 @@ ANSWERED_RULE = (
 NEW_MESSAGE_ANSWERS_NOTHING = "a new_message answers no message: set answered_message_id to null"
 WORDS_RULE = f"min_words and max_words are 1 to {MAX_WORDS}, or null"
 WORDS_ORDER_RULE = "min_words must not be above max_words"
-NOT_DICTATED_RULE = (
-    "this text is neither in the owner's own message nor in one of your recent replies; "
-    "to write a message from what the owner asked, use propose_reply with mode 'new_message'"
-)
 
 
 def _guidance(value: str | None) -> str | None:
@@ -119,15 +110,6 @@ def _guidance(value: str | None) -> str | None:
     stripped = value.strip()
     if not 1 <= len(stripped) <= GUIDANCE_CHARS:
         raise ArgumentRuleError(f"guidance must be 1 to {GUIDANCE_CHARS} characters, or null")
-    return stripped
-
-
-def _dictated(value: str) -> str:
-    # Only the surrounding whitespace goes (Telegram drops it anyway); the
-    # owner's words themselves are never rewritten (R-05).
-    stripped = value.strip()
-    if not 1 <= len(stripped) <= MAX_TEXT_LENGTH:
-        raise ArgumentRuleError(f"text must be 1 to {MAX_TEXT_LENGTH} characters")
     return stripped
 
 
@@ -198,14 +180,14 @@ class ProposeReplyArgs(_OneChat):
         return WordBounds(self.min_words, self.max_words)
 
 
-class ProposeMessageArgs(_OneChat):
-    text: Annotated[str, AfterValidator(_dictated)] = Field(
-        description=(
-            "The exact message, word for word (1-4096 characters): the owner's own words "
-            "from their message, or a text you suggested earlier that the owner chose."
-        )
-    )
-    answered_message_id: OptionalId = Field(
+class ProposeMessageArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: PositiveId
+    request_version: PositiveId
+    conversation_id: PositiveId
+    source_ids: Annotated[list[PositiveId], Field(min_length=1, max_length=64)]
+    answered_message_id: PositiveId | None = Field(
         description=(
             "The contact's message this text answers, a [msg:<id>] a chat tool showed you, "
             "when the owner names an earlier message; null otherwise."
@@ -290,10 +272,11 @@ async def _existing(session: AsyncSession, ctx: ToolContext, conversation_id: in
 
 def _request_digest(args: ProposeReplyArgs | ProposeMessageArgs) -> str:
     # Target aliases resolve to the same conversation before this comparison.
+    excluded = {"conversation_id", "contact_id"} if isinstance(args, ProposeReplyArgs) else set()
     return args_digest(
         {
             "tool": "propose_reply" if isinstance(args, ProposeReplyArgs) else "propose_message",
-            "request": args.model_dump(exclude={"conversation_id", "contact_id"}),
+            "request": args.model_dump(exclude=excluded),
         }
     )
 
@@ -338,6 +321,16 @@ async def _record_request(
         raise NotInAccountError("action")
     # A hash only, committed with the action; no additional content is stored.
     action.draft_flags = {**(action.draft_flags or {}), REQUEST_DIGEST: _request_digest(args)}
+    if isinstance(args, ProposeMessageArgs) and ctx.call_id and action.state == "awaiting_approval":
+        # The version's flags may be replaced by a later revision. Keep the
+        # effect key/digest independently so its exact retry stays factual.
+        await record_effect(
+            session,
+            ctx,
+            action_id=action.id,
+            version=action.version,
+            semantic_digest=_request_digest(args),
+        )
 
 
 def _status_of(state: ActionState) -> str:
@@ -609,91 +602,237 @@ def _owner_failure(
     return _not_drafted(target, outcome.status.value, guidance_ignored=ignored, log_detail=observed)
 
 
-# ------------------------------------------------------------ propose_message (PF-12)
-#: Apostrophes and quote marks as one each (several look alike on purpose).
-#: Uzbek writes o' and g' with any of the apostrophes.
-_APOSTROPHES = "‘’‚‛ʼʻʹʽ`´′"  # noqa: RUF001
-_QUOTE_MARKS = "“”„‟«»″"
-_QUOTES = str.maketrans(
-    {
-        **dict.fromkeys(_APOSTROPHES, "'"),
-        **dict.fromkeys(_QUOTE_MARKS, '"'),
-        # Uzbek Cyrillic: HA WITH DESCENDER as HA (the Latin x/h fold's twin).
-        "ҳ": "х",  # noqa: RUF001
+# ------------------------------------------------------------ propose_message (H3 / C2)
+def source_failure(
+    status: str,
+    reason: str,
+    request: OwnerRequest | None = None,
+) -> ToolOutcome:
+    """A C2 no-action result using v10's existing status vocabulary."""
+    return ToolOutcome(
+        "not_drafted",
+        {
+            "proposal_status": status,
+            "reason": reason,
+            "request_id": None if request is None else request.id,
+            "request_version": None if request is None else request.version,
+            "action": None,
+            "effect_version": None,
+            "requested_change_applied": False,
+        },
+        log_code=reason,
+    )
+
+
+async def _source_receipt(
+    session: AsyncSession,
+    ctx: ToolContext,
+    target: _Target,
+    action: Action,
+    args: ProposeMessageArgs,
+    *,
+    request: OwnerRequest,
+    staged: bool = False,
+) -> ToolOutcome:
+    if action.text is None:
+        return source_failure("not_available", "artifact_unavailable", request)
+    same_call = bool(ctx.call_id) and (action.run_id, action.tool_call_id) == (
+        ctx.run_id,
+        ctx.call_id,
+    )
+    recorded = await find_effect(session, ctx)
+    effect = recorded.details if recorded is not None and recorded.subject_id == action.id else None
+    same_call = same_call or effect is not None
+    digest = _request_digest(args)
+    # A committed call key takes precedence over mutable card flags. In
+    # particular, a revision key cannot replay the card's original proposal.
+    exact = (
+        effect.get("semantic_digest") == digest
+        if effect is not None
+        else (action.draft_flags or {}).get(REQUEST_DIGEST) == digest
+    )
+    blocked = staged and action.state == "blocked"
+    proposal_status = (
+        "blocked"
+        if blocked
+        else "staged"
+        if staged
+        else "reused_exact"
+        if exact
+        else "idempotency_conflict"
+        if same_call
+        else "proposal_conflict"
+    )
+    status = "not_drafted"
+    data: dict[str, Any] = {
+        "proposal_status": proposal_status,
+        "reason": None if staged or exact else "existing_draft_conflict",
+        "request_id": args.request_id,
+        "request_version": request.version,
+        "action": {
+            "action_id": action.id,
+            "conversation_id": action.conversation_id,
+            "version": action.version,
+            "state": action.state,
+        },
+        "effect_version": (
+            action.version
+            if staged and not blocked
+            else effect.get("effect_version")
+            if effect is not None and exact
+            else None
+        ),
+        "requested_change_applied": staged and not blocked,
     }
-)
-_EDGE = " '\".,!?;:…"
-
-
-def normalise_for_match(text: str) -> str:
-    """A text as the provenance check compares it: compatibility forms
-    folded, case-folded, quotes and apostrophes unified, the Uzbek x/h
-    spellings folded together, whitespace collapsed. Deterministic."""
-    folded = unicodedata.normalize("NFKC", text).casefold().translate(_QUOTES)
-    return " ".join(folded.replace("x", "h").split())
-
-
-def text_occurs_in(text: str, source: str | None) -> bool:
-    """`text` (its surrounding quotes and end punctuation aside) is part of
-    `source`, both normalised."""
-    if not source:
-        return False
-    needle = normalise_for_match(text).strip(_EDGE)
-    return bool(needle) and needle in normalise_for_match(source)
-
-
-WrittenBy = Literal["owner", "assistant"]
-
-
-async def _provenance(session: AsyncSession, ctx: ToolContext, text: str) -> WrittenBy | None:
-    """Who wrote `text`: the owner (in the current turn's own words), the
-    assistant (one of its last replies before that turn), or None."""
-    turn = ctx.owner_turn
-    if turn is not None and text_occurs_in(text, turn.own_words):
-        return "owner"
-    before = turn.id if turn is not None else ctx.turn_id
-    statement = select(ControlTurn.text).where(
-        ControlTurn.account_id == ctx.account_id,
-        ControlTurn.role == "assistant",
-        ControlTurn.text.is_not(None),
+    # Managed consent and instruction authority are independent (D-S3).
+    # IDs/statuses alone do not taint; a returned contact name does.
+    untrusted = False
+    # Transitional facts for existing card consumers. The nullable action
+    # union above is authoritative; a no-action result never contains these.
+    if staged or exact:
+        written_by = "owner" if action.origin == "owner_dictated" else "assistant_suggestion"
+        facts = await _result(
+            session,
+            ctx.account_id,
+            target,
+            action.id,
+            reused=not staged,
+            extra={"written_by": written_by},
+        )
+        data.update(facts.data)
+        untrusted = facts.taints
+        if facts.status in {"awaiting_approval", "blocked"}:
+            status = facts.status
+        else:
+            data["reason"] = "no_longer_pending"
+    else:
+        data.update({"action_id": action.id, "state": action.state, "rule": CONFLICT_RULE})
+    return ToolOutcome(
+        status,
+        data,
+        contains_managed=True,
+        untrusted=untrusted,
+        refs=ToolRefs(frozenset({target.conversation_id}), frozenset({target.contact_id})),
     )
-    if before is not None:
-        statement = statement.where(ControlTurn.id < before)
-    replies = await session.scalars(
-        statement.order_by(ControlTurn.id.desc()).limit(SUGGESTION_TURNS)
-    )
-    if any(text_occurs_in(text, reply) for reply in replies):
-        return "assistant"
-    return None
 
 
 async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> ToolOutcome:
     services = ctx.services
     config = services.actions_config
     if config is None or services.approval_cards is None:
-        return _not_available()
+        return source_failure("not_available", "not_available")
+    if not ctx.call_id or len(ctx.call_id) > EFFECT_KEY_CHARS:
+        return source_failure("invalid_arguments", "invalid_effect_key")
     async with transaction(services.session_factory) as uow:
-        target = await _target(uow.session, ctx, args)
+        session = uow.session
+        if not await lock_requests(session, account_id=ctx.account_id):
+            return source_failure("not_available", "not_found")
+        request = await session.scalar(
+            select(OwnerRequest)
+            .where(OwnerRequest.account_id == ctx.account_id, OwnerRequest.id == args.request_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if request is None:
+            return source_failure("not_available", "not_found")
+        try:
+            target = await _target(
+                session,
+                ctx,
+                _OneChat(conversation_id=args.conversation_id, contact_id=None),
+            )
+        except NotInAccountError:
+            return source_failure("not_available", "not_found", request)
+        effect = await find_effect(session, ctx)
+        if effect is not None:
+            artifact = await session.scalar(
+                select(Action).where(
+                    Action.account_id == ctx.account_id,
+                    Action.id == effect.subject_id,
+                )
+            )
+            if artifact is None:
+                return source_failure("not_available", "artifact_unavailable", request)
+            # A changed retry still refers to the original effect's artifact;
+            # it must not lose that receipt or borrow the newly requested chat.
+            if artifact.conversation_id != target.conversation_id:
+                target = await _target(
+                    session,
+                    ctx,
+                    _OneChat(conversation_id=artifact.conversation_id, contact_id=None),
+                )
+            return await _source_receipt(session, ctx, target, artifact, args, request=request)
+        # Completed exact retries precede current request/source validation:
+        # retention must not cause a retry to regenerate or recreate text.
+        existing = await _existing(session, ctx, target.conversation_id)
+        same_call = (
+            existing is not None
+            and bool(ctx.call_id)
+            and (existing.run_id, existing.tool_call_id) == (ctx.run_id, ctx.call_id)
+        )
+        if existing is not None and (
+            same_call or (existing.draft_flags or {}).get(REQUEST_DIGEST) == _request_digest(args)
+        ):
+            return await _source_receipt(session, ctx, target, existing, args, request=request)
+        if existing is None and request.action_id is not None:
+            existing = await session.scalar(
+                select(Action).where(
+                    Action.account_id == ctx.account_id,
+                    Action.id == request.action_id,
+                )
+            )
+            if existing is not None and (existing.draft_flags or {}).get(
+                REQUEST_DIGEST
+            ) == _request_digest(args):
+                return await _source_receipt(session, ctx, target, existing, args, request=request)
+        copied = await copy_request_body(
+            session,
+            account_id=ctx.account_id,
+            request_id=request.id,
+            source_ids=args.source_ids,
+        )
+        if isinstance(copied, CopyUnavailable):
+            return source_failure("invalid_arguments", copied.reason, request)
+        if existing is not None:
+            return await _source_receipt(session, ctx, target, existing, args, request=request)
+        if request.version != args.request_version:
+            return source_failure("stale", "request_changed", request)
+        if (
+            request.state not in ("ready", "preparing")
+            or request.expires_at <= services.clock.now()
+        ):
+            return source_failure("not_available", "request_unavailable", request)
+        if (request.conversation_id, request.contact_id) != (
+            target.conversation_id,
+            target.contact_id,
+        ):
+            return source_failure("invalid_arguments", "recipient_mismatch", request)
         if (refusal := _refused(target)) is not None:
-            return refusal
-        if (existing := await _existing(uow.session, ctx, target.conversation_id)) is not None:
-            return await _reuse_or_conflict(uow.session, ctx, target, existing, args)
+            return source_failure("not_available", str(refusal.data["reason"]), request)
         answered = args.answered_message_id
         if answered is not None and (
             services.drafter is None
             or answered
             not in await services.drafter.answerable_ids(
-                uow.session, ctx.account_id, target.conversation_id
+                session,
+                ctx.account_id,
+                target.conversation_id,
             )
         ):
-            return argument_error("answered_message_id", ANSWERED_RULE, "answered_not_answerable")
-        written_by = await _provenance(uow.session, ctx, args.text)
-        if written_by is None:
-            return argument_error("text", NOT_DICTATED_RULE, "text_not_dictated")
-        dictated = written_by == "owner"
+            return source_failure("invalid_arguments", "answered_not_answerable", request)
+        if request.target_message_id != answered:
+            return source_failure("invalid_arguments", "target_mismatch", request)
+        words = len(copied.text.split())
+        minimum = request.constraints.get("min_words")
+        maximum = request.constraints.get("max_words")
+        if (isinstance(minimum, int) and words < minimum) or (
+            isinstance(maximum, int) and words > maximum
+        ):
+            return source_failure("invalid_arguments", "length_not_met", request)
+        dictated = copied.written_by == "owner"
         try:
             proposal = await propose_draft(
-                uow.session,
+                session,
                 account_id=ctx.account_id,
                 conversation_id=target.conversation_id,
                 outcome=DraftOutcome(DraftStatus.DRAFTED),
@@ -704,34 +843,52 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
                 clock=services.clock,
                 config=config,
                 presenter=services.approval_cards,
-                dictated_text=args.text if dictated else None,
-                suggested_text=None if dictated else args.text,
+                dictated_text=copied.text if dictated else None,
+                suggested_text=None if dictated else copied.text,
                 answered_message_id=answered,
             )
         except ProposalRefused as refused:
-            return _not_available(refused)
-        assert not isinstance(proposal, Stale)  # a given text is never stale
-        if proposal.reused:
-            existing = await uow.session.scalar(
-                select(Action).where(
-                    Action.account_id == ctx.account_id, Action.id == proposal.action_id
-                )
+            return source_failure("not_available", refused.code, request)
+        assert not isinstance(proposal, Stale)
+        action = await session.scalar(
+            select(Action).where(
+                Action.account_id == ctx.account_id,
+                Action.id == proposal.action_id,
             )
-            assert existing is not None
-            return await _reuse_or_conflict(uow.session, ctx, target, existing, args)
-        await _record_request(uow.session, ctx, proposal.action_id, args)
-        return await _result(
-            uow.session,
-            ctx.account_id,
+        )
+        assert action is not None
+        if not proposal.reused:
+            await _record_request(session, ctx, action.id, args)
+            request.action_id = action.id
+            request.action_version = action.version
+            request.state = (
+                "awaiting_approval" if action.state == "awaiting_approval" else "suspended"
+            )
+            request.focused = action.state == "awaiting_approval"
+            request.missing_slot = None
+            request.version += 1
+            request.updated_at = services.clock.now()
+            if action.expires_at is not None:
+                request.expires_at = action.expires_at
+        outcome = await _source_receipt(
+            session,
+            ctx,
             target,
-            proposal.action_id,
-            reused=proposal.reused,
-            replaced_action_id=proposal.superseded_action_id,
-            extra={
-                "written_by": "owner" if dictated else "assistant_suggestion",
-                **({} if answered is None else {"answers_message_id": answered}),
+            action,
+            args,
+            request=request,
+            staged=not proposal.reused,
+        )
+        return ToolOutcome(
+            outcome.status,
+            {**outcome.data, **({} if answered is None else {"answers_message_id": answered})},
+            contains_managed=outcome.contains_managed,
+            untrusted=outcome.untrusted,
+            refs=outcome.refs,
+            log_detail={
+                "provenance": copied.written_by,
+                "has_answered_target": answered is not None,
             },
-            log_detail={"provenance": written_by, "has_answered_target": answered is not None},
         )
 
 
@@ -769,12 +926,19 @@ PROPOSE_REPLY = ToolDefinition(
 PROPOSE_MESSAGE = ToolDefinition(
     name="propose_message",
     description=(
-        "Propose an exact text as a message to one chat, for the owner's approval on a "
-        "card. Use when the owner dictates the words ('tell Alex: ...'; pass their words "
-        "exactly, never rephrased) or picks a text you suggested earlier. When the owner "
-        "says which earlier message the words answer and you know its id, pass it as "
-        "answered_message_id. Any other text is refused: to compose a message from what "
-        "the owner asked, use propose_reply with mode 'new_message'. " + _RESULT_RULE
+        "Copy exact literal-body source_ids from the selected request to its recipient's "
+        "approval card. Supply request_id, request_version, conversation_id and the "
+        "answered_message_id selected by that request (null for a standalone message). "
+        "Sources can be from earlier owner turns; do not ask for a re-paste. Pass no text. "
+        "The application copies source characters, without adding separators. An assistant "
+        "suggestion needs its exact request source and separate owner selection proof; "
+        "it remains assistant-written. Missing/invalid sources produce action=null, "
+        "effect_version=null, requested_change_applied=false; preserve the request and "
+        "report the missing source. Never regenerate as a fallback. 'awaiting_approval' "
+        "means a card needs the owner's tap; 'blocked' means it cannot be sent; "
+        "'not_drafted' means nothing new was made (say why from reason). 'reused' means "
+        "the card already existed. proposal_status carries the detailed C2 outcome; "
+        "a conflict never means the requested change was applied. Never say sent."
     ),
     args_model=ProposeMessageArgs,
     capability=CapabilityClass.PROPOSE,

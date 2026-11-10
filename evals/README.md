@@ -296,8 +296,22 @@ that message), substance the owner dictated carried into a reply, append to the 
 card (the same card, the old text as its prefix), shorter, 5–7 words, tone, the
 draft's word count (`get_draft`), and the assistant's suggestion #2 as a new message
 (the exact text, `agent_proposal`). The loader refuses records it cannot score (an
-answered message that is not the contact's, a dictated text that is not in the owner's
-message, a picked text no assistant turn holds, a revision with no live card).
+answered message that is not the contact's, a dictated text that does not equal its
+explicit owner source slices, a picked text without valid selection sources, a revision
+with no live card). H3/D-S2 (2026-11-09; dataset v1.2) permits dictation from
+earlier owner turns in the same active request. `dictation_sources` holds ordered
+zero-based `turn_index` values (history followed by the current turn), code-point
+`start`/`end` offsets and the entire owner's `text` field's `field_sha256`. Sources
+are literal-body selections; quotes and forwards cannot supply owner words.
+The loader stages these selections in a C1 request without staging a card.
+Picked text uses explicit `suggestion_selection` metadata: ordered assistant
+`sources` and the later owner `instruction`, each with the same turn-index,
+code-point offsets and whole-field hash shape. The loader validates exact
+characters, roles and chronology, creates a compose request, and records a C1
+`SelectSuggestion` binding to those precise artifact sources. `od31` supplies
+these fixtures; its fake-model regression only reads the loaded state. Missing
+or invalid selection metadata is rejected instead of inferred from substring
+matches. These review repairs have not yet been run through the lead/CI gate.
 
 `python -m evals run owner_drafting` runs the **real `OwnerRequestRuntime`** per case,
 with the shipped `owner_request` prompt, the production release flags (including
@@ -311,7 +325,8 @@ the product's `propose_draft`. Cards go to an eval-side recording sender; a busi
 Deterministic checks (`check_case`, pure): the tools called and not called (an
 instrumentation wrapper records each call's name, arguments and status); a card staged
 or revised only when asked, on the right chat, with the expected origin, mode (a new
-message has no base message) and answered message; the exact text; words that must or
+message has no base message) and answered message; character-exact text (including
+case, punctuation, Unicode and whitespace); words that must or
 must not be in the card (values compared as in `agent_mode.value_key`); word bounds and
 "fewer words" with the product's `word_count`; an append that keeps the old text as its
 prefix; the **same** card revised (a higher version, never a new card); names in the

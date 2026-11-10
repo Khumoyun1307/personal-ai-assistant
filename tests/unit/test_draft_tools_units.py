@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from assistant.actions.requests import RequestSource, SourceSpan, copy_source_text
 from assistant.agent.draft_owner_schemas import (
     OwnerDraftResult,
     OwnerRevisionResult,
@@ -35,6 +36,74 @@ from assistant.agent.tools.registry import (
     default_registry,
     strict_schema,
 )
+from assistant.agent.tools.replies import ProposeMessageArgs, source_failure
+
+
+@pytest.mark.parametrize(
+    "proposal_status",
+    ["needs_input", "invalid_arguments", "stale", "not_available"],
+)
+def test_source_validation_keeps_v10_no_action_status(proposal_status: str) -> None:
+    outcome = source_failure(proposal_status, "source_unavailable")
+    assert outcome.status == "not_drafted"
+    assert outcome.data["proposal_status"] == proposal_status
+    assert outcome.data["reason"] == "source_unavailable"
+    assert outcome.data["action"] is None
+    assert outcome.data["effect_version"] is None
+    assert outcome.data["requested_change_applied"] is False
+
+
+def test_source_copy_preserves_unicode_code_points_and_explicit_separator() -> None:
+    import hashlib
+
+    field = "Tell them:  X1 x/h, O‘g‘il! e\u0301\n👍  "
+    source = RequestSource(
+        span=SourceSpan(
+            turn_id=1,
+            field="text",
+            start=len("Tell them:"),
+            end=len(field),
+            field_sha256=hashlib.sha256(field.encode("utf-8")).hexdigest(),
+        ),
+        purpose="literal_body",
+    )
+    assert copy_source_text(field, source) == "  X1 x/h, O‘g‘il! e\u0301\n👍  "
+    assert copy_source_text(field.casefold(), source) is None
+    assert copy_source_text(field.replace("x/h", "h/h"), source) is None
+    assert copy_source_text(field[:-1], source) is None
+
+
+def test_source_proposal_schema_accepts_ids_and_never_model_text() -> None:
+    schema = strict_schema(ProposeMessageArgs)
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"])
+    assert set(schema["properties"]) == {
+        "request_id",
+        "request_version",
+        "conversation_id",
+        "answered_message_id",
+        "source_ids",
+    }
+    values = {
+        "request_id": 1,
+        "request_version": 1,
+        "conversation_id": 1,
+        "answered_message_id": None,
+        "source_ids": [1],
+    }
+    assert ProposeMessageArgs.model_validate(values).source_ids == [1]
+    for invalid in (
+        {"text": "X1"},
+        {"source_ids": [True]},
+        {"source_ids": []},
+        {"request_id": True},
+        {"request_version": 0},
+        {"answered_message_id": True},
+        {"contact_id": 1},
+    ):
+        with pytest.raises(ValidationError):
+            ProposeMessageArgs.model_validate(values | invalid)
+
 
 NAMES = ("revise_draft", "get_draft")
 
@@ -49,11 +118,21 @@ def offered(flags: frozenset[str], *, run_type: str = "owner_request", consent: 
     )
 
 
+def literal_args() -> dict[str, Any]:
+    return {
+        "request_id": 1,
+        "request_version": 1,
+        "expected_version": 1,
+        "edit": "literal_append",
+        "source_ids": [1],
+    }
+
+
 def revise(**values: Any) -> ReviseDraftArgs:
     base: dict[str, Any] = {
         "conversation_id": 1,
         "action_id": None,
-        "append_text": None,
+        "literal": None,
         "min_words": None,
         "max_words": None,
     }
@@ -109,7 +188,7 @@ def test_the_schemas_are_strict() -> None:
     assert set(strict_schema(ReviseDraftArgs)["properties"]) == {
         "conversation_id",
         "action_id",
-        "append_text",
+        "literal",
         "min_words",
         "max_words",
     }
@@ -120,10 +199,9 @@ def test_the_schemas_are_strict() -> None:
     [
         ({"conversation_id": None}, ONE_CARD_RULE),
         ({"action_id": 5}, ONE_CARD_RULE),
-        ({"append_text": "SYNTH words", "max_words": 7}, APPEND_AND_LENGTH_RULE),
+        ({"literal": literal_args(), "max_words": 7}, APPEND_AND_LENGTH_RULE),
         ({"min_words": 8, "max_words": 5}, "min_words must not be above max_words"),
         ({"min_words": 0}, "min_words and max_words are 1 to 1000, or null"),
-        ({"append_text": "   "}, "append_text must be 1 to 4096 characters, or null"),
     ],
 )
 def test_semantically_invalid_arguments_are_refused_in_fixed_words(
@@ -142,8 +220,8 @@ def test_unknown_fields_are_refused_and_get_draft_needs_one_card() -> None:
     assert GetDraftArgs.model_validate({"conversation_id": None, "action_id": 2}).action_id == 2
 
 
-def test_append_text_is_stripped_and_bounds_are_built() -> None:
-    assert revise(append_text="  SYNTH  ").append_text == "SYNTH"
+def test_source_edit_has_no_model_supplied_text_and_bounds_are_built() -> None:
+    assert revise(literal=literal_args()).literal is not None
     bounds = revise(min_words=5, max_words=7).bounds
     assert bounds is not None
     assert bounds.describe() == "between 5 and 7 words"

@@ -28,6 +28,10 @@ def test_every_production_migration_is_classified_exactly_once() -> None:
     assert LEGACY_COMPATIBILITY["0017"] == "expand"
     assert graph["0017"].compatibility == "expand"
     assert classify(graph, "0016", "0017") == "expand"
+    assert "0018" not in LEGACY_COMPATIBILITY
+    assert graph["0018"].parents == ("0017",)
+    assert graph["0018"].compatibility == "breaking"
+    assert classify(graph, "0017", "0018") == "breaking"
 
 
 def test_legacy_registry_classifies_immutable_migration(tmp_path: Path) -> None:

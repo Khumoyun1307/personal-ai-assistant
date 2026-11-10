@@ -19,21 +19,26 @@ from evals.owner_drafting import (
     RUBRIC_ID,
     OwnerDraftingCase,
     OwnerDraftingTarget,
+    load_cases,
 )
 from evals.targets import RunContext, Status
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from assistant.accounts.models import Account
+from assistant.accounts.models import Account, ControlTurn
 from assistant.actions.models import Action
+from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
 from assistant.agent import prompt_registry
+from assistant.agent.tools.registry import OwnerTurn, ToolContext, ToolServices
 from assistant.conversations.models import Contact, Conversation
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.db.models import SystemState
 from assistant.llm.port import LLMRequest, LLMResponse
+from tests.fakes.clock import FakeClock
 from tests.fakes.llm import FakeLLM, text_response, tool_response
+from tests.integration.test_reply_tools import prepare_literal
 from tests.scenarios.p2_drive import owner_draft_result
-from tests.unit.test_owner_drafting_dataset import card_expectation, case_record
+from tests.unit.test_owner_drafting_dataset import card_expectation, case_record, dictation_source
 
 pytestmark = pytest.mark.integration
 
@@ -122,6 +127,66 @@ def calling(name: str, **args: Any) -> Callable[[LLMRequest], Any]:
                 .where(Conversation.account_id == request.account_id)
             )
         payload = {"conversation_id": conversation_id, **args}
+        if name == "propose_message":
+            # H3: use the eval fixture's real active-request references, not
+            # a reconstructed current-turn text match or a new source turn.
+            async with SESSIONS[0]() as session:
+                active = await session.scalar(
+                    select(OwnerRequest).where(
+                        OwnerRequest.account_id == request.account_id,
+                        OwnerRequest.focused.is_(True),
+                        OwnerRequest.state == "ready",
+                    )
+                )
+                assert active is not None
+                source_ids = list(
+                    await session.scalars(
+                        select(OwnerRequestSource.id)
+                        .where(
+                            OwnerRequestSource.account_id == request.account_id,
+                            OwnerRequestSource.request_id == active.id,
+                            OwnerRequestSource.purpose.in_(("literal_body", "suggestion")),
+                        )
+                        .order_by(OwnerRequestSource.ordinal)
+                    )
+                )
+                return tool_response(
+                    (
+                        "call_1",
+                        name,
+                        json.dumps(
+                            {
+                                "request_id": active.id,
+                                "request_version": active.version,
+                                "conversation_id": conversation_id,
+                                "answered_message_id": active.target_message_id,
+                                "source_ids": source_ids,
+                            }
+                        ),
+                    )
+                )
+        if name == "revise_draft":
+            async with SESSIONS[0]() as session:
+                turn = await session.scalar(
+                    select(ControlTurn)
+                    .where(
+                        ControlTurn.account_id == request.account_id,
+                        ControlTurn.role == "owner",
+                    )
+                    .order_by(ControlTurn.id.desc())
+                    .limit(1)
+                )
+            assert turn is not None
+            ctx = ToolContext(
+                account_id=request.account_id,
+                run_id=request.run_id or 1,
+                run_type="owner_request",
+                tainted=False,
+                turn_id=turn.id,
+                owner_turn=OwnerTurn(turn.id, turn.text, False, False, False),
+                services=ToolServices(SESSIONS[0], FakeClock(turn.created_at), None),
+            )
+            payload = await prepare_literal(ctx, payload)
         return tool_response(("call_1", name, json.dumps(payload)))
 
     return step
@@ -229,6 +294,74 @@ async def test_the_target_runs_the_owner_runtime_and_scores_each_case(
         states = (await session.scalars(select(Action.state))).all()
     assert "approved" not in states
     assert "succeeded" not in states
+
+
+async def test_target_copies_dictation_from_before_recipient_clarification(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """H3/R2-15: no re-paste, fuzzy proof or model rewrite (D-S2, 2026-11-09)."""
+    SESSIONS[:] = [factory]
+    original = "SYNTH yoz: X1 x/h — Oʻgʻil, e\u0301!\n  Ha."
+    body = original.removeprefix("SYNTH yoz: ")
+    record = case_record(
+        history=[
+            {"role": "owner", "text": original},
+            {"role": "assistant", "text": "SYNTH Kimga?"},
+            {"role": "owner", "text": "SYNTH Dilnozaga"},
+        ],
+        turn="SYNTH yozaver",
+        dictation_sources=[dictation_source(original, body)],
+    )
+    record["expect"]["card"]["exact_text"] = body
+    case = OwnerDraftingCase.model_validate_json(json.dumps(record))
+    llm = FakeLLM(calling("propose_message"), text_response("SYNTH Karta tayyor."))
+    target = OwnerDraftingTarget([case], session_factory=factory)
+    result = await target.run(RunContext(llm=llm, model=LUNA, effort="medium"))
+    detail = result.details[0]
+    assert detail["problems"] == []
+    card = detail["new_cards"][0]
+    assert card["text"] == body
+    assert card["origin"] == "owner_dictated"
+    assert card["state"] == "awaiting_approval"
+    args = detail["tools"][0]["args"]
+    async with factory() as session:
+        source = await session.get(OwnerRequestSource, args["source_ids"][0])
+        assert source is not None
+        turn = await session.get(ControlTurn, source.turn_id)
+        assert turn is not None
+        assert turn.text == original
+    assert {r.purpose for r in llm.requests} == {"owner_request"}
+
+
+async def test_target_loads_explicit_suggestion_selection_without_helper_writes(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    SESSIONS[:] = [factory]
+    case = next(case for case in load_cases() if case.id == "od31")
+    llm = FakeLLM(calling("propose_message"), text_response("SYNTH Karta tayyor."))
+    target = OwnerDraftingTarget([case], session_factory=factory)
+    result = await target.run(RunContext(llm=llm, model=LUNA, effort="medium"))
+    detail = result.details[0]
+    assert detail["problems"] == []
+    [card] = detail["new_cards"]
+    assert case.expect.card is not None
+    assert card["text"] == case.expect.card.exact_text
+    assert card["origin"] == "agent_proposal"
+    assert card["state"] == "awaiting_approval"
+    assert {request.purpose for request in llm.requests} == {"owner_request"}
+    arguments = detail["tools"][0]["args"]
+    async with factory() as session:
+        sources = list(
+            await session.scalars(
+                select(OwnerRequestSource).where(
+                    OwnerRequestSource.request_id == arguments["request_id"]
+                )
+            )
+        )
+    assert {source.purpose for source in sources} == {"suggestion", "instruction"}
+    assert [source.id for source in sources if source.purpose == "suggestion"] == arguments[
+        "source_ids"
+    ]
 
 
 def test_the_estimate_plans_the_agent_loop_drafts_and_the_judge() -> None:
