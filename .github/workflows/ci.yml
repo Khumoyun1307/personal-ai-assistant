@@ -26,7 +26,8 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Main runs must finish so failures are never hidden by a newer push.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # The repository is public (owner, 2026-10-28): the token every job gets is
 # read-only, and no job needs more.
