@@ -10,13 +10,19 @@ Synthetic text.
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 from sqlalchemy import select
 
+from assistant.accounts.models import ControlTurn
+from assistant.actions.authorship import VersionAuthorship, is_ai_generated
 from assistant.actions.proposals import propose
+from assistant.actions.requests import RequestSource, SourceSpan, open_request
+from assistant.actions.source_copy import CopiedBody, copy_request_body
 from assistant.actions.states import ActionOrigin
 from assistant.conversations.models import Conversation, Message
-from tests.integration.actions_env import CONFIG, Chat, request, seed_turn
+from tests.integration.actions_env import CONFIG, Chat, request
 from tests.integration.business_env import (
     OTHER_CONTACT,
     OWNER,
@@ -40,9 +46,48 @@ async def card(env: Env, chat: Chat, *, dictated: bool = False) -> int:
     async with env.factory() as session, session.begin():
         fields: dict[str, object] = {"text": TEXT}
         if dictated:
+            turn = ControlTurn(
+                account_id=chat.account_id, role="owner", text=TEXT, created_at=env.clock.now()
+            )
+            session.add(turn)
+            await session.flush()
+            source = RequestSource(
+                span=SourceSpan(
+                    turn_id=turn.id,
+                    field="text",
+                    start=0,
+                    end=len(TEXT),
+                    field_sha256=hashlib.sha256(TEXT.encode("utf-8")).hexdigest(),
+                ),
+                purpose="literal_body",
+            )
+            owner_request = await open_request(
+                session,
+                account_id=chat.account_id,
+                turn_id=turn.id,
+                operation="dictate",
+                sources=(source,),
+                now=env.clock.now(),
+            )
+            copied = await copy_request_body(
+                session,
+                account_id=chat.account_id,
+                request_id=owner_request.request_id,
+                source_ids=list(owner_request.source_ids),
+            )
+            assert isinstance(copied, CopiedBody)
+            assert copied.written_by == "owner"
             fields |= {
                 "origin": ActionOrigin.OWNER_DICTATED,
-                "trigger_turn_id": await seed_turn(session, chat.account_id),
+                "trigger_turn_id": turn.id,
+                "text": copied.text,
+                "authorship": VersionAuthorship(
+                    version=1,
+                    kind="owner_dictated",
+                    source_ids=list(copied.source_ids),
+                    parent_version=None,
+                    retains_generated_text=False,
+                ),
             }
         result = await propose(session, request(chat, **fields), clock=env.clock, config=CONFIG)
         return result.action_id
@@ -99,6 +144,10 @@ async def test_managed_consent_revocation_cancels_pending_ai_drafts_and_keeps_di
     ai_approved = await approved(env, chat, text=TEXT)
     dictated = await card(env, chat, dictated=True)
     ai_card = await card(env, second)
+
+    dictated_row = await action(env, dictated)
+    assert not is_ai_generated(dictated_row.authorship, version=dictated_row.version)
+    assert dictated_row.text == TEXT
 
     await deliver(env, private_message(OWNER, "/privacy revoke"))
 

@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.callbacks import new_token
 from assistant.accounts.models import Account
+from assistant.actions.authorship import VersionAuthorship, generated_authorship, is_ai_generated
 from assistant.actions.config import ActionsConfig
 from assistant.actions.lifecycle import sendable_length, transition
 from assistant.actions.models import Action
@@ -49,6 +50,7 @@ class ProposalRequest:
     trigger_turn_id: int | None
     draft_run_id: int | None
     draft_flags: Mapping[str, Any] | None = None
+    authorship: VersionAuthorship | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +74,8 @@ async def propose(
     session: AsyncSession, request: ProposalRequest, *, clock: Clock, config: ActionsConfig
 ) -> ProposalResult:
     now = clock.now()
+    if request.authorship is not None and request.authorship.version != 1:
+        raise ProposalRefused("authorship_version_invalid")
     if request.origin is ActionOrigin.DELEGATION_AUTO:
         raise ProposalRefused("autonomous_not_available")  # no delegations in P2
     if request.kind is not ActionKind.SEND_MESSAGE:
@@ -128,7 +132,7 @@ async def propose(
         phase=Phase.PROPOSAL,
         now=now,
         config=config,
-        ai_generated=request.origin is ActionOrigin.AGENT_PROPOSAL,
+        ai_generated=is_ai_generated(_authorship(request), version=1),
         process_run_id=None,
     )
     decision = decide(context)
@@ -154,6 +158,7 @@ async def propose(
             reason=None,
             now=now,
             values={"approval_token": new_token()},
+            details={"authorship": _authorship(request)},
         )
         return ProposalResult(action_id, ActionState.AWAITING_APPROVAL, False, superseded, decision)
     # A draft that cannot be sent never destroys a card that can.
@@ -166,7 +171,7 @@ async def propose(
         to_state=ActionState.BLOCKED,
         reason=_blocked_reason(decision),
         now=now,
-        details={"failed_rules": failed},
+        details={"failed_rules": failed, "authorship": _authorship(request)},
     )
     return ProposalResult(action_id, ActionState.BLOCKED, False, None, decision)
 
@@ -174,6 +179,16 @@ async def propose(
 def _blocked_reason(decision: Decision) -> StateReason:
     target = execution_target(decision)
     return StateReason.POLICY_DENIED if target is None else target[1]
+
+
+def _authorship(request: ProposalRequest) -> dict[str, Any] | None:
+    if request.authorship is not None:
+        return request.authorship.model_dump(mode="json")
+    if request.origin is ActionOrigin.AGENT_PROPOSAL:
+        return generated_authorship(1).model_dump(mode="json")
+    # The pre-H3 dictation path used fuzzy provenance. Do not turn that
+    # immutable trigger into source proof; H3 supplies validated C1 ids.
+    return None
 
 
 def _reused(action: Action) -> ProposalResult:
@@ -265,6 +280,7 @@ async def _insert(
             origin=request.origin.value,
             state=ActionState.PROPOSED.value,
             version=1,
+            authorship=_authorship(request),
             text=request.text,
             base_message_id=base_message_id,
             shown_through_message_id=facts.shown_through_message_id,

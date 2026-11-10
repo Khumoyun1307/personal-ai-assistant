@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from sqlalchemy import func, select
 
+from assistant.actions.authorship import VersionAuthorship
 from assistant.actions.config import ActionsConfig
 from assistant.actions.models import Action
 from assistant.actions.proposals import ProposalRefused, ProposalRequest, ProposalResult, propose
@@ -370,11 +371,15 @@ async def test_proposal_audit_rows_are_content_free(env: Env) -> None:
     second = await propose_in(env, request(chat, text=canary + " again"))
     blocked = await propose_in(env, request(chat, text=canary * 400))
 
-    allowed = {"from", "to", "version", "reason", "superseded_by", "failed_rules"}
+    allowed = {"from", "to", "version", "reason", "superseded_by", "failed_rules", "authorship"}
     for action_id in (first.action_id, second.action_id, blocked.action_id):
         for entry in await audit(env, action_id):
             assert canary not in json.dumps(entry.details)
             assert set(entry.details) <= allowed
+            if "authorship" in entry.details:
+                proof = VersionAuthorship.model_validate(entry.details["authorship"])
+                assert proof.kind == "assistant_written"
+                assert proof.source_ids == []
     async with env.factory() as session:
         total = await session.scalar(
             select(func.count()).select_from(Action).where(Action.account_id == chat.account_id)

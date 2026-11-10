@@ -9,6 +9,7 @@ from sqlalchemy import ColumnElement, case, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry, ControlTurn, PendingInput
+from assistant.actions.lifecycle import clear_authorship_sources
 from assistant.actions.models import Action
 from assistant.actions.request_models import (
     TERMINAL_REQUEST_STATES,
@@ -134,6 +135,7 @@ async def purge_request_sources(
     for row in rows:
         await cancel_linked_action(session, row, now=now, clear_text=True)
         await _delete_selection(session, account_id=account_id, request_id=row.id)
+        await _clear_authorship_sources(session, account_id=account_id, request_id=row.id)
         await session.execute(
             delete(PendingInput).where(
                 PendingInput.account_id == account_id,
@@ -164,6 +166,20 @@ async def purge_request_sources(
             await session.delete(row)
     await session.flush()
     return len(rows)
+
+
+async def _clear_authorship_sources(
+    session: AsyncSession, *, account_id: int, request_id: int
+) -> None:
+    source_ids = list(
+        await session.scalars(
+            select(OwnerRequestSource.id).where(
+                OwnerRequestSource.account_id == account_id,
+                OwnerRequestSource.request_id == request_id,
+            )
+        )
+    )
+    await clear_authorship_sources(session, account_id=account_id, source_ids=source_ids)
 
 
 async def _delete_selection(session: AsyncSession, *, account_id: int, request_id: int) -> None:
@@ -227,6 +243,7 @@ async def sweep_requests(session: AsyncSession, *, account_id: int, now: datetim
     for row in old:
         await cancel_linked_action(session, row, now=now, reason=StateReason.MAX_AGE)
         await _delete_selection(session, account_id=account_id, request_id=row.id)
+        await _clear_authorship_sources(session, account_id=account_id, request_id=row.id)
         await session.execute(
             delete(PendingInput).where(
                 PendingInput.account_id == account_id,

@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 from sqlalchemy import update
 
+from assistant.actions.authorship import VersionAuthorship, current_authorship
 from assistant.actions.lifecycle import (
     ApproveStatus,
     IllegalTransitionError,
@@ -204,6 +205,11 @@ async def test_apply_new_version_bumps_the_version_and_rotates_the_token(env: En
     assert (row.state, row.version, row.text) == ("awaiting_approval", 2, REVISED)
     assert row.approval_token == result.token
     assert row.draft_flags == flags
+    proof = current_authorship(row.authorship, version=2)
+    assert proof is not None
+    assert proof.kind == "assistant_written"
+    assert row.approved_text_hash is None
+    assert (await audit(env, action_id))[-1].details["authorship"] == row.authorship
     assert (await events(env, action_id))[-1] == "action_edited"
     assert (await approve_in(env, chat.account_id, old_token)).status is ApproveStatus.NOT_ACTIVE
     approved = await approve_in(env, chat.account_id, result.token)
@@ -314,8 +320,27 @@ async def test_set_revision_turn_needs_the_current_version(env: Env) -> None:
 
 
 @pytest.mark.parametrize("back", [cancel_edit, revision_failed])
-async def test_cancel_edit_restores_the_same_version_with_a_new_token(env: Env, back: Any) -> None:
+@pytest.mark.parametrize("owner_only", [False, True])
+async def test_cancel_edit_restores_the_same_version_with_a_new_token(
+    env: Env, back: Any, owner_only: bool
+) -> None:
     chat, action_id, old_token = await editing(env)
+    async with env.factory() as session, session.begin():
+        if owner_only:
+            await session.execute(
+                update(Action)
+                .where(Action.account_id == chat.account_id, Action.id == action_id)
+                .values(
+                    authorship=VersionAuthorship(
+                        version=1,
+                        kind="owner_dictated",
+                        source_ids=[],
+                        parent_version=None,
+                        retains_generated_text=False,
+                    ).model_dump(mode="json")
+                )
+            )
+    before = await action(env, action_id)
     async with env.factory() as session, session.begin():
         turn_id = await seed_turn(session, chat.account_id)
         await set_revision_turn(
@@ -337,6 +362,9 @@ async def test_cancel_edit_restores_the_same_version_with_a_new_token(env: Env, 
     row = await action(env, action_id)
     assert (row.state, row.version, row.text) == ("awaiting_approval", 1, DRAFT_TEXT)
     assert (row.approval_token, row.revision_turn_id) == (token, None)
+    assert row.authorship == before.authorship
+    assert row.expires_at == before.expires_at
+    assert (await approve_in(env, chat.account_id, old_token)).status is ApproveStatus.NOT_ACTIVE
     assert (await events(env, action_id))[-1] == "action_revision_cancelled"
 
 
@@ -569,7 +597,25 @@ async def test_every_transition_writes_one_content_free_audit_row(env: Env) -> N
     for entry in entries:
         assert canary not in json.dumps(entry.details)
         assert DRAFT_TEXT not in json.dumps(entry.details)
-        assert set(entry.details) == {"from", "to", "version", "reason"}
+        expected_keys = {"from", "to", "version", "reason"}
+        if entry.event in {"action_proposed", "action_edited"}:
+            expected_keys.add("authorship")
+            proof = VersionAuthorship.model_validate(entry.details["authorship"])
+            assert proof.kind in {
+                "owner_dictated",
+                "owner_literal_edit",
+                "assistant_written",
+                "agent_proposal_selected",
+            }
+        if entry.event == "action_edited":
+            assert entry.details["authorship"] == {
+                "version": 2,
+                "kind": "assistant_written",
+                "source_ids": [],
+                "parent_version": 1,
+                "retains_generated_text": True,
+            }
+        assert set(entry.details) == expected_keys
     assert [entry.actor for entry in entries] == ["system", "owner", "system", "owner"]
 
 

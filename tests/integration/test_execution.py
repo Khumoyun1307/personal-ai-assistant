@@ -19,6 +19,7 @@ from sqlalchemy import select, text
 from assistant.accounts import connections
 from assistant.accounts.connections import ConnectionSnapshot, Source
 from assistant.accounts.models import Account, AuditLogEntry, BusinessConnection, Consent
+from assistant.actions.authorship import VersionAuthorship, generated_authorship
 from assistant.actions.executor import (
     MAX_RATE_LIMITED_ATTEMPTS,
     ExecuteStatus,
@@ -63,6 +64,48 @@ from tests.integration.execution_env import (
 pytestmark = pytest.mark.integration
 
 TEXT = "Synthetic approved reply"
+
+
+@pytest.mark.parametrize("generated", [False, True, None])
+async def test_h9_consent_recheck_classifies_current_body_not_dictated_origin(
+    env: Env, generated: bool | None
+) -> None:
+    chat = await seed(env)
+    await caught_up(env)
+    action_id = await approved(env, chat, text=TEXT, origin=ActionOrigin.OWNER_DICTATED)
+    proof = (
+        generated_authorship(2)
+        if generated
+        else VersionAuthorship(
+            version=2,
+            kind="owner_literal_edit",
+            source_ids=[],
+            parent_version=1,
+            retains_generated_text=False,
+        )
+    )
+    await update_rows(
+        env,
+        Action,
+        Action.id == action_id,
+        version=2,
+        authorship=None if generated is None else proof.model_dump(mode="json"),
+    )
+    await update_rows(
+        env,
+        Consent,
+        Consent.account_id == chat.account_id,
+        revoked_at=env.clock.now(),
+    )
+    h = harness(env)
+    outcome = await h.execute(action_id)
+    if generated is False:
+        assert outcome.status is ExecuteStatus.SENT
+        assert h.sender.business_calls == 1
+    else:
+        assert outcome.status is ExecuteStatus.DENIED
+        assert outcome.reason is StateReason.CONSENT_REVOKED
+        assert h.sender.business_calls == 0
 
 
 def too_many(retry_after: int | None = None) -> Exception:

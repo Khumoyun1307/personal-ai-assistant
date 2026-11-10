@@ -17,7 +17,10 @@ import pytest
 from sqlalchemy import select, update
 
 from assistant.accounts.models import AuditLogEntry, ControlTurn
+from assistant.actions import lifecycle
+from assistant.actions.authorship import VersionAuthorship, current_authorship, is_ai_generated
 from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
+from assistant.actions.states import StateReason
 from assistant.agent.tools.drafts import ReviseDraftArgs, revise_draft_tool
 from assistant.agent.tools.registry import OwnerTurn, ToolContext, ToolServices
 from assistant.conversations.models import Message
@@ -261,12 +264,24 @@ async def test_literal_revision_unavailable_states_use_c2_results(s: Scenario, s
 
 @pytest.mark.parametrize("edit", ["literal_append", "literal_replace"])
 @pytest.mark.parametrize("source_lost", [False, True])
+@pytest.mark.parametrize("owner_base", [False, True])
 async def test_literal_revision_copies_sources_without_normalizing_or_adding_spaces(
     s: Scenario,
     edit: str,
     source_lost: bool,
+    owner_base: bool,
 ) -> None:
-    row = await s.seed(text="SYNTH generated body  ")
+    row = await s.seed(
+        text="SYNTH retained body  ",
+        origin="owner_dictated" if owner_base else "agent_proposal",
+        authorship=VersionAuthorship(
+            version=1,
+            kind="owner_dictated" if owner_base else "assistant_written",
+            source_ids=[],
+            parent_version=None,
+            retains_generated_text=not owner_base,
+        ).model_dump(mode="json"),
+    )
     addition = "\n  X1 x/h, O‘g‘il e\u0301! 👍  "
     turn_id = await ask(s.env, "write it")
     services = ToolServices(
@@ -324,6 +339,7 @@ async def test_literal_revision_copies_sources_without_normalizing_or_adding_spa
         assert unchanged.version == row.version
         assert unchanged.text == row.text
         assert unchanged.approval_token == row.approval_token
+        assert unchanged.authorship == row.authorship
         assert "action_revision_requested" not in await s.events(row.id)
         return
     assert outcome.status == "revised"
@@ -332,6 +348,29 @@ async def test_literal_revision_copies_sources_without_normalizing_or_adding_spa
     assert revised.text == (row.text + addition if edit == "literal_append" else addition)
     assert revised.approval_token != row.approval_token
     assert revised.origin == row.origin
+    proof = current_authorship(revised.authorship, version=revised.version)
+    assert proof is not None
+    assert proof.kind == "owner_literal_edit"
+    assert proof.source_ids == selected["source_ids"]
+    generated = edit == "literal_append" and not owner_base
+    assert is_ai_generated(revised.authorship, version=revised.version) is generated
+    assert revised.expires_at == row.expires_at
+    assert revised.approved_text_hash is None
+    async with s.env.factory() as session, session.begin():
+        stale = await lifecycle.approve(
+            session,
+            account_id=s.account_id,
+            token=row.approval_token or "",
+            now=s.env.clock.now(),
+        )
+        assert stale.status is lifecycle.ApproveStatus.NOT_ACTIVE
+        cancelled = await lifecycle.cancel_pending_ai_generated(
+            session,
+            account_id=s.account_id,
+            reason=StateReason.CONSENT_REVOKED,
+            now=s.env.clock.now(),
+        )
+    assert cancelled == ([row.id] if generated else [])
     assert s.fake.requests == []
 
 
@@ -404,6 +443,57 @@ async def test_a_revision_keeps_an_explicit_target_and_re_anchors_the_default(
     assert revised.draft_flags["target"] == target
 
 
+@pytest.mark.parametrize(("target", "mode"), [("none", "new_message"), ("answered", "reply")])
+async def test_literal_edit_then_rewrite_keeps_generated_cards_mode_and_explicit_target(
+    s: Scenario, target: str, mode: str
+) -> None:
+    await deliver(
+        s.env, business_message(message_id=4403, message_text="SYNTH-LATER", date=s.date + 1)
+    )
+    earlier, *_, newest = await contact_ids(s)
+    base = earlier if target == "answered" else None
+    row = await s.seed(
+        origin="agent_proposal",
+        authorship=VersionAuthorship(
+            version=1,
+            kind="assistant_written",
+            source_ids=[],
+            parent_version=None,
+            retains_generated_text=True,
+        ).model_dump(mode="json"),
+        base_message_id=base,
+        shown_through_message_id=newest,
+        draft_flags=owner_flags(target, mode),
+        trigger_turn_id=None,
+    )
+    s.fake.parsed.append(revision_result(revision_kind="replacement"))
+    await start_edit(s, row, "Synthetic exact owner replacement.")
+    assert await run_queued(s, "replies.revise") == 1
+    literal = await s.action(row.id)
+    assert literal.version == 2
+    assert literal.text == "Synthetic exact owner replacement."
+    assert not is_ai_generated(literal.authorship, version=literal.version)
+    assert literal.base_message_id == base
+    assert literal.draft_flags == {"mode": mode, "target": target}
+
+    s.fake.parsed.append(revision_result(text="Synthetic rewritten message."))
+    await start_edit(s, literal, "Synthetic: shorter please.")
+    assert await run_queued(s, "replies.revise") == 1
+    rewritten = await s.action(row.id)
+    assert rewritten.version == 3
+    assert rewritten.text == "Synthetic rewritten message."
+    assert is_ai_generated(rewritten.authorship, version=rewritten.version)
+    assert rewritten.base_message_id == base
+    assert rewritten.draft_flags is not None
+    assert rewritten.draft_flags["mode"] == mode
+    assert rewritten.draft_flags["target"] == target
+    if base is not None:
+        drafts = [r for r in s.fake.requests if r.purpose == "draft_reply"]
+        assert len(drafts) == 2
+        shown = "\n".join(getattr(item, "text", "") for item in drafts[-1].items)
+        assert f"[msg:{earlier}]." in shown
+
+
 @pytest.mark.parametrize(("base", "kept"), [("earlier", "earlier"), (None, None)])
 async def test_a_dictated_card_keeps_the_message_it_answers_through_a_revision(
     s: Scenario, base: str | None, kept: str | None
@@ -429,8 +519,68 @@ async def test_a_dictated_card_keeps_the_message_it_answers_through_a_revision(
     revised = await s.action(row.id)
     assert (revised.state, revised.version) == ("awaiting_approval", 2)
     assert revised.base_message_id == named[kept]
-    assert revised.draft_flags is None
+    # H9 / R2-03: an AI rewrite is generated even when v1 was dictated.
+    assert is_ai_generated(revised.authorship, version=revised.version)
+    proof = current_authorship(revised.authorship, version=revised.version)
+    assert proof is not None
+    assert proof.kind == "assistant_written"
+    assert proof.parent_version == 1
+    assert revised.draft_flags is not None
     if kept is not None:
         [draft] = [r for r in s.fake.requests if r.purpose == "draft_reply"]
         shown = "\n".join(getattr(item, "text", "") for item in draft.items)
         assert f"[msg:{earlier}]." in shown
+
+
+@pytest.mark.parametrize("literal", [False, True])
+async def test_revision_authorship_token_expiry_and_consent_cancellation_follow_current_body(
+    s: Scenario, literal: bool
+) -> None:
+    original_proof = VersionAuthorship(
+        version=1,
+        kind="owner_dictated",
+        source_ids=[],
+        parent_version=None,
+        retains_generated_text=False,
+    )
+    row = await s.seed(
+        origin="owner_dictated",
+        authorship=original_proof.model_dump(mode="json"),
+        approved_text_hash="synthetic-prior-approval",
+    )
+    s.fake.parsed.append(
+        revision_result(
+            text="Synthetic AI rewrite.",
+            revision_kind="replacement" if literal else "instruction",
+        )
+    )
+    await start_edit(s, row, "Synthetic exact owner replacement.")
+    assert await run_queued(s, "replies.revise") == 1
+    revised = await s.action(row.id)
+    proof = current_authorship(revised.authorship, version=2)
+    assert proof is not None
+    assert proof.kind == ("owner_literal_edit" if literal else "assistant_written")
+    assert is_ai_generated(revised.authorship, version=2) is not literal
+    assert revised.text == (
+        "Synthetic exact owner replacement." if literal else "Synthetic AI rewrite."
+    )
+    assert revised.origin == "owner_dictated"
+    assert revised.approval_token != row.approval_token
+    assert revised.approved_text_hash is None
+    assert revised.expires_at == row.expires_at
+    async with s.env.factory() as session, session.begin():
+        stale = await lifecycle.approve(
+            session,
+            account_id=s.account_id,
+            token=row.approval_token or "",
+            now=s.env.clock.now(),
+        )
+        assert stale.status is lifecycle.ApproveStatus.NOT_ACTIVE
+        changed = await lifecycle.cancel_pending_ai_generated(
+            session,
+            account_id=s.account_id,
+            reason=StateReason.CONSENT_REVOKED,
+            now=s.env.clock.now(),
+        )
+    assert changed == ([] if literal else [row.id])
+    assert (await s.action(row.id)).state == ("awaiting_approval" if literal else "cancelled")

@@ -2,6 +2,7 @@
 
 import pytest
 
+from assistant.actions.authorship import VersionAuthorship
 from assistant.conversations.modes import set_mode
 from assistant.db.uow import transaction
 from tests.integration.business_env import (
@@ -85,11 +86,25 @@ async def test_switching_to_ignore_cancels_a_pending_draft(p2: Scenario) -> None
 
 async def test_revoking_managed_consent_cancels_a_queued_ai_draft(p2: Scenario) -> None:
     row = await p2.seed(state="approved")
-    dictated = await p2.seed(state="approved", origin="owner_dictated", base_message_id=None)
+    # C2/H9 (2026-11-09): only current owner proof exempts a body, never origin alone.
+    dictated = await p2.seed(
+        state="approved",
+        origin="owner_dictated",
+        base_message_id=None,
+        authorship=VersionAuthorship(
+            version=1,
+            kind="owner_dictated",
+            source_ids=[],
+            parent_version=None,
+            retains_generated_text=False,
+        ).model_dump(mode="json"),
+    )
+    legacy = await p2.seed(state="approved", origin="owner_dictated", base_message_id=None)
     await deliver(p2.env, private_message(OWNER, "/privacy revoke"))
     await p2.execute(row.id)
     assert (await p2.action(row.id)).state == "cancelled"
     assert (await p2.action(row.id)).state_reason == "consent_revoked"
+    assert (await p2.action(legacy.id)).state == "cancelled"
     assert p2.business_sends() == []
     assert (await p2.action(dictated.id)).state == "approved"
     await p2.execute(dictated.id)

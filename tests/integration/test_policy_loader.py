@@ -16,7 +16,9 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import BusinessConnection, Consent
+from assistant.actions.authorship import VersionAuthorship, generated_authorship
 from assistant.actions.config import ActionsConfig
+from assistant.actions.models import Action
 from assistant.actions.policy_loader import KEY_INGESTION_BARRIER, ingestion_state, load_context
 from assistant.actions.states import ActionKind, ActionOrigin, ActionState
 from assistant.core.errors import NotInAccountError
@@ -69,6 +71,45 @@ async def load(
         **fields,
     }
     return await load_context(session, **values)
+
+
+@pytest.mark.parametrize("generated", [False, True, None])
+async def test_persisted_current_authorship_overrides_origin_and_caller_classification(
+    db_session: AsyncSession, generated: bool | None
+) -> None:
+    chat = await seed_chat(db_session, NOW, consent=False)
+    proof = (
+        generated_authorship(2)
+        if generated
+        else VersionAuthorship(
+            version=2,
+            kind="owner_literal_edit",
+            source_ids=[],
+            parent_version=1,
+            retains_generated_text=False,
+        )
+    )
+    row = Action(
+        account_id=chat.account_id,
+        conversation_id=chat.conversation_id,
+        kind="send_message",
+        origin="owner_dictated",
+        state="approved",
+        version=2,
+        text="Synthetic current body",
+        authorship=None if generated is None else proof.model_dump(mode="json"),
+    )
+    db_session.add(row)
+    await db_session.flush()
+    context = await load(
+        db_session,
+        chat,
+        NOW,
+        facts=replace(facts(NOW), action_id=row.id, version=2),
+        ai_generated=generated is False,
+    )
+    assert context.ai_generated is (generated is not False)
+    assert context.account.managed_consent_ok is False
 
 
 async def message(

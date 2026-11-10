@@ -53,6 +53,7 @@ from assistant.accounts import service
 from assistant.accounts.callbacks import encode
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, PendingInput
 from assistant.actions import lifecycle
+from assistant.actions.authorship import VersionAuthorship, current_authorship, is_ai_generated
 from assistant.actions.config import ActionsConfig
 from assistant.actions.drafts import request_draft
 from assistant.actions.models import Action
@@ -273,6 +274,7 @@ class ApprovalCardView:
     #: last message + 24 h, less the margin). For an owner-approved card it
     #: only adds a warning line; Telegram decides at the send (P2-O20).
     window_open: bool = True
+    authorship: Mapping[str, Any] | None = None
 
     @property
     def sendable_until(self) -> datetime | None:
@@ -351,6 +353,7 @@ async def load_card_view(
         sending_enabled=sending_enabled,
         card_token=token,
         window_open=True if now is None else is_open(anchor, now),
+        authorship=action.authorship,
     )
 
 
@@ -471,7 +474,8 @@ def card_keyboard(view: ApprovalCardView) -> InlineKeyboardMarkup | None:
     rows: list[list[InlineKeyboardButton]] = []
     if (
         state in _REDRAFTABLE
-        and view.origin is ActionOrigin.AGENT_PROPOSAL
+        and view.origin is not ActionOrigin.DELEGATION_AUTO
+        and is_ai_generated(view.authorship, version=view.version)
         and view.card_token is not None
         and not view.redraft_requested
     ):
@@ -483,7 +487,7 @@ def card_keyboard(view: ApprovalCardView) -> InlineKeyboardMarkup | None:
 
 
 def _header(view: ApprovalCardView) -> str:
-    if view.origin is ActionOrigin.OWNER_DICTATED:
+    if not is_ai_generated(view.authorship, version=view.version):
         return _HEADERS["dictated"]
     if view.origin is ActionOrigin.DELEGATION_AUTO:
         return _HEADERS["automatic"]
@@ -494,6 +498,25 @@ def _header(view: ApprovalCardView) -> str:
     if (view.draft_flags or {}).get("mode") == "new_message":
         return _HEADERS["new_message"]
     return _HEADERS["requested"]
+
+
+# Stable codes keep the authorship meaning available to I27's localized cards.
+AUTHORSHIP_LABELS: Mapping[str, str] = {
+    "owner_words": "Your words",
+    "assistant_written": "Written by the assistant",
+    "assistant_with_owner_addition": "Written by the assistant — with your addition",
+}
+
+
+def _authorship_label(view: ApprovalCardView) -> str:
+    proof = current_authorship(view.authorship, version=view.version)
+    if not is_ai_generated(view.authorship, version=view.version):
+        code = "owner_words"
+    elif proof is not None and proof.kind == "owner_literal_edit":
+        code = "assistant_with_owner_addition"
+    else:
+        code = "assistant_written"
+    return AUTHORSHIP_LABELS[code]
 
 
 def _short(reason: StateReason | None) -> str:
@@ -583,7 +606,7 @@ def _warnings(view: ApprovalCardView) -> list[str]:
     """From `draft_flags` only (decisions R8), never from `policy_decision`;
     the owner's own dictated words carry none."""
     flags = view.draft_flags
-    if view.origin is ActionOrigin.OWNER_DICTATED or not flags:
+    if not is_ai_generated(view.authorship, version=view.version) or not flags:
         return []
     lines = []
     if flags.get("makes_commitment") is True:
@@ -625,6 +648,7 @@ def _compose(
     loaded); fewer than loaded are marked as left out."""
     shown_excerpts = view.excerpts if excerpts is None else excerpts
     parts = [_header(view), "", _name_line(view)]
+    parts.append(_authorship_label(view))
     if view.excerpts:
         parts += ["", "Answering (their words):"]
         if not shown_excerpts:
@@ -793,7 +817,9 @@ async def clear_edit_inputs(
 
 def _needs_card_token(view: ApprovalCardView) -> bool:
     return view.state is ActionState.REVISING or (
-        view.state in _REDRAFTABLE and view.origin is ActionOrigin.AGENT_PROPOSAL
+        view.state in _REDRAFTABLE
+        and view.origin is not ActionOrigin.DELEGATION_AUTO
+        and is_ai_generated(view.authorship, version=view.version)
     )
 
 
@@ -1152,7 +1178,12 @@ class ApprovalCards:
         action = (
             await session.execute(
                 select(
-                    Action.id, Action.conversation_id, Action.state, Action.version, Action.origin
+                    Action.id,
+                    Action.conversation_id,
+                    Action.state,
+                    Action.version,
+                    Action.origin,
+                    Action.authorship,
                 ).where(Action.id == card.ref_id, Action.account_id == account.id)
             )
         ).one_or_none()
@@ -1325,7 +1356,8 @@ class ApprovalCards:
     ) -> HandlerResult:
         if (
             action.state not in {state.value for state in _REDRAFTABLE}
-            or action.origin != ActionOrigin.AGENT_PROPOSAL.value
+            or action.origin == ActionOrigin.DELEGATION_AUTO.value
+            or not is_ai_generated(action.authorship, version=action.version)
         ):
             return self._settle(session, gateway, press, CALLBACK_EXPIRED_TEXT, action.id)
         if scheduler is None:
@@ -1702,9 +1734,19 @@ class RevisionJob:
         if not from_chat and outcome.revision_kind == "replacement" and turn.text is not None:
             # The owner's words, verbatim — never the model's rewrite (P2-T08).
             text = turn.text
+            authorship = VersionAuthorship(
+                version=before.version + 1,
+                kind="owner_literal_edit",
+                source_ids=[],
+                parent_version=before.version,
+                retains_generated_text=False,
+            )
         else:
             text = owner.text
-        return await self._apply(before, action_id, turn_id, text, outcome, from_chat=from_chat)
+            authorship = None  # lifecycle defaults every model rewrite to generated
+        return await self._apply(
+            before, action_id, turn_id, text, outcome, from_chat=from_chat, authorship=authorship
+        )
 
     async def _revising(self, action_id: int, turn_id: int) -> _Revising | None:
         async with self._sf() as session:
@@ -1728,10 +1770,10 @@ class RevisionJob:
             return None
         flags = row[5] or {}
         target, mode = flags.get(FLAG_TARGET), flags.get("mode")
-        if row[3] == ActionOrigin.OWNER_DICTATED.value and row[4] is not None:
+        if row[3] == ActionOrigin.OWNER_DICTATED.value and target is None:
             # A dictated card has no flags (R8); its base message is one the
             # owner named (`propose_message`, PF-F), kept like any named one.
-            target = TARGET_ANSWERED
+            target = TARGET_ANSWERED if row[4] is not None else TARGET_NONE
         return _Revising(
             row[0],
             row[1],
@@ -1821,9 +1863,10 @@ class RevisionJob:
         outcome: DraftOutcome,
         *,
         from_chat: bool,
+        authorship: VersionAuthorship | None,
     ) -> RevisionResult:
         now = self._clock.now()
-        dictated = before.origin is ActionOrigin.OWNER_DICTATED
+        generated = authorship is None or is_ai_generated(authorship, version=before.version + 1)
         owner = outcome.owner_result
         assert owner is not None
         async with transaction(self._sf) as uow:
@@ -1831,16 +1874,15 @@ class RevisionJob:
             if not await self._still_revising(session, before, action_id, turn_id):
                 logger.info("revision_stale", action_id=action_id)
                 return RevisionResult("stale")
-            flags: dict[str, Any] | None = None
-            # A dictated card answers the message the owner named, or none.
-            base_message_id: int | None = before.base_message_id if before.keeps_target else None
-            if not dictated:
-                # The owner chose what this answers (PF-12): a revision keeps it.
-                target = before.target if before.keeps_target else outcome.target
+            # Message structure survives a literal replacement independently
+            # of AI warning flags, so a later rewrite keeps the owner's target.
+            target = before.target if before.keeps_target else outcome.target
+            flags: dict[str, Any] = {"mode": before.message_mode, FLAG_TARGET: target}
+            base_message_id = (
+                before.base_message_id if before.keeps_target else outcome.base_message_id
+            )
+            if generated:
                 flags = owner_draft_flags(owner, mode=before.message_mode, target=target)
-                base_message_id = (
-                    before.base_message_id if before.keeps_target else outcome.base_message_id
-                )
             applied = await lifecycle.apply_new_version(
                 session,
                 account_id=before.account_id,
@@ -1848,11 +1890,12 @@ class RevisionJob:
                 expected_version=before.version,
                 text=text,
                 draft_run_id=outcome.run_id,
-                # The owner's own dictated words carry no draft flags (R8).
+                # Flags describe this body, never the original trigger (H9).
                 draft_flags=flags,
                 shown_through_message_id=outcome.shown_through_message_id,
                 base_message_id=base_message_id,
                 now=now,
+                authorship=authorship,
             )
             status = applied.status
             if status in {lifecycle.VersionStatus.TOO_LONG, lifecycle.VersionStatus.EMPTY}:

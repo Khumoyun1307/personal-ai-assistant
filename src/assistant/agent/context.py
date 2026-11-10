@@ -376,6 +376,8 @@ def render_live_cards(cards: Sequence[LiveCardFact], timezone: str = "UTC") -> s
             f"version {int(card.version)}",
             _enum_word(card.state),
             f"origin {_enum_word(card.origin)}",
+            f"authorship {_enum_word(card.authorship_kind or 'unknown')}",
+            f"ai_generated {str(card.ai_generated).lower()}",
         ]
         if card.mode in OWNER_DRAFT_MODES:
             parts.append(f"mode {card.mode}")

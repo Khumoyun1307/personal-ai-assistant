@@ -21,6 +21,7 @@ import pytest
 from sqlalchemy import select
 
 from assistant.actions import lifecycle
+from assistant.actions.authorship import current_authorship
 from assistant.actions.models import Action
 from assistant.agent.models import AgentRun, AgentRunStep
 from assistant.agent.tools.executor import ToolExecutor
@@ -136,6 +137,10 @@ async def test_add_this_phrase_appends_to_the_same_card_without_a_model_call(
     assert revised.approval_token
     assert revised.approval_token != row.approval_token
     assert revised.revision_turn_id is None
+    proof = current_authorship(revised.authorship, version=2)
+    assert proof is not None
+    assert proof.kind == "owner_literal_edit"
+    assert proof.retains_generated_text is True
     assert len(draft_requests(s)) == drafts_before  # deterministic: no model call
     events = await s.events(row.id)
     assert "action_superseded" not in events

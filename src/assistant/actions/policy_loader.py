@@ -22,7 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.accounts.connections import Tier, capability_tier, connection_for_account
 from assistant.accounts.models import Account
 from assistant.accounts.service import CONSENT_AI_MANAGED, active_consent
+from assistant.actions.authorship import is_ai_generated
 from assistant.actions.config import ActionsConfig
+from assistant.actions.models import Action
 from assistant.actions.states import ActionKind
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.errors import NotInAccountError
@@ -239,6 +241,17 @@ async def load_context(
 ) -> PolicyContext:
     """The `PolicyContext` for one action, read under the caller's locks."""
     conversation = await _conversation(session, account_id, conversation_id)
+    if facts.action_id is not None:
+        # Persisted versions override a caller's historical origin classification.
+        proof = await session.scalar(
+            select(Action.authorship).where(
+                Action.account_id == account_id,
+                Action.conversation_id == conversation_id,
+                Action.id == facts.action_id,
+                Action.version == facts.version,
+            )
+        )
+        ai_generated = is_ai_generated(proof, version=facts.version)
     return PolicyContext(
         now=now,
         phase=phase,

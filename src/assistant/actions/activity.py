@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry
+from assistant.actions.authorship import AuthorshipKind, current_authorship, is_ai_generated
 from assistant.actions.card_facts import (
     PresentationFact,
     draft_mode,
@@ -271,6 +272,8 @@ class LiveCardFact:
     created_at: datetime | None = None
     presentation_outcome: str | None = None
     presentation_version: int | None = None
+    authorship_kind: AuthorshipKind | None = None
+    ai_generated: bool = True
 
     @property
     def state_reason_explanation(self) -> str | None:
@@ -304,6 +307,7 @@ async def live_cards(
             Action.state_reason,
             Action.updated_at,
             Action.created_at,
+            Action.authorship,
         )
         .join(
             Conversation,
@@ -340,6 +344,12 @@ async def live_cards(
             created_at=created_at,
             presentation_outcome=presentations.get(action_id, PresentationFact()).outcome,
             presentation_version=presentations.get(action_id, PresentationFact()).version,
+            authorship_kind=(
+                None
+                if (proof := current_authorship(authorship, version=version)) is None
+                else proof.kind
+            ),
+            ai_generated=is_ai_generated(authorship, version=version),
         )
         for (
             action_id,
@@ -352,5 +362,6 @@ async def live_cards(
             state_reason,
             updated_at,
             created_at,
+            authorship,
         ) in card_rows
     ]

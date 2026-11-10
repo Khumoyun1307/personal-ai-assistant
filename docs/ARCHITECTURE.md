@@ -655,6 +655,15 @@ There is **no** tool that sends a message directly. Owner-dictated sends always 
 
 ### 8.2 Tool catalogue (owner_request runs)
 
+**Stabilization H9 (2026-11-09, C2):** proposal/revision authorship is an
+application-assigned `VersionAuthorship`, separate from immutable `origin`.
+`ProposalRequest.authorship` and `propose_draft(authorship=...)` accept validated
+source proof from H3/H4; they never accept model-assigned approval flags. The
+current `get_draft` facts report the proof's kind and conservative `ai_generated`
+predicate, rather than treating a draft's original source flag as current
+authorship. Existing pre-H3 fuzzy dictation has no new source proof and is
+classified conservatively. No prompt is changed by H9.
+
 | Tool | Class | Purpose | Release |
 |---|---|---|---|
 | `get_status` | read | Connection, rights tier, coverage, autonomy state, budget. **Implemented S01.4** (`agent/tools/status.py`, flag `tool.get_status`); **extended S02.3**: returns the same `observability/status.py::StatusReport` that `/status` renders (content-free: counts, states, times) | R0 |
@@ -706,7 +715,7 @@ Each tool definition: name, description, JSON schema (strict), capability class,
 
 **H3 review repairs (2026-11-09; validation unrun).** Continuation metadata exposes each account/request-scoped `source_id` alongside its span and purpose; the runtime regression constructs its FakeLLM proposal solely from those visible facts. Internal C1 `SelectSuggestion(instruction_source_id, source_ids)` binds an owner selection to the exact ordered artifact sources, persisted as the strict content-free `owner_request_suggestion_selected` audit event. Copying requires the latest binding and revalidates its owner instruction and every artifact; a later instruction alone cannot authorize another retained suggestion. Literal-revision replay first finds the account/call or retried owner-turn effect independently of the newly requested card, then reads the original artifact for exact reuse/conflict. Terminal and already-revising literal targets return the C2 compatibility union with applied=false, never legacy-only statuses.
 
-**H3 source-proposal delta (2026-11-09).** `propose_message` has C2 source-id arguments and a nullable artifact result: wire statuses remain compatible with active `owner_request.v10` rule 19. New cards return `awaiting_approval` with top-level action_id; exact retries report the current artifact status with reused=true. Blocked cards retain `blocked` and their reason. Validation failures, unavailable/stale sources, conflicts and terminal retries return `not_drafted` with a fixed reason; validation failures keep action/effect_version NULL and requested_change_applied=false, never a fabricated receipt or fallback writer. C2 distinctions (`staged`, `reused_exact`, `invalid_arguments`, `not_available`, `stale`, `proposal_conflict`, `idempotency_conflict`) travel only in the additional `proposal_status` field. Literal revisions likewise retain `revised` on success/exact reuse and `not_drafted` on failure, with C2 details in proposal_status. Invalid sources cannot reuse an unrelated same-turn card. Conflicts (Q4 equivalent) report applied=false and the relevant existing artifact. Semantic identity includes request/version, exact ordered source ids, recipient and target. An exact completed retry is read before stale request/source checks; it never copies purged text again. Source-proposal and literal-revision effect identity share the immutable, content-free `tool_effect_recorded` audit event (revision 0018; §10.3), so replacing draft flags does not lose the original effect key/version. The executor checks argument/tool digests before using its in-memory replay cache and re-reads proposal artifacts for an exact retry. Literal revisions validate sources and request/action versions before starting lifecycle revision. All receipts/logs exclude body text. Later H4/H9 work supplies the final flat revision API and current-version authorship integration; H3 does not activate a new prompt.
+**H3 source-proposal delta (2026-11-09).** `propose_message` has C2 source-id arguments and a nullable artifact result: wire statuses remain compatible with active `owner_request.v10` rule 19. New cards return `awaiting_approval` with top-level action_id; exact retries report the current artifact status with reused=true. Blocked cards retain `blocked` and their reason. Validation failures, unavailable/stale sources, conflicts and terminal retries return `not_drafted` with a fixed reason; validation failures keep action/effect_version NULL and requested_change_applied=false, never a fabricated receipt or fallback writer. C2 distinctions (`staged`, `reused_exact`, `invalid_arguments`, `not_available`, `stale`, `proposal_conflict`, `idempotency_conflict`) travel only in the additional `proposal_status` field. Literal revisions likewise retain `revised` on success/exact reuse and `not_drafted` on failure, with C2 details in proposal_status. Invalid sources cannot reuse an unrelated same-turn card. Conflicts (Q4 equivalent) report applied=false and the relevant existing artifact. Semantic identity includes request/version, exact ordered source ids, recipient and target. An exact completed retry is read before stale request/source checks; it never copies purged text again. Source-proposal and literal-revision effect identity share the immutable, content-free `tool_effect_recorded` audit event (revision 0018; §10.3), so replacing draft flags does not lose the original effect key/version. The executor checks argument/tool digests before using its in-memory replay cache and re-reads proposal artifacts for an exact retry. Literal revisions validate sources and request/action versions before starting lifecycle revision. All receipts/logs exclude body text. H9 supplies current-version authorship below; H4 owns the final flat revision API. Neither H3 nor H9 activates a new prompt.
 
 **H3/H12 receipt integration (2026-11-10).** Source-proposal results preserve the untrusted classification of any returned contact name, including exact replays. Conflict receipts containing only IDs, fixed statuses and rules remain subject to managed consent but introduce no taint; they never clear existing run taint. Literal source copying accepts validated owner components beside quotes and in tainted runs without copying the quote or passing model guidance. Proposal/revision staging still requires the version-bound owner approval card before execution.
 
@@ -783,6 +792,14 @@ class Decision:
 
 ### 9.3 Rule catalogue
 
+**Current-version generated predicate (H9):** generated means a missing,
+malformed or version-mismatched authorship record, `retains_generated_text=true`,
+or kind `assistant_written` / `agent_proposal_selected`. A persisted action's
+policy loader reloads this proof with account/conversation/version predicates;
+an origin-derived caller flag cannot override it. Literal owner-only versions
+keep the existing owner-authored consent rules; all provider calls retain their
+separate consent checks (§14.3).
+
 **Send preconditions (required for any send; failure ⇒ DENY with reason):**
 
 | Rule | Check |
@@ -844,6 +861,24 @@ class Decision:
 A rule that does not apply to the phase or kind is left out of `Decision.checks`. The other autonomy conditions above arrive with M06.
 
 ### 9.4 Action lifecycle and at-most-once execution
+
+**H9 version authorship (2026-11-09, C2 / R2-03):** `apply_new_version` updates
+body, authorship, version, approval token and cleared `approved_text_hash` in the
+same conditional transition. Its default is `assistant_written`, including an
+AI rewrite of an originally dictated action. A whole replacement copied
+verbatim from the owner's validated Edit turn is `owner_literal_edit` without
+generated residue; deterministic append preserves the previous version's
+generated predicate. Explicit C1 source ids are passed by the source-owning
+proposal/revision caller, never invented from turn ids. The legacy Edit path
+copies the entire owner turn directly and has no C1 ids until H3/H4 integration.
+Successful transitions record structural authorship metadata in lifecycle
+audit details; no old-body archive is created. Failed/cancelled edits keep
+body/proof/version/expiry and rotate only the approval token. Execution and
+managed-consent cancellation classify the current proof, never original origin.
+Literal Edit replacements retain structural `draft_flags.mode` and
+`draft_flags.target` while clearing AI warning flags. Subsequent rewrites keep
+the standalone-message mode or explicitly selected reply target even when the
+action originally came from an assistant proposal.
 
 **CP4 system-notification locks (ICR #132).** Synchronous `OwnerAlerts` claims take account `FOR KEY SHARE`, then a two-int4 transaction advisory lock (`0x53595341`, SYSA; signed first four SHA-256 bytes of compact UTF-8 JSON `[account_id,dedupe_key]`, literal Unicode), then notification/audit. Standard hourly-cap claims take account `FOR NO KEY UPDATE` and never acquire this namespace; KEY SHARE is compatible with them. Advisory hash collisions only serialize short transactions; full account/key predicates determine dedupe. Locks commit before channel I/O. Resolution uses the same order and appends one outcome per immutable claim. This namespace is separate from the existing singleton bigint advisory locks. [PostgreSQL 18](https://www.postgresql.org/docs/18/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS).
 
@@ -912,13 +947,24 @@ Telegram offers no idempotency key (TF §4), so this protocol guarantees **at-mo
 
 **Proposals (as built, M04 S04.1; `actions/proposals.py::propose`).** Every draft and dictated message goes through `propose`, which never sends, presents a card or defers a job (callers do that after commit). In order: refuse origin `delegation_auto` (`autonomous_not_available`) and kinds other than `send_message` (`kind_not_proposable`) and a proactive draft (`agent_proposal` without a `trigger_turn_id`) without `base_message_id` (`base_required`: it would have no takeover reference) with `ProposalRefused`; return the existing action for the same `(run_id, tool_call_id)`; lock the account `FOR SHARE` and the conversation `FOR UPDATE` (another account's conversation is `NotInAccountError`); return the live card of the same `trigger_turn_id` (a retried owner turn); compute `shown_through_message_id` (the request's; for owner-dictated text only, else the newest contact message id — an AI draft is fresh only through what it saw, so without the id `not_stale` fails closed) and **the one expiry rule** (decision R7, amended by owner decision 2026-10-30, P2-O20): `expires_at = now + approval_max_age` for every proposable (owner-approved) action, set once here — the window estimate never shortens it (an autonomous action would be bounded by `window close − 5 min` as well); decide in the proposal phase; insert as `proposed` (`ON CONFLICT (run_id, tool_call_id) DO NOTHING`), storing `draft_flags` apart from `policy_decision` (R8). `REQUIRE_APPROVAL` ⇒ outdate the chat's live card (`superseded`; its audit row names `superseded_by`) and move the new action to `awaiting_approval` with a fresh token. `DENY` ⇒ `blocked` with the reason the execution mapping gives (else `policy_denied`); **a blocked proposal never supersedes a live card**, because a draft that cannot be sent must not destroy one that can.
 
-**Transitions (as built; `actions/lifecycle.py`).** Every single-action change goes through `transition(session, *, account_id, action_id, from_state, to_state, reason, now, expected_version=None, token=None, values={}, details={})`: it raises `IllegalTransitionError` for a pair outside `TRANSITIONS`, refuses `awaiting_approval → approved` without a token (only the owner's press approves; `approve` passes it), runs one conditional `UPDATE … WHERE id AND account_id AND state [AND version] [AND approval_token]`, clears the token unless the new state is `awaiting_approval`, and writes exactly one content-free audit row (`details = {from, to, version, reason}` plus `attempt_id` and any ids or codes the caller adds). The event follows from the pair and reason (decision R15): `proposed → awaiting_approval` `action_proposed`; `→ revising` `action_revision_requested`; `revising → awaiting_approval` `action_edited` with a new version, else `action_revision_cancelled`; `awaiting_approval → approved` `action_approved`; `approved → executing` `action_claimed`; `executing → approved` `action_rate_limited`; `executing →` `succeeded`/`failed`/`delivery_uncertain` `action_succeeded`/`action_failed`/`action_delivery_uncertain`; from `delivery_uncertain` `action_late_result`; `→ outdated` `action_superseded` (reason `superseded`) or `action_outdated`; `→ rejected`/`blocked`/`expired`/`cancelled` `action_rejected`/`action_blocked`/`action_expired`/`action_cancelled`. The autonomy pairs (`proposed → approved`, `approved ↔ scheduled`) have no P2 event and raise. Built on it: `approve` (by token, which rotates per version, and `expires_at > now`; sets `decided_at` and `approved_text_hash` = sha256 of the stored text, computed in the same UPDATE; a card past its expiry is expired instead), `reject`, `start_edit` (voids the token), `set_revision_turn`, `cancel_edit` and `revision_failed` (same version, new token), `apply_new_version` (version + 1, new token, `TOO_LONG`/`EMPTY`/`STALE` write nothing; `expires_at` is never extended; for an autonomous action only it shortens when the window now closes earlier), and `expire_due` (`awaiting_approval`/`revising`/`approved` past `expires_at` ⇒ `expired` with `window_closed` when an autonomous action's window is closed now, else `max_age` — owner-approved actions always `max_age`, owner decision 2026-10-30, P2-O20; never `executing`). `lifecycle.window_bounds(origin)` is the one switch.
+**Transitions (as built; `actions/lifecycle.py`).** Every single-action change goes through `transition(session, *, account_id, action_id, from_state, to_state, reason, now, expected_version=None, token=None, values={}, details={})`: it raises `IllegalTransitionError` for a pair outside `TRANSITIONS`, refuses `awaiting_approval → approved` without a token (only the owner's press approves; `approve` passes it), runs one conditional `UPDATE … WHERE id AND account_id AND state [AND version] [AND approval_token]`, clears the token unless the new state is `awaiting_approval`, and writes exactly one content-free audit row (`details = {from, to, version, reason}` plus `attempt_id`, structural `authorship` on proposals/new versions, and any ids or codes the caller adds; `authorship` is a validated `VersionAuthorship` object containing only version/source ids, a boolean, and `kind` restricted to `owner_dictated`, `owner_literal_edit`, `assistant_written` or `agent_proposal_selected`). The event follows from the pair and reason (decision R15): `proposed → awaiting_approval` `action_proposed`; `→ revising` `action_revision_requested`; `revising → awaiting_approval` `action_edited` with a new version, else `action_revision_cancelled`; `awaiting_approval → approved` `action_approved`; `approved → executing` `action_claimed`; `executing → approved` `action_rate_limited`; `executing →` `succeeded`/`failed`/`delivery_uncertain` `action_succeeded`/`action_failed`/`action_delivery_uncertain`; from `delivery_uncertain` `action_late_result`; `→ outdated` `action_superseded` (reason `superseded`) or `action_outdated`; `→ rejected`/`blocked`/`expired`/`cancelled` `action_rejected`/`action_blocked`/`action_expired`/`action_cancelled`. The autonomy pairs (`proposed → approved`, `approved ↔ scheduled`) have no P2 event and raise. Built on it: `approve` (by token, which rotates per version, and `expires_at > now`; sets `decided_at` and `approved_text_hash` = sha256 of the stored text, computed in the same UPDATE; a card past its expiry is expired instead), `reject`, `start_edit` (voids the token), `set_revision_turn`, `cancel_edit` and `revision_failed` (same version, new token), `apply_new_version` (version + 1, new token, `TOO_LONG`/`EMPTY`/`STALE` write nothing; `expires_at` is never extended; for an autonomous action only it shortens when the window now closes earlier), and `expire_due` (`awaiting_approval`/`revising`/`approved` past `expires_at` ⇒ `expired` with `window_closed` when an autonomous action's window is closed now, else `max_age` — owner-approved actions always `max_age`, owner decision 2026-10-30, P2-O20; never `executing`). `lifecycle.window_bounds(origin)` is the one switch.
 
 ### 9.5 Approval handling
 
 **Stabilization H2 explicit selection:** successful current-version card sends/edits record a structural `card_presented` audit event (`action_id`, `version`, fixed `state`, `control_message_id`, nullable `claim_id`). Resolution uses the account's latest successful mapping for that control message; replaced messages retain their old version for stale detection. Historical cards without a mapping use only the current action pointer, and an unrecorded current presentation is stale. An explicit reply selects the presented version, never approves it, revises it or sends it. The existing version-bound tap and execution policy checks remain mandatory. An explicit return may refocus an unexpired request suspended for a topic switch; opening a distinct request or cancelling one uses C1 and never transfers the old body/recipient. H6 and the request-consuming tools own interpretation of natural-language topic changes/cancellation; H2 supplies the deterministic selection and lifecycle seam.
 
-**H3 literal-copy amendment (2026-11-09).** Character-exact copied bodies still use the existing proposal policy/card and version-bound approval flow. No missing-source result queues presentation or touches another card. Literal append/replacement uses `start_revision` and `apply_new_version`, rotates the approval token and clears previous approval as usual. Retaining generated base text does not establish owner-only authorship; H9 owns that predicate. No send or approval shortcut is added.
+**H3/H9 literal-copy amendment (2026-11-09).** Character-exact copied bodies still use the existing proposal policy/card and version-bound approval flow. No missing-source result queues presentation or touches another card. Literal append/replacement uses `start_revision` and `apply_new_version`, rotates the approval token and clears previous approval as usual. Source proposals persist the copied C1 source ids as `owner_dictated` or `agent_proposal_selected`. Literal replacements persist `owner_literal_edit` without generated residue; appends preserve the base version's generated predicate and retained source ids alongside the new source ids. Shared H3 durable effect identity and C2 nullable result/compatibility statuses remain unchanged; exact retries report current-version authorship. No send or approval shortcut is added.
+
+**H9 cards:** current owner-only proof shows “Your words”; generated/unknown
+proof shows “Written by the assistant”; appending owner words to generated
+text identifies the owner addition. Warnings and Re-draft eligibility follow
+the current proof. Recipient and complete-body presentation and the
+version-bound approval tap remain required. The card-press lookup loads the
+current authorship with the version; Re-draft still defers in the press
+transaction (SAVEPOINT) and answers “Drafting a new version…” after commit.
+Label codes are separate from the English renderer strings for I27's
+Uzbek/Russian wording review; those localized
+wordings are not approved or implemented by H9.
 
 ```mermaid
 sequenceDiagram
@@ -956,6 +1002,10 @@ The approval token is bound to (action_id, version). Every edit or revision incr
 **Stabilization H1 (2026-11-09, D-S2/D-S4):** revision `0015` adds only structural `owner_requests` and `owner_request_sources`. They store typed slots, ids, source purposes, Unicode code-point offsets, whole-field SHA-256 digests and timestamps, never copied owner text, questions or model summaries. `constraints` accepts only word bounds and a supported language tag. Their text/jsonb columns are explicitly classified in `privacy/content_columns.py`; the content-column list below is unchanged. The request service is independent of the agent layer and does not activate owner-turn routing, tools or prompts.
 
 **H2 revision `0016`:** adds nullable bigint `control_turns.reply_to_telegram_message_id` and non-null boolean `owner_text_verified` (default false, including legacy rows). These are structural; no new content column or request prose cache is introduced. Audit `card_presented` details and the new turn-ref keys contain only ids/versions/enums, under the existing structural registries.
+
+- H9's `actions.authorship` JSON and lifecycle audit authorship metadata are
+  structural (strict enums, ids, version/parent and a generated-residue flag),
+  registered in `privacy/content_columns.py`; no duplicated body or free text.
 
 - PostgreSQL schema `app` (procrastinate uses schema `procrastinate`).
 - Primary keys `bigint generated always as identity`; Telegram ids stored as `bigint`; Telegram string ids (`connection_id`) as `text`.
@@ -1003,6 +1053,28 @@ erDiagram
 ### 10.3 Tables (essential columns)
 
 **Stabilization I8 (revision 0017):** `notification_sources` keeps one immutable triggering-verdict snapshot per notification (`notification_id` primary key/FK, `account_id`, `conversation_id`, original verdict/run/coverage ids, structural `verdict_state`, `created_at`). Its **`reasons` is a content-bearing column**, included in the §10.1 inventory and `privacy/content_columns.py`; a copy is necessary because `conversation_triage` overwrites previous explanations. Notifications and refs remain content-free; the fixed notification kind is the event's reason category. Message and monitor ids remain in refs. Snapshot content cascades with its notification, conversation or account. Legacy alerts are not backfilled from mutable current verdicts.
+
+**H9 schema delta (revision 0020):** `actions.authorship jsonb NULL` stores only
+`version`, `kind` (`owner_dictated`, `owner_literal_edit`, `assistant_written`,
+`agent_proposal_selected`), `source_ids`, `parent_version`, and
+`retains_generated_text`. The strict application reader fails conservatively on
+unknown/invalid JSON. Migration backfill marks legacy generated origins as
+generated; legacy dictation stays NULL, without manufactured source spans.
+Revision `0020_action_authorship` follows `0019_privacy_journal`
+(revision id `0019`), after H3's `0018`. `COMPATIBILITY = "expand"` is declared in-file: the nullable
+column and its backfill leave existing reads/writes and constraints unchanged.
+The sole head is `0020`; an upgrade from `0018` or earlier still crosses I20's
+breaking migration, while `0019` → `0020` alone is expand-compatible.
+Request source purge and one-year request sweeping clear matching current and
+audit authorship links before removing source rows; no source text is pinned.
+I20 journal replay reuses the ordinary scoped/account deletion and message
+retention/deletion paths. Those paths invoke `purge_request_sources` and, for
+action-body erasure, `clear_texts`, clearing both current proof and historical
+audit authorship links in the deletion transaction. Complete-purge fallback
+uses `delete_everything` and the same cleanup. Authorship remains structural
+in `NON_CONTENT_COLUMNS`; it adds no body copy, table, recovery identity or
+independent journal subject. Existing subject recovery UUIDs select the replay
+scope, and request source IDs are cleared locally rather than exported.
 
 | Table | Key columns | Notes |
 |---|---|---|
@@ -1140,6 +1212,7 @@ duplicate Telegram deletion handling.
 | `conversation_summaries.summary` | Rolling: until deleted. Period (catch-up cache): 30 days (S03.2, M03 D64) | Hourly sweep deletes period rows; managed-data deletion and conversation purge delete the rows; a deleted (M03 D63) or edited (D66) message — one that held content until that statement, not a repeated deletion — drops its chat's period rows and the rolling summary that covered it, which is rebuilt from retained messages (`summary_gap_before` records content that had already expired). A summary whose source changed while the model ran is never stored (re-check under the §9.4 locks, §11.1) |
 | `actions.text` | Same as messages (owner: 14–90 days), measured from `created_at` | Hourly per-account sweep clears text, never while `executing` |
 | `actions` rows | 1 year from `created_at` | Delete terminal and `delivery_uncertain` rows; never pending/executing |
+| `actions.authorship`, lifecycle audit authorship details (structural, no body) | Same 1-year action/audit row retention | Account deletion cascades; scoped/all/managed purges clear current proof and audit source metadata. C1 source purge and one-year request sweeping call `actions.lifecycle.clear_authorship_sources` before deleting source rows, including historical artifacts no longer linked as the request's current action; source text is never pinned. |
 | `conversation_triage.reasons` | Same as messages, measured from `updated_at` | Delete the expired verdict |
 | `notification_sources.reasons` | The shorter of the account's message period (from the original verdict's `updated_at`, stored as snapshot `created_at`) and its notification's remaining 30-day lifetime | Hourly `sweep_p2_content` deletes expired snapshots; notification/conversation/account deletion cascades. Holds, retries and digests never extend retention. |
 | `control_turns.text`, `control_turns.quoted_text` | 90 days (owner: 14–90, set separately from messages) | Hourly sweep (both columns together); managed-data deletion clears both on turns flagged `contains_managed`; per-conversation/contact deletion purges or redacts turns whose `refs` include it; a button deletion, and a confirmed deletion tool, clear the owner's own turns only up to the tap — the Confirm tap for a tool (`turn_cutoff`, M03 D88, D94) |
@@ -1334,6 +1407,13 @@ Custom retry strategy: bounded attempts (default 5), small exponential base (pro
 ### 14.3 Consent enforcement
 
 **H1 source provenance:** `load_source` validates account, retained field, role/purpose, exact whole-field UTF-8 hash and Unicode code-point bounds before returning a span with separate `managed` and `untrusted` flags. Assistant text is suggestion-only; quoted fields are quote-only. Ambiguous legacy forwarded/mixed text cannot become an owner instruction; H2/H12 own component classification. Source hashes are integrity metadata, never consent or authorship authority. Request metadata requires `ai_control` before model exposure; managed targets/quotes still require `ai_managed` for the named provider. Existing LLM gates remain unchanged. Post-restore cancels unfinished request attempts with `restored_from_backup` and invalidates old questions; it never resumes them automatically.
+
+**H9:** revoking managed consent cancels pending generated and unknown versions
+even if their immutable origin is `owner_dictated`. A literal whole replacement
+is classified from its current owner-only proof. Tx A reloads the proof and
+current processor-specific consent, so missing a cancellation cannot allow a
+generated version to execute. The LLM consent wrapper is unchanged; copying or
+editing a body never grants permission for a provider call.
 
 - `consents` gates processing. Every LLM call requires `ai_control`. Every LLM call that includes managed-conversation content requires an active `ai_managed` consent whose `processors` include the adapter's processor id. Since S03.1 the processor is resolved from the request's (route's) model (`core/model_routes.py`, §7.4): an unknown model, or a model of a processor the adapter does not serve or the consent does not name, is refused. Enforcement has one choke point, the `LLMClient` wrapper. Each request carries the provenance of every content part (context-builder sections, tool results, control turns flagged `contains_managed`), and the wrapper raises before calling the provider if a required consent is missing. When `ai_managed` is not active, the tool registry omits the tools that return managed content, including contact names (`get_conversation`, `search_messages`, `summarize_period`, `get_attention_list`, `list_tasks`, `get_activity`, `list_conversations`, `resolve_contact`) — since S03.7 the `owner_request` runtime offers them instead as blocked stubs that read nothing and return only `chat_access_off` (§8.2, D104) — and the `owner_request` builder excludes control turns flagged `contains_managed`. Context builders also check, as defence in depth; tested.
 - Before `ai_managed` is granted, and after revocation, business messages from an active connection are stored normally in the owner's encrypted database (content, subject to retention) for coverage. No LLM call may include them, and LLM-dependent jobs (triage, drafts, summaries, semantic monitors) do not run; flagged conversations are processed once consent is granted. If the owner declines or revokes, they are offered deletion of the stored managed data, plus a choice between a non-AI mode (coverage and visibility only) and disconnection (J1, FR-ONB-06). The privacy policy and consent text state this.

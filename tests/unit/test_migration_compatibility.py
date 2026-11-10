@@ -38,6 +38,13 @@ def test_every_production_migration_is_classified_exactly_once() -> None:
     assert classify(graph, "0018", "0019") == "breaking"
     assert classify(graph, "0017", "0019") == "breaking"
     assert classify(graph, "0016", "0019") == "breaking"
+    assert "0020" not in LEGACY_COMPATIBILITY
+    assert graph["0020"].parents == ("0019",)
+    assert graph["0020"].compatibility == "expand"
+    assert classify(graph, "0019", "0020") == "expand"
+    assert classify(graph, "0018", "0020") == "breaking"
+    assert classify(graph, "0017", "0020") == "breaking"
+    assert classify(graph, "0016", "0020") == "breaking"
 
 
 def test_legacy_registry_classifies_immutable_migration(tmp_path: Path) -> None:

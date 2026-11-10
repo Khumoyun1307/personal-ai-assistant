@@ -491,7 +491,7 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0019"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0020"]
 
 
 def test_0017_notification_sources_round_trip(scratch_url: str) -> None:
@@ -702,6 +702,50 @@ def test_0015_owner_requests_reverse(scratch_url: str) -> None:
     run_alembic(scratch_url, "0014", down=True)
     assert "owner_requests" not in tables_in(scratch_url, "app")
     assert "owner_request_sources" not in tables_in(scratch_url, "app")
+    run_alembic(scratch_url, "head")
+
+
+def test_0020_authorship_reverse_and_conservative_legacy_backfill(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    run_alembic(scratch_url, "0019", down=True)
+    assert "authorship" not in _columns(scratch_url, "actions")
+    assert {"privacy_journal", "privacy_journal_heads"} <= tables_in(scratch_url, "app")
+    assert "recovery_id" in _columns(scratch_url, "messages")
+    with psycopg.connect(libpq(scratch_url)) as conn:
+        account, conversation = _phase_conversation(conn, 81009)
+        for origin in ("owner_dictated", "agent_proposal", "delegation_auto"):
+            conn.execute(
+                "INSERT INTO app.actions "
+                "(account_id, conversation_id, kind, origin, state, version, text) "
+                "VALUES (%s, %s, 'send_message', %s, 'failed', 2, 'Synthetic body')",
+                (account, conversation, origin),
+            )
+    run_alembic(scratch_url, "0020")
+    assert "authorship" in _columns(scratch_url, "actions")
+    with psycopg.connect(libpq(scratch_url)) as conn:
+        rows = conn.execute(
+            "SELECT origin, authorship, text FROM app.actions WHERE account_id = %s",
+            (account,),
+        ).fetchall()
+        assert len(rows) == 3
+        for origin, authorship, body in rows:
+            assert body == "Synthetic body"
+            if origin == "owner_dictated":
+                assert authorship is None
+            else:
+                assert authorship == {
+                    "version": 2,
+                    "kind": "assistant_written",
+                    "source_ids": [],
+                    "parent_version": 1,
+                    "retains_generated_text": True,
+                }
+    run_alembic(scratch_url, "0019", down=True)
+    assert "authorship" not in _columns(scratch_url, "actions")
+    assert {"privacy_journal", "privacy_journal_heads"} <= tables_in(scratch_url, "app")
+    assert "recovery_id" in _columns(scratch_url, "messages")
+    with psycopg.connect(libpq(scratch_url)) as conn:
+        conn.execute("DELETE FROM app.accounts WHERE id = %s", (account,))
     run_alembic(scratch_url, "head")
 
 

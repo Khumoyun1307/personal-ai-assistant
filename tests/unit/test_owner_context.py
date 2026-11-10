@@ -117,6 +117,15 @@ def test_the_live_cards_block_carries_ids_and_states_only() -> None:
     assert "answers a specific message" not in lines[2]
 
 
+def test_current_authorship_is_separate_from_the_original_trigger() -> None:
+    text = render_live_cards(
+        [card(origin="owner_dictated", authorship_kind="assistant_written", ai_generated=True)]
+    )
+    assert "origin owner_dictated" in text
+    assert "authorship assistant_written" in text
+    assert "ai_generated true" in text
+
+
 def test_the_block_never_shows_a_mode_outside_the_fixed_set() -> None:
     """`draft_flags` is jsonb: a value that is not a known mode is never
     copied into the prompt (content-free by construction)."""
