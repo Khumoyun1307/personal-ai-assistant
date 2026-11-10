@@ -109,6 +109,7 @@ def test_m05_wires_notification_delivery_its_reconciler_and_the_alert_cards(
     [
         ("", True, False, False),
         ("triage.run", True, True, True),
+        ("triage.run,triage.resolution_evidence", True, True, True),
         # Without a model client (no worker or system role) the job is not
         # registered in this process; the listener and reconciler still are.
         ("triage.run", False, True, False),
@@ -138,6 +139,10 @@ def test_m05_wires_triage_only_while_its_flag_is_on(
     assert len(wiring.reconcilers) == (2 if listener else 1)
     assert wiring.inbox is not None
     assert isinstance(wiring.inbox.triage, TriageJob) is job
+    if isinstance(wiring.inbox.triage, TriageJob):
+        assert wiring.inbox.triage.triager.config.resolution_evidence == (
+            "triage.resolution_evidence" in flags.split(",")
+        )
 
 
 @pytest.mark.parametrize(

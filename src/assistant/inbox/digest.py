@@ -125,6 +125,7 @@ class TaskLine:
     title: str
     name: str | None
     due_at: datetime | None = None
+    resolution_evidence_message_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,6 +394,7 @@ async def _task_lines(
             title=view.title,
             name=None if view.conversation_id is None else names.get(view.conversation_id),
             due_at=view.due_at,
+            resolution_evidence_message_ids=view.resolution_evidence_message_ids,
         )
         for view in views
     )

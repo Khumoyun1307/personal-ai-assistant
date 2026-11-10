@@ -155,9 +155,16 @@
   },
   "triage.v1": {
     "sha256": "6820dcb05a14f06d5d4258192ed56bec6fd678195767438cbef54c8645165689",
-    "active": true,
+    "active": false,
     "structured_outputs": ["assistant.agent.triage_schemas.TriageResult"],
     "schema_notes": "",
     "eval_records": ["docs/evals/2026-10-29-triage-gpt-6-luna.json","docs/evals/2026-10-29-triage-gpt-6-luna-trial.json"]
+  },
+  "triage.v2": {
+    "sha256": "b64ded9d01e5134508010dec1a8fb034b6412f67f465664bb932fb7f243c40ce",
+    "active": true,
+    "structured_outputs": ["assistant.agent.triage_schemas.TriageResultV2"],
+    "schema_notes": "Evidence-backed resolution; triage.resolution_evidence defaults off until owner-approved eval.",
+    "eval_records": []
   }
 }

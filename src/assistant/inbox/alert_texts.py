@@ -27,6 +27,7 @@ from assistant.core.channel import Button
 from assistant.inbox.models import Notification, Task
 from assistant.inbox.notification_sources import explanation
 from assistant.inbox.notification_types import NotificationKind
+from assistant.inbox.tasks import resolution_ids
 from assistant.memory.summaries import preferred_name
 
 #: A contact without a usable name.
@@ -148,14 +149,14 @@ async def render_task(
         return None
     task = (
         await session.execute(
-            select(Task.title, Task.conversation_id, Task.status)
+            select(Task.title, Task.conversation_id, Task.status, Task.details)
             .where(Task.account_id == account.id)
             .where(Task.id == task_ids[0])
         )
     ).first()
     if task is None:
         return None
-    title, conversation_id, status = task
+    title, conversation_id, status, details = task
     name = (
         await _contact_name(session, account.id, conversation_id)
         if conversation_id is not None
@@ -167,6 +168,9 @@ async def render_task(
             f"✅ Closed automatically: {html.escape(title)}{who}\n\n"
             "A later message in the chat showed it done or answered."
         )
+        evidence = resolution_ids(details)
+        if evidence:
+            text += "\nEvidence: " + ", ".join(f"[msg:{value}]" for value in evidence)
     elif status != "open":
         text = f"Earlier due alert ({html.escape(status)}): {html.escape(title)}{who}"
     else:

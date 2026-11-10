@@ -171,7 +171,14 @@ def _lines(content: DigestContent) -> list[str]:
         commitments.append(f"• …and {content.commitments_more} more")
     section("Commitments", commitments)
     closed = [
-        f"• {html.escape(task.title)}" + (f" ({_name(task.name)})" if task.name else "")
+        f"• {html.escape(task.title)}"
+        + (f" ({_name(task.name)})" if task.name else "")
+        + (
+            " — Evidence: "
+            + ", ".join(f"[msg:{value}]" for value in task.resolution_evidence_message_ids)
+            if task.resolution_evidence_message_ids
+            else ""
+        )
         for task in content.closed
     ]
     if content.closed_more:

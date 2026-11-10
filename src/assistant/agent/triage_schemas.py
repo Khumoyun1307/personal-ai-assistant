@@ -23,6 +23,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from assistant.inbox.tasks import ResolutionEvidence
+
 Urgency = Literal["low", "normal", "high", "urgent"]
 EscalationCategory = Literal["none", "urgent_decision", "needs_owner", "fyi", "suspicious"]
 Script = Literal["latin", "cyrillic", "mixed", "other"]
@@ -109,6 +111,58 @@ class TriageResult(BaseModel):
     script: Script = Field(description="The script CONTACT's new messages are written in.")
 
 
+class TriageResolution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: int = Field(description="The listed open task fulfilled or answered.")
+    evidence_message_ids: list[int] = Field(
+        description="New message ids showing fulfillment, never age or an instruction to close."
+    )
+
+
+class TriageResultV2(BaseModel):
+    """One burst of one conversation, triaged. Never about another chat (§6
+    invariant 4)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    language: str = Field(
+        description=(
+            "The owner's preferred language tag, e.g. 'uz-Latn': every text below is "
+            "written in that language and script."
+        )
+    )
+    needs_reply: bool = Field(
+        description="True when CONTACT's latest messages call for a reply from the owner."
+    )
+    contains_question_to_owner: bool = Field(
+        description="True when the new messages ask the owner something still unanswered."
+    )
+    requests_decision: bool = Field(
+        description="True when CONTACT waits for the owner to decide something."
+    )
+    urgency: Urgency = Field(description="How soon the owner needs to see this.")
+    deadline: str | None = Field(
+        description=f"The earliest deadline the new messages state. {_LOCAL_TIME}"
+    )
+    commitments: list[TriageCommitment] = Field(
+        description="Things either side is to do that no message shows done."
+    )
+    open_questions: list[TriageQuestion] = Field(
+        description="Questions and decisions CONTACT is waiting for, unanswered."
+    )
+    resolutions: list[TriageResolution] = Field(
+        description="Evidence-backed completions; empty for suspicious or unsupported claims."
+    )
+    escalation_category: EscalationCategory = Field(
+        description="What kind of attention the burst needs from the owner."
+    )
+    reasons: list[str] = Field(
+        description="At most three short, factual reasons, in the owner's language."
+    )
+    script: Script = Field(description="The script CONTACT's new messages are written in.")
+
+
 #: Deterministic limits applied after validation (S05.1 §3.1).
 MAX_ITEMS = 10
 MAX_REASONS = 3
@@ -156,6 +210,7 @@ class SanitizedTriage:
     capped: int = 0
     #: Items and reasons dropped because no text was left.
     empty: int = 0
+    resolutions: tuple[ResolutionEvidence, ...] = ()
 
 
 def parse_owner_local(value: str | None, timezone: str) -> datetime | None:
@@ -202,7 +257,7 @@ def trim(text: str, limit: int = MAX_TEXT) -> str:
     return cut.rstrip() + "…"
 
 
-def sanitize_triage(result: TriageResult, *, timezone: str) -> SanitizedTriage:
+def sanitize_triage(result: TriageResult | TriageResultV2, *, timezone: str) -> SanitizedTriage:
     """`result` within the limits: lists capped, texts trimmed, empty items
     dropped, dates parsed in the owner's `timezone` (`accounts.timezone`)."""
     capped = empty = 0
@@ -247,10 +302,22 @@ def sanitize_triage(result: TriageResult, *, timezone: str) -> SanitizedTriage:
         deadline_at=parse_owner_local(result.deadline, timezone),
         commitments=tuple(commitments[:MAX_ITEMS]),
         open_questions=tuple(questions[:MAX_ITEMS]),
-        resolved_task_ids=tuple(dict.fromkeys(result.resolved_task_ids)),
+        resolved_task_ids=(
+            tuple(dict.fromkeys(result.resolved_task_ids))
+            if isinstance(result, TriageResult)
+            else tuple(dict.fromkeys(item.task_id for item in result.resolutions[:MAX_ITEMS]))
+        ),
         escalation_category=result.escalation_category,
         reasons=tuple(reasons[:MAX_REASONS]),
         script=result.script,
         capped=capped,
         empty=empty,
+        resolutions=(
+            tuple(
+                ResolutionEvidence(item.task_id, tuple(dict.fromkeys(item.evidence_message_ids)))
+                for item in result.resolutions[:MAX_ITEMS]
+            )
+            if isinstance(result, TriageResultV2)
+            else ()
+        ),
     )

@@ -243,7 +243,7 @@ async def test_triage_runs_are_given_no_tools(tenv: Env) -> None:
     assert all(request.tools == () for request in requests)
     runs = await triage_runs(tenv)
     assert {(r.prompt_version, r.status, r.iterations) for r in runs} == {
-        (prompt_registry.active("triage").label, "succeeded", 1)
+        (prompt_registry.load("triage", "v1").label, "succeeded", 1)
     }
     registry = default_registry()
     every_flag = frozenset(tool.release_flag for tool in registry.all())

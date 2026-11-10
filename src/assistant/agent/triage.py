@@ -51,7 +51,12 @@ from assistant.agent.models import AgentRun
 from assistant.agent.persistence import AgentRunRepository, LlmCallRepository, month_start
 from assistant.agent.prompt_registry import Prompt
 from assistant.agent.triage_context import TriageContext, build_triage
-from assistant.agent.triage_schemas import SanitizedTriage, TriageResult, sanitize_triage
+from assistant.agent.triage_schemas import (
+    SanitizedTriage,
+    TriageResult,
+    TriageResultV2,
+    sanitize_triage,
+)
 from assistant.core.clock import Clock
 from assistant.core.model_routes import processor_for_model
 from assistant.db.uow import transaction
@@ -70,6 +75,7 @@ from assistant.observability.logging import get_logger
 logger = get_logger(__name__)
 
 RUN_TYPE = "triage"
+RESOLUTION_EVIDENCE_FLAG = "triage.resolution_evidence"
 
 #: Errors a retry would only repeat at a cost: after enough of them in a row,
 #: that chat's triage pauses for a while (the summaries' rule, M03 D65).
@@ -90,6 +96,7 @@ class TriageConfig:
     monthly_budget_usd: Decimal | None = None
     failure_backoff_runs: int = 3
     failure_backoff_window: timedelta = timedelta(hours=24)
+    resolution_evidence: bool = False
 
 
 class TriageStatus(StrEnum):
@@ -233,6 +240,7 @@ def validate_triage(
         commitments=tuple(commitments),
         open_questions=tuple(questions),
         resolved_task_ids=resolved,
+        resolutions=tuple(item for item in verdict.resolutions if item.task_id in open_ids),
     )
     return checked, ValidationCounts(
         commitments_kept=len(commitments),
@@ -313,7 +321,11 @@ class Triager:
 
     async def triage(self, conversation_id: int) -> TriageOutcome:
         """Triage the conversation's messages its verdict does not cover yet."""
-        prompt = prompt_registry.active(RUN_TYPE)
+        prompt = (
+            prompt_registry.active(RUN_TYPE)
+            if self._config.resolution_evidence
+            else prompt_registry.load(RUN_TYPE, "v1")
+        )
         config = self._config
         async with transaction(self._session_factory) as uow:
             session = uow.session
@@ -411,6 +423,8 @@ class Triager:
                 script=checked.script,
                 tasks=task_candidates(checked),
                 resolved_task_ids=checked.resolved_task_ids,
+                resolutions=checked.resolutions,
+                require_resolution_evidence=config.resolution_evidence,
             )
             async with transaction(self._session_factory) as uow:
                 result = await self._store.apply(uow.session, verdict, now=self._clock.now())
@@ -447,11 +461,16 @@ class Triager:
         return TriageOutcome(TriageStatus.TRIAGED, account_id, calls, through)
 
     # ------------------------------------------------------------ the call
-    async def _call(self, prepared: _Prepared, prompt: Prompt) -> tuple[TriageResult, int]:
+    async def _call(
+        self, prepared: _Prepared, prompt: Prompt
+    ) -> tuple[TriageResult | TriageResultV2, int]:
         """One structured call — no tools, ever (§6 invariant 3a) — retried
         once with a larger output budget if truncated, never continued by
         prefilling (AGENTS §8). Stop reason first, then content."""
         config = self._config
+        output_model: type[TriageResult | TriageResultV2] = (
+            TriageResultV2 if config.resolution_evidence else TriageResult
+        )
         request = LLMRequest(
             account_id=prepared.account_id,
             run_id=prepared.run_id,
@@ -471,13 +490,13 @@ class Triager:
             return _CallFailedError(status, run_status, error_class, calls=calls)
 
         try:
-            response = await self._llm.parse(request, TriageResult)
+            response = await self._llm.parse(request, output_model)
             calls += 1
             if response.stop_reason is StopReason.MAX_TOKENS:
                 larger = min(request.max_output_tokens * 2, config.max_output_tokens_ceiling)
                 if larger > request.max_output_tokens:
                     response = await self._llm.parse(
-                        replace(request, max_output_tokens=larger), TriageResult
+                        replace(request, max_output_tokens=larger), output_model
                     )
                     calls += 1
         except ConsentMissingError:
@@ -491,7 +510,7 @@ class Triager:
                     raise failed(TriageStatus.FAILED, "failed", "invalid_output")
                 try:
                     # Our own model again: the adapter's validation is not the contract.
-                    validated = TriageResult.model_validate(response.parsed.model_dump())
+                    validated = output_model.model_validate(response.parsed.model_dump())
                 except pydantic.ValidationError:
                     raise failed(TriageStatus.FAILED, "failed", "invalid_output") from None
                 return validated, calls

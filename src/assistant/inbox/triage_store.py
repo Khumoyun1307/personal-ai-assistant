@@ -35,7 +35,7 @@ from assistant.inbox import tasks
 from assistant.inbox.models import ConversationTriage
 from assistant.inbox.notification_types import NotificationKind, NotificationRefs, Priority
 from assistant.inbox.notifications import enqueue
-from assistant.inbox.tasks import TaskView
+from assistant.inbox.tasks import ResolutionEvidence, TaskView
 from assistant.inbox.triage_trigger import TRIGGER_DIRECTIONS
 from assistant.memory import summaries
 from assistant.memory.summaries import SourceMessage, StoreResult
@@ -121,6 +121,8 @@ class TriageVerdict:
     script: str | None
     tasks: tuple[TaskCandidate, ...]
     resolved_task_ids: tuple[int, ...]
+    resolutions: tuple[ResolutionEvidence, ...] = ()
+    require_resolution_evidence: bool = False
 
 
 class ApplyResult(StrEnum):
@@ -391,17 +393,29 @@ class TriageRepository:
             )
             if inserted:
                 created.append(task_id)
-        closed = [
-            task_id
-            for task_id in verdict.resolved_task_ids
-            if await tasks.close(
-                session,
-                account_id=account_id,
-                task_id=task_id,
-                reason=tasks.RESOLVED_BY_TRIAGE,
-                clock=self._clock,
-            )
-        ]
+        closed: list[int] = []
+        if verdict.require_resolution_evidence:
+            for resolution in verdict.resolutions:
+                if await tasks.close_with_evidence(
+                    session,
+                    account_id=account_id,
+                    conversation_id=conversation_id,
+                    resolution=resolution,
+                    shown_new_ids=verdict.burst_message_ids,
+                    suspicious=verdict.escalation_category == "suspicious",
+                    clock=self._clock,
+                ):
+                    closed.append(resolution.task_id)
+        else:
+            for task_id in verdict.resolved_task_ids:
+                if await tasks.close(
+                    session,
+                    account_id=account_id,
+                    task_id=task_id,
+                    reason=tasks.RESOLVED_BY_TRIAGE,
+                    clock=self._clock,
+                ):
+                    closed.append(task_id)
         contact_id = conversation.contact_id
         for task_id in closed:
             await enqueue(
