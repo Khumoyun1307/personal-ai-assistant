@@ -32,11 +32,11 @@ from assistant.conversations.models import Contact, Conversation, Message
 from assistant.db.models import SystemState
 from assistant.inbox.notify import OwnerAlerts
 from assistant.telegram.business_targets import BusinessTargetResolver
-from assistant.telegram.gateway import OutboundGateway
+from assistant.telegram.gateway import OutboundGateway, Sleep
 from assistant.telegram.ingress.writer import write_state
 from tests.fakes.approvals import RecordingApprovalPresenter
 from tests.fakes.channel import FakeChannel
-from tests.fakes.clock import FakeSleep
+from tests.fakes.clock import FakeGatewayClock
 from tests.fakes.sender import FakeTelegramSender
 from tests.integration.actions_env import CONFIG, DRAFT_TEXT, Chat, request, seed_chat
 from tests.integration.business_env import (
@@ -86,7 +86,7 @@ class RecordingScheduler:
 class Harness:
     env: Env
     sender: FakeTelegramSender
-    sleep: FakeSleep
+    sleep: FakeGatewayClock
     presenter: RecordingApprovalPresenter
     channel: FakeChannel
     scheduler: RecordingScheduler
@@ -97,11 +97,20 @@ class Harness:
         return await self.executor.execute(action_id)
 
 
-def harness(env: Env, *, config: ActionsConfig = CONFIG, **overrides: Any) -> Harness:
+def harness(
+    env: Env,
+    *,
+    config: ActionsConfig = CONFIG,
+    gateway_sleep: Sleep | None = None,
+    **overrides: Any,
+) -> Harness:
     sender = FakeTelegramSender()
-    sleep = FakeSleep()
+    sleep = FakeGatewayClock(env.clock)
     gateway = OutboundGateway(
-        sender, env.clock, sleep=sleep, targets=BusinessTargetResolver(env.factory)
+        sender,
+        env.clock if gateway_sleep is not None else sleep,
+        sleep=gateway_sleep or sleep.sleep,
+        targets=BusinessTargetResolver(env.factory),
     )
     presenter = RecordingApprovalPresenter()
     channel = FakeChannel()

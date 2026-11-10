@@ -60,9 +60,9 @@ from assistant.telegram.control.digest import (
     render_digest,
 )
 from assistant.telegram.control.routes import ControlRoutes
-from assistant.telegram.gateway import OutboundGateway
+from assistant.telegram.gateway import MAX_THROTTLE_WAIT_SECONDS, ControlChat, OutboundGateway
 from tests.fakes.channel import FakeChannel
-from tests.fakes.clock import FakeClock, FakeSleep
+from tests.fakes.clock import FakeClock, FakeGatewayClock
 from tests.fakes.sender import FakeTelegramSender, telegram_error
 from tests.integration.business_env import (
     CONTACT,
@@ -640,6 +640,55 @@ async def test_an_uncertain_digest_is_never_resent(env: Env) -> None:
     assert "Kamola" not in channel.sends[-1]
 
 
+async def test_a_digest_not_started_keeps_its_period_claim_and_releases_its_alerts(
+    env: Env,
+) -> None:
+    account_id = await owner(env, control_chat_id=OWNER)
+    alert = await batched(env, await chat(env, account_id, "Kamola", reasons=["Synthetic"]))
+    env.clock.set(EVENING + timedelta(seconds=20))
+    clock = FakeClock(env.clock.now())
+    sender = FakeTelegramSender()
+
+    async def oversleep(seconds: float) -> None:
+        clock.advance(seconds=MAX_THROTTLE_WAIT_SECONDS + seconds)
+
+    gateway = OutboundGateway(sender, clock, sleep=oversleep)
+    assert (await gateway.send_text(ControlChat(account_id, OWNER), "Synthetic warm-up")).ok
+    sender.sends.clear()
+    delivery = DigestDelivery(
+        session_factory=env.factory,
+        channel=GatewayControlChannel(gateway),
+        clock=env.clock,
+        render=render_digest,
+    )
+
+    result = await delivery.build(account_id, EVENING)
+    assert (result.status, result.reason) == ("failed", "not_delivered")
+    assert sender.sends == []
+    assert (await notification(env, alert)).digest_id is None
+    assert await _cards(env) == []
+
+    # Capacity is available again, but this period is still the same claim.
+    again = await delivery.build(account_id, EVENING)
+    assert again.status == "duplicate"
+    assert again.digest_id == result.digest_id
+    [row] = await digests(env, account_id)
+    assert row.id == result.digest_id
+    assert row.status == "failed"
+    assert sender.sends == []
+
+    # Existing digest rules carry definite non-delivery into the next period.
+    tomorrow = EVENING + timedelta(days=1)
+    env.clock.set(tomorrow + timedelta(seconds=20))
+    clock.set(env.clock.now())
+    assert (await delivery.build(account_id, tomorrow)).status == "sent"
+    failed, sent = await digests(env, account_id)
+    assert failed.id == row.id
+    assert sent.status == "sent"
+    assert (await notification(env, alert)).digest_id == sent.id
+    assert len(sender.sends) == 1
+
+
 async def test_a_failed_digest_is_covered_by_the_next_one(env: Env) -> None:
     account_id = await owner(env)
     kamola = await chat(env, account_id, "Kamola", reasons=["Synthetic decision"])
@@ -706,7 +755,8 @@ def production_channel(refuse_send: int) -> tuple[FakeTelegramSender, GatewayCon
             sender.fail_with = telegram_error("Bad Request: synthetic refusal", status_code=400)
 
     sender.on_call = refuse
-    return sender, GatewayControlChannel(OutboundGateway(sender, FakeClock(), sleep=FakeSleep()))
+    clock = FakeGatewayClock(FakeClock())
+    return sender, GatewayControlChannel(OutboundGateway(sender, clock, sleep=clock.sleep))
 
 
 async def test_a_digest_cut_off_after_its_first_part_is_uncertain_and_keeps_its_alerts(

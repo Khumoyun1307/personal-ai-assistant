@@ -3,7 +3,9 @@
 The one place a business send happens (a confinement test checks it). The
 protocol, exactly:
 
-1. **Tx A** — lock account `FOR SHARE`, conversation `FOR SHARE`, the action
+1. **Capacity** — reserve a bounded gateway slot without holding row locks
+   or claiming an attempt. Then **Tx A** — lock account `FOR SHARE`,
+   conversation `FOR SHARE`, the action
    `FOR UPDATE` (the global order), require `approved`, load the policy
    context from those locked rows and `decide` in the execution phase. A
    failed check moves the action to the state `execution_target` names (or
@@ -50,7 +52,7 @@ from assistant.actions.states import ActionKind, ActionOrigin, ActionState, Stat
 from assistant.conversations.events import MessageContent
 from assistant.conversations.models import Conversation, Message
 from assistant.core.clock import Clock
-from assistant.core.delivery import ErrorClass, SendResult
+from assistant.core.delivery import BusinessSendReservation, ErrorClass, SendResult
 from assistant.core.jobs import EXECUTE_TASK, JobScheduler
 from assistant.db.uow import transaction
 from assistant.inbox.notify import EVENT_ALERT, EVENT_ALERT_CLAIMED, AlertKind, OwnerAlerts
@@ -101,8 +103,17 @@ class ConnectionReportingSender(BusinessSender, Protocol):
     never a replacement that arrived meanwhile (Antony on #107).
     `OutboundGateway` implements both."""
 
+    async def reserve_business_send(
+        self, *, account_id: int, conversation_id: int
+    ) -> BusinessSendReservation | SendResult: ...
+
     async def send_business_text_with_connection(
-        self, *, account_id: int, conversation_id: int, text: str
+        self,
+        *,
+        account_id: int,
+        conversation_id: int,
+        text: str,
+        reservation: BusinessSendReservation | None = None,
     ) -> tuple[SendResult, str | None]: ...
 
 
@@ -199,15 +210,22 @@ class ActionExecutor:
         """Run the protocol once. An exception before the claim commits
         propagates (the job may retry: nothing was sent); after the claim
         nothing propagates, so no retry can ever send twice."""
-        claimed = await self._tx_a(action_id)
+        reservation = await self._reserve_dispatch(action_id)
+        claimed = await self._tx_a(
+            action_id,
+            dispatch_available=reservation is not None,
+            dispatch_deadline=reservation.expires_at if reservation is not None else None,
+        )
         if isinstance(claimed, ExecuteOutcome):
             await self._redefer(action_id, claimed.redefer_at)
             return claimed
         try:
+            assert reservation is not None
             result, used_connection = await self._sender.send_business_text_with_connection(
                 account_id=claimed.account_id,
                 conversation_id=claimed.conversation_id,
                 text=claimed.text,
+                reservation=reservation,
             )
         except Exception as error:
             # The gateway classifies every Telegram failure; this is a bug or
@@ -225,7 +243,32 @@ class ActionExecutor:
         await self._after_outcome(claimed, outcome)
         return outcome
 
-    async def _tx_a(self, action_id: int) -> _Claim | ExecuteOutcome:
+    async def _reserve_dispatch(self, action_id: int) -> BusinessSendReservation | None:
+        """Read only routing keys; Tx A reloads all authoritative facts after waiting."""
+        async with self._sf() as session:
+            keys = (
+                await session.execute(
+                    select(
+                        Action.account_id, Action.conversation_id, Action.state, Action.retry_at
+                    ).where(Action.id == action_id)
+                )
+            ).one_or_none()
+        if keys is None or keys.state != ActionState.APPROVED.value:
+            return None
+        if keys.retry_at is not None and keys.retry_at > self._clock.now():
+            return None
+        reserved = await self._sender.reserve_business_send(
+            account_id=int(keys.account_id), conversation_id=int(keys.conversation_id)
+        )
+        return reserved if isinstance(reserved, BusinessSendReservation) else None
+
+    async def _tx_a(
+        self,
+        action_id: int,
+        *,
+        dispatch_available: bool = True,
+        dispatch_deadline: datetime | None = None,
+    ) -> _Claim | ExecuteOutcome:
         async with transaction(self._sf) as uow:
             session = uow.session
             keys = (
@@ -292,6 +335,14 @@ class ActionExecutor:
                     return ExecuteOutcome(ExecuteStatus.SETTLED, state)  # already claimed
                 to_state, reason = target or (ActionState.BLOCKED, StateReason.POLICY_DENIED)
                 return await self._deny(session, action, now, decision, to_state, reason)
+            if not dispatch_available or (
+                dispatch_deadline is not None and self._clock.now() > dispatch_deadline
+            ):
+                # Capacity was definitely unavailable: no request and no
+                # executing attempt to be mistaken for an uncertain send.
+                return ExecuteOutcome(
+                    ExecuteStatus.WAITING, ActionState.APPROVED, redefer_at=now + WAIT_REDEFER
+                )
             attempt = self._new_attempt_id()
             claimed = await transition(
                 session,

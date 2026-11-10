@@ -33,11 +33,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from aiogram import Bot
 
 from assistant.core.clock import Clock
+from assistant.core.delivery import BusinessSendReservation
 from assistant.core.delivery import SendResult as SendResult
 from assistant.observability.logging import get_logger
 from assistant.telegram.business_targets import BusinessTarget, BusinessTargetResolver
@@ -64,6 +66,8 @@ REQUEST_TIMEOUT_SECONDS = 20
 #: the request timeout it bounds how long a claimed attempt can still be in
 #: flight (`system.mark_uncertain` never marks one earlier).
 MAX_THROTTLE_WAIT_SECONDS = 10
+#: No request started: safe to re-queue under the caller's existing retry rules.
+DISPATCH_NOT_STARTED = "dispatch_not_started"
 #: `error_code` of a business call refused before Telegram was asked.
 LOCAL_TARGET_REFUSED = "local_target_refused"
 
@@ -165,33 +169,74 @@ class OutboundGateway:
         #: None: no business target resolves, so every business call is
         #: refused locally (a process or test that never sends as the owner).
         self._targets = targets
-        self._last_send_at: dict[int, float] = {}
-        self._locks: dict[int, asyncio.Lock] = {}
-        self._global_lock = asyncio.Lock()
-        self._last_any_send_at: float | None = None
+        # Reservations are queue positions, not request starts. In particular,
+        # a send must never conflict with its own newly reserved slot.
+        self._last_reserved_at: dict[int, datetime] = {}
+        self._last_any_reserved_at: datetime | None = None
+        self._last_dispatch_at: dict[int, datetime] = {}
+        self._last_any_dispatch_at: datetime | None = None
 
-    async def _throttle(self, chat_id: int) -> None:
-        """One message per second per chat, serialised per chat, and any two
-        sends at least `MIN_SECONDS_BETWEEN_ANY_SENDS` apart.
+    def _dispatch_deadline(self) -> datetime:
+        return self._clock.now() + timedelta(seconds=MAX_THROTTLE_WAIT_SECONDS)
 
-        The send's slot is reserved before waiting (one wait, never a lock
-        held across it for other chats): the later of now, this chat's last
-        slot plus one second, and anyone's last slot plus the global spacing.
+    def _not_started(self) -> SendResult:
+        return SendResult(ErrorClass.RATE_LIMITED, error_code=DISPATCH_NOT_STARTED)
+
+    async def _throttle(self, chat_id: int, *, deadline: datetime | None = None) -> bool:
+        """Chat-targeted requests share the per-chat and global send spacing.
+
+        Reservation is synchronous, so no task can interleave or wait on a
+        lock here. Reject an over-budget slot without extending the tail.
+        Both the sleep and a late wake-up are bounded before dispatch.
         """
-        lock = self._locks.setdefault(chat_id, asyncio.Lock())
-        async with lock:
-            now = self._clock.now().timestamp()
-            async with self._global_lock:
-                due = now
-                previous = self._last_send_at.get(chat_id)
-                if previous is not None:
-                    due = max(due, previous + MIN_SECONDS_BETWEEN_SENDS)
-                if self._last_any_send_at is not None:
-                    due = max(due, self._last_any_send_at + MIN_SECONDS_BETWEEN_ANY_SENDS)
-                self._last_any_send_at = due
-                self._last_send_at[chat_id] = due
-            if due > now:
-                await self._sleep(due - now)
+        deadline = deadline or self._dispatch_deadline()
+        now = self._clock.now()
+        due = now
+        chat_spacing = timedelta(seconds=MIN_SECONDS_BETWEEN_SENDS)
+        global_spacing = timedelta(seconds=MIN_SECONDS_BETWEEN_ANY_SENDS)
+        previous = self._last_reserved_at.get(chat_id)
+        if previous is not None:
+            due = max(due, previous + chat_spacing)
+        dispatched = self._last_dispatch_at.get(chat_id)
+        if dispatched is not None:
+            due = max(due, dispatched + chat_spacing)
+        if self._last_any_reserved_at is not None:
+            due = max(due, self._last_any_reserved_at + global_spacing)
+        if self._last_any_dispatch_at is not None:
+            due = max(due, self._last_any_dispatch_at + global_spacing)
+        if due > deadline:
+            return False
+        self._last_any_reserved_at = due
+        self._last_reserved_at[chat_id] = due
+        if due > now:
+            try:
+                async with asyncio.timeout(max(0.0, (deadline - now).total_seconds())):
+                    await self._sleep((due - now).total_seconds())
+            except TimeoutError:
+                return False
+        return self._clock.now() <= deadline
+
+    def _start_dispatch(self, chat_id: int, *, deadline: datetime) -> bool:
+        """Atomically check and record request-start spacing, without waiting.
+
+        Slots can converge after a slow claim, target read or wake-up. A
+        conflicting slot is definitely not started; waiting again would
+        separate the request from the executor's fresh policy claim.
+        No await may separate this check from starting the sender call.
+        """
+        now = self._clock.now()
+        if now > deadline:
+            return False
+        previous = self._last_dispatch_at.get(chat_id)
+        if previous is not None and now < previous + timedelta(seconds=MIN_SECONDS_BETWEEN_SENDS):
+            return False
+        if self._last_any_dispatch_at is not None and now < self._last_any_dispatch_at + timedelta(
+            seconds=MIN_SECONDS_BETWEEN_ANY_SENDS
+        ):
+            return False
+        self._last_dispatch_at[chat_id] = now
+        self._last_any_dispatch_at = now
+        return True
 
     async def send_text(
         self,
@@ -225,7 +270,11 @@ class OutboundGateway:
         return result
 
     async def _send_one(self, target: ControlChat, text: str, keyboard: Any | None) -> SendResult:
-        await self._throttle(target.chat_id)
+        deadline = self._dispatch_deadline()
+        if not await self._throttle(target.chat_id, deadline=deadline):
+            return self._not_started()
+        if not self._start_dispatch(target.chat_id, deadline=deadline):
+            return self._not_started()
         try:
             message = await self._sender.send_message(
                 chat_id=target.chat_id,
@@ -248,6 +297,11 @@ class OutboundGateway:
         """Edit a control-chat card in place (approval cards, confirmations)."""
         chunks = render_control_message(text)
         body = chunks[0] if chunks else ""
+        deadline = self._dispatch_deadline()
+        if not await self._throttle(target.chat_id, deadline=deadline):
+            return self._not_started()
+        if not self._start_dispatch(target.chat_id, deadline=deadline):
+            return self._not_started()
         try:
             await self._sender.edit_message_text(
                 chat_id=target.chat_id,
@@ -269,6 +323,11 @@ class OutboundGateway:
     async def clear_control_keyboard(self, target: ControlChat, message_id: int) -> SendResult:
         """Remove a control-chat card's buttons and keep its text — for a
         card whose body says more than its question (the connection notice)."""
+        deadline = self._dispatch_deadline()
+        if not await self._throttle(target.chat_id, deadline=deadline):
+            return self._not_started()
+        if not self._start_dispatch(target.chat_id, deadline=deadline):
+            return self._not_started()
         try:
             await self._sender.edit_message_reply_markup(
                 chat_id=target.chat_id,
@@ -280,17 +339,24 @@ class OutboundGateway:
             return self._classify_failure(error, account_id=target.account_id)
         return SendResult(ErrorClass.OK, message_id=message_id)
 
-    async def chat_action(self, target: ControlChat, action: str = "typing") -> None:
+    async def chat_action(self, target: ControlChat, action: str = "typing") -> SendResult:
         """Typing indicator. Control chat only.
 
         A typing indicator in a business chat is an owner-voice action and
         needs a PRD requirement and a policy rule first (AGENTS §7), so the
         signature does not accept a business target at all.
         """
+        deadline = self._dispatch_deadline()
+        if not await self._throttle(target.chat_id, deadline=deadline):
+            return self._not_started()
+        if not self._start_dispatch(target.chat_id, deadline=deadline):
+            return self._not_started()
         try:
             await self._sender.send_chat_action(chat_id=target.chat_id, action=action)
         except Exception as error:
             logger.warning("chat_action_failed", exc_type=type(error).__name__)
+            return self._classify_failure(error, account_id=target.account_id)
+        return SendResult(ErrorClass.OK)
 
     async def answer_callback(
         self, callback_query_id: str, text: str | None = None, *, show_alert: bool = False
@@ -327,24 +393,82 @@ class OutboundGateway:
         return result
 
     async def send_business_text_with_connection(
-        self, *, account_id: int, conversation_id: int, text: str
+        self,
+        *,
+        account_id: int,
+        conversation_id: int,
+        text: str,
+        reservation: BusinessSendReservation | None = None,
     ) -> tuple[SendResult, str | None]:
         """`send_business_text`, and the connection id the call was sent on
         (None when refused locally: no call was made). The executor stales
         only that connection on BUSINESS_CONNECTION_INVALID — never a
         replacement that arrived while the call was in flight (§6.4)."""
         return await self._send_business(
-            account_id=account_id, conversation_id=conversation_id, text=text
+            account_id=account_id,
+            conversation_id=conversation_id,
+            text=text,
+            reservation=reservation,
         )
 
+    async def reserve_business_send(
+        self, *, account_id: int, conversation_id: int
+    ) -> BusinessSendReservation | SendResult:
+        """Wait for capacity before Tx A; this neither claims nor sends.
+
+        The deadline includes target lookup, waiting, and the subsequent
+        claim. Dispatch must consume this slot without another throttle wait.
+        """
+        deadline = self._dispatch_deadline()
+        try:
+            async with asyncio.timeout(MAX_THROTTLE_WAIT_SECONDS):
+                target = await self._business_target(account_id, conversation_id)
+        except TimeoutError:
+            return self._not_started()
+        if target is None:
+            return self._refused("send", account_id=account_id, conversation_id=conversation_id)
+        if not await self._throttle(target.chat_id, deadline=deadline):
+            return self._not_started()
+        return BusinessSendReservation(account_id, conversation_id, target.chat_id, deadline)
+
     async def _send_business(
-        self, *, account_id: int, conversation_id: int, text: str
+        self,
+        *,
+        account_id: int,
+        conversation_id: int,
+        text: str,
+        reservation: BusinessSendReservation | None = None,
     ) -> tuple[SendResult, str | None]:
-        target = await self._business_target(account_id, conversation_id)
+        if reservation is None:
+            reserved = await self.reserve_business_send(
+                account_id=account_id, conversation_id=conversation_id
+            )
+            if isinstance(reserved, SendResult):
+                return reserved, None
+            reservation = reserved
+        if (
+            reservation.consumed
+            or reservation.account_id != account_id
+            or reservation.conversation_id != conversation_id
+            or self._clock.now() > reservation.expires_at
+        ):
+            return self._not_started(), None
+        reservation.consumed = True
+        # Refresh after capacity waiting AND Tx A. Never use a connection
+        # captured before waiting, and never start a request after the bound.
+        try:
+            remaining = (reservation.expires_at - self._clock.now()).total_seconds()
+            async with asyncio.timeout(max(0.0, remaining)):
+                target = await self._business_target(account_id, conversation_id)
+        except TimeoutError:
+            return self._not_started(), None
         if target is None:
             refused = self._refused("send", account_id=account_id, conversation_id=conversation_id)
             return refused, None
-        await self._throttle(target.chat_id)
+        if target.chat_id != reservation.chat_id:
+            return self._not_started(), None
+        if not self._start_dispatch(target.chat_id, deadline=reservation.expires_at):
+            return self._not_started(), None
         try:
             message = await self._sender.send_plain_message(
                 chat_id=target.chat_id,
@@ -380,7 +504,11 @@ class OutboundGateway:
         )
         if target is None or telegram_ids is None:
             return self._refused("edit", account_id=account_id, conversation_id=conversation_id)
-        await self._throttle(target.chat_id)
+        deadline = self._dispatch_deadline()
+        if not await self._throttle(target.chat_id, deadline=deadline):
+            return self._not_started()
+        if not self._start_dispatch(target.chat_id, deadline=deadline):
+            return self._not_started()
         try:
             await self._sender.edit_plain_message_text(
                 chat_id=target.chat_id,
@@ -411,7 +539,11 @@ class OutboundGateway:
         )
         if target is None or telegram_ids is None:
             return self._refused("delete", account_id=account_id, conversation_id=conversation_id)
-        await self._throttle(target.chat_id)
+        deadline = self._dispatch_deadline()
+        if not await self._throttle(target.chat_id, deadline=deadline):
+            return self._not_started()
+        if not self._start_dispatch(target.chat_id, deadline=deadline):
+            return self._not_started()
         try:
             await self._sender.delete_business_messages(
                 business_connection_id=target.connection_id, message_ids=telegram_ids

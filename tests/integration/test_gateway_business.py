@@ -8,6 +8,7 @@ Texts are synthetic.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -17,10 +18,17 @@ from sqlalchemy import update
 from assistant.accounts.models import BusinessConnection
 from assistant.config import Settings
 from assistant.conversations.models import Contact, Conversation, Message
-from assistant.core.delivery import ErrorClass
+from assistant.core.delivery import ErrorClass, SendResult
 from assistant.observability.logging import configure_logging
 from assistant.telegram.business_targets import BusinessTargetResolver
-from assistant.telegram.gateway import LOCAL_TARGET_REFUSED, OutboundGateway
+from assistant.telegram.gateway import (
+    DISPATCH_NOT_STARTED,
+    LOCAL_TARGET_REFUSED,
+    MAX_THROTTLE_WAIT_SECONDS,
+    MIN_SECONDS_BETWEEN_ANY_SENDS,
+    MIN_SECONDS_BETWEEN_SENDS,
+    OutboundGateway,
+)
 from tests.fakes.clock import FakeClock, FakeSleep
 from tests.fakes.sender import FakeTelegramSender, network_error, telegram_error
 from tests.integration.actions_env import Chat, add_message, seed_chat
@@ -33,10 +41,17 @@ TOKEN = "8123456789:AAH1bQ7xKqY-ZZ_pLm3nOpQrStUvWxYz012"
 
 
 def gateway_for(env: Env, sender: FakeTelegramSender, sleep: FakeSleep | None = None) -> Any:
+    clock = FakeClock(NOW)
+
+    async def wait(seconds: float) -> None:
+        if sleep is not None:
+            await sleep(seconds)
+        clock.advance(seconds=seconds)
+
     return OutboundGateway(
         sender,
-        FakeClock(NOW),
-        sleep=sleep or FakeSleep(),
+        clock,
+        sleep=wait,
         targets=BusinessTargetResolver(env.factory),
     )
 
@@ -343,8 +358,151 @@ async def test_global_throttle_spaces_sends(env: Env) -> None:
             account_id=chat.account_id, conversation_id=chat.conversation_id, text="Synthetic"
         )
 
-    assert sleep.waits == [pytest.approx(0.04), pytest.approx(1.0)]
+    assert sleep.waits == [pytest.approx(0.04), pytest.approx(0.96)]
     assert len(sender.plain_sends) == 3
+
+
+async def own_message(env: Env, chat: Chat) -> int:
+    async with env.factory() as session, session.begin():
+        return await add_message(
+            session, chat.account_id, chat.conversation_id, direction="assistant_sent", sent_at=NOW
+        )
+
+
+async def edit_or_delete(
+    gateway: OutboundGateway, chat: Chat, ref: int, operation: str
+) -> SendResult:
+    if operation == "edit":
+        return await gateway.edit_assistant_message(
+            account_id=chat.account_id,
+            conversation_id=chat.conversation_id,
+            assistant_message_ref=ref,
+            text="Synthetic edit",
+        )
+    return await gateway.delete_own_business_messages(
+        account_id=chat.account_id,
+        conversation_id=chat.conversation_id,
+        assistant_message_refs=[ref],
+    )
+
+
+@pytest.mark.parametrize("operations", [("edit", "edit"), ("delete", "delete"), ("edit", "delete")])
+async def test_converging_business_edit_delete_waits_cannot_dispatch_together(
+    env: Env, operations: tuple[str, str]
+) -> None:
+    chat = await seed(env)
+    ref = await own_message(env, chat)
+    sender = FakeTelegramSender()
+    clock = FakeClock(NOW)
+    waiting: asyncio.Queue[float] = asyncio.Queue()
+    release = asyncio.Event()
+
+    async def hold(seconds: float) -> None:
+        waiting.put_nowait(seconds)
+        await release.wait()
+
+    gateway = OutboundGateway(
+        sender, clock, sleep=hold, targets=BusinessTargetResolver(env.factory)
+    )
+    assert (
+        await gateway.send_business_text(
+            account_id=chat.account_id, conversation_id=chat.conversation_id, text="Synthetic first"
+        )
+    ).ok
+    tasks = []
+    try:
+        for index, operation in enumerate(operations, start=1):
+            tasks.append(asyncio.create_task(edit_or_delete(gateway, chat, ref, operation)))
+            async with asyncio.timeout(5):
+                assert await waiting.get() == index * MIN_SECONDS_BETWEEN_SENDS
+        clock.advance(seconds=5)
+    finally:
+        release.set()
+        results = await asyncio.gather(*tasks)
+
+    assert sum(result.ok for result in results) == 1
+    [refused] = [result for result in results if not result.ok]
+    assert refused.error_code == DISPATCH_NOT_STARTED
+    assert not refused.delivery_uncertain
+    assert len(sender.plain_edits) + len(sender.deletes) == 1
+    assert len(sender.plain_sends) == 1
+
+
+@pytest.mark.parametrize("operation", ["edit", "delete"])
+@pytest.mark.parametrize("same_chat", [True, False])
+@pytest.mark.parametrize("network_failure", [False, True])
+async def test_send_after_delayed_business_edit_delete_respects_actual_start(
+    env: Env, operation: str, same_chat: bool, network_failure: bool
+) -> None:
+    chat = await seed(env)
+    following = chat if same_chat else await seed(env)
+    ref = await own_message(env, chat)
+    sender = FakeTelegramSender()
+    clock = FakeClock(NOW)
+    waits: list[float] = []
+
+    async def wait(seconds: float) -> None:
+        waits.append(seconds)
+        clock.advance(seconds=5 if len(waits) == 1 else seconds)
+
+    gateway = OutboundGateway(
+        sender, clock, sleep=wait, targets=BusinessTargetResolver(env.factory)
+    )
+    assert (
+        await gateway.send_business_text(
+            account_id=chat.account_id, conversation_id=chat.conversation_id, text="Synthetic first"
+        )
+    ).ok
+    if network_failure:
+        sender.fail_with = network_error()
+    result = await edit_or_delete(gateway, chat, ref, operation)
+    assert result.ok is not network_failure
+    assert result.delivery_uncertain is network_failure
+    dispatched_at = clock.now()
+    sender.fail_with = None
+
+    assert (
+        await gateway.send_business_text(
+            account_id=following.account_id,
+            conversation_id=following.conversation_id,
+            text="Synthetic following send",
+        )
+    ).ok
+
+    spacing = MIN_SECONDS_BETWEEN_SENDS if same_chat else MIN_SECONDS_BETWEEN_ANY_SENDS
+    assert (clock.now() - dispatched_at).total_seconds() == spacing
+    assert waits == [MIN_SECONDS_BETWEEN_SENDS, spacing]
+    assert len(sender.plain_edits) + len(sender.deletes) == 1
+    assert len(sender.plain_sends) == 2
+
+
+@pytest.mark.parametrize("operation", ["edit", "delete"])
+async def test_late_business_edit_delete_cannot_extend_its_dispatch_deadline(
+    env: Env, operation: str
+) -> None:
+    chat = await seed(env)
+    ref = await own_message(env, chat)
+    sender = FakeTelegramSender()
+    clock = FakeClock(NOW)
+
+    async def oversleep(seconds: float) -> None:
+        clock.advance(seconds=MAX_THROTTLE_WAIT_SECONDS + seconds)
+
+    gateway = OutboundGateway(
+        sender, clock, sleep=oversleep, targets=BusinessTargetResolver(env.factory)
+    )
+    assert (
+        await gateway.send_business_text(
+            account_id=chat.account_id, conversation_id=chat.conversation_id, text="Synthetic first"
+        )
+    ).ok
+
+    refused = await edit_or_delete(gateway, chat, ref, operation)
+
+    assert refused.error_code == DISPATCH_NOT_STARTED
+    assert not refused.delivery_uncertain
+    assert sender.plain_edits == []
+    assert sender.deletes == []
 
 
 @pytest.mark.parametrize(

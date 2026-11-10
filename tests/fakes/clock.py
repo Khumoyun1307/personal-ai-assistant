@@ -28,13 +28,39 @@ class FakeClock:
 
 
 class FakeSleep:
-    """A sleep that records the wait asked for and returns at once.
+    """Record waits, optionally advancing the clock instead of sleeping.
 
-    The FakeClock never moves by itself, so a real `asyncio.sleep` behind a
-    rate limit waits its full length on every call (AGENTS §11)."""
+    Pass a clock when the test needs completed waits to consume time. Scenario
+    gateways use FakeGatewayClock to keep business time unchanged (AGENTS §11).
+    """
 
-    def __init__(self) -> None:
+    def __init__(self, clock: FakeClock | None = None) -> None:
+        self._clock = clock
         self.waits: list[float] = []
 
     async def __call__(self, seconds: float) -> None:
         self.waits.append(seconds)
+        if self._clock is not None:
+            self._clock.advance(seconds=seconds)
+
+
+class FakeGatewayClock:
+    """Simulate gateway waits without advancing the scenario's business time.
+
+    Completed sleeps consume local time, so sequential sends do not build a
+    phantom backlog. Explicit scenario advances are still visible to the
+    gateway. Other services keep the original clock, preserving period keys,
+    deadlines and scheduled jobs until the test explicitly moves them.
+    """
+
+    def __init__(self, clock: FakeClock) -> None:
+        self._clock = clock
+        self._now = clock.now()
+        self.waits: list[float] = []
+
+    def now(self) -> datetime:
+        return max(self._clock.now(), self._now)
+
+    async def sleep(self, seconds: float) -> None:
+        self.waits.append(seconds)
+        self._now = self.now() + timedelta(seconds=seconds)
