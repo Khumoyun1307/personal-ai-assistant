@@ -2,6 +2,16 @@
 
 *Owner approvals and Technical Lead decisions for phase P2. Engineers follow these; a decision that seems wrong is raised with the TL (ORG §5), never silently changed. New entries are appended; nothing is rewritten.*
 
+**D-S6 supersession (H4, owner decision 2026-11-09; implementation 2026-11-10,
+unverified/default off).** The owner-requested parts of R2/E3 and PF-10/PF-11
+now have a main-model composition path: the main chat supplies the complete
+body to `propose_owner_message` or a full rewrite to flat `revise_draft`, with
+no isolated nested writer. C1 exact owner sources survive continuation beside
+untrusted quotes; literal dictation still uses H3 source copying. The existing
+tool-less isolated proactive Assist writer remains. H6 owns prompt activation,
+H8 card-button cutover and H10 settlement/execution freshness. This amendment
+does not enable the flag or claim tests, evals or owner acceptance have passed.
+
 ## A. Owner approvals (2026-10-26, in conversation with the TL)
 
 The owner approved the TL's P2 proposal in full ("I approve it"):

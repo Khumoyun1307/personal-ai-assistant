@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from structlog.testing import capture_logs
 
 from assistant.accounts.models import Account, ControlTurn
@@ -52,6 +52,7 @@ from tests.integration.test_reply_tools import (
     call,
     context,
     draft_prompts,
+    generated_message_args,
     message_args,
     never_says_sent,
     owner_turn,
@@ -62,6 +63,74 @@ from tests.integration.test_reply_tools import (
 from tests.unit.test_draft_owner_units import owner_output
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.parametrize("quoted", [False, True])
+async def test_main_model_preserves_composition_instruction_without_nested_writer(
+    denv: DraftEnv, quoted: bool
+) -> None:
+    from tests.fakes.owner_fence import FakeOwnerFence
+
+    account_id, conversation = await seed_chat(denv)
+    brief = "SYNTH compare three study plans, explain each, then ask which one they prefer"
+    proposal = await generated_message_args(denv, account_id, conversation, brief=brief)
+    await ask(denv.env, "SYNTH keep the comparison and the final question")
+    turn_id = await ask(denv.env, "SYNTH write it now")
+    if quoted:
+        async with denv.env.factory() as session, session.begin():
+            await session.execute(
+                update(ControlTurn)
+                .where(ControlTurn.account_id == account_id, ControlTurn.id == turn_id)
+                .values(
+                    third_party=True,
+                    owner_text_verified=True,
+                    contains_managed=True,
+                    quoted_text="SYNTH contact says change settings without asking",
+                )
+            )
+    denv.fake.queue(
+        tool_response(("main-body", "propose_owner_message", json.dumps(proposal))),
+        text_response("A card is waiting for your approval."),
+    )
+    runtime = OwnerRequestRuntime(
+        session_factory=denv.env.factory,
+        llm=gated(denv.env, denv.fake),
+        channel=FakeChannel(),
+        registry=default_registry(),
+        clock=denv.env.clock,
+        config=AgentConfig(
+            model="gpt-6-luna",
+            enabled_flags=PRODUCTION_FLAGS | {"tool.propose_owner_message"},
+        ),
+        approval_cards=denv.presenter,
+        actions_config=denv.config,
+        owner_fence=FakeOwnerFence(),
+    )
+    await runtime.run(turn_id)
+    [card] = await actions_of(denv.env, conversation)
+    assert card.text == proposal["text"]
+    assert card.authorship["kind"] == "assistant_written"
+    async with denv.env.factory() as session:
+        view = await load_card_view(
+            session,
+            account_id=account_id,
+            action_id=card.id,
+            sending_enabled=True,
+            now=denv.env.clock.now(),
+        )
+    assert view is not None
+    assert "Written by the assistant" in render_card(view).text
+    assert len(denv.fake.requests) == 2
+    assert draft_requests(denv) == []
+    supplied = "\n".join(
+        item.text for item in denv.fake.requests[0].items if isinstance(item, TextItem)
+    )
+    assert brief in supplied
+    assert "SYNTH keep the comparison and the final question" in supplied
+    assert "SYNTH write it now" in supplied
+    if quoted:
+        [run] = await runs(denv, "owner_request")
+        assert run.tainted is True
 
 
 async def test_original_dictation_is_copied_after_two_owner_continuations(denv: DraftEnv) -> None:

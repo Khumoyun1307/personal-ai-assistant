@@ -94,6 +94,7 @@ from assistant.llm.port import (
 if TYPE_CHECKING:
     from assistant.actions.config import ActionsConfig
     from assistant.actions.ports import ApprovalCardPresenter
+    from assistant.actions.proposals import OwnerProposalFence
     from assistant.agent.drafting import (  # type: ignore[import-untyped, unused-ignore]
         CardReviser,
         Drafter,
@@ -257,6 +258,7 @@ class OwnerRequestRuntime:
         actions_config: ActionsConfig | None = None,
         notifications_enabled: bool = False,
         card_reviser: CardReviser | None = None,
+        owner_fence: OwnerProposalFence | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._llm = llm
@@ -272,6 +274,7 @@ class OwnerRequestRuntime:
         self._notifications_enabled = notifications_enabled
         #: `revise_draft`'s path to the card's revision machinery (PF-13).
         self._card_reviser = card_reviser
+        self._owner_fence = owner_fence
 
     async def run(self, turn_id: int) -> RunOutcome:
         prompt = prompt_registry.active(RUN_TYPE)
@@ -331,6 +334,7 @@ class OwnerRequestRuntime:
                     notifications_enabled=self._notifications_enabled,
                     enabled_flags=self._config.enabled_flags,
                     card_reviser=self._card_reviser,
+                    owner_fence=self._owner_fence,
                 ),
             ),
             offered=offered,

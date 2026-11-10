@@ -39,6 +39,7 @@ from tests.integration.agent_env import (
     ALL_FLAGS,
     DELETION_FLAGS,
     DRAFT_TOOL_FLAGS,
+    MAIN_PROPOSAL_FLAGS,
     MEMORY_FLAGS,
     READ_FLAGS,
     TASK_FLAGS,
@@ -1166,6 +1167,11 @@ async def test_flags_off_means_no_read_tools(env: Env) -> None:
 
 
 def test_all_flags_cover_every_registered_tool() -> None:
-    assert {
-        tool.release_flag for tool in default_registry().all()
-    } <= ALL_FLAGS | MEMORY_FLAGS | DELETION_FLAGS | DRAFT_TOOL_FLAGS | TASK_FLAGS
+    assert {tool.release_flag for tool in default_registry().all()} <= (
+        ALL_FLAGS
+        | MEMORY_FLAGS
+        | DELETION_FLAGS
+        | DRAFT_TOOL_FLAGS
+        | TASK_FLAGS
+        | MAIN_PROPOSAL_FLAGS
+    )

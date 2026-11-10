@@ -39,5 +39,12 @@ At rebaseline, allocate the next unused prompt/migration versions, adapt shared 
 
 ## Applying the record
 
+**D-S17 — Owner has the final say (owner, 2026-11-10).** The application warns
+but must not introduce a new state that dead-ends an owner-approved draft send.
+Only Telegram's own refusal or an already-claimed send can stop the owner's
+approved attempt. H4 introduces no new card states or approval vetoes and
+continues using the existing version/token/claim lifecycle. This records the
+owner's decision; it does not claim a phase-wide policy cutover is implemented.
+
 Earlier P2/P3 rulings and milestone reports remain historical evidence. The supersession table above is the dated amendment; each owning implementation unit updates its architecture/spec/as-built records in the same PR, without claiming planned behavior is already deployed. P0-2 freezes the changed contracts before dependent units start. D-S15 selects the hybrid journal design; implementation remains required. The owner's 2026-11-10 amendment assigns policy work to the owner personally and removes publication/version/notice dependencies from journal use and stabilization. No model switch, paid evaluation, deploy, external publication, live storage access or milestone completion is implied.
 

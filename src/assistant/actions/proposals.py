@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal, Protocol
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -34,6 +34,65 @@ from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
 from assistant.policy.context import ActionFacts, Decision, Outcome, Phase
 from assistant.policy.engine import decide, execution_target
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentOwnerFence:
+    """Application-validated snapshot, never authority supplied by the model."""
+
+    fence_id: int
+    shown_through_message_id: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class UnavailableOwnerFence:
+    reason: Literal[
+        "not_found",
+        "source_edited",
+        "source_deleted",
+        "new_contact_message",
+        "takeover",
+        "owner_intent_superseded",
+        "request_changed",
+        "source_unavailable",
+    ]
+
+
+class OwnerProposalFence(Protocol):
+    """H10/H11 seam. There is deliberately no permissive implementation.
+
+    Caller holds the account lock. check_fence must verify account/run/request
+    binding and lock ALL dependency/recipient conversations in sorted order,
+    before the caller locks the request/action. Locks last through settlement.
+    bind_action atomically associates the checked snapshot and original request
+    time with the committed version; H10 owns its persistence and execution hook.
+    Neither method performs network I/O or changes approval/send authority.
+    """
+
+    async def check_fence(
+        self,
+        session: AsyncSession,
+        *,
+        account_id: int,
+        run_id: int,
+        fence_id: int | None,
+        request_id: int,
+        expected_request_version: int,
+        conversation_id: int,
+        requested_at: datetime,
+    ) -> CurrentOwnerFence | UnavailableOwnerFence: ...
+
+    async def bind_action(
+        self,
+        session: AsyncSession,
+        *,
+        account_id: int,
+        action_id: int,
+        version: int,
+        fence: CurrentOwnerFence,
+        request_id: int,
+        requested_at: datetime,
+    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)

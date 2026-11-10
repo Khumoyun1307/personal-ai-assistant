@@ -488,6 +488,12 @@ def owner_instruction(
 
 # ------------------------------------------------------------ propose_reply
 async def propose_reply_tool(ctx: ToolContext, args: ProposeReplyArgs) -> ToolOutcome:
+    if "tool.propose_owner_message" in ctx.services.enabled_flags:
+        return ToolOutcome(
+            "not_available",
+            {"reason": "use_propose_owner_message"},
+            log_code="legacy_writer_retired",
+        )
     services = ctx.services
     drafter, config = services.drafter, services.actions_config
     if drafter is None or config is None or services.approval_cards is None:

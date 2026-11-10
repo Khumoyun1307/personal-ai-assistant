@@ -173,7 +173,12 @@ async def test_the_blocked_stub_returns_no_message_data_and_makes_no_db_read_of_
         managed_consent=False,
         stub_managed_tools=True,
     )
-    real = {tool.name: tool for tool in registry.all()}
+    real = registry.for_run(
+        "owner_request",
+        tier=CapabilityTier.CONTROL_ONLY,
+        enabled_flags=flags,
+        managed_consent=True,
+    )
     managed = {name for name, tool in real.items() if tool.returns_managed}
     assert managed == {
         "search_messages",
@@ -185,7 +190,7 @@ async def test_the_blocked_stub_returns_no_message_data_and_makes_no_db_read_of_
         "list_monitors",  # S05.4: contact names and the owner's terms, wrapped
         "get_activity",
         # S04.2: their results name the contact (F0-interfaces §9).
-        "propose_reply",
+        "propose_owner_message",
         "propose_message",
         # PF-13: a draft written from the chat (its text, or facts about it).
         "revise_draft",
@@ -450,11 +455,64 @@ def test_schemas_satisfy_openai_strict_mode() -> None:
 
 
 def test_the_production_flags_line_is_every_registered_tool_plus_the_refresh() -> None:
-    """The production line agrees with the eval copy. I11 task tools stay
-    registered but off until the stabilization rollout enables them."""
+    """The production line agrees with the eval copy. I11 tasks and H4 main
+    proposals stay registered but off until their rollout gates pass."""
     from evals.agent_mode import PRODUCTION_FLAGS as EVAL_FLAGS
 
-    from tests.integration.agent_env import PRODUCTION_FLAGS, TASK_FLAGS
+    from tests.integration.agent_env import MAIN_PROPOSAL_FLAGS, PRODUCTION_FLAGS, TASK_FLAGS
 
-    assert (every_flag(default_registry()) - TASK_FLAGS) | {"summary.refresh"} == PRODUCTION_FLAGS
+    assert (every_flag(default_registry()) - TASK_FLAGS - MAIN_PROPOSAL_FLAGS) | {
+        "summary.refresh"
+    } == PRODUCTION_FLAGS
     assert PRODUCTION_FLAGS == EVAL_FLAGS
+
+
+def test_main_composition_flag_cuts_over_both_proposal_and_revision_without_fallback() -> None:
+    from assistant.agent.tools.drafts import ReviseDraftArgs
+    from assistant.agent.tools.owner_composition import (
+        ProposeOwnerMessageArgs,
+        ReviseOwnerDraftArgs,
+    )
+
+    registry = default_registry()
+    flags = frozenset({"tool.propose_reply", "tool.revise_draft"})
+    off = registry.for_run(
+        "owner_request",
+        tier=CapabilityTier.CONTROL_ONLY,
+        enabled_flags=flags,
+        managed_consent=True,
+    )
+    assert "propose_owner_message" not in off
+    assert "propose_reply" in off
+    assert off["revise_draft"].args_model is ReviseDraftArgs
+    on = registry.for_run(
+        "owner_request",
+        tier=CapabilityTier.CONTROL_ONLY,
+        enabled_flags=flags | {"tool.propose_owner_message"},
+        managed_consent=True,
+    )
+    assert "propose_reply" not in on
+    assert on["propose_owner_message"].args_model is ProposeOwnerMessageArgs
+    assert on["propose_owner_message"].capability is CapabilityClass.PROPOSE
+    assert on["propose_owner_message"].allowed_run_types == frozenset({"owner_request"})
+    assert on["propose_owner_message"].min_tier is CapabilityTier.CONTROL_ONLY
+    assert on["revise_draft"].args_model is ReviseOwnerDraftArgs
+    assert set(strict_schema(ProposeOwnerMessageArgs)["required"]) == {
+        "request_id",
+        "request_version",
+        "conversation_id",
+        "mode",
+        "answered_message_id",
+        "text",
+        "context_fence_id",
+    }
+    assert set(strict_schema(ReviseOwnerDraftArgs)["required"]) == {
+        "request_id",
+        "request_version",
+        "action_id",
+        "expected_version",
+        "edit",
+        "text",
+        "source_ids",
+        "context_fence_id",
+    }
