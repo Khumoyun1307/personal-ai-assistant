@@ -140,34 +140,7 @@ IGNORE_DELETE_OPTION: tuple[str, str] | None = ("Ignore + delete data", "confirm
 
 MODE_LABELS = {"observe": "Observe", "ignore": "Ignore", "assist": "Assist"}
 
-#: The Ignore confirmation: this question, what Ignore does in the owner's
-#: locale (`owner_texts.ignore_effects`, C3), then `IGNORE_DELETE_TEXT`.
-IGNORE_CONFIRM_QUESTION = "<b>Ignore the chat with {name}?</b>"
-IGNORE_DELETE_TEXT = (
-    "<b>Ignore + delete data</b> also deletes what is stored from this chat now: its "
-    "messages, summary and raw updates, notes about this chat, and every note or turn "
-    "here that drew on this chat or on {name}. Other notes about {name} stay. That "
-    "cannot be undone. " + deletion.ARRIVING_NOTE + " " + deletion.BACKUP_NOTE
-)
-
 CANNOT_UNDO = "This cannot be undone."
-#: What stays follows M03 D79: per chat, a note goes when it is about the chat
-#: or was saved by a run that drew on the chat or its contact; per contact,
-#: also every note about the person (review items 8 and 10).
-DELETE_CHAT_TEXT = (
-    "<b>Delete what is stored from the chat with {name}?</b>\n\n"
-    "<b>Chat data</b>: its messages, summary and raw updates, notes about this chat, "
-    "and every note or turn here that drew on this chat or on {name}. Other notes "
-    "about {name} stay.\n"
-    "<b>Chat + notes</b>: also all notes saved about {name}. Your general notes "
-    "that only mention {name} stay.\n\n"
-    "The chat stays in its mode: new messages are stored as before. "
-    + CANNOT_UNDO
-    + " "
-    + deletion.ARRIVING_NOTE
-    + " "
-    + deletion.BACKUP_NOTE
-)
 DELETE_ALL_TEXT = (
     "<b>Delete everything?</b>\n\n"
     "This deletes all stored content: every message, name, summary and note (yours "
@@ -368,9 +341,9 @@ def ignore_confirm_text(account: Account, name: str) -> str:
     )
     return "\n\n".join(
         (
-            IGNORE_CONFIRM_QUESTION.format(name=name),
+            operational_text("ignore_question", account.locale_pref, name=name),
             "\n".join(effects),
-            IGNORE_DELETE_TEXT.format(name=name),
+            deletion_text("ignore_delete_body", account.locale_pref, name=name),
         )
     )
 
@@ -497,11 +470,27 @@ async def _press_panel(
             clock,
             account.id,
             DELETE_CARD,
-            DELETE_CHAT_TEXT.format(name=name),
-            [[("Chat data", "chat"), ("Chat + notes", "contact"), ("Cancel", "cancel")]],
+            deletion_text("delete_chat_body", account.locale_pref, name=name),
+            [
+                localized_buttons(
+                    [
+                        ("chat_data_button", "chat"),
+                        ("chat_notes_button", "contact"),
+                        ("cancel", "cancel"),
+                    ],
+                    account.locale_pref,
+                )
+            ],
             ref_id=conversation_id,
         )
-        _after_press(session, gateway, press, target, answer="Confirm to delete", edit=screen)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("confirm_delete", account.locale_pref),
+            edit=screen,
+        )
         return HandlerResult(True, "card", None, note="delete_asked")
     if press.op == modes.MODE_IGNORE and panel.mode != modes.MODE_IGNORE:
         # Ask first, in place of the panel (the owner's own tap still
@@ -513,10 +502,17 @@ async def _press_panel(
             account.id,
             IGNORE_CARD,
             ignore_confirm_text(account, name),
-            _ignore_confirm(),
+            _ignore_confirm(account.locale_pref),
             ref_id=conversation_id,
         )
-        _after_press(session, gateway, press, target, answer="Confirm to ignore", edit=screen)
+        _after_press(
+            session,
+            gateway,
+            press,
+            target,
+            answer=operational_text("confirm_ignore", account.locale_pref),
+            edit=screen,
+        )
         return HandlerResult(True, "card", None, note="ignore_asked")
     change = (panel.mode, panel.mode)
     if press.op != panel.mode:
@@ -542,11 +538,11 @@ async def _press_panel(
     return HandlerResult(True, "card", None, note=press.op if moved else "unchanged")
 
 
-def _ignore_confirm() -> Rows:
-    row = [("Ignore", "confirm"), ("Cancel", "cancel")]
+def _ignore_confirm(locale: str | None = None) -> Rows:
+    row = [("ignore_button", "confirm"), ("cancel", "cancel")]
     if IGNORE_DELETE_OPTION is not None:  # S03.5
-        row.insert(1, IGNORE_DELETE_OPTION)
-    return [row]
+        row.insert(1, ("ignore_delete_button", IGNORE_DELETE_OPTION[1]))
+    return [localized_buttons(row, locale)]
 
 
 async def _queue_deletion(

@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from assistant.accounts import service
 from assistant.accounts.models import Account, Consent
-from assistant.core.control_texts import text
+from assistant.core.control_texts import deletion_text, text
 from assistant.db.models import KEY_RESTORE_PENDING, SystemState
 from assistant.db.uow import transaction
 from assistant.inbox.connection_alerts import send_managed_consent_card
@@ -20,8 +20,11 @@ from assistant.telegram.control.handlers import local_time
 from assistant.telegram.control.routes import ControlRoutes
 from tests.fakes.channel import FakeChannel
 from tests.integration.business_env import (
+    CONTACT,
     OWNER,
+    business_message,
     callback,
+    connect,
     connection_update,
     deliver,
     environment,
@@ -32,6 +35,41 @@ from tests.integration.business_env import (
 from tests.integration.p2_factories import seed_notification
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.parametrize("locale", ["uz-Latn", "uz-Cyrl", "ru", "en"])
+@pytest.mark.parametrize("operation", ["delete", "ignore"])
+async def test_chat_privacy_confirmation_is_localized(
+    migrated_url: str, locale: str, operation: str
+) -> None:
+    async with environment(migrated_url) as env:
+        await connect(env)
+        await deliver(env, business_message(first_name="Synthetic contact"))
+        await deliver(env, private_message(OWNER, f"/settings language {locale}"))
+        await deliver(env, private_message(OWNER, f"/start bizChat{CONTACT}"))
+        await press_own(env, "conv_panel", operation)
+        screen = env.sender.edits[-1]
+        key = "delete_chat_body" if operation == "delete" else "ignore_delete_body"
+        expected = deletion_text(key, locale, name="Synthetic contact")
+        assert expected in screen["text"]
+        assert text("cannot_undo", locale) in screen["text"]
+        assert text("arriving_note", locale) in screen["text"]
+        assert text("backup_note", locale) in screen["text"]
+        keys = (
+            ["chat_data_button", "chat_notes_button", "cancel"]
+            if operation == "delete"
+            else ["ignore_button", "ignore_delete_button", "cancel"]
+        )
+        buttons = [b for row in screen["reply_markup"].inline_keyboard for b in row]
+        assert [button.text for button in buttons] == [text(key, locale) for key in keys]
+        assert [button.callback_data.rsplit(":", 1)[-1] for button in buttons] == (
+            ["chat", "contact", "cancel"]
+            if operation == "delete"
+            else ["confirm", "confirmdel", "cancel"]
+        )
+        assert env.sender.answered_callbacks[-1]["text"] == text(
+            "confirm_delete" if operation == "delete" else "confirm_ignore", locale
+        )
 
 
 @pytest.mark.parametrize("locale", ["uz-Latn", "uz-Cyrl", "ru", "en"])

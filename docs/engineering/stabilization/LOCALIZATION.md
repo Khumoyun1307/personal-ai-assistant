@@ -21,6 +21,8 @@ Uzbek Cyrillic conveys the same meaning as Uzbek Latin. The inventory is:
 | Navigation and feedback | `back`, `cancel`, `saved*`, `settings`, `confirm_first`, `nothing_changed`, `deleting`, `nothing_deleted`, `kept*`, alert feedback/open-chat labels |
 | I9 scoped feedback and derived mutes (rebase follow-up) | `not_useful` (first mark, no delivery change), `feedback_muted` (threshold reached, urgent exception and recovery path), `alerts_title`, `mutes_title`, `mutes_button`, `mutes_body`, `mutes_empty`, `mute_kind_*` (all eight notification kinds), `mute_contact`, `mute_no_contact`, `mute_monitor`, `mute_reason`, `mute_reset`, `mute_reset_done`, `mutes_reset_all`, `mutes_all_reset`, `previous`, `next` |
 | I20 unresolved recovery (rebase follow-up) | `consent_blocked` (both control and managed grants refused), `restore_pending`, `restore_consent_pending`; onboarding's `CONSENT_BLOCKED` is a compatibility view of the shared catalogue |
+| Review fixes: per-chat privacy | `delete_chat_body`, `ignore_question`, `ignore_delete_body`, `chat_data_button`, `chat_notes_button`, `ignore_button`, `ignore_delete_button`, `confirm_delete`, `confirm_ignore`; same chat/contact scopes and retained-note exceptions, irreversible-deletion, arriving-message and backup caveats |
+| Review fixes: standard alert bodies | `alert_unnamed`; `triage_urgent_*`, `triage_decision_*`, `triage_needs_reply_*`, `triage_suspicious_*` (headline/next/event); `triage_earlier`, `triage_unavailable`, `triage_historical`; `task_closed`, `task_due`, `task_earlier`, `task_evidence`, `task_status_done`, `task_status_cancelled`, `task_status_expired` |
 
 Consent review must check the same facts in each language: control-chat scope
 versus connected-chat scope; configured processor names; no model training;
@@ -60,3 +62,12 @@ notification callback route, matching production wiring and the I9 test setup.
 The alerts picker uses a separate `off_button` key in all four locales to retain
 English “Off” while status prose retains “off”. The new Uzbek and Russian button
 wording also awaits owner review. Tests were not rerun in this fix round.
+
+Review-fix regressions cover both per-chat privacy confirmation paths with their
+buttons and callback scopes in all four locales, and actual standard notification
+delivery for every triage kind (current, historical and unavailable) and task
+state, including resolution evidence. Dynamic names, reasons and task titles are
+preserved and escaped. The delivery regression also switches language between
+alerts. Catalogue guards cover the dynamically selected notification keys and
+long-name privacy rendering. All new Uzbek and Russian entries listed above
+await owner review. Tests and Docker commands were **not run** in this round.

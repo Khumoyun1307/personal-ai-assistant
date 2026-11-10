@@ -357,6 +357,12 @@ points share the same managed question and buttons; restoration warnings are
 localized too. Consent still names the same processor and scope, describes
 storage while processing is off, and retains the same opt-out. Callback
 operations, policy checks, transactions and at-most-once claims are unchanged.
+Per-chat deletion and Ignore/delete confirmation screens share the catalogue,
+including scope labels, irreversible-deletion, arriving-message and backup
+caveats. Standard triage/task alert bodies resolve the saved locale at delivery:
+headlines, next steps, historical/unavailable explanations, task status and
+evidence labels are deterministic translations; contact names, verdict reasons
+and task titles remain unchanged and HTML-escaped.
 Approval/draft rendering belongs to I27. Uzbek and Russian wording is **pending
 owner review**, with the review inventory and unrun validation gates in
 [the localization review](engineering/stabilization/LOCALIZATION.md).

@@ -28,6 +28,35 @@ LOCALES = ("uz-Latn", "uz-Cyrl", "ru", "en")
 
 
 @pytest.mark.parametrize("locale", LOCALES)
+def test_notification_body_dynamic_keys_are_complete(locale: str) -> None:
+    for kind in (
+        NotificationKind.TRIAGE_URGENT,
+        NotificationKind.TRIAGE_DECISION,
+        NotificationKind.TRIAGE_NEEDS_REPLY,
+        NotificationKind.TRIAGE_SUSPICIOUS,
+    ):
+        assert text(f"{kind.value}_headline", locale, name="Synthetic contact")
+        assert text(f"{kind.value}_next", locale)
+        assert text(f"{kind.value}_event", locale)
+    for status in ("done", "cancelled", "expired"):
+        assert text(f"task_status_{status}", locale)
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("key", ["delete_chat_body", "ignore_delete_body"])
+def test_chat_deletion_scopes_render_long_names_and_all_caveats(locale: str, key: str) -> None:
+    name = "SYNTHETIC &lt;contact&gt; " * 15
+    body = deletion_text(key, locale, name=name)
+    chunks = render_control_message(body)
+    assert chunks
+    assert text("cannot_undo", locale) in body
+    assert text("arriving_note", locale) in body
+    assert text("backup_note", locale) in body
+    assert name in body
+    assert all(len(chunk) <= 4096 for chunk in chunks)
+
+
+@pytest.mark.parametrize("locale", LOCALES)
 def test_mute_kinds_and_restore_refusal_share_the_operational_catalogue(locale: str) -> None:
     for kind in NotificationKind:
         assert text(f"mute_kind_{kind.value}", locale)

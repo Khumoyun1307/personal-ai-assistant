@@ -25,11 +25,12 @@ def buttons(rows: list[tuple[str, str]], tag: str | None) -> list[tuple[str, str
     return [(text(key, tag), op) for key, op in rows]
 
 
-def deletion_text(key: str, tag: str | None) -> str:
+def deletion_text(key: str, tag: str | None, **values: object) -> str:
     return text(
         key,
         tag,
         undo=text("cannot_undo", tag),
         arriving=text("arriving_note", tag),
         backup=text("backup_note", tag),
+        **values,
     )
