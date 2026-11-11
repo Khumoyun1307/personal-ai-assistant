@@ -26,9 +26,19 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal, cast
 
-from sqlalchemy import Boolean, delete, func, literal_column, or_, select, text, update
+from sqlalchemy import (
+    Boolean,
+    ColumnElement,
+    delete,
+    func,
+    literal_column,
+    or_,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,6 +53,7 @@ from assistant.memory.models import (
     STATUS_ARCHIVED,
     MemoryItem,
 )
+from assistant.memory.preference_proof import OwnerCapture, read_capture
 
 EVENT_MEMORY_SAVED = "memory_saved"
 EVENT_MEMORY_FORGOTTEN = "memory_forgotten"
@@ -73,6 +84,14 @@ class MemoryView:
     #: The chats and contacts its run drew on (`provenance.refs`).
     ref_conversation_ids: tuple[int, ...] = ()
     ref_contact_ids: tuple[int, ...] = ()
+    owner_source_exact: bool = False
+    status: str = STATUS_ACTIVE
+    #: New unproved H13 preferences cannot inherit legacy draft applicability.
+    owner_source_required: bool = False
+
+    @property
+    def untrusted(self) -> bool:
+        return self.tainted or self.managed or (self.kind != "fact" and not self.owner_source_exact)
 
     @property
     def conversation_refs(self) -> frozenset[int]:
@@ -132,6 +151,14 @@ def _view(row: MemoryItem) -> MemoryView:
         tainted=bool((row.provenance or {}).get("tainted")),
         created_at=row.created_at,
         source=row.source,
+        owner_source_exact=(
+            read_capture(flags.get("owner_capture"), row.content) is not None
+            and flags.get("tainted") is False
+            and flags.get("managed") is False
+            and not raw_refs
+        ),
+        status=row.status,
+        owner_source_required=bool(flags.get("owner_source_required")),
     )
 
 
@@ -213,6 +240,8 @@ async def save(
     tainted: bool = False,
     managed: bool | None = None,
     refs: Mapping[str, list[int]] | None = None,
+    owner_capture: OwnerCapture | None = None,
+    owner_source_required: bool = False,
     actor: str,
     now: datetime,
 ) -> SaveOutcome:
@@ -227,8 +256,8 @@ async def save(
     one of them deletes the item too (S3)."""
     if contact_id is not None and conversation_id is not None:
         raise ValueError("an item is about a contact or a conversation, not both")
-    text = content.strip()
-    if not text or len(text) > MAX_CONTENT:
+    text = content if owner_capture is not None else content.strip()
+    if not text.strip() or len(text) > MAX_CONTENT:
         raise ValueError(f"content must be 1-{MAX_CONTENT} characters")
     keyed = run_id is not None and bool(tool_call_id)
     if keyed:
@@ -264,7 +293,9 @@ async def save(
         if replaced is None:
             raise NotInAccountError("memory item not found in this account")
         old = _view(replaced)
-        if old.tainted or old.managed:
+        if owner_capture is None:
+            owner_source_required = owner_source_required or old.owner_source_required
+        if (old.tainted or old.managed) and owner_capture is None:
             # A correction of a note from other people's text is one too: it
             # keeps the flags and the chats/contacts it came from, so the
             # per-chat deletion still finds it (verification item 1).
@@ -276,6 +307,9 @@ async def save(
                 ),
                 "contact_ids": sorted(set((refs or {}).get("contact_ids", [])) | old.contact_refs),
             }
+        # C8 replaces the entire text with an independently validated owner
+        # source. The archived old row keeps its origins for Undo/deletion;
+        # none of its prose or genuine dependencies is copied into the new row.
     values: dict[str, Any] = {
         "account_id": account_id,
         "scope": scope,
@@ -292,6 +326,12 @@ async def save(
         "created_at": now,
         "updated_at": now,
     }
+    if owner_capture is not None:
+        if read_capture(owner_capture, text) is None:
+            raise ValueError("invalid owner capture")
+        values["provenance"]["owner_capture"] = owner_capture.model_dump(mode="json")
+    elif owner_source_required:
+        values["provenance"]["owner_source_required"] = True
     statement = insert(MemoryItem).values(**values)
     if keyed:
         statement = statement.on_conflict_do_nothing(
@@ -323,6 +363,11 @@ async def save(
         scope=scope,
         kind=kind,
         replaced_id=replaced.id if replaced is not None else None,
+        **(
+            {"owner_source_capture": True, "run_id": run_id, "tool_call_id": tool_call_id}
+            if owner_capture is not None and keyed
+            else {}
+        ),
     )
     await session.flush()
     row = (await session.execute(select(MemoryItem).where(MemoryItem.id == new_id))).scalar_one()
@@ -461,6 +506,89 @@ async def owner_items(
     return [_view(row) for row in rows.scalars().all()]
 
 
+@dataclass(frozen=True, slots=True)
+class EffectivePreference:
+    memory_id: int
+    content: str
+    scope: Literal["owner", "contact", "conversation"]
+    kind: Literal["preference", "style", "instruction"]
+    applies_to_replies: bool
+    verification: Literal["owner_source_exact", "legacy_unverified"] = "owner_source_exact"
+
+
+async def effective_owner_preferences(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    conversation_id: int | None,
+    purpose: Literal["owner_request", "assist"],
+    managed_allowed: bool,
+) -> tuple[EffectivePreference, ...]:
+    """Only independently proved instructions; never globalize scoped notes.
+
+    The caller's provider wrapper still enforces ai_control (and ai_managed
+    for Assist). A selected chat must be account-local and consented even
+    when the saved preference itself contains only owner-control content.
+    """
+    allowed: ColumnElement[bool] = MemoryItem.scope == SCOPE_OWNER
+    if conversation_id is not None:
+        if not managed_allowed:
+            if purpose == "assist":
+                return ()
+            return await effective_owner_preferences(
+                session,
+                account_id=account_id,
+                conversation_id=None,
+                purpose=purpose,
+                managed_allowed=False,
+            )
+        contact_id = await session.scalar(
+            select(Conversation.contact_id).where(
+                Conversation.account_id == account_id,
+                Conversation.id == conversation_id,
+            )
+        )
+        if contact_id is None:
+            return ()
+        allowed = (
+            allowed
+            | ((MemoryItem.scope == SCOPE_CONTACT) & (MemoryItem.contact_id == contact_id))
+            | (
+                (MemoryItem.scope == SCOPE_CONVERSATION)
+                & (MemoryItem.conversation_id == conversation_id)
+            )
+        )
+    elif purpose == "assist":
+        return ()
+    statement = select(MemoryItem).where(
+        MemoryItem.account_id == account_id,
+        MemoryItem.status == STATUS_ACTIVE,
+        MemoryItem.kind.in_(("preference", "style", "instruction")),
+        allowed,
+        ~IS_TAINTED,
+        ~IS_MANAGED,
+    )
+    if purpose == "assist":
+        statement = statement.where(
+            (MemoryItem.kind != "instruction") | MemoryItem.applies_to_replies.is_(True)
+        )
+    rows = await session.scalars(statement.order_by(MemoryItem.created_at, MemoryItem.id))
+    return tuple(
+        EffectivePreference(
+            row.id,
+            row.content,
+            cast(Literal["owner", "contact", "conversation"], row.scope),
+            cast(Literal["preference", "style", "instruction"], row.kind),
+            row.applies_to_replies,
+        )
+        for row in rows
+        if read_capture(row.provenance.get("owner_capture"), row.content) is not None
+        and row.provenance.get("tainted") is False
+        and row.provenance.get("managed") is False
+        and not row.provenance.get("refs")
+    )
+
+
 #: Owner-scope kinds a contact-facing run may see (§7.3); never `fact`.
 CONTACT_FACING_OWNER_KINDS = ("preference", "style")
 
@@ -472,6 +600,7 @@ async def contact_facing(
     *,
     include_owner_preferences: bool,
     limit: int = 30,
+    preference_capture_enabled: bool = False,
 ) -> list[MemoryView]:
     """The §7.3 isolation rule: what a contact-facing run about ONE
     conversation may load. That conversation's contact's notes and that
@@ -514,6 +643,8 @@ async def contact_facing(
         & ~drawn_elsewhere,
     ]
     if include_owner_preferences:
+        # Preserve the legacy eligible notes, including those without C8
+        # proof. H13 changes their authority, not their scoped availability.
         allowed.append(
             (MemoryItem.scope == SCOPE_OWNER)
             & (
@@ -524,6 +655,8 @@ async def contact_facing(
             # to anyone are written (safety review S2).
             & ~IS_TAINTED
             & ~IS_MANAGED
+            # Persisted H13 guards survive callers using the legacy path.
+            & ~MemoryItem.provenance.contains({"owner_source_required": True})
         )
     rows = await session.execute(
         select(MemoryItem)
@@ -535,6 +668,39 @@ async def contact_facing(
         .limit(limit)
     )
     newest = [_view(row) for row in rows.scalars().all()]
+    if include_owner_preferences and preference_capture_enabled:
+        newest = [
+            view
+            for view in newest
+            if not (
+                view.owner_source_exact
+                and view.kind == "instruction"
+                and not view.applies_to_replies
+            )
+        ]
+        # Applicable defaults must not disappear behind a page of recent
+        # contact notes. This additional path requires exact owner proof;
+        # legacy notes remain untrusted background when capture is enabled.
+        effective = await effective_owner_preferences(
+            session,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            purpose="assist",
+            managed_allowed=True,
+        )
+        existing = {item.memory_id for item in newest}
+        defaults = await session.scalars(
+            select(MemoryItem)
+            .where(
+                MemoryItem.account_id == account_id,
+                MemoryItem.id.in_(
+                    [item.memory_id for item in effective if item.memory_id not in existing]
+                ),
+            )
+            .order_by(MemoryItem.created_at.desc(), MemoryItem.id.desc())
+        )
+        newest.extend(_view(row) for row in defaults)
+        newest.sort(key=lambda item: (item.created_at, item.memory_id), reverse=True)
     newest.reverse()
     return newest
 
@@ -676,3 +842,46 @@ async def sweep_forgotten(session: AsyncSession, now: datetime) -> int:
             .where(MemoryItem.archived_at < now - FORGET_UNDO_WINDOW)
         )
     )
+
+
+async def clear_owner_capture_sources(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    turn_ids: Sequence[int],
+    everything: bool = False,
+) -> None:
+    """Drop structural source pointers without reloading or resurrecting prose."""
+    statement = select(MemoryItem).where(
+        MemoryItem.account_id == account_id,
+        MemoryItem.provenance.bool_op("?")("owner_capture"),
+    )
+    if not everything:
+        if not turn_ids:
+            return
+        statement = statement.where(
+            or_(
+                *(
+                    MemoryItem.provenance.contains({"owner_capture": {"turn_ids": [turn_id]}})
+                    for turn_id in turn_ids
+                )
+            )
+        )
+    for row in await session.scalars(statement.with_for_update()):
+        proof = read_capture(row.provenance.get("owner_capture"), row.content)
+        if proof is None:
+            # Malformed legacy evidence never establishes trust.
+            row.provenance = {
+                key: value for key, value in row.provenance.items() if key != "owner_capture"
+            }
+            continue
+        removed = set(proof.turn_ids) if everything else set(turn_ids)
+        cleaned = proof.model_copy(
+            update={
+                "turn_ids": [value for value in proof.turn_ids if value not in removed],
+                "source_spans": [
+                    span for span in proof.source_spans if span.turn_id not in removed
+                ],
+            }
+        )
+        row.provenance = {**row.provenance, "owner_capture": cleaned.model_dump(mode="json")}

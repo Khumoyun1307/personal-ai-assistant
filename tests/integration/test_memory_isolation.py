@@ -19,15 +19,17 @@ tainted run reaches a model only wrapped as untrusted. Synthetic text only.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from assistant.llm.port import LLMRequest
 from assistant.memory import items
+from assistant.memory.preference_proof import OwnerCapture, content_hash
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response
-from tests.integration.agent_env import ask, one_id, request_texts, runtime, summarizer
+from tests.integration.agent_env import READ_FLAGS, ask, one_id, request_texts, runtime, summarizer
 from tests.integration.business_env import (
     CONTACT,
     OTHER_CONTACT,
@@ -116,6 +118,17 @@ async def seed(env: Env) -> tuple[int, int, int]:
                 applies_to_replies=applies,
                 actor="owner",
                 now=now,
+                owner_capture=(
+                    OwnerCapture(
+                        method="owner_source_exact",
+                        turn_ids=[],
+                        source_spans=[],
+                        content_sha256=content_hash(content),
+                        confirmed_at=None,
+                    )
+                    if not target and kind != "fact"
+                    else None
+                ),
                 **target,  # type: ignore[arg-type]
             )
     return account, conv_a, conv_b
@@ -201,9 +214,20 @@ async def test_owner_scope_facts_mentioning_another_contact_never_reach_a_contac
     assert [i.content for i in summarizing] == [NOTE_A]
 
 
-async def test_the_owners_own_runs_see_owner_items_but_never_a_tainted_ones_text(env: Env) -> None:
+@pytest.mark.parametrize("preference_capture_enabled", [False, True])
+async def test_the_owners_own_runs_see_owner_items_but_never_a_tainted_ones_text(
+    env: Env, preference_capture_enabled: bool
+) -> None:
     account, _, _ = await seed(env)
     async with env.factory() as session, session.begin():
+        await items.save(
+            session,
+            account_id=account,
+            content="SYNTH legacy owner style",
+            kind="style",
+            actor="owner",
+            now=env.clock.now(),
+        )
         await items.save(
             session,
             account_id=account,
@@ -215,13 +239,210 @@ async def test_the_owners_own_runs_see_owner_items_but_never_a_tainted_ones_text
         )
     turn = await ask(env, "What do I owe?")
     fake = FakeLLM(text_response("500."))
-    await runtime(env, fake, FakeChannel()).run(turn)
+    flags = READ_FLAGS | ({"tool.remember_owner_sources"} if preference_capture_enabled else set())
+    await runtime(env, fake, FakeChannel(), flags=flags).run(turn)
     seen = everything(fake.requests[0])
     for owner_item in (OWNER_FACT, OWNER_PREF, OWNER_REPLY_RULE, OWNER_PRIVATE_RULE):
         assert owner_item in seen
+    assert ("SYNTH legacy owner style" in seen) is not preference_capture_enabled
+    assert ("Verified exact owner preferences" in seen) is preference_capture_enabled
+    assert ("legacy unverified note" in seen) is preference_capture_enabled
     # Contact notes are fetched with list_memories, not preloaded.
     assert NOTE_A not in seen
     # Safety review V1: a note from other people's text is never preloaded,
     # not even wrapped — only a placeholder that points at list_memories.
     assert "SYNTH-FROM-FORWARD" not in seen
     assert "saved from other people's text" in seen
+
+
+@pytest.mark.parametrize("with_exact_preference", [False, True])
+async def test_h13_keeps_legacy_draft_notes_without_promoting_them_to_exact_preferences(
+    env: Env,
+    *,
+    with_exact_preference: bool,
+) -> None:
+    from assistant.agent.drafting import DraftConfig, Drafter
+    from tests.integration.agent_env import gated
+    from tests.unit.test_draft_units import output
+
+    account, chat_a, _ = await seed(env)
+    legacy_text = "SYNTH-LEGACY-STYLE formal replies without emojis"
+    async with env.factory() as session, session.begin():
+        saved = await items.save(
+            session,
+            account_id=account,
+            content=legacy_text,
+            kind="style",
+            actor="owner",
+            now=env.clock.now(),
+        )
+    if with_exact_preference:
+        from assistant.agent.tools.memory import remember_tool
+        from tests.integration.preference_helpers import owner_capture
+
+        context, arguments = await owner_capture(env, account, "SYNTH write concise replies")
+        assert (await remember_tool(context, arguments)).status == "ok"
+    async with env.factory() as session:
+        loaded = await items.contact_facing(
+            session, account, chat_a, include_owner_preferences=True
+        )
+        legacy = next(note for note in loaded if note.memory_id == saved.item.memory_id)
+        assert legacy.content == legacy_text
+        assert legacy.owner_source_exact is False
+        assert legacy.tainted is False
+        assert legacy.managed is False
+        effective = await items.effective_owner_preferences(
+            session,
+            account_id=account,
+            conversation_id=chat_a,
+            purpose="assist",
+            managed_allowed=True,
+        )
+        assert legacy.memory_id not in {note.memory_id for note in effective}
+    fake = FakeLLM()
+    fake.parsed.append(output())
+    # The production Drafter has no H13 capture flag; legacy loading must
+    # also survive alongside exact preferences saved with that flag on.
+    await Drafter(
+        session_factory=env.factory,
+        llm=gated(env, fake),
+        clock=env.clock,
+        config=DraftConfig(model="gpt-6-luna"),
+    ).draft(account_id=account, conversation_id=chat_a, reason="eval")
+    [request] = fake.requests
+    text = everything(request)
+    assert f"- (style) {legacy_text}" in text
+    for excluded in (NOTE_B, CHAT_NOTE_B, OWNER_FACT, OWNER_PRIVATE_RULE):
+        assert excluded not in text
+
+
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("preference_capture_enabled", [False, True])
+async def test_h13_new_unproved_style_cannot_use_the_legacy_global_draft_path(
+    env: Env,
+    *,
+    held: bool,
+    preference_capture_enabled: bool,
+) -> None:
+    from assistant.agent.tools.memory import remember_tool
+    from tests.integration.preference_helpers import owner_capture
+
+    account, chat_a, _ = await seed(env)
+    context, arguments = await owner_capture(env, account, "SYNTH new model paraphrase")
+    # A clean run and even a confirmation are not exact source proof.
+    arguments.capture = None
+    context = replace(context, held=held)
+    outcome = await remember_tool(context, arguments)
+    assert outcome.status == "ok"
+    assert outcome.data["effective_for"] == ()
+    async with env.factory() as session:
+        saved = await items.get(session, account, outcome.data["memory_id"])
+        assert saved is not None
+        assert saved.tainted is held
+        assert saved.managed is held
+        loaded = await items.contact_facing(
+            session,
+            account,
+            chat_a,
+            include_owner_preferences=True,
+            preference_capture_enabled=preference_capture_enabled,
+        )
+        assert saved.memory_id not in {note.memory_id for note in loaded}
+    # A later legacy-schema correction cannot strip the new item's guard.
+    async with env.factory() as session, session.begin():
+        replacement = await items.save(
+            session,
+            account_id=account,
+            content="SYNTH corrected model paraphrase",
+            kind="style",
+            replaces_id=saved.memory_id,
+            actor="owner",
+            now=env.clock.now(),
+        )
+        assert replacement.item.owner_source_required is True
+        loaded = await items.contact_facing(
+            session,
+            account,
+            chat_a,
+            include_owner_preferences=True,
+            preference_capture_enabled=preference_capture_enabled,
+        )
+        assert replacement.item.memory_id not in {note.memory_id for note in loaded}
+
+
+async def test_h13_scoped_preferences_reach_only_the_selected_main_and_assist_chat(
+    env: Env,
+) -> None:
+    from assistant.agent.tools.memory import remember_tool
+    from tests.integration.preference_helpers import owner_capture
+
+    account, chat_a, chat_b = await seed(env)
+    contact_a = await one_id(
+        env, "SELECT contact_id FROM app.conversations WHERE id = :c", c=chat_a
+    )
+    for text, changes in (
+        ("SYNTH global formal tone", {}),
+        ("SYNTH contact A concise", {"scope": "contact", "contact_id": contact_a}),
+        ("SYNTH A no emojis", {"scope": "conversation", "conversation_id": chat_a}),
+        ("SYNTH B private style", {"scope": "conversation", "conversation_id": chat_b}),
+        (
+            "SYNTH A private reminder",
+            {
+                "scope": "conversation",
+                "conversation_id": chat_a,
+                "kind": "instruction",
+                "applies_to_replies": False,
+            },
+        ),
+    ):
+        context, arguments = await owner_capture(env, account, text, **changes)
+        assert (await remember_tool(context, arguments)).status == "ok"
+    async with env.factory() as session:
+        for purpose in ("owner_request", "assist"):
+            effective = await items.effective_owner_preferences(
+                session,
+                account_id=account,
+                conversation_id=chat_a,
+                purpose=purpose,
+                managed_allowed=True,
+            )
+            contents = {item.content for item in effective}
+            assert "SYNTH global formal tone" in contents
+            assert "SYNTH A no emojis" in contents
+            assert "SYNTH contact A concise" in contents
+            assert "SYNTH B private style" not in contents
+            assert ("SYNTH A private reminder" in contents) == (purpose == "owner_request")
+        assist = await items.contact_facing(
+            session,
+            account,
+            chat_a,
+            include_owner_preferences=True,
+            preference_capture_enabled=True,
+        )
+        seen = {item.content for item in assist}
+        assert "SYNTH global formal tone" in seen
+        assert "SYNTH A no emojis" in seen
+        assert "SYNTH contact A concise" in seen
+        assert "SYNTH B private style" not in seen
+        assert "SYNTH A private reminder" not in seen
+        assert OWNER_FACT not in seen
+        assert (
+            await items.effective_owner_preferences(
+                session,
+                account_id=account,
+                conversation_id=chat_a,
+                purpose="assist",
+                managed_allowed=False,
+            )
+            == ()
+        )
+        assert (
+            await items.effective_owner_preferences(
+                session,
+                account_id=account,
+                conversation_id=999_999_999,
+                purpose="assist",
+                managed_allowed=True,
+            )
+            == ()
+        )

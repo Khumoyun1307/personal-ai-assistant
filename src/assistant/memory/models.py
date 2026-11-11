@@ -185,6 +185,8 @@ class MemoryItem(Base):
     provenance: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=sql_text("'{}'")
     )
+    # H13 adds optional strict owner_capture evidence inside this existing
+    # JSON: source coordinates/hashes and confirmation metadata, never prose.
     #: Owner-set: an owner instruction that reply drafting must follow (§7.3).
     applies_to_replies: Mapped[bool] = mapped_column(
         nullable=False, server_default=sql_text("false")

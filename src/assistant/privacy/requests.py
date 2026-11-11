@@ -65,7 +65,7 @@ logger = get_logger(__name__)
 async def export_owner_requests(
     session: AsyncSession, *, account_id: int
 ) -> dict[str, list[dict[str, Any]]]:
-    """Account-local structural export seam; no new export UI/job is enabled."""
+    """Account-local request/preference export; no new export UI/job is enabled."""
     result: dict[str, list[dict[str, Any]]] = {}
     for model in (OwnerRequest, OwnerRequestSource):
         rows = await session.scalars(
@@ -143,9 +143,33 @@ async def export_owner_requests(
         }
         for row in presentations
     ]
+    from assistant.memory.models import MemoryItem
     from assistant.privacy.journal import export_account
 
     result["privacy_journal"] = await export_account(session, account_id=account_id)
+    saved = await session.scalars(
+        select(MemoryItem)
+        .where(
+            MemoryItem.account_id == account_id,
+            MemoryItem.kind.in_(("preference", "style", "instruction")),
+        )
+        .order_by(MemoryItem.id)
+    )
+    result["memory_preferences"] = [
+        {
+            "memory_id": row.id,
+            "account_id": account_id,
+            "content": row.content,
+            "kind": row.kind,
+            "scope": row.scope,
+            "contact_id": row.contact_id,
+            "conversation_id": row.conversation_id,
+            "status": row.status,
+            "applies_to_replies": row.applies_to_replies,
+            "provenance": row.provenance,
+        }
+        for row in saved
+    ]
     return result
 
 

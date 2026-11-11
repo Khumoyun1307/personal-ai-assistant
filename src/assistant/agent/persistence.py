@@ -27,7 +27,9 @@ from assistant.actions.request_models import OwnerRequest
 from assistant.actions.requests import (
     Continuation,
     OwnerContinuation,
+    RequestSource,
     SetState,
+    SourceSpan,
     SourceUnavailable,
     ValidatedSource,
     load_request,
@@ -76,6 +78,44 @@ class ControlTurnRepository(AccountScopedRepository[ControlTurn]):
         rows = cast("list[ControlTurn]", list(result.scalars().all()))
         rows.reverse()
         return rows
+
+
+async def load_preference_reply_source(
+    session: AsyncSession, *, account_id: int, turn: ControlTurn
+) -> ValidatedSource | None:
+    """Reload only an explicitly selected, retained owner-text component.
+
+    A preference needs no messaging request. C1 validates source authority
+    independently of continuation selection and the recent history window.
+    """
+    if turn.account_id != account_id or turn.reply_to_telegram_message_id is None:
+        return None
+    selected = await session.scalar(
+        select(ControlTurn).where(
+            ControlTurn.account_id == account_id,
+            ControlTurn.role == "owner",
+            ControlTurn.telegram_message_id == turn.reply_to_telegram_message_id,
+        )
+    )
+    if selected is None or not selected.text:
+        return None
+    loaded = await load_source(
+        session,
+        account_id=account_id,
+        source=RequestSource(
+            span=SourceSpan(
+                turn_id=selected.id,
+                field="text",
+                start=0,
+                end=len(selected.text),
+                field_sha256=hashlib.sha256(selected.text.encode("utf-8")).hexdigest(),
+            ),
+            purpose="instruction",
+        ),
+    )
+    if isinstance(loaded, SourceUnavailable) or loaded.untrusted or loaded.managed:
+        return None
+    return loaded
 
 
 async def load_owner_continuation(

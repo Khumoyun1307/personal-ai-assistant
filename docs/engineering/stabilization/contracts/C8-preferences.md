@@ -85,6 +85,42 @@ Existing `tainted`, `managed`, `refs` describe **the stored content's origins**,
 | Proactive Assist | Existing `contact_facing` isolation: current conversation/contact items and eligible owner preference/style or applies_to_replies instruction. No other chat refs, no owner facts, no main transcript. Verified global style may be included despite unrelated historical run taint. |
 | General owner memory | Legacy conservative placeholders remain; contact-derived/model-authored entries cannot become trusted instructions via this loader. |
 
+These effective-loading rules are gated by `tool.remember_owner_sources`.
+Flag-off main-chat and Assist context retain the production query and rendering
+behavior. Flag-on Assist preserves every legacy note eligible under the existing
+scope/origin filters, marking uncertain style/instructions as untrusted background
+instead of excluding their text or promoting them to verified defaults.
+
 Explicit current request constraints override saved defaults; scoped owner preference overrides owner-global defaults when applicable; account settings supply fallback. Conflicting same-scope saved instructions without explicit replacement require clarification rather than silently inventing a merge. `replaces_memory_id` validates account, archives old item and uses existing Undo atomically. Q1 `get_preferences` reads current structural account settings after panel/Undo changes; H13 must not invent a separate settings cache.
 
 Update architecture §7.3/§8.2/§10.3/10.4 and M03 D70/M04 supersession notes. Tests: tainted run→exact owner preference→confirm→effective main/Assist; quoted injection cannot globalize; foreign source; scoped leakage; source expiry after independent capture; forget/Undo/replacement; consent-off and legacy provenance. H13 follows H4/H12; I12 follows its shared memory/registry edits.
+
+Implementation binding (H13, 2026-11-10; validation unrun): C8 capture is an
+optional nested `capture` variant of `remember`; its fields match the contract
+above, and outer legacy content/applicability must agree. It adds no tool name.
+The legacy schema is retained until both `tool.remember` and default-off
+`tool.remember_owner_sources` are enabled. Span limits are Pydantic validators,
+not provider JSON-schema constraints; up to eight contiguous spans from the same
+retained owner field may supply the existing 400-character content. Receipts
+also carry the existing scope/kind/target/idempotency fields. The shared export
+seam adds `memory_preferences` (including archived state and capture proof);
+there is no new export UI. Proof cleanup is attached to existing C1 source purge
+transactions, preserving I20's memory deletion/replay mechanism. No migration,
+historical trust reset, prompt edit or production flag activation is included.
+The existing `memory_saved` audit keeps source-capture run/call identity (ids and
+a boolean only), so retrying an original call after hard deletion returns
+`memory_unavailable` instead of recreating the item. Unverified legacy style or
+instruction text is wrapped as untrusted even on explicit `list_memories` reads;
+its stored flags are not rewritten and confirmation never supplies source proof.
+
+CI compatibility repair (2026-11-10; validation unrun): the existing
+`contact_facing` draft path continues loading eligible legacy owner
+preferences/style and reply instructions, with its original provenance gates
+and rendering. This holds alongside exact captures, without rewriting legacy
+flags or admitting legacy entries to `effective_owner_preferences`. New
+non-fact `remember` saves without exact proof while the H13 flag is enabled
+carry optional structural `provenance.owner_source_required=true`; they cannot
+inherit the legacy global draft path. A replacement without proof preserves
+that marker, and scoped display stays untrusted. Existing JSON retention,
+export, Undo and deletion apply; no migration or historical backfill. Production
+tool offers retain the legacy `remember` schema and keep H4 proposals off.

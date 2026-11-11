@@ -127,6 +127,7 @@ class DraftConfig:
     call_timeout_seconds: float = 60.0
     window_messages: int = 30
     monthly_budget_usd: Decimal | None = None
+    preference_capture_enabled: bool = False
 
 
 class DraftStatus(StrEnum):
@@ -503,7 +504,11 @@ class Drafter:
             if account is None:
                 raise NotInAccountError("account not found")
             notes = await items.contact_facing(
-                session, account_id, conversation_id, include_owner_preferences=True
+                session,
+                account_id,
+                conversation_id,
+                include_owner_preferences=True,
+                preference_capture_enabled=self._config.preference_capture_enabled,
             )
             previous = await summaries.rolling_summary(session, account_id, conversation_id)
             contact_name = await summaries.contact_display_name(
@@ -535,6 +540,7 @@ class Drafter:
                     previous=previous.summary if previous is not None else None,
                     contact_name=contact_name,
                     inputs=inputs,
+                    preference_capture_enabled=self._config.preference_capture_enabled,
                     now=self._clock.now(),
                 )
                 answered = owner.answered_message_id
@@ -552,6 +558,7 @@ class Drafter:
                     guidance=request.guidance,
                     run_tainted=request.run_tainted,
                     revision=revision,
+                    preference_capture_enabled=self._config.preference_capture_enabled,
                     now=self._clock.now(),
                 )
             run = AgentRunRepository(session, account_id).add(

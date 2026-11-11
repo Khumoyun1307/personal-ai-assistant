@@ -50,6 +50,7 @@ from assistant.core.channel import Button, ControlChannel
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import after_commit, transaction
+from assistant.memory.items import MAX_CONTENT
 from assistant.observability.logging import get_logger
 from assistant.privacy.deletion import receipt_text
 
@@ -204,7 +205,24 @@ async def hold(
         return ToolOutcome(
             "not_executed", {"reason": "confirmation is not available"}, log_code="no_channel"
         )
-    if len(render_args(args)) > CARD_ARGS_LIMIT:
+    shown_args = args
+    source_card = tool.name == "remember" and isinstance(args.get("capture"), Mapping)
+    if source_card:
+        # The describer validates and shows the full exact source text. Hashes
+        # and duplicate source coordinates are proof, not another owner choice.
+        capture = args["capture"]
+        shown_args = {
+            key: capture[key]
+            for key in (
+                "kind",
+                "scope",
+                "contact_id",
+                "conversation_id",
+                "applies_to_replies",
+                "replaces_memory_id",
+            )
+        }
+    if len(render_args(shown_args)) > CARD_ARGS_LIMIT:
         # The owner must see everything they confirm; truncating would let
         # them approve a payload they never saw (invariant 3b).
         return ToolOutcome(
@@ -222,13 +240,18 @@ async def hold(
                 {"reason": "the owner cannot be reached"},
                 log_code="owner_unreachable",
             )
+        if source_card:
+            from assistant.agent.tools.memory import RememberArgs, validate_preference_source
+
+            parsed = RememberArgs.model_validate(dict(args))
+            assert parsed.capture is not None
+            await validate_preference_source(session, ctx, parsed.capture)
         # What the ids refer to, so the owner sees what they confirm (S1).
         # An id that is not this account's is "not found" (`NotInAccountError`),
         # like a direct call.
         description = await tool.describe(session, ctx.account_id, args) if tool.describe else None
-        if description is not None and len(render_description(description)) > (
-            CARD_DESCRIPTION_LIMIT
-        ):
+        description_limit = CARD_DESCRIPTION_LIMIT + (MAX_CONTENT if source_card else 0)
+        if description is not None and len(render_description(description)) > description_limit:
             return ToolOutcome(
                 "not_executed",
                 {"reason": "the change is too large to show on a confirmation card"},
@@ -315,7 +338,7 @@ async def hold(
             ref_id=confirmation_id,
         )
         assert card.token is not None
-        text = card_text(tool, args, tainted=ctx.tainted, description=description)
+        text = card_text(tool, shown_args, tainted=ctx.tainted, description=description)
         buttons = card_buttons(card.token)
         chat_id = account.control_chat_id
         card_id = card.id
@@ -513,6 +536,7 @@ class ConfirmationApplier:
             if row is None or account is None:
                 return ApplyOutcome("skipped")
             tool_name, run_id, call_id = row.tool_name, row.run_id, row.tool_call_id
+            confirmed_at = row.decided_at
             # The claim: confirmed → applying, exactly once.
             moved = await _finish(
                 session,
@@ -528,6 +552,15 @@ class ConfirmationApplier:
         args = moved.args
 
         tool = next((t for t in self._registry.all() if t.name == tool_name), None)
+        if tool_name == "remember" and args is not None and "capture" in args:
+            from assistant.agent.tools.memory import PREFERENCE_SOURCES_FLAG, REMEMBER_SOURCES
+
+            tool = (
+                REMEMBER_SOURCES
+                if PREFERENCE_SOURCES_FLAG in self._enabled_flags
+                and "tool.remember" in self._enabled_flags
+                else None
+            )
         outcome: ToolOutcome
         if tool is None or tool.release_flag not in self._enabled_flags:
             outcome = ToolOutcome("error", {"reason": "this action is no longer available"})
@@ -550,6 +583,7 @@ class ConfirmationApplier:
                     # It was held because its run was tainted: what it saves
                     # stays marked so, even if the run row is gone (N1).
                     held=True,
+                    confirmed_at=confirmed_at,
                     turn_cutoff=turn_cutoff,
                 )
                 try:

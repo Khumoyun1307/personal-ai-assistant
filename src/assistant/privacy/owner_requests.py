@@ -23,6 +23,7 @@ from assistant.actions.requests import (
     lock_requests,
 )
 from assistant.actions.states import StateReason
+from assistant.memory.items import clear_owner_capture_sources
 
 
 async def purge_request_sources(
@@ -46,6 +47,9 @@ async def purge_request_sources(
     """
     if not locked and not await lock_requests(session, account_id=account_id):
         return 0
+    await clear_owner_capture_sources(
+        session, account_id=account_id, turn_ids=turn_ids, everything=everything
+    )
     source_requests = select(OwnerRequestSource.request_id).where(
         OwnerRequestSource.account_id == account_id,
         OwnerRequestSource.turn_id.in_(turn_ids),

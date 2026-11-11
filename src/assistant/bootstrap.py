@@ -353,6 +353,7 @@ def draft_config(settings: Settings) -> DraftConfig:
         model=settings.model_routes.model_for("draft_reply"),
         effort=settings.llm_draft_reply_effort,
         monthly_budget_usd=settings.llm_monthly_budget_usd,
+        preference_capture_enabled="tool.remember_owner_sources" in settings.feature_flags,
     )
 
 

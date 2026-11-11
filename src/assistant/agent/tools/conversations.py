@@ -27,6 +27,7 @@ from assistant.actions.requests import (
     update_request,
 )
 from assistant.agent.citations import CitableMessage
+from assistant.agent.context import render_effective_preferences
 from assistant.agent.locales import supported_locale
 from assistant.agent.tools.common import (
     COVERAGE_RULE,
@@ -55,7 +56,7 @@ from assistant.conversations import read
 from assistant.conversations.models import Conversation
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
-from assistant.memory import summaries
+from assistant.memory import items, summaries
 
 LIST_FLAG = "tool.list_conversations"
 GET_FLAG = "tool.get_conversation"
@@ -234,6 +235,17 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
             message_id=args.message_id,
         )
         stored = await summaries.rolling_summary(session, ctx.account_id, conversation_id)
+        preferences = (
+            await items.effective_owner_preferences(
+                session,
+                account_id=ctx.account_id,
+                conversation_id=conversation_id,
+                purpose="owner_request",
+                managed_allowed=ctx.managed_ok,
+            )
+            if "tool.remember_owner_sources" in ctx.services.enabled_flags
+            else ()
+        )
         authors = (
             {}
             if stored is None
@@ -295,6 +307,11 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
             ],
             "next_cursor": encode_cursor(page.next_cursor),
             "summary": summary,
+            **(
+                {"owner_preferences": render_effective_preferences(preferences)}
+                if preferences
+                else {}
+            ),
             "timezone": tz,
             "coverage": {
                 "rule": COVERAGE_RULE,

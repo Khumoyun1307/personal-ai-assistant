@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from decimal import Decimal
 from enum import IntEnum, StrEnum
 from typing import TYPE_CHECKING, Any
@@ -223,6 +224,9 @@ class ToolContext:
     #: H2: application-selected request/card and exact validated sources.
     #: No model-selected recipient or execution authority is implied.
     continuation: OwnerContinuation | None = None
+    #: The owner's confirmation tap time, retained before the apply claim
+    #: updates the confirmation row's decision timestamp (C8).
+    confirmed_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,6 +379,14 @@ class ToolRegistry:
             return {}
         offered: dict[str, ToolDefinition] = {}
         for tool in self._tools.values():
+            if (
+                tool.name == "remember"
+                and "tool.remember" in enabled_flags
+                and "tool.remember_owner_sources" in enabled_flags
+            ):
+                from assistant.agent.tools.memory import REMEMBER_SOURCES
+
+                tool = REMEMBER_SOURCES
             if tool.name == "propose_reply" and "tool.propose_owner_message" in enabled_flags:
                 continue
             if tool.name == "revise_draft" and "tool.propose_owner_message" in enabled_flags:

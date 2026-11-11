@@ -6,6 +6,8 @@ registered tool sends, edits, deletes or marks read.
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from typing import Any
 
 import pytest
@@ -480,6 +482,94 @@ def test_schemas_satisfy_openai_strict_mode() -> None:
     status_schema = default_registry().all()[0].spec().parameters
     assert status_schema["additionalProperties"] is False
     assert status_schema["required"] == []
+
+
+def test_h13_source_schema_is_off_by_default_and_preserves_configure_gate() -> None:
+    from assistant.agent.tools.memory import LegacyRememberArgs, RememberArgs
+    from tests.integration.agent_env import MEMORY_FLAGS, PREFERENCE_SOURCE_FLAGS
+
+    registry = default_registry()
+    off = registry.for_run(
+        "owner_request",
+        tier=CapabilityTier.CONTROL_ONLY,
+        enabled_flags=MEMORY_FLAGS,
+        managed_consent=False,
+    )
+    on = registry.for_run(
+        "owner_request",
+        tier=CapabilityTier.CONTROL_ONLY,
+        enabled_flags=MEMORY_FLAGS | PREFERENCE_SOURCE_FLAGS,
+        managed_consent=False,
+    )
+    assert off["remember"].args_model is LegacyRememberArgs
+    assert on["remember"].args_model is RememberArgs
+    assert on["remember"].needs_confirmation(tainted=True)
+    assert on["remember"].capability is CapabilityClass.CONFIGURE
+    assert (
+        registry.for_run(
+            "draft_reply",
+            tier=CapabilityTier.CONTROL_ONLY,
+            enabled_flags=MEMORY_FLAGS | PREFERENCE_SOURCE_FLAGS,
+            managed_consent=True,
+        )
+        == {}
+    )
+    assert "remember" not in registry.for_run(
+        "owner_request",
+        tier=CapabilityTier.CONTROL_ONLY,
+        enabled_flags=PREFERENCE_SOURCE_FLAGS,
+        managed_consent=True,
+    )
+
+    def check(value: Any) -> None:
+        if isinstance(value, dict):
+            forbidden = {
+                "minItems",
+                "maxItems",
+                "minLength",
+                "maxLength",
+                "minimum",
+                "maximum",
+                "pattern",
+            }
+            assert not forbidden & value.keys()
+            for child in value.values():
+                check(child)
+        elif isinstance(value, list):
+            for child in value:
+                check(child)
+
+    check(on["remember"].spec().parameters)
+
+
+@pytest.mark.parametrize("managed_consent", [False, True])
+def test_h13_off_preserves_the_production_tool_offer_byte_for_byte(
+    *,
+    managed_consent: bool,
+) -> None:
+    from evals.agent_mode import PRODUCTION_FLAGS
+
+    from assistant.agent.tools.memory import LegacyRememberArgs
+
+    registry = default_registry()
+    offered = registry.for_run(
+        "owner_request",
+        tier=CapabilityTier.CONTROL_ONLY,
+        enabled_flags=PRODUCTION_FLAGS,
+        managed_consent=managed_consent,
+        stub_managed_tools=True,
+    )
+    expected = [tool for tool in registry.all() if tool.release_flag in PRODUCTION_FLAGS]
+    assert list(offered) == [tool.name for tool in expected]
+    assert "propose_owner_message" not in offered
+    assert "propose_reply" in offered
+    assert offered["remember"].args_model is LegacyRememberArgs
+    assert "capture" not in offered["remember"].spec().parameters["properties"]
+    # Include descriptions, field order and nullable/required fields, not
+    # merely tool names: the disabled variant must not alter provider input.
+    assert json.dumps([asdict(tool.spec()) for tool in offered.values()]) == json.dumps(
+        [asdict(tool.spec()) for tool in expected]
+    )
 
 
 def test_the_production_flags_line_is_every_registered_tool_plus_the_refresh() -> None:
