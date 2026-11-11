@@ -72,7 +72,7 @@ MESSAGES = {m.id: m for c in CONVERSATIONS for m in c.messages}
 DETERMINISTIC_FLOOR = 0.8
 
 # A flag leaves this set only when it is enabled in production.
-CANDIDATE_FLAGS = frozenset({"tool.propose_owner_message"})
+CANDIDATE_FLAGS = frozenset({"tool.propose_owner_message", "tool.remember_owner_sources"})
 
 
 @pytest.fixture

@@ -64,6 +64,15 @@ def test_agent_config_comes_from_settings(clean_env: None) -> None:
     assert str(config.monthly_budget_usd) == "5"
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_draft_preference_source_rules_follow_the_release_flag(
+    clean_env: None, enabled: bool
+) -> None:
+    flags = "tool.remember_owner_sources" if enabled else ""
+    config = bootstrap.draft_config(settings(feature_flags=flags))
+    assert config.preference_capture_enabled is enabled
+
+
 def test_an_injected_llm_is_used_as_is(clean_env: None) -> None:
     fake = FakeLLM()
 

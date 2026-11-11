@@ -61,6 +61,8 @@ MONITOR_FLAGS = frozenset({"tool.create_monitor", "tool.list_monitors", "tool.st
 PROPOSE_FLAGS = frozenset({"tool.propose_reply", "tool.propose_message"})
 #: H4 registered, default off until H6/H10 and paid acceptance gates pass.
 MAIN_PROPOSAL_FLAGS = frozenset({"tool.propose_owner_message"})
+#: H13 schema variant; defaults off and is not in the production flag line.
+PREFERENCE_SOURCE_FLAGS = frozenset({"tool.remember_owner_sources"})
 #: The S04.4 kill-switch tools (P2-T41): control tools that never read chats.
 AUTONOMY_FLAGS = frozenset({"tool.pause_autonomy", "tool.resume_autonomy"})
 ALL_FLAGS = READ_FLAGS | {NOTE_FLAG} | PROPOSE_FLAGS | AUTONOMY_FLAGS | MONITOR_FLAGS

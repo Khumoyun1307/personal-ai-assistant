@@ -39,6 +39,76 @@ from tests.integration.p2_factories import (
 pytestmark = pytest.mark.integration
 
 
+async def test_h13_forgotten_exact_preference_cannot_return_from_a_backup(env: Env) -> None:
+    from assistant.agent.tools.memory import remember_tool
+    from assistant.memory import items
+    from assistant.memory.models import MemoryItem
+    from tests.integration.preference_helpers import owner_capture
+
+    await connect(env)
+    async with env.factory() as session:
+        account_id = (await session.scalars(select(Account.id))).one()
+    context, arguments = await owner_capture(env, account_id, "SYNTH no emojis.")
+    saved = await remember_tool(context, arguments)
+    memory_id = saved.data["memory_id"]
+    assert isinstance(memory_id, int)
+    async with transaction(env.factory) as uow:
+        row = await uow.session.get(MemoryItem, memory_id)
+        assert row is not None
+        recovery_id = row.recovery_id
+        snapshot = {
+            column.key: getattr(row, column.key)
+            for column in MemoryItem.__table__.columns
+            if not column.primary_key
+        }
+        anchor = (await journal.anchors(uow.session))[0]
+        await items.forget(
+            uow.session,
+            account_id=account_id,
+            memory_id=memory_id,
+            actor="owner",
+            now=env.clock.now(),
+        )
+    env.clock.advance(days=2)
+    async with transaction(env.factory) as uow:
+        assert await items.sweep_forgotten(uow.session, env.clock.now()) == 1
+        segment = await journal.export_segment(uow.session, checked_at=env.clock.now())
+        assert segment.records[-1].scope == "memory"
+        assert segment.records[-1].subject_recovery_id == recovery_id
+    async with transaction(env.factory) as uow:
+        uow.session.add(MemoryItem(**snapshot))
+        await uow.session.execute(delete(PrivacyDecision))
+        await uow.session.execute(
+            update(PrivacyJournalHead)
+            .where(PrivacyJournalHead.account_recovery_id == anchor.account_recovery_id)
+            .values(sequence=anchor.sequence, digest=anchor.digest)
+        )
+        uow.session.add(SystemState(key=KEY_RESTORE_PENDING, value={}))
+    await post_restore(env.factory, env.clock, backup_taken_at=env.clock.now())
+    await journal.reconcile(env.factory, env.clock, segment=segment)
+    await journal.reconcile(env.factory, env.clock, segment=segment)
+    async with env.factory() as session:
+        assert (
+            await session.scalar(
+                select(MemoryItem.id).where(
+                    MemoryItem.account_id == account_id,
+                    MemoryItem.recovery_id == recovery_id,
+                )
+            )
+            is None
+        )
+        assert (
+            await items.effective_owner_preferences(
+                session,
+                account_id=account_id,
+                conversation_id=None,
+                purpose="owner_request",
+                managed_allowed=False,
+            )
+            == ()
+        )
+
+
 @pytest.mark.parametrize("decision", ["delete", "purge", "purge_then_delete"])
 async def test_replay_distinguishes_message_expiry_from_explicit_deletion(
     env: Env, decision: str

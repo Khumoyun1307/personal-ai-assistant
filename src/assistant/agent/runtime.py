@@ -63,6 +63,7 @@ from assistant.agent.persistence import (
     LlmCallRepository,
     account_of_turn,
     load_owner_continuation,
+    load_preference_reply_source,
     month_start,
 )
 from assistant.agent.ports import ControlChannel
@@ -424,6 +425,7 @@ class OwnerRequestRuntime:
                 now=self._clock.now(),
                 managed_allowed=managed_ok,
             )
+            preference_capture_enabled = "tool.remember_owner_sources" in self._config.enabled_flags
             context = build_owner_request(
                 prompt=prompt,
                 account=account,
@@ -432,10 +434,41 @@ class OwnerRequestRuntime:
                 now=self._clock.now(),
                 managed_allowed=managed_ok,
                 continuation=continuation,
-                # The owner's own saved items (owner scope; S03.3, FR-CTL-01).
-                memory=await items.owner_items(
-                    session, account_id, limit=OWNER_MEMORY_ITEMS, include_managed=managed_ok
+                preferences=(
+                    await items.effective_owner_preferences(
+                        session,
+                        account_id=account_id,
+                        conversation_id=(
+                            None
+                            if continuation.request is None
+                            else continuation.request.conversation_id
+                        ),
+                        purpose="owner_request",
+                        managed_allowed=managed_ok,
+                    )
+                    if preference_capture_enabled
+                    else ()
                 ),
+                preference_capture_enabled=preference_capture_enabled,
+                preference_reply_source=(
+                    await load_preference_reply_source(session, account_id=account_id, turn=turn)
+                    if preference_capture_enabled
+                    else None
+                ),
+                # The owner's own saved items (owner scope; S03.3, FR-CTL-01).
+                memory=[
+                    item
+                    for item in await items.owner_items(
+                        session, account_id, limit=OWNER_MEMORY_ITEMS, include_managed=managed_ok
+                    )
+                    if not (
+                        preference_capture_enabled
+                        and item.owner_source_exact
+                        and not item.tainted
+                        and not item.managed
+                        and item.kind != "fact"
+                    )
+                ],
                 # Which approval cards are live, content-free (PF-15); only
                 # with `ai_managed`, like the chat tools that act on them.
                 live_cards=(

@@ -86,6 +86,7 @@ JOURNEY_FLAGS = PRODUCTION_FLAGS | {
     "actions.send",
     "assist.drafts",
     "tool.propose_owner_message",
+    "tool.remember_owner_sources",
 }
 _CALL_IDS = count(1)
 EXECUTING_ACTION: ContextVar[int | None] = ContextVar("journey_executing_action", default=None)

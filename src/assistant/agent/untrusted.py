@@ -50,6 +50,10 @@ class Source(StrEnum):
     (the owner confirmed it on a card, S03.3, M03 D70): the words may be
     someone else's."""
 
+    UNVERIFIED_MEMORY = "unverified_memory"
+    """A legacy preference/instruction without exact owner-source proof;
+    confirmation or owner_stated labelling cannot establish authority (C8)."""
+
     TASK_TITLE = "task_title"
     """A task's title (S05.1): model-written from a contact's message, so it
     may carry an injection forward."""

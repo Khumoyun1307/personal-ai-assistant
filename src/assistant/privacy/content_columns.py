@@ -172,8 +172,8 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("memory_items", "kind"),
         ("memory_items", "source"),
         ("memory_items", "status"),
-        # Flags and ids only: `{"tainted", "managed", "refs": {conversation
-        # and contact ids}}` — no content.
+        # Flags/ids only, plus C8 owner_capture: method, source spans/hashes,
+        # stored-content hash and confirmation timestamp; never source prose.
         ("memory_items", "provenance"),
         ("memory_items", "tool_call_id"),
         # Alembic's own bookkeeping table.

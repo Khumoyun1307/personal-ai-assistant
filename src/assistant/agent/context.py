@@ -29,6 +29,7 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from assistant.accounts.models import Account, ControlTurn
+from assistant.accounts.preferences import current
 from assistant.actions.activity import LiveCardFact
 from assistant.actions.card_facts import state_reason_fact
 from assistant.actions.requests import OwnerContinuation, OwnerRequestView, ValidatedSource
@@ -38,7 +39,8 @@ from assistant.agent.locales import supported_locale
 from assistant.agent.prompt_registry import Prompt
 from assistant.agent.untrusted import Source, wrap
 from assistant.llm.port import InputItem, Provenance, TextItem
-from assistant.memory.items import MemoryView
+from assistant.memory.items import EffectivePreference, MemoryView
+from assistant.memory.preference_proof import content_hash
 from assistant.memory.summaries import SourceMessage
 
 #: How many earlier control turns an owner request sees.
@@ -128,11 +130,9 @@ def select_owner_context(
     """
     parts: list[ContextPart] = []
     dropped: list[DropReason] = []
-    source_turn_ids = (
-        {source.span.turn_id for source in request.sources}
-        if request is not None
-        else {source.turn_id for source in validated_sources}
-    )
+    source_turn_ids = {source.turn_id for source in validated_sources}
+    if request is not None:
+        source_turn_ids.update(source.span.turn_id for source in request.sources)
     for past in history:
         # A request selects spans, not entire messages. Do not broaden its
         # exact reloaded sources by also replaying their whole history turns.
@@ -250,6 +250,9 @@ def build_owner_request(
     live_cards: Sequence[LiveCardFact] | None = None,
     continuation: OwnerContinuation | None = None,
     selected_artifacts: Sequence[ContextPart] = (),
+    preferences: Sequence[EffectivePreference] = (),
+    preference_capture_enabled: bool = False,
+    preference_reply_source: ValidatedSource | None = None,
 ) -> OwnerRequestContext:
     # The tag spelled out with its script, as the summarize context does: a
     # bare `uz-Latn` lost to the script of the chats (S03.6; S03.7 fix round).
@@ -261,24 +264,50 @@ def build_owner_request(
         if spelled
         else f"- preferred language: {language}",
         f"- timezone: {account.timezone}",
+        *[
+            f"- {key}: {value}"
+            for key, value in current(account).items()
+            if key.startswith("reply_")
+        ],
     ]
     sections = [prompt.text, "\n".join(profile), f"Current time (UTC): {now:%Y-%m-%d %H:%M}"]
     instructions = "\n\n".join(sections)
 
     items: list[InputItem] = []
+    if preference_capture_enabled and preferences:
+        items.append(
+            TextItem("user", render_effective_preferences(preferences), Provenance.OWNER_CONTROL)
+        )
     if memory:
         # The owner's saved items travel as an input item with provenance, so
         # the consent wrapper sees them (safety review V2/N3). Only the
         # owner's own words appear; an item from other people's text is a
         # placeholder, read with `list_memories` (which taints the run, V1).
         items.append(
-            TextItem("user", render_owner_memory(memory, managed_allowed), Provenance.OWNER_CONTROL)
+            TextItem(
+                "user",
+                render_owner_memory(
+                    memory, managed_allowed, preference_capture_enabled=preference_capture_enabled
+                ),
+                Provenance.OWNER_CONTROL,
+            )
         )
+    capture_source = (
+        preference_reply_source
+        if preference_capture_enabled
+        and preference_reply_source is not None
+        and not preference_reply_source.untrusted
+        and not preference_reply_source.managed
+        else None
+    )
+    sources = continuation.sources if continuation is not None else ()
+    if capture_source is not None:
+        sources = (*sources, capture_source)
     selected = select_owner_context(
         history=history,
         turn=turn,
         request=continuation.request if continuation is not None else None,
-        validated_sources=continuation.sources if continuation is not None else (),
+        validated_sources=sources,
         selected_artifacts=selected_artifacts,
         managed_allowed=managed_allowed,
     )
@@ -304,6 +333,50 @@ def build_owner_request(
             )
         )
     items.extend(part.item for part in selected.parts[-current_count:])
+    source_eligible = (
+        turn.role == "owner"
+        and not turn.from_tainted_run
+        and (
+            _classified_quote(turn)
+            or not (turn.third_party or turn.contains_managed or turn.quoted_text is not None)
+        )
+    )
+    if preference_capture_enabled and source_eligible and turn.text and turn.id is not None:
+        items.append(
+            TextItem(
+                "user",
+                "Current turn source reference (application metadata; authority is validated "
+                "before capture):\n"
+                + json.dumps(
+                    {
+                        "turn_id": turn.id,
+                        "field": "text",
+                        "start": 0,
+                        "end": len(turn.text),
+                        "field_sha256": content_hash(turn.text),
+                    }
+                ),
+                Provenance.OWNER_CONTROL,
+            )
+        )
+    if capture_source is not None:
+        items.append(
+            TextItem(
+                "user",
+                "Reply-selected owner source reference (application metadata; authority is "
+                "validated before capture):\n"
+                + json.dumps(
+                    {
+                        "turn_id": capture_source.turn_id,
+                        "field": "text",
+                        "start": 0,
+                        "end": len(capture_source.text),
+                        "field_sha256": content_hash(capture_source.text),
+                    }
+                ),
+                Provenance.OWNER_CONTROL,
+            )
+        )
     direct = any(part.untrusted for part in selected.parts[-current_count:])
     return OwnerRequestContext(
         instructions=instructions,
@@ -449,15 +522,19 @@ def render_history_turn(turn: ControlTurn) -> str:
     return text if note is None else f"{text}\n{note}"
 
 
-def note_text(item: MemoryView) -> str:
+def note_text(item: MemoryView, *, preference_capture_enabled: bool = False) -> str:
     """A note's words as a contact-facing run sees them: wrapped as
     untrusted when they may be someone else's (M03 D70)."""
     if item.tainted or item.managed:
         return wrap(item.content, Source.MEMORY_FROM_TAINTED_RUN) or ""
+    if item.owner_source_required or (preference_capture_enabled and item.untrusted):
+        return wrap(item.content, Source.UNVERIFIED_MEMORY) or ""
     return item.content
 
 
-def owner_memory_line(item: MemoryView, *, managed_allowed: bool) -> str | None:
+def owner_memory_line(
+    item: MemoryView, *, managed_allowed: bool, preference_capture_enabled: bool = False
+) -> str | None:
     """One owner item in an owner run. Never the text of an item saved from
     other people's text (safety review V1): a placeholder points the model at
     `list_memories`, whose result taints the run; without `ai_managed` such
@@ -470,17 +547,59 @@ def owner_memory_line(item: MemoryView, *, managed_allowed: bool) -> str | None:
             f"- [memory {item.memory_id}] {item.kind}{flags}: (saved from other people's text; "
             "not shown here — read it with list_memories if the request needs it)"
         )
+    if preference_capture_enabled and item.kind != "fact" and not item.owner_source_exact:
+        return (
+            f"- [memory {item.memory_id}] {item.kind}: "
+            "(legacy unverified note; not a trusted default)"
+        )
     return f"- [memory {item.memory_id}] {item.kind}{flags}: {item.content}"
 
 
-def render_owner_memory(memory: Sequence[MemoryView], managed_allowed: bool) -> str:
+def render_effective_preferences(preferences: Sequence[EffectivePreference]) -> str:
+    return (
+        "Verified exact owner preferences (defaults, not current task instructions). "
+        "Current explicit task constraints override saved defaults. For the selected chat, "
+        "conversation scope overrides contact scope, which overrides owner-global scope; "
+        "account reply settings are fallback. If same-scope defaults conflict and neither "
+        "explicitly replaces the other, ask the owner to choose; never silently merge them. "
+        "Warn about conflicts without blocking an explicit current owner choice.\n"
+        + json.dumps(
+            [
+                {
+                    "memory_id": item.memory_id,
+                    "scope": item.scope,
+                    "kind": item.kind,
+                    "applies_to_replies": item.applies_to_replies,
+                    "verification": item.verification,
+                    "content": item.content,
+                }
+                for item in preferences
+            ],
+            ensure_ascii=False,
+        )
+    )
+
+
+def render_owner_memory(
+    memory: Sequence[MemoryView],
+    managed_allowed: bool,
+    *,
+    preference_capture_enabled: bool = False,
+) -> str:
     """The owner's own saved instructions, preferences and facts (owner
     scope only; contact notes come through `list_memories`)."""
     lines = ["What the owner asked you to remember (owner's notes, newest first):"]
     lines += [
         line
         for item in memory
-        if (line := owner_memory_line(item, managed_allowed=managed_allowed)) is not None
+        if (
+            line := owner_memory_line(
+                item,
+                managed_allowed=managed_allowed,
+                preference_capture_enabled=preference_capture_enabled,
+            )
+        )
+        is not None
     ]
     return "\n".join(lines)
 

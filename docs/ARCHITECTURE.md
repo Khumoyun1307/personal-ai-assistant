@@ -518,6 +518,38 @@ return partial_with_note(run)
 
 ### 7.3 Context assembly
 
+**H13 / C8 effective owner preferences (2026-11-10, D-S2/D-S3/D-S6).**
+`memory.items.effective_owner_preferences` loads active source-exact
+preference/style/instruction defaults, independent of unrelated historical run
+taint. Main `owner_request` receives owner-global defaults and, for its selected
+request, that contact/chat's defaults as provenance-tagged input items, never
+system-prompt concatenation. With the H13 flag, reading a chat also supplies its
+applicable defaults to main-model composition in that run. Account reply settings
+are read afresh as fallback; Q1 remains the structural settings reader. Current
+explicit task constraints win, then conversation/contact defaults, then global
+defaults, then account settings. Same-scope conflicts require clarification,
+not an invented merge; an explicit current owner choice is not blocked.
+Proactive Assist uses the same eligible defaults through `contact_facing`, beside
+only its own chat/contact notes. Owner facts and other-chat refs stay excluded;
+instructions require `applies_to_replies`. Eligible defaults are not lost behind
+the 30-note background page. Legacy uncertain defaults are placeholders in main
+context and cannot steer Assist globally; scoped uncertain notes are untrusted
+background. This amends the earlier S03.3 preload rules below, without changing
+historical provenance flags. No owner-request prompt version changes here;
+H6 owns prompt guidance and activation. All H13 preference loading and rendering
+rules require `tool.remember_owner_sources`. With it off, main-chat owner-memory
+loading and Assist's eligible-note query, ordering, limit and rendered wording
+remain the production behavior. With it on, the existing eligible legacy notes
+still reach the same scoped Assist drafts as untrusted background; missing exact
+source proof prevents trusted promotion rather than removing their text. The
+flag is passed through `DraftConfig` to both the loader and context builder.
+The persisted `owner_source_required` guard is independent of the current flag:
+new unproved H13 saves stay excluded from the legacy global draft path and
+remain wrapped as unverified memory in scoped context even with the flag off.
+Historical unmarked notes retain their production flag-off behavior.
+Explicit `list_memories` reads also retain production text/rules with the flag
+off; existing managed/tainted wrapping and confirmation gates apply in both states.
+
 **H4 composition input (2026-11-10).** H2/H12 continue supplying exact owner
 instructions independently of recent history and separately from untrusted
 contact/quoted prose. Composition adds no second context builder or model call.
@@ -529,6 +561,8 @@ No main transcript is passed to proactive Assist.
 **Stabilization H3, 2026-11-09 (D-S2).** Dictation is resolved from C1 request source rows, including earlier owner turns; a clarification turn need not repeat the body. Only explicitly classified `literal_body` owner `text` spans can become owner wording. Separate `quoted_text` and forwarded text remain untrusted and cannot supply a literal body. Field hashes detect edits; they never authorize a source alone. No historical fuzzy substring search is used for authorship. H6 owns context/prompt activation; H9 owns current-version provenance.
 
 Context builders (`agent/context.py`) are explicit, testable functions per run type. Rules:
+
+- **H13 reply-selected preference sources:** with `tool.remember_owner_sources` enabled, runtime independently reloads the owner turn explicitly selected by Telegram reply, even without a messaging request and outside recent history. C1 `load_source` validates the retained account-local owner `text` component; unavailable, untrusted or managed components supply no capture source. Context includes the exact validated text and application-generated full-field span/hash metadata. A classified mixed turn supplies only its owner component, never its quote. Capture revalidates the source at write/confirmation time; source selection grants no mutation authority or provider consent.
 
 - **Stabilization H2 continuation context:** required source spans are reloaded independently of the recent 20-turn history, verified against their whole-field hashes and original account, then supplied verbatim as separate context items with their consent provenance and untrusted wrapper where required. Content-free request facts carry no text or names and do not taint or confer authority. Missing/purged sources give `source_unavailable`; stale/foreign/unavailable explicit reply targets do not fall back to newest work. Managed-associated request/card facts require the existing managed gate. Eligible owner-only sources remain available when that gate is closed. A lost question row can be recreated from the request's missing slot and expiry without changing its source spans, request/action version or original deadline. Source/request/action references on owner and assistant turns allow a later explicit return without reconstructing task text from assistant prose.
 
@@ -544,6 +578,7 @@ Context builders (`agent/context.py`) are explicit, testable functions per run t
 - **Language & style:** owner personalization (preferred language for owner-facing output; default and per-contact reply language/tone/style) is passed as preferences; wording is the model's job.
 
 - **As built (S04.2 part a) — draft context.** `agent/draft_context.py::build_draft_reply` receives one chat's newest 30 retained messages (up to 2000 text characters each), its rolling summary and the notes permitted by `contact_facing(include_owner_preferences=True)`. Contact names appear once in an untrusted header; fixed YOU/CONTACT labels and edit times identify message authors. Reply language/tone/style come from account preferences. The owner's own instruction for this draft may enter with `OWNER_CONTROL` provenance only from an untainted run; tainted guidance is rejected defensively. Message ids used for freshness are computed from the shown messages, never supplied by the model. Stable instructions precede content and the injected current time.
+- **H13 compatibility amendment (2026-11-10).** Eligible historical owner preferences/style and reply instructions retain their original draft applicability and rendering, including when exact captures coexist. They are not promoted into C8's verified loader and no historical flags are rewritten. New non-fact saves without source proof while `tool.remember_owner_sources` is on carry structural `memory_items.provenance.owner_source_required=true`; the legacy global draft query excludes them and scoped reads remain untrusted. Unproved replacements preserve this marker. It adds no content column or migration and follows the item's existing export, Undo, retention and deletion. With production flags the model still sees the legacy `remember` schema; H4's default-off proposal is not offered. Compatibility regressions are authored, unrun in the restricted worktree.
 - **As built (S04.2 part b) — what a draft may see, completed.** The isolation list above gains one input for `draft_reply`: **the owner's own instruction for this draft** (`propose_reply`'s `guidance`, ≤ 400 characters), only from an untainted owner run — a tainted run's guidance could restate another chat's text, so `propose_reply` drops it and its result says `guidance_ignored: "tainted_run"` (decisions R2; owner decision B3 E3, 2026-10-26). Guidance shapes the draft's content only: it is never an approval, an edit of a live card or a permission to send. A revision adds the card's current text, wrapped `source="draft"` (a draft written from contact text, `agent/untrusted.py::Source.DRAFT`), and the owner's revision message from the control chat (owner input; a forwarded or third-party message never reaches the edit input, M03 D49).
 - **As changed (PF-11, owner decision D2 of 2026-10-30) — the owner's own words reach the draft.** In production every owner run was tainted (any chat tool's result taints it, and taint carries over through history), so the R2 rule above meant the owner's instructions never reached a draft. Now the **application** supplies them: the runtime puts the current owner turn on `ToolContext.owner_turn` (`agent/tools/registry.py::OwnerTurn`: id, text, `third_party`, `contains_managed`, `quoted`), and `propose_reply` passes that turn's text to `draft_owner` as **the owner's request** (`Provenance.OWNER_CONTROL`, so `ai_control` covers it) whenever the turn is not forwarded, not quoting and carries no managed content — tainted run or not. It is the owner's own text, never contact text (invariant 3b), and one chat per draft (invariant 4). The model-written `guidance` keeps R2: dropped in a tainted run (the result says `guidance_ignored` only when nothing of the owner's reached the draft; `owner_message_used` says whether the turn did). The chat itself stays `MANAGED` (`ai_managed`), contact text stays wrapped, and the run has no tools (invariant 3a). Content-free observability (PF-04): the executor's line for the call carries `instruction_source` (`owner_turn` | `model` | `none` | `dropped_tainted` | `dropped_quoted`), `mode`, `has_answered_target`, `bounds_retry`, `bounds_met`.
 - **As changed (PF-15) — the owner run's working context.** With `ai_managed` (the consent the chat and draft tools need), `build_owner_request` adds one input item after the history and before the new owner message: the account's live approval cards followed by recent terminal/uncertain cards (Q3: shared cap 50 loaded, at most 20 listed and the rest counted; live cards first, then newest updated; `actions/activity.py::live_cards`), each as action id, chat (conversation) id, version, state, origin, the draft mode (only `reply`/`new_message`/`revise`; any other stored value is dropped) and whether it answers a chosen message, fixed state-reason codes/explanations, owner-local created/updated times, and the latest stored presentation outcome with its version — **never the draft's text, never a name**. Presentation `claimed` means only an attempt was recorded; null means no outcome is recorded, and an older-version outcome is not proof the current version was shown. Each history turn also carries a short application note with the integer ids from its `control_turns.refs` (chats, contacts, and the card an Edit-button turn revised — PF-01 stores `revision_action_id` as a list), outside any untrusted block, and also only with `ai_managed`. Both are written by the application, are content-free by construction and carry `OWNER_CONTROL` provenance; they never change taint (the §7.1 rule still decides from forwarded/quoted/managed turns) or any other item's provenance, and the instructions (the cached prefix) are unchanged. Why: continuity across runs was text only, so the model could not tell which chat or card the owner meant (ISSUE-003/006/009).
@@ -726,6 +761,27 @@ is inert bookkeeping, never approval or permission to send. Owned Ignore-mode
 and bot conversations can bind; proposal checks retain their specific
 `ignored_chat` / `bot_chat` refusals. H6 owns prompt
 activation; H10 and existing policy/card gates still apply.
+
+**H13 `remember` variant (2026-11-10).** The existing `remember` tool keeps
+CONFIGURE, owner_request-only, CONTROL_ONLY, idempotency and Undo. Both
+`tool.remember` and the new default-off `tool.remember_owner_sources` must be
+enabled to expose its optional strict `capture` object (C8); otherwise the legacy
+schema is unchanged. Capture carries request/version (both or neither), exact C1
+owner spans, kind, scope/FKs, reply applicability and optional replacement id.
+The outer legacy fields must agree. Account, hash, bounds, retained owner text,
+kind, scope and length are validated; content is copied exactly into the existing
+column. Multiple spans must be contiguous, so omitted words cannot reverse an
+instruction. Without a request, only the current or application-selected owner
+source qualifies. Tainted runs still require a card showing the full copied
+text, scope, reply applicability and intended consumers; applying revalidates
+sources. Proof coordinates/hashes are stored with the held args but omitted from
+the human-facing card details, whose describer shows all consequential choices.
+Receipts distinguish an effective default from an unverified saved note and name
+main-chat versus all/selected-contact reply consumers. Replacement archives the
+old item atomically. Legacy corrections retain origin dependencies; a complete
+source-exact replacement is independent, while the archived old row keeps its
+flags/refs for Undo and deletion.
+Confirmation alone cannot promote contact/quoted/forwarded/assistant prose.
 
 **H4 catalogue addition (2026-11-10; not enabled):**
 
@@ -1163,6 +1219,26 @@ erDiagram
 
 ### 10.3 Tables (essential columns)
 
+**H13 additive JSON provenance (no migration).** `memory_items.content` remains
+the only preference-text column. Existing `provenance` optionally adds strict
+`owner_capture`: required `method=owner_source_exact`, `turn_ids`, C1
+`source_spans` (turn/field/offsets/whole-field hash), `content_sha256`, and
+nullable UTC `confirmed_at` (set when a held save is applied). It contains no
+source prose. Absent/malformed/hash-mismatched proof never establishes trust;
+there is no historical flag migration. A source-exact owner capture can be
+untainted/unmanaged despite unrelated reads in its original run. Existing
+taint/managed flags and genuine origin refs remain conservative for every
+other save. Account-scoped export includes content, applicability, active/archive
+state and this proof under `memory_preferences`; no new export UI is enabled.
+New unproved non-fact H13 saves also set optional structural
+`owner_source_required=true`; this excludes them from the historical global
+draft-note path without reclassifying existing rows. Unproved replacements
+retain it; existing item export/Undo/retention/deletion apply unchanged.
+Source-capture `memory_saved` audit details also retain a boolean and the
+run/call ids under the existing audit retention ceiling. This content-free
+effect identity prevents an original tool retry from recreating a hard-deleted
+preference; it carries no copied text or source spans.
+
 **Stabilization I8 (revision 0017):** `notification_sources` keeps one immutable triggering-verdict snapshot per notification (`notification_id` primary key/FK, `account_id`, `conversation_id`, original verdict/run/coverage ids, structural `verdict_state`, `created_at`). Its **`reasons` is a content-bearing column**, included in the §10.1 inventory and `privacy/content_columns.py`; a copy is necessary because `conversation_triage` overwrites previous explanations. Notifications and refs remain content-free; the fixed notification kind is the event's reason category. Message and monitor ids remain in refs. Snapshot content cascades with its notification, conversation or account. Legacy alerts are not backfilled from mutable current verdicts.
 
 **H9 schema delta (revision 0020):** `actions.authorship jsonb NULL` stores only
@@ -1232,6 +1308,17 @@ scope, and request source IDs are cleared locally rather than exported.
 **H3 effect identity (revision 0018).** `tool_effect_recorded` audit details contain only `run_id`, bounded `tool_call_id` (at most 256 code points), `semantic_digest`, `effect_action_id` and `effect_version`. A unique partial expression index on `(account_id, details.run_id, details.tool_call_id)` for that event guards each committed effect. Source proposals and successful literal revisions both check this shared identity under the account lock and write the event atomically with their effect; changing tools cannot reuse a committed key. It survives replacement of mutable draft flags. Literal revisions also retain their semantic digest in the existing `action_revision_requested` audit event; H4/H8 own the final generic revision API. No content column/table or argument/body copy is added. The existing audit retention/export/account-deletion rules apply; no source text is pinned. Revision 0016 exclusively owns the control-turn reply/provenance columns; upgrading or downgrading 0018 changes only the audit index. Revision 0018 follows I8's 0017 and declares `COMPATIBILITY = "breaking"` in-file: I23 conservatively treats a unique constraint on existing audit fields as breaking. H3 copying delegates provenance validation to H2's shared `actions.requests.load_source`, using its existing `owner_text_verified` classification rather than a separate authorship flag. The authored migration regression preserves the full control-turn column set and non-default reply/provenance values across 0018 upgrade/downgrade; execution remains pending lead/CI validation.
 
 ### 10.4 Retention (defaults; owner-configurable — PRD R-07)
+
+**H13 preference evidence.** Independently captured owner text follows curated
+memory retention, until forgotten/deleted; archived items are excluded at once
+and deleted after the existing 24-hour Undo window. Source control-turn expiry,
+text clearing and deletion remove matching `owner_capture.turn_ids/source_spans`
+in the same privacy transaction, retaining only the prior validation method,
+content integrity and confirmation evidence. They neither pin nor reload source
+prose. Scope deletion removes scoped items and genuine origin-dependent notes;
+independent global owner style survives managed erasure. Everything/account
+deletion removes text and proof. Existing memory-row deletion journal triggers
+and I20 replay remain authoritative; cleanup never reactivates an archived row.
 
 **I20 privacy enforcement metadata (D-S15/C9; migration 0019, not yet deployed).**
 Accounts, conversations, contacts, messages, memory_items and notification_sources have unique,
@@ -1321,6 +1408,7 @@ duplicate Telegram deletion handling.
 | `messages` content (text, caption, `search_key`/`search_tsv`) | 90 days (owner: 14–90) | Hourly sweep; the retention period is a hard ceiling. `memory.refresh_summary` is scheduled to roll up messages from day `retention_days − 10`; at `retention_days` content is purged unconditionally, whether or not a summary exists. If content is purged without summary coverage (no `ai_managed` consent, provider outage, budget exhausted, repeated validation failures), set `conversations.summary_gap_before = <date>` so that summaries state that earlier messages expired without a summary. **As built (S03.3):** the hourly sweep (after its purges, in its own transaction, an error logged and never stopping a purge) queues `memory.refresh_summary` (immediately, flag `pending_ai_since` set no later than the content, soonest-to-expire chats first, only the chats its single UPDATE flagged) for chats with retained content last changed more than 80 days ago that the rolling summary has not covered — accounts with `ai_managed`, not Ignore, not bot chats, and only while `summary.refresh` is on (M03 D72); then it purges at 90 days unconditionally and sets `summary_gap_before` only for purged messages above the rolling summary's `covers_through_message_id`. |
 | Summaries, memory, tasks (including the latest task Undo snapshot and ids-only resolution evidence in `tasks.details`) | Until deleted (closed tasks + 1 year) | Owner actions / sweep; task snapshots and evidence ids are deleted with their task, never copied into audit rows; evidence content follows message retention independently |
 | `memory_items.content` | Until deleted; a forgotten (archived) item 24 h — the Undo window (S03.3, M03 D69) | Hourly sweep deletes archived items; FK cascade from contact/conversation; managed-data deletion deletes contact- and conversation-scoped items and every managed-origin item in any scope (the owner's own items stay, M03 D71); a bot-chat purge deletes that chat's and contact's items and every item whose `provenance.refs` names them; `memory/items.py::delete_for_conversation` / `delete_for_contact` are the helpers for S03.5's per-conversation/contact deletion |
+| `memory_items.provenance.owner_capture` (structural, H13) | Same lifetime as its curated item; turn ids/spans removed when their source text is cleared/deleted | Existing C1 privacy/retention transactions clean pointers; validation method/content hash/confirmation time can survive independently. Item deletion removes all proof; cleanup never reloads source prose or reactivates forgotten items |
 | `conversation_summaries.summary` | Rolling: until deleted. Period (catch-up cache): 30 days (S03.2, M03 D64) | Hourly sweep deletes period rows; managed-data deletion and conversation purge delete the rows; a deleted (M03 D63) or edited (D66) message — one that held content until that statement, not a repeated deletion — drops its chat's period rows and the rolling summary that covered it, which is rebuilt from retained messages (`summary_gap_before` records content that had already expired). A summary whose source changed while the model ran is never stored (re-check under the §9.4 locks, §11.1) |
 | `actions.text` | Same as messages (owner: 14–90 days), measured from `created_at` | Hourly per-account sweep clears text, never while `executing` |
 | `actions` rows | 1 year from `created_at` | Delete terminal and `delivery_uncertain` rows; never pending/executing |
@@ -1517,6 +1605,14 @@ Custom retry strategy: bounded attempts (default 5), small exponential base (pro
 - **Field-level application encryption** of content columns is **deferred** to the public-readiness decision (ADR-11): it conflicts with database full-text search and adds key management; content columns are isolated (§10.1) so it can be added later (e.g., envelope encryption per account with blind search keys).
 
 ### 14.3 Consent enforcement
+
+**H13:** source authority, write confirmation and provider consent remain three
+separate checks. Main preference inputs carry OWNER_CONTROL provenance and still
+require `ai_control` at the provider wrapper; managed-origin notes require
+`ai_managed` too and never become trusted defaults through confirmation. Scoped
+selection is withheld without managed access. Assist keeps both consent gates
+for its own chat input; no main transcript or other-chat data is added. Stored
+source proof cannot grant or restore consent.
 
 **H1 source provenance:** `load_source` validates account, retained field, role/purpose, exact whole-field UTF-8 hash and Unicode code-point bounds before returning a span with separate `managed` and `untrusted` flags. Assistant text is suggestion-only; quoted fields are quote-only. Ambiguous legacy forwarded/mixed text cannot become an owner instruction; H2/H12 own component classification. Source hashes are integrity metadata, never consent or authorship authority. Request metadata requires `ai_control` before model exposure; managed targets/quotes still require `ai_managed` for the named provider. Existing LLM gates remain unchanged. Post-restore cancels unfinished request attempts with `restored_from_backup` and invalidates old questions; it never resumes them automatically.
 

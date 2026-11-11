@@ -196,11 +196,58 @@ def test_the_longest_note_still_fits_a_confirmation_card() -> None:
     """A held `remember` is shown whole on its card or refused (S03.1, D55);
     the content limit keeps the longest note within the card."""
     from assistant.agent.confirmations import CARD_ARGS_LIMIT, render_args
+    from assistant.agent.tools.memory import LegacyRememberArgs
 
-    longest = RememberArgs.model_validate(
+    longest = LegacyRememberArgs.model_validate(
         _with(REMEMBER, content="ў" * 400, contact_id=2**63 - 1, replaces_memory_id=2**63 - 1)
     )
     assert len(render_args(longest.model_dump(mode="json"))) <= CARD_ARGS_LIMIT
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"sources": []},
+        {"scope": "contact"},
+        {"scope": "owner", "contact_id": 7},
+        {"scope": "contact", "contact_id": True},
+        {"scope": "conversation", "contact_id": 7, "conversation_id": 8},
+        {"kind": "fact"},
+        {"applies_to_replies": True},
+        {"request_id": 1},
+        {"request_id": True, "request_version": 1},
+        {"request_version": 1},
+        {
+            "sources": [
+                {
+                    "turn_id": True,
+                    "field": "text",
+                    "start": 0,
+                    "end": 5,
+                    "field_sha256": "a" * 64,
+                }
+            ]
+        },
+    ],
+)
+def test_h13_capture_validates_scope_kind_source_and_request_pair(change: dict[str, Any]) -> None:
+    from assistant.agent.tools.memory import CapturePreferenceArgs
+
+    value = {
+        "request_id": None,
+        "request_version": None,
+        "sources": [
+            {"turn_id": 1, "field": "text", "start": 0, "end": 5, "field_sha256": "a" * 64}
+        ],
+        "kind": "style",
+        "scope": "owner",
+        "contact_id": None,
+        "conversation_id": None,
+        "applies_to_replies": False,
+        "replaces_memory_id": None,
+    }
+    with pytest.raises(ValidationError):
+        CapturePreferenceArgs.model_validate({**value, **change})
 
 
 def test_valid_arguments_are_accepted_and_trimmed() -> None:

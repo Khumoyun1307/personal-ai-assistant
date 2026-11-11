@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from evals import cli, live
+from evals import drafts as draft_eval
 from evals.budget import BudgetedLLMClient, CallLedger
 from evals.drafts import DRAFT_PURPOSE, JUDGE_PURPOSE, DraftsTarget
 from evals.live import LiveConfig, LiveSetupError, ModelChoice
@@ -28,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import Account
 from assistant.agent import prompt_registry
+from assistant.agent.drafting import DraftConfig
 from assistant.config import Settings
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.llm.port import LLMRequest, ParsedResponse, StopReason, TextItem, Usage
@@ -152,9 +154,16 @@ async def test_drafts_target_runs_the_product_drafter_end_to_end_with_fake_llm(
     assert await accounts(factory) == before  # the synthetic account is gone
 
 
+@pytest.mark.parametrize("preference_capture_enabled", [False, True])
 async def test_each_situation_sees_only_its_own_preferences_and_notes(
     factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    preference_capture_enabled: bool,
 ) -> None:
+    def draft_config(**kwargs: Any) -> DraftConfig:
+        return DraftConfig(**kwargs, preference_capture_enabled=preference_capture_enabled)
+
+    monkeypatch.setattr(draft_eval, "DraftConfig", draft_config)
     llm = DraftOracle()
     await target(factory).run(context(llm))
 
@@ -166,6 +175,13 @@ async def test_each_situation_sees_only_its_own_preferences_and_notes(
         assert f"STYLE-NOTE-{own}" in text
         assert f"CONTACT-NOTE-{own}" in text
         assert f"reply tone: {TONES[situation.id]}" in text
+        if preference_capture_enabled:
+            assert "verification=legacy_unverified" in text
+            assert 'source="unverified_memory"' in text
+        else:
+            assert "Owner notes and style for this reply:\n" in text
+            assert "verification=" not in text
+            assert "unverified_memory" not in text
         for other, name in NAMES.items():
             if other == situation.id:
                 continue
