@@ -19,12 +19,17 @@ type ExecutionTarget = tuple[ActionState, StateReason]
 #: moved on (outdated), then time ran out (expired), then a named block.
 _EXECUTION_TARGETS: tuple[tuple[frozenset[str], ExecutionTarget | None], ...] = (
     (frozenset({"already_claimed"}), None),
-    (frozenset({"takeover"}), (ActionState.OUTDATED, StateReason.TAKEOVER)),
+    (frozenset({"takeover", "fence_takeover"}), (ActionState.OUTDATED, StateReason.TAKEOVER)),
     (
-        frozenset({"new_contact_message"}),
+        frozenset({"new_contact_message", "fence_new_contact"}),
         (ActionState.OUTDATED, StateReason.NEW_CONTACT_MESSAGE),
     ),
-    (frozenset({"source_deleted"}), (ActionState.OUTDATED, StateReason.SOURCE_DELETED)),
+    (
+        frozenset({"source_deleted", "fence_deleted"}),
+        (ActionState.OUTDATED, StateReason.SOURCE_DELETED),
+    ),
+    (frozenset({"source_edited"}), (ActionState.OUTDATED, StateReason.SOURCE_EDITED)),
+    (frozenset({"source_unavailable"}), (ActionState.OUTDATED, StateReason.SOURCE_DELETED)),
     (frozenset({"window_closed"}), (ActionState.EXPIRED, StateReason.WINDOW_CLOSED)),
     (frozenset({"max_age"}), (ActionState.EXPIRED, StateReason.MAX_AGE)),
     (frozenset({"consent_missing"}), (ActionState.BLOCKED, StateReason.CONSENT_REVOKED)),
@@ -73,6 +78,14 @@ def execution_target(decision: Decision) -> ExecutionTarget | None:
     if decision.outcome is not Outcome.DENY:
         return None
     failed = {check.reason for check in decision.checks if not check.passed}
+    if "source_unavailable" in failed and failed - {
+        "source_unavailable",
+        "inbox_pending",
+        "barrier_pending",
+    }:
+        # Missing legacy proof is advisory for owner review. It must not
+        # hide a concrete safety denial behind another approvable warning.
+        failed.remove("source_unavailable")
     for reasons, target in _EXECUTION_TARGETS:
         if failed & reasons:
             return target

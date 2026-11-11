@@ -44,13 +44,13 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup
-from sqlalchemy import delete, select, tuple_, update
+from sqlalchemy import case, delete, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.selectable import Exists
 
 from assistant.accounts import service
-from assistant.accounts.callbacks import encode
+from assistant.accounts.callbacks import encode, new_token
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, PendingInput
 from assistant.actions import lifecycle
 from assistant.actions.authorship import VersionAuthorship, current_authorship, is_ai_generated
@@ -80,6 +80,7 @@ from assistant.agent.drafting import (
     RevisionResult,
     owner_draft_flags,
 )
+from assistant.conversations.fences import check_fence, lock_fence_conversations
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.delivery import MAX_TEXT_LENGTH, ErrorClass, SendResult
@@ -118,7 +119,7 @@ OP_EDIT = "ed"
 OP_REJECT = "rj"
 OP_CANCEL_EDIT = "cx"
 OP_REDRAFT = "rd"
-_TOKEN_OPS = frozenset({OP_APPROVE, OP_EDIT, OP_REJECT})
+_TOKEN_OPS = frozenset({OP_APPROVE, OP_EDIT, OP_REJECT, OP_REDRAFT})
 _CARD_OPS = frozenset({OP_CANCEL_EDIT, OP_REDRAFT})
 
 #: Bot API `CopyTextButton.text`: 1-256 characters.
@@ -275,6 +276,7 @@ class ApprovalCardView:
     #: only adds a warning line; Telegram decides at the send (P2-O20).
     window_open: bool = True
     authorship: Mapping[str, Any] | None = None
+    freshness_warning: str | None = None
 
     @property
     def sendable_until(self) -> datetime | None:
@@ -354,6 +356,7 @@ async def load_card_view(
         card_token=token,
         window_open=True if now is None else is_open(anchor, now),
         authorship=action.authorship,
+        freshness_warning=action.freshness_warning,
     )
 
 
@@ -452,6 +455,21 @@ def _button(label: str, token: str, op: str) -> InlineKeyboardButton:
 def card_keyboard(view: ApprovalCardView) -> InlineKeyboardMarkup | None:
     """Buttons by state (spec §3.1). None: a card without buttons."""
     state = view.state
+    if view.redraft_requested and not _warned(view):
+        if _copyable(view.text) and view.text is not None:
+            return InlineKeyboardMarkup(inline_keyboard=[[_copy_button(view.text)]])
+        return None
+    if _warned(view) and view.approval_token:
+        token = view.approval_token
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    _button("Approve anyway", token, OP_APPROVE),
+                    _button("Re-draft", view.card_token or token, OP_REDRAFT),
+                    _button("Discard", token, OP_REJECT),
+                ]
+            ]
+        )
     if state is ActionState.AWAITING_APPROVAL and view.approval_token:
         token = view.approval_token
         return InlineKeyboardMarkup(
@@ -603,17 +621,55 @@ def _explanation(view: ApprovalCardView) -> str | None:
 
 
 def _warnings(view: ApprovalCardView) -> list[str]:
-    """From `draft_flags` only (decisions R8), never from `policy_decision`;
-    the owner's own dictated words carry none."""
+    """Source warnings are factual; only generated text carries model flags.
+
+    Neither kind is reconstructed from the overwritten policy decision.
+    """
+    warning = _freshness_warning(view)
+    lines = [] if warning is None else ["Warning: " + warning]
     flags = view.draft_flags
     if not is_ai_generated(view.authorship, version=view.version) or not flags:
-        return []
-    lines = []
+        return lines
     if flags.get("makes_commitment") is True:
         lines.append("⚠️ Contains a commitment (date, amount or promise) — check it")
     if flags.get("sensitive_topic") is True:
         lines.append("⚠️ Sensitive topic")
     return lines
+
+
+FRESHNESS_WARNINGS: Mapping[str, str] = {
+    "source_edited": "A message used for this draft was edited.",
+    "source_deleted": (
+        "A message used for this draft was deleted. The draft will be sent on its own."
+    ),
+    "new_contact_message": "A newer contact message arrived after this draft was written.",
+    "takeover": "You replied in the chat after this draft was requested.",
+    "owner_edit": "You edited a message in the chat.",
+    "owner_intent_superseded": "Your instructions for this chat changed.",
+    "request_changed": "The request used for this draft changed.",
+    "source_unavailable": "The sources used for this draft could not be checked.",
+}
+
+
+def _freshness_warning(view: ApprovalCardView) -> str | None:
+    code = view.freshness_warning
+    if view.state is ActionState.OUTDATED:
+        if view.reason is not None and view.reason.value not in lifecycle.FRESHNESS_REASONS:
+            # Rights/connection/policy failures are not source warnings, even
+            # if this version previously carried a freshness warning.
+            return None
+        if code is None:
+            code = view.reason.value if view.reason is not None else "source_unavailable"
+    return FRESHNESS_WARNINGS.get(code) if code is not None else None
+
+
+def _warned(view: ApprovalCardView) -> bool:
+    return (
+        view.state in {ActionState.AWAITING_APPROVAL, ActionState.OUTDATED}
+        and view.origin is not ActionOrigin.DELEGATION_AUTO
+        and view.text is not None
+        and _freshness_warning(view) is not None
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -816,10 +872,14 @@ async def clear_edit_inputs(
 
 
 def _needs_card_token(view: ApprovalCardView) -> bool:
-    return view.state is ActionState.REVISING or (
-        view.state in _REDRAFTABLE
-        and view.origin is not ActionOrigin.DELEGATION_AUTO
-        and is_ai_generated(view.authorship, version=view.version)
+    return (
+        _warned(view)
+        or view.state is ActionState.REVISING
+        or (
+            view.state in _REDRAFTABLE
+            and view.origin is not ActionOrigin.DELEGATION_AUTO
+            and is_ai_generated(view.authorship, version=view.version)
+        )
     )
 
 
@@ -897,6 +957,30 @@ class ApprovalCards:
 
         after_commit(session, sync)
 
+    def redraft_failed_after_commit(
+        self, session: AsyncSession, action_id: int, reason: str
+    ) -> None:
+        async def restore(_: async_sessionmaker[AsyncSession]) -> None:
+            view = await self._prepare(action_id)
+            if view is None or not _warned(view):
+                return
+            await self.sync(action_id)
+            explanation = {
+                "window_closed": "The reply window is closed.",
+                "no_consent": "AI permission is unavailable.",
+                "not_needed": "The draft writer returned no replacement.",
+                "no_reply_needed": "The draft writer returned no replacement.",
+                "not_draftable": "The draft writer could not use the available messages.",
+            }.get(reason, "The draft writer did not finish a replacement.")
+            await self.notify(
+                view.account_id,
+                "I could not create a replacement draft. "
+                + explanation
+                + " The original draft is still available: Approve anyway, Re-draft or Discard.",
+            )
+
+        after_commit(session, restore)
+
     # ---------------------------------------------------------- show / edit
     async def _prepare(self, action_id: int) -> ApprovalCardView | None:
         """The view, in a short transaction that also makes the card token
@@ -915,6 +999,30 @@ class ApprovalCards:
                 sending_enabled=self._config.sending_enabled,
                 now=self._clock.now(),
             )
+            if view is not None and _warned(view) and view.approval_token is None:
+                token = new_token()
+                await session.execute(
+                    update(Action)
+                    .where(
+                        Action.account_id == account_id,
+                        Action.id == action_id,
+                        Action.state == view.state.value,
+                        Action.version == view.version,
+                        Action.approval_token.is_(None),
+                    )
+                    .values(
+                        approval_token=token,
+                        freshness_warning=view.freshness_warning
+                        or (view.reason.value if view.reason is not None else "source_unavailable"),
+                    )
+                )
+                view = await load_card_view(
+                    session,
+                    account_id=account_id,
+                    action_id=action_id,
+                    sending_enabled=self._config.sending_enabled,
+                    now=self._clock.now(),
+                )
             if view is None or not _needs_card_token(view):
                 return view
             token = await ensure_card_token(
@@ -939,7 +1047,7 @@ class ApprovalCards:
             return None
         if view.card_message_id is None:
             # Never shown (its presentation failed): a live card is shown now.
-            return await self._send_new(view) if view.state in LIVE_CARD else None
+            return await self._send_new(view) if view.state in LIVE_CARD or _warned(view) else None
         return await self._show(view)
 
     async def show_new_version(self, action_id: int) -> SendResult | None:
@@ -1104,7 +1212,17 @@ class ApprovalCards:
             result = await uow.session.execute(
                 update(Action)
                 .where(*mine, Action.version == view.version)
-                .values(card_message_id=message_id, card_state=view.state.value)
+                .values(
+                    card_message_id=message_id,
+                    card_state=case(
+                        (
+                            Action.approval_token.is_not_distinct_from(view.approval_token)
+                            & Action.freshness_warning.is_not_distinct_from(view.freshness_warning),
+                            view.state.value,
+                        ),
+                        else_=None,
+                    ),
+                )
                 .execution_options(synchronize_session=False)
             )
             if getattr(result, "rowcount", 0):
@@ -1168,6 +1286,13 @@ class ApprovalCards:
                 )
             if press.op == OP_EDIT:
                 return await self._start_edit(session, gateway, clock, account, press, live.id)
+            if press.op == OP_REDRAFT:
+                live_action = await session.get(Action, live.id)
+                if live_action is None:
+                    return self._settle(session, gateway, press, CALLBACK_EXPIRED_TEXT, None)
+                return await self._redraft(
+                    session, gateway, clock, scheduler, account, press, live_action
+                )
             return await self._reject(session, gateway, clock, account, press, live.id)
         card = await service.claim_card(
             session, account_id=account.id, token=press.token, clock=clock
@@ -1355,9 +1480,8 @@ class ApprovalCards:
         action: Any,
     ) -> HandlerResult:
         if (
-            action.state not in {state.value for state in _REDRAFTABLE}
+            action.state not in {state.value for state in _REDRAFTABLE | LIVE_CARD}
             or action.origin == ActionOrigin.DELEGATION_AUTO.value
-            or not is_ai_generated(action.authorship, version=action.version)
         ):
             return self._settle(session, gateway, press, CALLBACK_EXPIRED_TEXT, action.id)
         if scheduler is None:
@@ -1499,12 +1623,21 @@ class ApprovalCards:
         now = self._clock.now()
         stale_cards = select(Action.id).where(
             Action.card_message_id.is_not(None),
-            Action.card_state.is_distinct_from(Action.state),
+            or_(
+                Action.card_state.is_distinct_from(Action.state),
+                # Pre-H10 source-stale cards were rendered without an
+                # approval token and may already show state == outdated.
+                lifecycle.legacy_warning_card_filter(),
+            ),
             ~_pending_presentation(),
         )
         lost_cards = select(Action.id).where(
             Action.card_message_id.is_(None),
-            Action.state.in_([state.value for state in LIVE_CARD]),
+            or_(
+                Action.state.in_([state.value for state in LIVE_CARD]),
+                lifecycle.warning_card_filter(),
+                lifecycle.legacy_warning_card_filter(),
+            ),
             Action.created_at < now - PRESENT_GRACE,
             ~_pending_presentation(),
         )
@@ -1871,6 +2004,29 @@ class RevisionJob:
         assert owner is not None
         async with transaction(self._sf) as uow:
             session = uow.session
+            await session.execute(
+                select(Account.id).where(Account.id == before.account_id).with_for_update(read=True)
+            )
+            await lock_fence_conversations(
+                session,
+                account_id=before.account_id,
+                conversation_id=before.conversation_id,
+                fence_id=outcome.context_fence_id,
+            )
+            if outcome.context_fence_id is None or outcome.run_id is None:
+                return RevisionResult("stale")
+            checked = await check_fence(
+                session,
+                account_id=before.account_id,
+                fence_id=outcome.context_fence_id,
+                request_id=None,
+                expected_request_version=None,
+                run_id=outcome.run_id,
+            )
+            if checked.reason == "source_unavailable":
+                # Erasure may remove this generation's proof while an older
+                # revision remains live. Never write the erased result back.
+                return RevisionResult("stale")
             if not await self._still_revising(session, before, action_id, turn_id):
                 logger.info("revision_stale", action_id=action_id)
                 return RevisionResult("stale")
@@ -1896,6 +2052,9 @@ class RevisionJob:
                 base_message_id=base_message_id,
                 now=now,
                 authorship=authorship,
+                context_fence_id=outcome.context_fence_id,
+                requested_at=outcome.requested_at,
+                freshness_warning=checked.reason,
             )
             status = applied.status
             if status in {lifecycle.VersionStatus.TOO_LONG, lifecycle.VersionStatus.EMPTY}:

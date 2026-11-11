@@ -21,3 +21,8 @@ class RecordingApprovalPresenter:
             self.synced.append(action_id)
 
         after_commit(session, sync)
+
+    def redraft_failed_after_commit(
+        self, session: AsyncSession, action_id: int, reason: str
+    ) -> None:
+        self.sync_after_commit(session, action_id)

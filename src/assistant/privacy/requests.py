@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import callbacks, service
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, PendingInput
+from assistant.actions.models import ContextFenceRecord
 from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
 from assistant.actions.requests import SUGGESTION_SELECTED
 from assistant.core.channel import Button, ControlChannel, Delivery
@@ -170,7 +171,31 @@ async def export_owner_requests(
         }
         for row in saved
     ]
+    result["context_fences"] = await export_context_fences(session, account_id=account_id)
     return result
+
+
+async def export_context_fences(
+    session: AsyncSession,
+    *,
+    account_id: int,
+) -> list[dict[str, Any]]:
+    """Structural C6 metadata; scope deletion removes these references too."""
+    return [
+        {
+            "id": row.id,
+            "run_id": row.run_id,
+            "facts": row.facts,
+            "created_at": row.created_at.isoformat(),
+        }
+        for row in await session.scalars(
+            select(ContextFenceRecord)
+            .where(
+                ContextFenceRecord.account_id == account_id,
+            )
+            .order_by(ContextFenceRecord.id)
+        )
+    ]
 
 
 SCOPES = (

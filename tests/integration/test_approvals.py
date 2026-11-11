@@ -17,7 +17,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,12 +27,12 @@ from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, Pendi
 from assistant.actions import lifecycle
 from assistant.actions.authorship import generated_authorship
 from assistant.actions.executor import ActionExecutor
-from assistant.actions.models import Action
+from assistant.actions.models import Action, ContextFenceRecord
 from assistant.conversations.models import Conversation
 from assistant.core.delivery import ErrorClass
 from assistant.db.uow import transaction
 from assistant.inbox.notify import OwnerAlerts
-from assistant.llm.port import LLMRequest
+from assistant.llm.port import LLMError, LLMErrorKind, LLMRequest
 from assistant.telegram.business_targets import BusinessTargetResolver
 from assistant.telegram.control import approvals
 from assistant.telegram.control.agent_channel import GatewayControlChannel
@@ -387,6 +387,32 @@ async def test_the_revision_turn_is_recorded_on_the_action(s: Scenario) -> None:
     assert "Revising…" in s.control_text()
 
 
+async def test_erased_generation_proof_cannot_stage_a_revision_of_a_surviving_card(
+    s: Scenario,
+) -> None:
+    original = await s.seed()
+
+    async def erase_generation(request: LLMRequest) -> dict[str, Any]:
+        assert request.run_id is not None
+        async with transaction(s.env.factory) as uow:
+            # The same trigger used by scope/request erasure must reject
+            # settlement even if this older action itself remains revising.
+            await uow.session.execute(
+                delete(ContextFenceRecord).where(
+                    ContextFenceRecord.account_id == s.account_id,
+                    ContextFenceRecord.run_id == request.run_id,
+                )
+            )
+        return revision_result(text="SYNTH erased generation must never be stored")
+
+    s.fake.parsed.append(erase_generation)
+    await start_edit(s, original, "SYNTH rewrite the draft")
+    assert await run_queued(s, "replies.revise") == 1
+    after = await s.action(original.id)
+    assert after.version == original.version
+    assert after.text == original.text
+
+
 async def test_the_edit_loop_instruction_produces_a_new_version_and_token(s: Scenario) -> None:
     row = await s.seed()
     s.fake.parsed.append(revision_result(text="Synthetic shorter reply."))
@@ -566,6 +592,37 @@ def fresh_cards(s: Scenario) -> ApprovalCards:
         clock=s.env.clock,
         config=config,
     )
+
+
+async def test_warned_card_with_definite_presentation_failure_is_recovered_with_approval(
+    s: Scenario,
+) -> None:
+    s.env.sender.fail_with = telegram_error("Bad Request: synthetic refusal", status_code=400)
+    row = await s.seed(
+        state="outdated", state_reason="source_edited", freshness_warning="source_edited"
+    )
+    assert row.card_message_id is None
+    s.env.sender.fail_with = None
+    s.env.clock.advance(seconds=31)
+    assert await fresh_cards(s).sync_cards() == 1
+    current = await s.action(row.id)
+    assert current.approval_token is not None
+    [delivered] = [
+        call
+        for call in s.env.sender.delivered_control_sends
+        if call["message_id"] == current.card_message_id
+    ]
+    assert "Warning:" in delivered["text"]
+    markup = delivered["reply_markup"]
+    assert markup is not None
+    assert [button.text for line in markup.inline_keyboard for button in line] == [
+        "Approve anyway",
+        "Re-draft",
+        "Discard",
+    ]
+    await press(s, current.approval_token, "ok")
+    await run_queued(s, "actions.execute")
+    assert (await s.action(row.id)).state == "succeeded"
 
 
 async def test_uncertain_full_text_is_not_replayed_by_a_fresh_presenter(s: Scenario) -> None:
@@ -1042,11 +1099,14 @@ async def test_redraft_is_deferred_in_the_press_transaction_without_a_flag(
             select(Conversation.pending_draft_at).where(Conversation.id == s.conversation_id)
         )
     assert flag is None
-    # The old card keeps its final state; Re-draft is gone, copy stays.
+    # A pending replacement must not remove the original owner's choices.
     card = s.final_card(outdated)
     assert "Re-draft requested" in card["text"]
-    assert not any(b.get("callback_data") for b in s.card_buttons(outdated))
-    s.assert_copy_ready(outdated)
+    assert [b["text"] for b in s.card_buttons(outdated)] == [
+        "Approve anyway",
+        "Re-draft",
+        "Discard",
+    ]
 
 
 async def test_redraft_on_an_outdated_card_requests_a_new_draft(s: Scenario) -> None:
@@ -1065,6 +1125,55 @@ async def test_redraft_on_an_outdated_card_requests_a_new_draft(s: Scenario) -> 
     )
     assert new.card_message_id is not None
     assert new.card_message_id != old.card_message_id
+
+
+@pytest.mark.parametrize("failure", ["no_result", "window_closed", "provider_failure"])
+@pytest.mark.parametrize("warning_state", ["outdated", "awaiting_approval"])
+async def test_warned_redraft_failure_keeps_original_approval_choices(
+    s: Scenario, failure: str, warning_state: str
+) -> None:
+    row = await s.seed()
+    await deliver(s.env, business_message(message_id=102, date=s.date + 1))
+    if warning_state == "awaiting_approval":
+        # A source change during generation initially creates a warned
+        # awaiting-approval card, rather than outdating an existing one.
+        async with transaction(s.env.factory) as uow:
+            action = await uow.session.get(Action, row.id)
+            assert action is not None
+            action.state = warning_state
+        assert s.wiring.approval_cards is not None
+        await s.wiring.approval_cards.sync(row.id)
+    warned = await s.action(row.id)
+    shown, version, token = warned.text, warned.version, warned.approval_token
+    await press(s, button_token(s, warned, "rd"), "rd")
+    if failure == "window_closed":
+        # Keep the card within max age; only Telegram's reply window closes.
+        async with transaction(s.env.factory) as uow:
+            conversation_row = await uow.session.get(Conversation, s.conversation_id)
+            assert conversation_row is not None
+            conversation_row.last_contact_msg_at = s.env.clock.now() - timedelta(days=2)
+    elif failure == "no_result":
+        s.fake.parsed.append(
+            draft_result(needs_reply=False, text="", skip_reason="no_reply_needed")
+        )
+    else:
+        s.fake.parsed.append(LLMError(LLMErrorKind.UNAVAILABLE))
+    s.env.sender.sends.clear()
+    await run_queued(s, "replies.draft")
+    [unchanged] = await s.rows()
+    assert unchanged.text == shown
+    assert unchanged.version == version
+    assert unchanged.approval_token == token
+    assert [b["text"] for b in s.card_buttons(unchanged)] == [
+        "Approve anyway",
+        "Re-draft",
+        "Discard",
+    ]
+    notices = [item["text"] for item in s.env.sender.sends]
+    assert any("could not create a replacement" in text for text in notices)
+    # The restored button is functional, not merely decorative.
+    await press(s, button_token(s, unchanged, "ok"), "ok")
+    assert (await s.action(row.id)).state == "approved"
 
 
 async def test_a_second_redraft_tap_while_one_is_queued_keeps_the_press_transaction_alive(

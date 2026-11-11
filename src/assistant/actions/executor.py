@@ -49,8 +49,10 @@ from assistant.actions.lifecycle import sendable_length, text_hash, transition
 from assistant.actions.models import Action
 from assistant.actions.policy_loader import decision_record, load_context
 from assistant.actions.ports import ApprovalCardPresenter, BusinessSender
+from assistant.actions.request_models import OwnerRequest
 from assistant.actions.states import ActionKind, ActionOrigin, ActionState, StateReason
 from assistant.conversations.events import MessageContent
+from assistant.conversations.fences import lock_fence_conversations
 from assistant.conversations.models import Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.delivery import BusinessSendReservation, ErrorClass, SendResult
@@ -274,7 +276,12 @@ class ActionExecutor:
             session = uow.session
             keys = (
                 await session.execute(
-                    select(Action.account_id, Action.conversation_id).where(Action.id == action_id)
+                    select(
+                        Action.account_id,
+                        Action.conversation_id,
+                        Action.context_fence_id,
+                        Action.owner_request_id,
+                    ).where(Action.id == action_id)
                 )
             ).one_or_none()
             if keys is None:
@@ -284,6 +291,23 @@ class ActionExecutor:
             await session.execute(
                 select(Account.id).where(Account.id == account_id).with_for_update(read=True)
             )
+            await lock_fence_conversations(
+                session,
+                account_id=account_id,
+                conversation_id=conversation_id,
+                fence_id=keys[2],
+                read=True,
+                require_recipient=False,
+            )
+            if keys[3] is not None:
+                await session.execute(
+                    select(OwnerRequest.id)
+                    .where(
+                        OwnerRequest.account_id == account_id,
+                        OwnerRequest.id == keys[3],
+                    )
+                    .with_for_update()
+                )
             owned = await session.scalar(
                 select(Conversation.id)
                 .where(Conversation.id == conversation_id, Conversation.account_id == account_id)
@@ -301,6 +325,14 @@ class ActionExecutor:
             if state is not ActionState.APPROVED:
                 # A second job for one action, or one that settled meanwhile.
                 return ExecuteOutcome(ExecuteStatus.SETTLED, state)
+            if action.context_fence_id != keys[2] or action.owner_request_id != keys[3]:
+                # A new version was approved while dependency locks were
+                # acquired. Re-enter from the start to lock its own read set.
+                return ExecuteOutcome(
+                    ExecuteStatus.WAITING,
+                    state,
+                    redefer_at=now + WAIT_REDEFER,
+                )
             if action.text is None:
                 # P2-T37: a data deletion cleared the text; never sendable,
                 # before any other rule.
@@ -390,6 +422,11 @@ class ActionExecutor:
             expires_at=action.expires_at,
             shown_through_message_id=action.shown_through_message_id,
             owner_retry=False,
+            requested_at=action.requested_at,
+            context_fence_id=action.context_fence_id,
+            generating_run_id=action.draft_run_id or action.run_id,
+            owner_request_id=action.owner_request_id,
+            freshness_override=action.freshness_override,
         )
         context = await load_context(
             session,
@@ -422,6 +459,17 @@ class ActionExecutor:
         """Tx A said no: move the action, keep the execution-phase decision
         (codes only), and refresh its card. Nothing is sent."""
         failed = [check.name for check in decision.checks if not check.passed]
+        warning = None
+        if to_state is ActionState.OUTDATED:
+            warning = reason.value
+            if (
+                any(
+                    check.reason == "source_unavailable" and not check.passed
+                    for check in decision.checks
+                )
+                and reason is StateReason.SOURCE_DELETED
+            ):
+                warning = "source_unavailable"
         applied = await transition(
             session,
             account_id=action.account_id,
@@ -431,7 +479,10 @@ class ActionExecutor:
             reason=reason,
             now=now,
             expected_version=action.version,
-            values={"policy_decision": decision_record(decision, Phase.EXECUTION)},
+            values={
+                "policy_decision": decision_record(decision, Phase.EXECUTION),
+                "freshness_warning": warning,
+            },
             details={"failed_rules": failed},
         )
         if not applied:

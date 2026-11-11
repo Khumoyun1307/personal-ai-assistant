@@ -200,6 +200,21 @@ def test_a_blocked_sending_disabled_card_says_not_sendable_and_offers_copy() -> 
     assert ops(card.keyboard) == []
 
 
+@pytest.mark.parametrize("warning", [None, "source_edited"])
+def test_rights_outdating_never_offers_a_freshness_override(warning: str | None) -> None:
+    card = render_card(
+        in_state(
+            ActionState.OUTDATED,
+            reason=StateReason.RIGHTS_CHANGED,
+            freshness_warning=warning,
+            approval_token="synthetic-old-token",
+        )
+    )
+    assert "ok" not in ops(card.keyboard)
+    assert copies(card.keyboard) == [TEXT]
+    assert "Approve anyway" not in shown(card.text)
+
+
 def test_card_content_is_escaped_and_bidi_made_visible() -> None:
     hostile = 'Tom & Jerry <b>bold</b> <a href="https://x.example">link</a> <script>‮abc'
     card = render_card(
@@ -352,6 +367,19 @@ def test_sendable_until_is_the_earlier_of_max_age_and_window_close_in_local_time
     assert "Approve by" not in shown(render_card(in_state(ActionState.APPROVED)).text)
 
 
+@pytest.mark.parametrize("state", [ActionState.AWAITING_APPROVAL, ActionState.OUTDATED])
+def test_pending_warned_redraft_keeps_all_owner_choices(state: ActionState) -> None:
+    keyboard = card_keyboard(
+        in_state(
+            state,
+            approval_token="AbCdEf1234",
+            freshness_warning="source_edited",
+            redraft_requested=True,
+        )
+    )
+    assert ops(keyboard) == ["ok", "rd", "rj"]
+
+
 def test_keyboards_per_state() -> None:
     awaiting = card_keyboard(in_state(ActionState.AWAITING_APPROVAL))
     assert ops(awaiting) == ["ok", "ed", "rj"]
@@ -382,6 +410,21 @@ def test_keyboards_per_state() -> None:
         ActionState.EXECUTING,
     ):
         assert card_keyboard(in_state(state)) is None, state
+
+
+@pytest.mark.parametrize("state", [ActionState.AWAITING_APPROVAL, ActionState.OUTDATED])
+def test_changed_sources_keep_approve_redraft_and_discard(state: ActionState) -> None:
+    warned = in_state(state, approval_token="Warning123", freshness_warning="source_edited")
+    card = render_card(warned)
+    assert "Warning: A message used for this draft was edited." in card.text
+    assert ops(card.keyboard) == ["ok", "rd", "rj"]
+    assert [button["text"] for button in buttons(card.keyboard)] == [
+        "Approve anyway",
+        "Re-draft",
+        "Discard",
+    ]
+    superseded = in_state(ActionState.OUTDATED, reason=StateReason.SUPERSEDED)
+    assert "ok" not in ops(card_keyboard(superseded))
 
 
 def test_copy_button_only_for_1_to_256_characters() -> None:

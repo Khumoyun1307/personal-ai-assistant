@@ -818,11 +818,12 @@ async def test_a_draft_inside_the_range_is_kept_without_a_retry(denv: DraftEnv) 
 
 async def test_a_failed_bounds_retry_keeps_the_first_draft(denv: DraftEnv) -> None:
     account_id, conversation = await seed_chat(denv, mode="observe")
+    run_id, _ = await run_and_turn(denv, account_id)
     denv.script(owner_output(text="far too many words in this one draft"), StopReason.REFUSAL)
     outcome = await denv.drafter().draft_owner(
         account_id=account_id,
         conversation_id=conversation,
-        owner_run_id=1,
+        owner_run_id=run_id,
         bounds=WordBounds(None, 3),
     )
     assert outcome.status is DraftStatus.DRAFTED

@@ -104,7 +104,9 @@ async def test_outdate_pending_includes_approved_only_when_asked(env: Env) -> No
             include_approved=True,
             now=env.clock.now(),
         )
-    assert set(changed) == {ids["awaiting_approval"], ids["approved"]}
+    # D-S17: an existing owner approval is rechecked at execution; ingestion
+    # never resets it or its committed claim. Unapproved work gets a warning.
+    assert changed == [ids["awaiting_approval"]]
 
 
 async def test_cancel_pending_never_touches_executing_uncertain_or_terminal(env: Env) -> None:
@@ -281,4 +283,8 @@ async def test_bulk_helpers_handle_a_revising_card_without_restoring_its_token(
             )
     action = (await rows(env, account_id))[ids["awaiting_approval"]]
     assert action.state == ("cancelled" if operation == "cancel" else "outdated")
-    assert action.approval_token is None
+    if operation == "cancel":
+        assert action.approval_token is None
+    else:
+        assert action.approval_token is not None
+        assert action.freshness_warning == "new_contact_message"

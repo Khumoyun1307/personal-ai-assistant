@@ -28,7 +28,7 @@ from enum import StrEnum
 from typing import Any, Literal, Protocol
 
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
@@ -41,7 +41,8 @@ from assistant.accounts.service import (
 from assistant.actions.authorship import VersionAuthorship
 from assistant.actions.config import ActionsConfig
 from assistant.actions.drafts import FLAGGED_REASONS, JOB_REASONS, redraft_queueing_lock
-from assistant.actions.models import Action
+from assistant.actions.lifecycle import warning_card_filter
+from assistant.actions.models import Action, ContextFenceRecord
 from assistant.actions.ports import ApprovalCardPresenter
 from assistant.actions.proposals import (
     ProposalRefused,
@@ -73,6 +74,12 @@ from assistant.agent.draft_schemas import DraftResult, validate_draft
 from assistant.agent.models import AgentRun
 from assistant.agent.persistence import AgentRunRepository, LlmCallRepository, month_start
 from assistant.agent.untrusted import Source, wrap
+from assistant.conversations.fences import (
+    ContextFence,
+    capture_fence,
+    lock_fence_conversations,
+    observe_conversations,
+)
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
@@ -162,6 +169,8 @@ class DraftOutcome:
     #: `owner_request` (the tool's `answered_message_id`), `draft_writer`
     #: (`answers_message_id`, checked), or None (the newest, or no target).
     answered_by: AnsweredBy | None = None
+    context_fence_id: int | None = None
+    requested_at: datetime | None = None
 
     @property
     def text(self) -> str | None:
@@ -237,6 +246,8 @@ class _Request:
     action_id: int | None = None
     turn_id: int | None = None
     owner: _OwnerAsk | None = None
+    reference_run_id: int | None = None
+    reference_turn_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +264,8 @@ class _Prepared:
     #: a newest message would make every draft stale (PR #106 review).
     shown_through_message_id: int
     owner: OwnerDraftInputs | None = None
+    context_fence_id: int | None = None
+    requested_at: datetime | None = None
 
 
 async def draft_consent_ok(session: AsyncSession, account_id: int, model: str) -> bool:
@@ -402,20 +415,31 @@ class Drafter:
                 conversation_id=conversation_id,
                 run_tainted=run_tainted,
                 owner=ask,
+                reference_run_id=owner_run_id,
+                reference_turn_id=revise_turn_id,
             )
         )
 
     async def answerable_ids(
         self, session: AsyncSession, account_id: int, conversation_id: int
     ) -> frozenset[int]:
-        """The contact messages an owner's draft may answer by id (PF-12):
-        those the draft's window shows now — retained, in this chat and this
-        account. Account-scoped."""
-        through = await _newest_message_id(session, account_id, conversation_id)
-        if through is None:
-            return frozenset()
-        messages = await self._messages(session, account_id, conversation_id, through=through)
-        return frozenset(m.message_id for m in messages if m.direction == "contact")
+        """Retained explicit targets, including older messages outside the window.
+
+        `_prepare` loads the selected message itself alongside the window;
+        missing/foreign/deleted/purged selections never become latest-message replies.
+        """
+        return frozenset(
+            await session.scalars(
+                select(Message.id).where(
+                    Message.account_id == account_id,
+                    Message.conversation_id == conversation_id,
+                    Message.direction == "contact",
+                    Message.deleted_at.is_(None),
+                    Message.purged_at.is_(None),
+                    Message.text.is_not(None) | Message.media.is_not(None),
+                )
+            )
+        )
 
     async def _run(self, request: _Request) -> DraftOutcome:
         prepared = await self._prepare(request)
@@ -443,6 +467,8 @@ class Drafter:
                     else prepared.context.base_message_id
                 ),
                 shown_through_message_id=prepared.shown_through_message_id,
+                context_fence_id=prepared.context_fence_id,
+                requested_at=prepared.requested_at,
             )
         except BaseException as error:
             # Cancellation is included: shutdown must not leave a running row.
@@ -463,6 +489,71 @@ class Drafter:
                     return DraftOutcome(DraftStatus.NOT_DRAFTABLE)
                 conversation_id, revision = loaded
             assert conversation_id is not None
+            await session.execute(
+                select(Account.id).where(Account.id == account_id).with_for_update(read=True)
+            )
+            observed = await observe_conversations(
+                session,
+                account_id=account_id,
+                conversation_ids=(conversation_id,),
+            )
+            requested_at = self._clock.now()
+            if request.reference_run_id is not None:
+                parent = await session.scalar(
+                    select(AgentRun).where(
+                        AgentRun.account_id == account_id,
+                        AgentRun.id == request.reference_run_id,
+                    )
+                )
+                if parent is None:
+                    return DraftOutcome(DraftStatus.NOT_DRAFTABLE, error_class="source_unavailable")
+                requested_at = parent.started_at
+                if parent.trigger_ref is not None and parent.trigger_ref.startswith("turn:"):
+                    turn_key = parent.trigger_ref.removeprefix("turn:")
+                    if turn_key.isdecimal():
+                        received_at = await session.scalar(
+                            select(ControlTurn.created_at).where(
+                                ControlTurn.account_id == account_id,
+                                ControlTurn.id == int(turn_key),
+                            )
+                        )
+                        if received_at is not None:
+                            requested_at = received_at
+                records = await session.scalars(
+                    select(ContextFenceRecord).where(
+                        ContextFenceRecord.account_id == account_id,
+                        ContextFenceRecord.run_id == request.reference_run_id,
+                    )
+                )
+                observed = (
+                    *observed,
+                    *(
+                        item
+                        for record in records
+                        for item in ContextFence.model_validate(record.facts).conversations
+                    ),
+                )
+                # Keep the first recipient/manual observation across bounded
+                # retries of this owner run; a delayed manual reply must not
+                # become the retry's new reference.
+                await capture_fence(
+                    session,
+                    account_id=account_id,
+                    run_id=request.reference_run_id,
+                    request=None,
+                    reads=observed,
+                    requested_at=requested_at,
+                )
+            reference_turn = request.reference_turn_id or request.turn_id
+            if reference_turn is not None:
+                asked_at = await session.scalar(
+                    select(ControlTurn.created_at).where(
+                        ControlTurn.account_id == account_id,
+                        ControlTurn.id == reference_turn,
+                    )
+                )
+                if asked_at is not None:
+                    requested_at = asked_at
             row = (
                 await session.execute(
                     select(Conversation, Contact)
@@ -496,6 +587,34 @@ class Drafter:
                 if through is not None
                 else []
             )
+            if owner is not None and owner.answered_message_id is not None:
+                selected = await session.scalar(
+                    select(Message).where(
+                        Message.account_id == account_id,
+                        Message.conversation_id == conversation_id,
+                        Message.id == owner.answered_message_id,
+                        Message.direction == "contact",
+                        Message.deleted_at.is_(None),
+                        Message.purged_at.is_(None),
+                        Message.text.is_not(None) | Message.media.is_not(None),
+                    )
+                )
+                if selected is None or selected.sent_at is None:
+                    return DraftOutcome(DraftStatus.NOT_DRAFTABLE, error_class="source_unavailable")
+                if selected.id not in {message.message_id for message in messages}:
+                    messages.insert(
+                        0,
+                        SourceMessage(
+                            selected.id,
+                            str(selected.direction),
+                            selected.sent_at,
+                            selected.content_type,
+                            selected.text,
+                            (selected.media or {}).get("kind"),
+                            selected.edited_at,
+                            selected.content_hash,
+                        ),
+                    )
             # An owner's request is drafted even when nothing in the window
             # can be shown (a new message needs no chat text; D1).
             if through is None or (not messages and owner is None):
@@ -573,8 +692,24 @@ class Drafter:
                 )
             )
             await session.flush()
+            fence_id = await capture_fence(
+                session,
+                account_id=account_id,
+                run_id=run.id,
+                request=None,
+                reads=observed,
+                requested_at=requested_at,
+            )
             return _Prepared(
-                account_id, run.id, context, prompt.label, request.run_kind, through, inputs
+                account_id,
+                run.id,
+                context,
+                prompt.label,
+                request.run_kind,
+                through,
+                inputs,
+                fence_id,
+                requested_at,
             )
 
     async def _messages(
@@ -914,10 +1049,13 @@ SUGGESTION_FLAGS: Mapping[str, Any] = {
 
 @dataclass(frozen=True, slots=True)
 class Stale:
-    """A contact message newer than anything the draft saw arrived while the
-    model ran: the draft is discarded, nothing is proposed."""
+    """Legacy stale-settlement result retained for existing job/tool callers.
+
+    D-S17 owner-reviewable source changes now create warned proposals instead.
+    """
 
     newest_contact_message_id: int
+    reason: str = "new_contact_message"
 
 
 async def propose_draft(
@@ -958,7 +1096,15 @@ async def propose_draft(
     by the caller): it becomes the base message, so the card quotes it and a
     revision keeps it. Raises `ProposalRefused` and `NotInAccountError` from
     `propose()`."""
-    await _lock_for_proposal(session, account_id, conversation_id)
+    await session.execute(
+        select(Account.id).where(Account.id == account_id).with_for_update(read=True)
+    )
+    await lock_fence_conversations(
+        session,
+        account_id=account_id,
+        conversation_id=conversation_id,
+        fence_id=outcome.context_fence_id,
+    )
     flags: Mapping[str, Any] | None
     if origin is ActionOrigin.OWNER_DICTATED or suggested_text is not None:
         if origin is ActionOrigin.OWNER_DICTATED and dictated_text is None:
@@ -980,12 +1126,9 @@ async def propose_draft(
             raise ValueError("only a drafted outcome can be proposed")
         if answered_message_id is not None:
             raise ValueError("a draft's answered message comes from its outcome")
-        newest_contact = await _newest_message_id(
-            session, account_id, conversation_id, direction="contact"
-        )
         seen = outcome.shown_through_message_id
-        if newest_contact is not None and (seen is None or newest_contact > seen):
-            return Stale(newest_contact)
+        # D-S17: proposal policy records stale source facts as a warning;
+        # the owner can approve this exact text or request a fresh draft.
         text = drafted
         base_message_id = outcome.base_message_id
         if outcome.owner_result is not None:
@@ -1010,6 +1153,8 @@ async def propose_draft(
             tool_call_id=tool_call_id,
             trigger_turn_id=trigger_turn_id,
             draft_run_id=outcome.run_id,
+            context_fence_id=outcome.context_fence_id,
+            requested_at=outcome.requested_at,
             draft_flags=flags,
             authorship=authorship,
         ),
@@ -1113,11 +1258,48 @@ class AssistDraftJob:
         if checked.later is not None:
             await self._defer(conversation_id, why, at=checked.later)
         if not checked.proceed or checked.account_id is None:
+            if why is DraftReason.REDRAFT:
+                await self._restore_redraft(conversation_id, checked.code)
             logger.info("draft_job_skipped", conversation_id=conversation_id, code=checked.code)
             return checked.code
-        code = await self._draft(checked.account_id, conversation_id, why)
+        code = "failed"
+        try:
+            code = await self._draft(checked.account_id, conversation_id, why)
+        finally:
+            if why is DraftReason.REDRAFT and code != "proposed_awaiting_approval":
+                await self._restore_redraft(conversation_id, code)
         logger.info("draft_job_finished", conversation_id=conversation_id, code=code)
         return code
+
+    async def _restore_redraft(self, conversation_id: int, reason: str) -> None:
+        """A failed replacement leaves the exact original version reviewable.
+
+        H8 owns request-preserving re-drafting. Never re-open superseded,
+        erased, claimed or otherwise terminal work when the legacy writer fails.
+        """
+        if self._presenter is None:
+            return
+        async with transaction(self._factory) as uow:
+            account_id = await uow.session.scalar(
+                select(Conversation.account_id).where(Conversation.id == conversation_id)
+            )
+            if account_id is None:
+                return
+            action_ids = await uow.session.scalars(
+                select(Action.id).where(
+                    Action.account_id == account_id,
+                    Action.conversation_id == conversation_id,
+                    Action.origin != ActionOrigin.DELEGATION_AUTO.value,
+                    Action.text.is_not(None),
+                    or_(
+                        warning_card_filter(),
+                        (Action.state == ActionState.AWAITING_APPROVAL.value)
+                        & Action.freshness_warning.is_not(None),
+                    ),
+                )
+            )
+            for action_id in action_ids:
+                self._presenter.redraft_failed_after_commit(uow.session, action_id, reason)
 
     async def _check(self, conversation_id: int, why: DraftReason) -> _Checked:
         flagged = why in FLAGGED_REASONS
@@ -1249,7 +1431,13 @@ class AssistDraftJob:
                 if isinstance(proposal, Stale):
                     stale = True  # keep the flag; a newer burst is waiting
                 else:
-                    await self._clear(session, account_id, conversation_id, flagged=flagged)
+                    await self._clear(
+                        session,
+                        account_id,
+                        conversation_id,
+                        flagged=flagged,
+                        unless_newer_than=outcome.shown_through_message_id,
+                    )
                     return f"proposed_{proposal.state.value}"
             else:
                 code = _outcome_code(outcome)

@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from assistant.accounts.models import Account
+from assistant.actions.authorship import VersionAuthorship
 from assistant.agent.models import AgentRun, ToolConfirmation
 from tests.integration.business_env import OWNER, deliver, private_message
 from tests.scenarios.p2_drive import Scenario, run_queued, tool_outputs
@@ -59,7 +60,18 @@ async def test_a_model_resume_call_never_resumes(p2: Scenario, tainted: bool) ->
 
 async def test_pause_does_not_block_an_owner_approved_send(p2: Scenario) -> None:
     await deliver(p2.env, private_message(OWNER, "/pause"))
-    row = await p2.seed(state="approved", origin="owner_dictated", base_message_id=None)
+    row = await p2.seed(
+        state="approved",
+        origin="owner_dictated",
+        base_message_id=None,
+        authorship=VersionAuthorship(
+            version=1,
+            kind="owner_dictated",
+            source_ids=[],
+            parent_version=None,
+            retains_generated_text=False,
+        ).model_dump(mode="json"),
+    )
     await p2.execute(row.id)
     assert await paused(p2)
     assert (await p2.action(row.id)).state == "succeeded"

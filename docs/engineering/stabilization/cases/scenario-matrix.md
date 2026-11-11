@@ -61,3 +61,5 @@ restores the old policy: the `retention_review` marker keeps startup closed
 until the latest periods are explicitly reissued/reviewed or complete purge is
 chosen. Fresh consent never certifies that the restored retention policy is
 current.
+
+**D-S17 / H10 amendment (2026-11-10), J08/J09:** a changed captured source never silently drops an owner-reviewable generated body. Expect a warning card with Approve anyway / Re-draft / Discard, rotated tokens, and zero business attempts before approval. Approve anyway sends the shown body once, including standalone delivery after target deletion; Telegram refusal is definite not-sent. `tests/journeys/test_interleavings.py::test_j08_warned_draft_approval_sends_the_shown_version_once` exercises the current writer/tool path in all four locales. The main-model composition journeys remain strict xfails for H4/H6, and J07 for H4; H10 alone does not activate their missing proposal API.

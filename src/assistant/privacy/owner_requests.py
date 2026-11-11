@@ -9,8 +9,8 @@ from sqlalchemy import ColumnElement, case, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry, ControlTurn, PendingInput
-from assistant.actions.lifecycle import clear_authorship_sources
-from assistant.actions.models import Action
+from assistant.actions.lifecycle import clear_authorship_sources, transition
+from assistant.actions.models import Action, ContextFenceRecord
 from assistant.actions.request_models import (
     TERMINAL_REQUEST_STATES,
     OwnerRequest,
@@ -22,8 +22,55 @@ from assistant.actions.requests import (
     expire_requests,
     lock_requests,
 )
-from assistant.actions.states import StateReason
+from assistant.actions.states import PENDING, ActionState, StateReason
+from assistant.conversations.fences import invalidate_fences
+from assistant.conversations.models import Conversation, Message
 from assistant.memory.items import clear_owner_capture_sources
+
+
+async def _purge_request_fences(
+    session: AsyncSession, *, account_id: int, request_id: int, now: datetime
+) -> None:
+    fences = select(ContextFenceRecord.id).where(
+        ContextFenceRecord.account_id == account_id,
+        ContextFenceRecord.facts["request_id"].astext == str(request_id),
+    )
+    rows = (
+        await session.execute(
+            select(Action.id, Action.state, Action.version)
+            .where(
+                Action.account_id == account_id,
+                Action.context_fence_id.in_(fences),
+                Action.state.in_(PENDING),
+            )
+            .order_by(Action.id)
+        )
+    ).all()
+    for action_id, state, version in rows:
+        await transition(
+            session,
+            account_id=account_id,
+            action_id=action_id,
+            from_state=ActionState(state),
+            to_state=ActionState.CANCELLED,
+            reason=StateReason.DATA_DELETED,
+            now=now,
+            expected_version=version,
+        )
+    await session.execute(
+        update(Action)
+        .where(
+            Action.account_id == account_id,
+            Action.context_fence_id.in_(fences),
+        )
+        .values(text=None, context_fence_id=None)
+    )
+    await session.execute(
+        delete(ContextFenceRecord).where(
+            ContextFenceRecord.account_id == account_id,
+            ContextFenceRecord.id.in_(fences),
+        )
+    )
 
 
 async def purge_request_sources(
@@ -50,6 +97,42 @@ async def purge_request_sources(
     await clear_owner_capture_sources(
         session, account_id=account_id, turn_ids=turn_ids, everything=everything
     )
+    scoped = set(conversation_ids)
+    if everything:
+        scoped.update(
+            await session.scalars(
+                select(Conversation.id).where(
+                    Conversation.account_id == account_id,
+                )
+            )
+        )
+    for conversation_id in sorted(scoped):
+        has_content = await session.scalar(
+            select(Message.id)
+            .where(
+                Message.account_id == account_id,
+                Message.conversation_id == conversation_id,
+                Message.text.is_not(None) | Message.media.is_not(None),
+            )
+            .limit(1)
+        )
+        if has_content is not None:
+            await session.execute(
+                update(Conversation)
+                .where(
+                    Conversation.account_id == account_id,
+                    Conversation.id == conversation_id,
+                )
+                .values(content_revision=Conversation.content_revision + 1)
+            )
+        await invalidate_fences(
+            session,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            reason=StateReason.SOURCE_DELETED,
+            now=now,
+            clear=True,
+        )
     source_requests = select(OwnerRequestSource.request_id).where(
         OwnerRequestSource.account_id == account_id,
         OwnerRequestSource.turn_id.in_(turn_ids),
@@ -151,6 +234,7 @@ async def purge_request_sources(
         )
     )
     for row in rows:
+        await _purge_request_fences(session, account_id=account_id, request_id=row.id, now=now)
         await cancel_linked_action(session, row, now=now, clear_text=True)
         await _delete_selection(session, account_id=account_id, request_id=row.id)
         await _clear_authorship_sources(session, account_id=account_id, request_id=row.id)
@@ -260,6 +344,7 @@ async def sweep_requests(session: AsyncSession, *, account_id: int, now: datetim
         )
     )
     for row in old:
+        await _purge_request_fences(session, account_id=account_id, request_id=row.id, now=now)
         await cancel_linked_action(session, row, now=now, reason=StateReason.MAX_AGE)
         await _delete_selection(session, account_id=account_id, request_id=row.id)
         await _clear_authorship_sources(session, account_id=account_id, request_id=row.id)

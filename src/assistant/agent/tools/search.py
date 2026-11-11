@@ -42,7 +42,8 @@ from assistant.agent.tools.registry import (
     ToolOutcome,
     ToolRefs,
 )
-from assistant.conversations.models import Contact
+from assistant.conversations.fences import capture_fence, observe_conversations
+from assistant.conversations.models import Contact, Conversation
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
 from assistant.memory.retrieval import MAX_LIMIT, MAX_QUERIES, SearchFilters, search_messages
@@ -131,6 +132,19 @@ async def search_messages_tool(ctx: ToolContext, args: SearchMessagesArgs) -> To
         start, end = day_range(
             parse_local_date(args.since), parse_local_date(args.until), account.timezone
         )
+        # Search may widen its scope. Lock the account's chats in sorted order
+        # before reading any hit, and keep only returned chats as dependencies.
+        observed = await observe_conversations(
+            session,
+            account_id=ctx.account_id,
+            conversation_ids=tuple(
+                await session.scalars(
+                    select(Conversation.id).where(
+                        Conversation.account_id == ctx.account_id,
+                    )
+                )
+            ),
+        )
         result = await search_messages(
             session,
             ctx.account_id,
@@ -146,6 +160,15 @@ async def search_messages_tool(ctx: ToolContext, args: SearchMessagesArgs) -> To
             widen_empty_scope=True,
         )
         contact_ids = sorted({hit.contact_id for hit in result.hits})
+        returned_chats = {hit.conversation_id for hit in result.hits}
+        fence_id = await capture_fence(
+            session,
+            account_id=ctx.account_id,
+            run_id=ctx.run_id,
+            request=None,
+            reads=tuple(item for item in observed if item.conversation_id in returned_chats),
+            requested_at=services.clock.now(),
+        )
         names: dict[int, str | None] = {
             int(contact_id): display_name
             for contact_id, display_name in (
@@ -180,6 +203,7 @@ async def search_messages_tool(ctx: ToolContext, args: SearchMessagesArgs) -> To
         for hit in result.hits
     ]
     data = {
+        "context_fence_id": fence_id,
         "results": results,
         "result_count": len(results),
         "matched_any_word_only": result.relaxed,

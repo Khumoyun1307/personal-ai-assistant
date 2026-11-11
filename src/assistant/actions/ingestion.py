@@ -21,6 +21,9 @@ are conditional on the state).
 - A contact edit of an action's base message: audit
   `source_edited_after_action` per action; unsent ones →
   `outdated`/`source_edited`.
+- C6 generated dependencies: any changed captured conversation invalidates
+  unclaimed cards, including non-base messages and other-chat reads. The
+  revision fence remains an independent execution check.
 - A deletion of an action's base message: unsent ones →
   `outdated`/`source_deleted`.
 - A deletion of assistant_sent messages: audit `assistant_message_deleted`
@@ -48,6 +51,7 @@ from assistant.actions.models import Action
 from assistant.actions.ports import ApprovalCardPresenter
 from assistant.actions.states import LIVE_CARD, ActionState, StateReason
 from assistant.conversations.events import Direction
+from assistant.conversations.fences import invalidate_fences
 from assistant.conversations.listeners import DeletionChange, MessageChange
 from assistant.conversations.models import Message
 from assistant.core.clock import Clock
@@ -110,6 +114,35 @@ class ActionsIngestionListener:
             )
         elif _content_edit(change) and direction is Direction.CONTACT:
             affected = await self._base_edited(session, change, now=now)
+        if change.new_message and direction in (Direction.CONTACT, Direction.OWNER_MANUAL):
+            affected.extend(
+                await invalidate_fences(
+                    session,
+                    account_id=change.account_id,
+                    conversation_id=change.conversation_id,
+                    reason=(
+                        StateReason.NEW_CONTACT_MESSAGE
+                        if direction is Direction.CONTACT
+                        else StateReason.TAKEOVER
+                    ),
+                    now=now,
+                    include_approved=direction is Direction.OWNER_MANUAL,
+                )
+            )
+        elif _content_edit(change):
+            affected.extend(
+                await invalidate_fences(
+                    session,
+                    account_id=change.account_id,
+                    conversation_id=change.conversation_id,
+                    reason=(
+                        StateReason.OWNER_EDIT
+                        if direction is Direction.OWNER_MANUAL
+                        else StateReason.SOURCE_EDITED
+                    ),
+                    now=now,
+                )
+            )
         self._sync(session, affected)
 
     async def on_deletion(self, session: AsyncSession, change: DeletionChange) -> None:
@@ -128,6 +161,16 @@ class ActionsIngestionListener:
             )
         if change.assistant_sent_ids:
             await self._sent_deleted(session, change, now=now)
+        if change.message_ids:
+            affected.extend(
+                await invalidate_fences(
+                    session,
+                    account_id=change.account_id,
+                    conversation_id=change.conversation_id,
+                    reason=StateReason.SOURCE_DELETED,
+                    now=now,
+                )
+            )
         self._sync(session, affected)
 
     async def _outdate(
@@ -221,7 +264,7 @@ class ActionsIngestionListener:
         logger.info("actions_outdated_by_ingestion", count=len(action_ids))
         if self._presenter is None:
             return  # S04.3's periodic card sync is the safety net
-        for action_id in action_ids:
+        for action_id in sorted(set(action_ids)):
             self._presenter.sync_after_commit(session, action_id)
 
 
@@ -252,8 +295,22 @@ async def _outdate_based_on(
             .order_by(Action.id)
         )
     ).all()
-    moved: list[int] = []
+    from assistant.actions.lifecycle import warn_pending
+
+    warned = await warn_pending(
+        session,
+        account_id=account_id,
+        action_ids=[row[0] for row in rows],
+        reason=reason.value,
+        now=now,
+    )
+    moved: list[int] = list(warned)
     for action_id, state, version in rows:
+        origin = await session.scalar(
+            select(Action.origin).where(Action.account_id == account_id, Action.id == action_id)
+        )
+        if origin != "delegation_auto":
+            continue
         if await transition(
             session,
             account_id=account_id,

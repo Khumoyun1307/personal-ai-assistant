@@ -38,7 +38,7 @@ from tests.fakes.approvals import RecordingApprovalPresenter
 from tests.fakes.channel import FakeChannel
 from tests.fakes.clock import FakeGatewayClock
 from tests.fakes.sender import FakeTelegramSender
-from tests.integration.actions_env import CONFIG, DRAFT_TEXT, Chat, request, seed_chat
+from tests.integration.actions_env import CONFIG, DRAFT_TEXT, Chat, fenced_chat, request, seed_chat
 from tests.integration.business_env import (
     CONTACT,
     OWNER,
@@ -178,7 +178,7 @@ async def second_chat(env: Env, chat: Chat) -> Chat:
         )
         session.add(message)
         await session.flush()
-        return Chat(chat.account_id, conversation.id, message.id)
+        return await fenced_chat(session, Chat(chat.account_id, conversation.id, message.id), now)
 
 
 async def approved(env: Env, chat: Chat, *, text: str = DRAFT_TEXT, **fields: Any) -> int:
@@ -223,6 +223,10 @@ async def inserted(
             approved_text_hash=text_hash(text),
             base_message_id=chat.contact_message_id or None,
             shown_through_message_id=chat.contact_message_id or None,
+            context_fence_id=(
+                None if origin is ActionOrigin.OWNER_DICTATED else chat.context_fence_id
+            ),
+            draft_run_id=None if origin is ActionOrigin.OWNER_DICTATED else chat.draft_run_id,
             expires_at=now + timedelta(hours=2),
             created_at=now,
             updated_at=now,
@@ -311,7 +315,7 @@ async def owner_chat(env: Env) -> Chat:
     await connect(env)
     await grant_managed(env)
     await deliver(env, business_message(message_id=11, message_text="Synthetic", date=T_BASE))
-    async with env.factory() as session:
+    async with env.factory() as session, session.begin():
         row = (
             await session.execute(
                 select(Conversation).where(Conversation.business_chat_id == CONTACT)
@@ -322,8 +326,8 @@ async def owner_chat(env: Env) -> Chat:
                 Message.conversation_id == row.id, Message.direction == "contact"
             )
         )
-    assert message_id is not None
-    return Chat(row.account_id, row.id, message_id)
+        assert message_id is not None
+        return await fenced_chat(session, Chat(row.account_id, row.id, message_id), env.clock.now())
 
 
 async def owner_account(env: Env) -> Account:

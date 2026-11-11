@@ -51,6 +51,13 @@ FAILURES: dict[str, dict[str, Any]] = {
     "chat_ignored": {"conversation": {"mode": "ignore"}},
     "chat_possibly_paused": {"conversation": {"availability": "possibly_paused"}},
     "takeover": {"freshness": {"newest_owner_manual_sent_at": NOW - timedelta(minutes=1)}},
+    "source_edited": {"freshness": {"source_fence_reason": "source_edited"}},
+    "source_unavailable": {"freshness": {"source_fence_reason": "source_unavailable"}},
+    "request_changed": {"freshness": {"source_fence_reason": "request_changed"}},
+    "owner_intent_superseded": {"freshness": {"source_fence_reason": "owner_intent_superseded"}},
+    "fence_takeover": {"freshness": {"source_fence_reason": "takeover"}},
+    "fence_new_contact": {"freshness": {"source_fence_reason": "new_contact_message"}},
+    "fence_deleted": {"freshness": {"source_fence_reason": "source_deleted"}},
     "consent_missing": {"account": {"managed_consent_ok": False}},
     "empty_text": {"action": {"text_length": 0}},
     "too_long": {"action": {"text_length": 4097}},
@@ -210,6 +217,29 @@ def test_execution_failure_maps_to_its_state(
     assert execution_target(decision) == expected
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        (EXECUTION_FAILURES["too_long"], (BLOCKED, StateReason.TOO_LONG)),
+        (EXECUTION_FAILURES["empty_text"], (BLOCKED, StateReason.TOO_LONG)),
+        (EXECUTION_FAILURES["no_reply_right"], (BLOCKED, StateReason.POLICY_DENIED)),
+        (EXECUTION_FAILURES["consent_missing"], (BLOCKED, StateReason.CONSENT_REVOKED)),
+        (EXECUTION_FAILURES["sending_disabled"], (BLOCKED, StateReason.SENDING_DISABLED)),
+        (
+            merged(AUTONOMOUS, {"account": {"autonomy_paused": True}}),
+            (ActionState.CANCELLED, StateReason.AUTONOMY_PAUSED),
+        ),
+    ],
+)
+def test_missing_revision_proof_does_not_mask_an_execution_safety_failure(
+    overrides: dict[str, Any], expected: tuple[ActionState, StateReason]
+) -> None:
+    decision = decide(ctx(**merged(EXECUTION_FAILURES["source_unavailable"], overrides)))
+    assert decision.outcome is Outcome.DENY
+    assert "source_unavailable" in failed_reasons(decision)
+    assert execution_target(decision) == expected
+
+
 @pytest.mark.parametrize("phase", list(Phase))
 def test_window_estimate_never_blocks_an_owner_approved_action(phase: Phase) -> None:
     """Invariant 8 as amended (owner decision 2026-10-30, P2-O20): for an
@@ -287,6 +317,7 @@ def test_checks_list_every_evaluated_rule_in_order() -> None:
         "conversation_owned",
         "conversation_available",
         "no_takeover_since",
+        "source_revision_current",
         "not_stale",
         "not_already_executed",
         "not_expired",
@@ -303,6 +334,7 @@ def test_checks_list_every_evaluated_rule_in_order() -> None:
         "conversation_available",
         "window_open",
         "no_takeover_since",
+        "source_revision_current",
         "target_is_assistant_sent",
         "consent_valid",
     ]

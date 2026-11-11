@@ -110,6 +110,7 @@ def test_rule_names_and_order_match_the_contract() -> None:
         "conversation_available",
         "window_open",
         "no_takeover_since",
+        "source_revision_current",
         "not_stale",
         "not_already_executed",
         "not_expired",
@@ -369,6 +370,37 @@ def test_not_stale_fails_when_the_base_message_was_deleted() -> None:
     # A deleted source is reported even when a newer contact message also exists.
     both = ctx(freshness={"base_message_present": False, "newest_contact_message_id": 101})
     assert outcome(rules.not_stale(both)) == (False, "source_deleted")
+
+
+def test_owner_takeover_uses_request_time_before_action_creation() -> None:
+    context = ctx(
+        freshness={
+            "base_message_sent_at": None,
+            "newest_owner_manual_sent_at": NOW - timedelta(minutes=10),
+        },
+        action={"requested_at": NOW - timedelta(minutes=20), "created_at": NOW},
+    )
+    assert outcome(rules.no_takeover_since(context)) == (False, "takeover")
+
+
+@pytest.mark.parametrize("phase", list(Phase))
+def test_source_revision_is_checked_at_proposal_and_execution(phase: Phase) -> None:
+    context = ctx(phase=phase, freshness={"source_fence_reason": "source_edited"})
+    assert outcome(rules.source_revision_current(context)) == (False, "source_edited")
+
+
+@pytest.mark.parametrize("reason", ["source_edited", "source_deleted", "new_contact_message"])
+def test_owner_freshness_override_never_relaxes_autonomous_freshness(reason: str) -> None:
+    owner = ctx(
+        freshness={"source_fence_reason": reason, "base_message_present": False},
+        action={"freshness_override": True},
+    )
+    assert outcome(rules.source_revision_current(owner)) == OK
+    assert outcome(rules.not_stale(owner)) == OK
+    autonomous = replace(owner, action=replace(owner.action, origin=ActionOrigin.DELEGATION_AUTO))
+    checked = rules.source_revision_current(autonomous)
+    assert not checked.passed
+    assert outcome(rules.not_stale(autonomous)) == (False, "source_deleted")
 
 
 @pytest.mark.parametrize("state", list(ActionState))

@@ -8,6 +8,7 @@ listener, one transaction); cards are made with the real `Drafter` (scripted
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -33,6 +34,7 @@ from tests.integration.drafting_env import (
     assistant_sent,
     contact_says,
     drafting_environment,
+    later,
     message_row_id,
     output,
     owner_automated,
@@ -142,13 +144,16 @@ async def test_an_owner_manual_message_outdates_pending_and_approved_actions(
     live = await draft_card(denv, account_id, conversation)
     await owner_says(denv, "SYNTH-OWNER-TOOK-OVER")
     assert await states(denv, approved, live) == [
-        ("outdated", "takeover"),
+        ("approved", None),
         ("outdated", "takeover"),
     ]
-    assert sorted(denv.presenter.synced) == sorted([approved, live])
+    assert denv.presenter.synced == [live]
 
 
 async def test_an_owner_edit_outdates_without_pausing_autonomy(denv: DraftEnv) -> None:
+    # Generation starts after the existing Telegram message, not eight hours
+    # before it (the generic fixture's server clock precedes its message dates).
+    denv.env.clock.set(datetime.fromtimestamp(later(1), tz=UTC))
     account_id, conversation = await seed_chat(denv, mode="observe")
     owner_message = await owner_says(denv, "SYNTH-OWNER-FIRST")
     async with denv.env.factory() as session, session.begin():
@@ -193,7 +198,7 @@ async def test_a_contact_edit_of_the_base_message_outdates_and_audits(denv: Draf
     assert edited.details == {"message_id": base_row}
 
 
-async def test_a_contact_edit_of_another_message_changes_nothing(denv: DraftEnv) -> None:
+async def test_a_contact_edit_of_another_read_message_outdates(denv: DraftEnv) -> None:
     account_id, conversation = await seed_chat(denv, mode="observe")
     await contact_says(denv, "SYNTH-BASE")  # the newest contact message: the base
     card = await draft_card(denv, account_id, conversation)
@@ -201,7 +206,7 @@ async def test_a_contact_edit_of_another_message_changes_nothing(denv: DraftEnv)
     await deliver(
         denv.env, business_message(message_id=1, message_text="SYNTH-FIRST-EDITED", edit=True)
     )
-    assert await states(denv, card) == [("awaiting_approval", None)]
+    assert await states(denv, card) == [("outdated", "source_edited")]
     assert await audits(denv, "source_edited_after_action") == []
 
 
@@ -247,6 +252,14 @@ async def test_outdating_is_idempotent_when_an_update_is_requeued(denv: DraftEnv
     await deliver(denv.env, update_payload)
     assert await states(denv, first) == [("outdated", "new_contact_message")]
     second = await draft_card(denv, account_id, conversation)
+    # A new card retires the older warning card's approval path. Replaying
+    # the update must preserve that supersession and the new card's token.
+    assert await states(denv, first) == [("outdated", "superseded")]
+    async with denv.env.factory() as session:
+        current = await session.get(Action, second)
+        assert current is not None
+        token = current.approval_token
+    assert token is not None
 
     # `inbox requeue`: the same update is processed again.
     async with denv.env.factory() as session, session.begin():
@@ -257,10 +270,42 @@ async def test_outdating_is_idempotent_when_an_update_is_requeued(denv: DraftEnv
         )
     await denv.env.processor.process_batch()
     assert await states(denv, first, second) == [
-        ("outdated", "new_contact_message"),
+        ("outdated", "superseded"),
         ("awaiting_approval", None),
     ]
+    async with denv.env.factory() as session:
+        current = await session.get(Action, second)
+        assert current is not None
+        assert current.approval_token == token
     assert len(await audits(denv, "action_outdated", subject_id=first)) == 1
+
+
+async def test_a_superseded_warning_cannot_regain_approval_after_a_source_edit(
+    denv: DraftEnv,
+) -> None:
+    account_id, conversation = await seed_chat(denv, mode="observe")
+    first = await draft_card(denv, account_id, conversation)
+    # A stale generation is awaiting approval with a warning. Supersession
+    # must retire that warning's approval path as well as ordinary cards.
+    async with denv.env.factory() as session, session.begin():
+        await session.execute(
+            update(Action)
+            .where(Action.id == first, Action.account_id == account_id)
+            .values(freshness_warning="source_unavailable")
+        )
+    second = await draft_card(denv, account_id, conversation)
+    await deliver(
+        denv.env,
+        business_message(message_id=1, message_text="SYNTH-EDITED", edit=True),
+    )
+    assert await states(denv, first, second) == [
+        ("outdated", "superseded"),
+        ("outdated", "source_edited"),
+    ]
+    async with denv.env.factory() as session:
+        retired = await session.get(Action, first)
+        assert retired is not None
+        assert retired.approval_token is None
 
 
 async def test_owner_automated_and_assistant_sent_messages_change_nothing(

@@ -274,8 +274,8 @@ async def test_a_dictated_message_after_the_owners_own_manual_reply_is_a_normal_
     assert (await action(env, dictated.action_id)).base_message_id is None
     assert answering.state is ActionState.AWAITING_APPROVAL
     assert (await action(env, answering.action_id)).base_message_id == chat.contact_message_id
-    assert proactive.state is ActionState.BLOCKED
-    assert (await action(env, proactive.action_id)).state_reason == "takeover"
+    assert proactive.state is ActionState.AWAITING_APPROVAL
+    assert (await action(env, proactive.action_id)).freshness_warning == "takeover"
 
 
 async def test_only_dictated_text_is_marked_fresh_through_the_newest_contact_message(
@@ -360,8 +360,8 @@ async def test_proposal_waits_for_a_conversation_lock_held_by_ingestion(env: Env
     result = await proposal
 
     # The proposal read the chat only after ingestion committed: a takeover.
-    assert result.state is ActionState.BLOCKED
-    assert (await action(env, result.action_id)).state_reason == "takeover"
+    assert result.state is ActionState.AWAITING_APPROVAL
+    assert (await action(env, result.action_id)).freshness_warning == "takeover"
 
 
 async def test_proposal_audit_rows_are_content_free(env: Env) -> None:

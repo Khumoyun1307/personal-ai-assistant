@@ -21,7 +21,7 @@ from assistant.telegram.control import approvals
 from assistant.telegram.control.approvals import SYNC_MAX_FAILURES
 from tests.fakes.sender import network_error, telegram_error
 from tests.integration.p2_factories import seed_action
-from tests.scenarios.p2_drive import DRAFT, Scenario, advance, m04_environment
+from tests.scenarios.p2_drive import DRAFT, Scenario, advance, m04_environment, press_action
 
 pytestmark = pytest.mark.integration
 
@@ -67,6 +67,45 @@ async def test_a_state_change_outside_the_card_flow_is_shown_within_a_minute(
     s.env.sender.edits.clear()
     await advance(s, 60, periodic=SYNC)
     assert s.env.sender.edits == []
+
+
+@pytest.mark.parametrize("reason", [None, "source_edited", "source_deleted", "new_contact_message"])
+async def test_legacy_outdated_card_is_upgraded_even_when_its_display_state_matches(
+    s: Scenario, reason: str | None
+) -> None:
+    row = await s.seed(
+        state="outdated",
+        state_reason=reason,
+        freshness_warning=None,
+        approval_token=None,
+    )
+    assert row.card_state == "outdated"
+    # Simulate an already rendered pre-H10 card; preparation itself would
+    # otherwise mask the reconciler's selection bug in this fixture.
+    async with transaction(s.env.factory) as uow:
+        action = await uow.session.get(Action, row.id)
+        assert action is not None
+        action.freshness_warning = None
+        action.approval_token = None
+        action.card_state = "outdated"
+    s.env.sender.edits.clear()
+    await advance(s, 60, periodic=SYNC)
+    upgraded = await s.action(row.id)
+    assert upgraded.approval_token is not None
+    assert upgraded.freshness_warning == (reason or "source_unavailable")
+    assert "Warning:" in s.final_card(upgraded)["text"]
+    assert [b["text"] for b in s.card_buttons(upgraded)] == [
+        "Approve anyway",
+        "Re-draft",
+        "Discard",
+    ]
+    token = upgraded.approval_token
+    s.env.sender.edits.clear()
+    await advance(s, 60, periodic=SYNC)
+    assert s.env.sender.edits == []
+    assert (await s.action(row.id)).approval_token == token
+    await press_action(s, row.id, "ok")
+    assert (await s.action(row.id)).state == "approved"
 
 
 async def test_a_card_lost_between_proposal_and_send_is_presented_by_the_sync(

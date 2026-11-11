@@ -15,7 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
 from assistant.actions.models import Action
+from assistant.agent.models import AgentRun
 from assistant.automation.models import Automation
+from assistant.conversations.fences import capture_fence, observe_conversations
 from assistant.conversations.models import Contact, Conversation
 from assistant.core.errors import NotInAccountError
 from assistant.inbox.models import ConversationTriage, Notification, Task
@@ -116,6 +118,32 @@ async def seed_action(
     session: AsyncSession, *, account_id: int, conversation_id: int, **fields: Any
 ) -> Action:
     await _conversation(session, account_id, conversation_id)
+    if (
+        "context_fence_id" not in fields
+        and fields.get("origin", "agent_proposal") == "agent_proposal"
+    ):
+        run = AgentRun(
+            account_id=account_id,
+            run_type="draft_reply",
+            model="synthetic",
+            started_at=fields.get("created_at", NOW),
+        )
+        session.add(run)
+        await session.flush()
+        observed = await observe_conversations(
+            session,
+            account_id=account_id,
+            conversation_ids=(conversation_id,),
+        )
+        fields["context_fence_id"] = await capture_fence(
+            session,
+            account_id=account_id,
+            run_id=run.id,
+            request=None,
+            reads=observed,
+            requested_at=fields.get("created_at", NOW),
+        )
+        fields.setdefault("draft_run_id", run.id)
     row = Action(
         **{
             "account_id": account_id,

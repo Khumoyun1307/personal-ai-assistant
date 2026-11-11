@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from assistant.accounts.models import AuditLogEntry
+from assistant.agent.models import AgentRun
 from assistant.db.uow import transaction
 from tests.integration.business_env import OWNER, deliver, private_message
 from tests.scenarios.p2_drive import Scenario, advance, tool_outputs
@@ -98,10 +99,20 @@ async def test_catch_up_mentions_what_the_assistant_sent_and_drafted(p2: Scenari
     from assistant.agent.tools.registry import ToolContext, ToolServices
     from assistant.agent.tools.summaries import SummarizePeriodArgs, summarize_period_tool
 
+    async with transaction(p2.env.factory) as uow:
+        run = AgentRun(
+            account_id=p2.account_id,
+            run_type="owner_request",
+            model="synthetic",
+            started_at=p2.env.clock.now(),
+        )
+        uow.session.add(run)
+        await uow.session.flush()
+        run_id = run.id
     result = await summarize_period_tool(
         ToolContext(
             account_id=p2.account_id,
-            run_id=1,
+            run_id=run_id,
             run_type="owner_request",
             tainted=False,
             services=ToolServices(

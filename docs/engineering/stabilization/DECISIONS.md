@@ -48,3 +48,9 @@ owner's decision; it does not claim a phase-wide policy cutover is implemented.
 
 Earlier P2/P3 rulings and milestone reports remain historical evidence. The supersession table above is the dated amendment; each owning implementation unit updates its architecture/spec/as-built records in the same PR, without claiming planned behavior is already deployed. P0-2 freezes the changed contracts before dependent units start. D-S15 selects the hybrid journal design; implementation remains required. The owner's 2026-11-10 amendment assigns policy work to the owner personally and removes publication/version/notice dependencies from journal use and stabilization. No model switch, paid evaluation, deploy, external publication, live storage access or milestone completion is implied.
 
+
+## D-S17 — The owner has the final say on drafts (2026-11-10)
+
+Approved by the owner in the H10 rebuild brief. Captured source changes are warnings for owner-approved drafts, including changes during generation, legacy missing revision proof, and existing source-stale `OUTDATED` cards. A card shows a fixed, content-free explanation and **Approve anyway / Re-draft / Discard**. Approval binds to exactly the shown version and text hash; stale buttons cannot approve a replacement. A deleted reply target results in a standalone message. Telegram refusal is definite not-sent, copy-ready and never retried; committed claims and policy/consent/rights checks remain in force. Rights/connection/policy failures remain copy-ready without an approval override. Autonomous sends retain conservative freshness checks. Explicit privacy erasure still clears derived text and cancels affected work.
+
+This amends D-S10 and C6/H10's former blanket stale-rejection rule for owner review. H11 still owns explicit-request precedence over background work. English card wording ships through the current card renderer; I27 owns localization. No prompt or model-routing change is authorized here.

@@ -29,6 +29,7 @@ from assistant.actions.models import Action
 from assistant.actions.proposals import ProposalRequest
 from assistant.actions.states import ActionKind, ActionOrigin
 from assistant.agent.models import AgentRun
+from assistant.conversations.fences import capture_fence, observe_conversations
 from assistant.conversations.models import Contact, Conversation, Message
 from tests.integration.business_env import Env
 
@@ -52,6 +53,8 @@ class Chat:
     account_id: int
     conversation_id: int
     contact_message_id: int
+    context_fence_id: int | None = None
+    draft_run_id: int | None = None
 
 
 async def seed_chat(
@@ -109,7 +112,21 @@ async def seed_chat(
         message_id = await add_message(
             session, account.id, conversation.id, direction="contact", sent_at=anchor
         )
-    return Chat(account.id, conversation.id, message_id)
+    run_id = await seed_run(session, account.id)
+    observed = await observe_conversations(
+        session,
+        account_id=account.id,
+        conversation_ids=(conversation.id,),
+    )
+    fence_id = await capture_fence(
+        session,
+        account_id=account.id,
+        run_id=run_id,
+        request=None,
+        reads=observed,
+        requested_at=now,
+    )
+    return Chat(account.id, conversation.id, message_id, fence_id, run_id)
 
 
 async def add_message(
@@ -145,6 +162,23 @@ async def seed_run(session: AsyncSession, account_id: int) -> int:
     return run.id
 
 
+async def fenced_chat(session: AsyncSession, chat: Chat, now: datetime) -> Chat:
+    """Attach real application-issued proof to a synthetic generated-action fixture."""
+    run_id = await seed_run(session, chat.account_id)
+    observed = await observe_conversations(
+        session, account_id=chat.account_id, conversation_ids=(chat.conversation_id,)
+    )
+    fence_id = await capture_fence(
+        session,
+        account_id=chat.account_id,
+        run_id=run_id,
+        request=None,
+        reads=observed,
+        requested_at=now,
+    )
+    return Chat(chat.account_id, chat.conversation_id, chat.contact_message_id, fence_id, run_id)
+
+
 async def seed_turn(session: AsyncSession, account_id: int) -> int:
     turn = ControlTurn(account_id=account_id, role="owner")
     session.add(turn)
@@ -165,7 +199,12 @@ def request(chat: Chat, **fields: Any) -> ProposalRequest:
         "run_id": None,
         "tool_call_id": None,
         "trigger_turn_id": None,
-        "draft_run_id": None,
+        "draft_run_id": (
+            None if fields.get("origin") is ActionOrigin.OWNER_DICTATED else chat.draft_run_id
+        ),
+        "context_fence_id": (
+            None if fields.get("origin") is ActionOrigin.OWNER_DICTATED else chat.context_fence_id
+        ),
         **fields,
     }
     return ProposalRequest(**values)

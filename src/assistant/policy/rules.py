@@ -36,6 +36,15 @@ REASON_CODES: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "conversation_available": ("chat_ignored", "chat_possibly_paused"),
         "window_open": ("window_closed",),
         "no_takeover_since": ("takeover",),
+        "source_revision_current": (
+            "source_edited",
+            "source_unavailable",
+            "request_changed",
+            "owner_intent_superseded",
+            "fence_takeover",
+            "fence_new_contact",
+            "fence_deleted",
+        ),
         "not_stale": ("source_deleted", "new_contact_message"),
         "not_already_executed": ("already_claimed",),
         "not_expired": ("max_age",),
@@ -131,11 +140,13 @@ def window_open(ctx: PolicyContext) -> CheckResult | None:
 
 
 def no_takeover_since(ctx: PolicyContext) -> CheckResult:
+    if _owner_freshness_override(ctx):
+        return _check("no_takeover_since", None)
     # Telegram dates on both sides, so a late-ingested owner message still counts.
-    # Without a base date (owner-requested actions, decisions R3) the reference
-    # is the action's creation: the owner's request postdates their own replies.
+    # Owner-requested actions use the original request time (D-S10/C6).
+    # Creation time is only the legacy fallback; revision proof is independent.
     freshness = ctx.freshness
-    reference = freshness.base_message_sent_at or ctx.action.created_at
+    reference = freshness.base_message_sent_at or ctx.action.requested_at or ctx.action.created_at
     newest = freshness.newest_owner_manual_sent_at
     return _check(
         "no_takeover_since", _first((newest is not None and newest > reference, "takeover"))
@@ -145,6 +156,8 @@ def no_takeover_since(ctx: PolicyContext) -> CheckResult:
 def not_stale(ctx: PolicyContext) -> CheckResult | None:
     if _execution_only(ctx):
         return None
+    if _owner_freshness_override(ctx):
+        return _check("not_stale", None)
     # Ingestion-order ids only: Telegram dates are never compared with server time.
     newest = ctx.freshness.newest_contact_message_id
     shown = ctx.action.shown_through_message_id
@@ -155,6 +168,35 @@ def not_stale(ctx: PolicyContext) -> CheckResult | None:
             (not ctx.freshness.base_message_present, "source_deleted"),
             (newer_message, "new_contact_message"),
         ),
+    )
+
+
+def source_revision_current(ctx: PolicyContext) -> CheckResult:
+    if _owner_freshness_override(ctx):
+        return _check("source_revision_current", None)
+    reason = ctx.freshness.source_fence_reason
+    if reason is None and ctx.phase is Phase.PROPOSAL and not ctx.freshness.base_message_present:
+        reason = "source_unavailable"
+    reason = (
+        {
+            "takeover": "fence_takeover",
+            "new_contact_message": "fence_new_contact",
+            "source_deleted": "fence_deleted",
+        }.get(reason, reason)
+        if reason is not None
+        else None
+    )
+    return _check(
+        "source_revision_current",
+        reason,
+    )
+
+
+def _owner_freshness_override(ctx: PolicyContext) -> bool:
+    return (
+        ctx.action.freshness_override
+        and ctx.action.kind is ActionKind.SEND_MESSAGE
+        and ctx.action.origin is not ActionOrigin.DELEGATION_AUTO
     )
 
 
@@ -249,6 +291,7 @@ RULES: tuple[Rule, ...] = (
     conversation_available,
     window_open,
     no_takeover_since,
+    source_revision_current,
     not_stale,
     not_already_executed,
     not_expired,

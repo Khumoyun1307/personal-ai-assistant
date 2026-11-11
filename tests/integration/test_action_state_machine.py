@@ -438,8 +438,14 @@ class ActionMachine(RuleBasedStateMachine):
                         )
                         .limit(1)
                     )
-                    assert owner_after is None, "sent after the owner took over"
-                    if newer_contact is not None:
+                    # D-S17: source freshness is advisory only after the owner
+                    # approved the exact warned version. At-most-once and the
+                    # approval/hash invariants above still apply to every send.
+                    if row.freshness_override:
+                        assert row.freshness_warning is not None
+                    else:
+                        assert owner_after is None, "sent after the owner took over"
+                    if newer_contact is not None and not row.freshness_override:
                         # Only a contact message ingested after the claim is allowed.
                         message_at = await session.scalar(
                             select(Message.sent_at).where(Message.id == newer_contact)

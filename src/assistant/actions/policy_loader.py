@@ -7,15 +7,17 @@ Every read is account-scoped; another account's conversation is
 `NotInAccountError` (invariant 12).
 
 Freshness compares Telegram dates only with Telegram dates (the owner's
-newest manual message against the base message, or `created_at` for owner
-requests) and ingestion-order ids only with ingestion-order ids.
+newest manual message against the base message, or the original request time
+for owner requests) and ingestion-order ids only with ingestion-order ids.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,8 +26,9 @@ from assistant.accounts.models import Account
 from assistant.accounts.service import CONSENT_AI_MANAGED, active_consent
 from assistant.actions.authorship import is_ai_generated
 from assistant.actions.config import ActionsConfig
-from assistant.actions.models import Action
+from assistant.actions.models import Action, ContextFenceRecord
 from assistant.actions.states import ActionKind
+from assistant.conversations.fences import ContextFence, check_fence
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.errors import NotInAccountError
 from assistant.core.model_routes import processor_for_model
@@ -252,21 +255,59 @@ async def load_context(
             )
         )
         ai_generated = is_ai_generated(proof, version=facts.version)
+    fence_reason: str | None = None
+    if facts.context_fence_id is not None and facts.generating_run_id is not None:
+        expected_version = facts.expected_request_version
+        if expected_version is None and phase is Phase.EXECUTION:
+            record = await session.scalar(
+                select(ContextFenceRecord).where(
+                    ContextFenceRecord.account_id == account_id,
+                    ContextFenceRecord.id == facts.context_fence_id,
+                )
+            )
+            if record is not None:
+                try:
+                    expected_version = ContextFence.model_validate(record.facts).request_version
+                except ValidationError:
+                    fence_reason = "source_unavailable"
+        checked = await check_fence(
+            session,
+            account_id=account_id,
+            fence_id=facts.context_fence_id,
+            request_id=facts.owner_request_id,
+            expected_request_version=expected_version,
+            run_id=facts.generating_run_id,
+            required_conversation_id=conversation_id,
+        )
+        fence_reason = fence_reason or checked.reason
+    elif ai_generated or facts.context_fence_id is not None:
+        fence_reason = "source_unavailable"
+    freshness = await _freshness(
+        session,
+        account_id=account_id,
+        conversation_id=conversation_id,
+        kind=facts.kind,
+        base_message_id=base_message_id,
+        target_message_id=target_message_id,
+        owner_requested=owner_requested,
+    )
+    if fence_reason is None:
+        reference = freshness.base_message_sent_at or facts.requested_at or facts.created_at
+        owner_at = freshness.newest_owner_manual_sent_at
+        newest = freshness.newest_contact_message_id
+        if owner_at is not None and owner_at > reference:
+            fence_reason = "takeover"
+        elif not freshness.base_message_present:
+            fence_reason = "source_deleted"
+        elif newest is not None and newest > (facts.shown_through_message_id or 0):
+            fence_reason = "new_contact_message"
     return PolicyContext(
         now=now,
         phase=phase,
         account=await _account(session, account_id, config),
         connection=await _connection(session, account_id),
         conversation=conversation,
-        freshness=await _freshness(
-            session,
-            account_id=account_id,
-            conversation_id=conversation_id,
-            kind=facts.kind,
-            base_message_id=base_message_id,
-            target_message_id=target_message_id,
-            owner_requested=owner_requested,
-        ),
+        freshness=replace(freshness, source_fence_reason=fence_reason),
         ingestion=await ingestion_state(session, process_run_id=process_run_id),
         action=facts,
         ai_generated=ai_generated,

@@ -13,6 +13,11 @@ from assistant.actions.states import (
 
 def test_transitions_match_the_architecture_diagram() -> None:
     expected = {
+        ("outdated", "approved"),
+        ("outdated", "rejected"),
+        ("outdated", "expired"),
+        ("outdated", "cancelled"),
+        ("outdated", "revising"),
         ("proposed", "awaiting_approval"),
         ("proposed", "approved"),
         ("proposed", "blocked"),
@@ -47,7 +52,16 @@ def test_transitions_match_the_architecture_diagram() -> None:
 
 
 def test_settled_states_have_no_way_back_to_sending() -> None:
-    assert not any(source in TERMINAL for source, _ in TRANSITIONS)
+    # D-S17 reopens only the exact-version, token-gated warning-card path.
+    settled = TERMINAL - {ActionState.OUTDATED}
+    assert not any(source in settled for source, _ in TRANSITIONS)
+    assert {target for source, target in TRANSITIONS if source is ActionState.OUTDATED} == {
+        ActionState.APPROVED,
+        ActionState.REJECTED,
+        ActionState.EXPIRED,
+        ActionState.CANCELLED,
+        ActionState.REVISING,
+    }
 
 
 def test_delivery_uncertain_moves_only_to_succeeded_or_failed() -> None:

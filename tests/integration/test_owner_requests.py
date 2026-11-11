@@ -379,7 +379,10 @@ async def test_every_unfinished_state_reloads_without_business_effect(env: Env, 
         assert executing == 0
 
 
-async def test_approval_expiry_follows_action_age_and_never_extends_it(env: Env) -> None:
+@pytest.mark.parametrize("warned", [False, True])
+async def test_approval_expiry_follows_action_age_and_never_extends_it(
+    env: Env, *, warned: bool
+) -> None:
     account, conversation, _, request_id = await seed_request(env)
     deadline = env.clock.now() + timedelta(hours=2)
     async with env.factory() as session, session.begin():
@@ -414,6 +417,12 @@ async def test_approval_expiry_follows_action_age_and_never_extends_it(env: Env)
         )
         assert staged.status == "applied"
         assert staged.view.expires_at == deadline
+        if warned:
+            action.state = "outdated"
+            action.freshness_warning = "source_edited"
+            action.approval_token = "Synthetic-warning-token"
+    async with env.factory() as session, session.begin():
+        assert await expire_requests(session, account_id=account, now=env.clock.now()) == 0
     env.clock.advance(hours=2)
     async with env.factory() as session, session.begin():
         assert await expire_requests(session, account_id=account, now=env.clock.now()) == 1
@@ -429,7 +438,7 @@ async def test_approval_expiry_follows_action_age_and_never_extends_it(env: Env)
 
 
 @pytest.mark.parametrize(
-    "state", ["awaiting_approval", "executing", "succeeded", "delivery_uncertain"]
+    "state", ["awaiting_approval", "outdated", "executing", "succeeded", "delivery_uncertain"]
 )
 async def test_cancel_never_resets_a_claim_or_receipt(env: Env, state: str) -> None:
     account, conversation, _, request_id = await seed_request(env)
@@ -455,6 +464,9 @@ async def test_cancel_never_resets_a_claim_or_receipt(env: Env, state: str) -> N
         )
         assert linked.status == "applied"
         action.state = state
+        if state == "outdated":
+            action.freshness_warning = "source_edited"
+            action.approval_token = "Synthetic-warning-token"
     async with env.factory() as session, session.begin():
         cancelled = await update_request(
             session,
@@ -468,7 +480,10 @@ async def test_cancel_never_resets_a_claim_or_receipt(env: Env, state: str) -> N
     async with env.factory() as session:
         action = await session.get(Action, action_id)
         assert action is not None
-        assert action.state == ("cancelled" if state == "awaiting_approval" else state)
+        expected = "cancelled" if state in {"awaiting_approval", "outdated"} else state
+        assert action.state == expected
+        if state == "outdated":
+            assert action.approval_token is None
 
 
 async def test_source_hash_role_offsets_and_span_limit_fail_closed(env: Env) -> None:
@@ -742,7 +757,7 @@ async def test_target_source_loss_never_selects_a_newer_message(env: Env) -> Non
 
 
 @pytest.mark.parametrize("action_state", ["awaiting_approval", "executing"])
-async def test_telegram_target_deletion_invalidates_request_and_body_preserving_claim(
+async def test_telegram_target_deletion_preserves_owner_words_shown_body_and_claim(
     env: Env, action_state: str
 ) -> None:
     account, conversation, turn_id, request_id = await seed_request(env)
@@ -822,24 +837,20 @@ async def test_telegram_target_deletion_invalidates_request_and_body_preserving_
     async with env.factory() as session:
         view = await load_request(session, account_id=account, request_id=request_id)
         assert view is not None
-        assert view.state == "cancelled"
-        assert view.target_message_id is None
-        assert view.action_id is None
-        assert view.action_version is None
-        assert view.sources == ()
+        assert view == asked.view
+        assert view.target_message_id == target_id
+        assert view.action_id == action_id
         request = await session.get(OwnerRequest, request_id)
         assert request is not None
-        assert request.question_input_id is None
-        assert request.focused is False
+        assert request.question_input_id == question.id
         questions = await session.scalar(
             select(func.count()).select_from(PendingInput).where(PendingInput.ref_id == request_id)
         )
-        assert questions == 0
+        assert questions == 1
         action = await session.get(Action, action_id)
         assert action is not None
-        assert action.text is None
-        expected_state = "cancelled" if action_state == "awaiting_approval" else action_state
-        assert action.state == expected_state
+        assert action.text == "Synthetic derived reply"
+        assert action.state == action_state
         target = await session.get(Message, target_id)
         assert target is not None
         assert target.text is None
@@ -854,7 +865,7 @@ async def test_telegram_target_deletion_invalidates_request_and_body_preserving_
             reply_to_message_id=None,
             now=env.clock.now(),
         )
-        assert continuation.status == "none"
+        assert continuation.status == "selected"
 
 
 @pytest.mark.parametrize("action_first", [False, True])

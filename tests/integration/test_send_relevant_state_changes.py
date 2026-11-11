@@ -22,7 +22,7 @@ from assistant.actions.requests import RequestSource, SourceSpan, open_request
 from assistant.actions.source_copy import CopiedBody, copy_request_body
 from assistant.actions.states import ActionOrigin
 from assistant.conversations.models import Conversation, Message
-from tests.integration.actions_env import CONFIG, Chat, request
+from tests.integration.actions_env import CONFIG, Chat, fenced_chat, request
 from tests.integration.business_env import (
     OTHER_CONTACT,
     OWNER,
@@ -99,7 +99,7 @@ async def other_chat(env: Env, chat: Chat) -> Chat:
         env,
         business_message(from_id=OTHER_CONTACT, chat_id=OTHER_CONTACT, message_id=21, date=T_BASE),
     )
-    async with env.factory() as session:
+    async with env.factory() as session, session.begin():
         conversation = (
             await session.execute(
                 select(Conversation).where(Conversation.business_chat_id == OTHER_CONTACT)
@@ -108,8 +108,10 @@ async def other_chat(env: Env, chat: Chat) -> Chat:
         message_id = await session.scalar(
             select(Message.id).where(Message.conversation_id == conversation.id)
         )
-    assert message_id is not None
-    return Chat(chat.account_id, conversation.id, message_id)
+        assert message_id is not None
+        return await fenced_chat(
+            session, Chat(chat.account_id, conversation.id, message_id), env.clock.now()
+        )
 
 
 async def test_connection_disabled_cancels_pending_actions(env: Env) -> None:

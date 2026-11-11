@@ -7,9 +7,9 @@ import pytest
 
 from assistant.conversations.modes import set_mode
 from assistant.db.uow import transaction
-from assistant.llm.port import LLMRequest
+from assistant.llm.port import LLMError, LLMErrorKind, LLMRequest
 from tests.fakes.llm import text_response
-from tests.journeys.harness import Journey, ModelBarrier
+from tests.journeys.harness import JOURNEY_FLAGS, Journey, ModelBarrier, call
 from tests.journeys.locales import TEXT
 from tests.journeys.matrix import owner_input
 from tests.journeys.models import (
@@ -21,12 +21,12 @@ from tests.journeys.models import (
     Locale,
     Restart,
 )
-from tests.scenarios.p2_drive import draft_result, run_queued
+from tests.scenarios.p2_drive import draft_result, owner_draft_result, run_queued
 
 pytestmark = [pytest.mark.integration, pytest.mark.journey]
 
 
-@pytest.mark.xfail(strict=True, reason="needs H10", raises=AssertionError)
+@pytest.mark.xfail(strict=True, reason="needs H4/H6", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("event", ["arrival", "edit-base", "edit-other", "delete", "manual"])
 async def test_j08_j09_source_changes_during_main_model_composition(
@@ -77,8 +77,10 @@ async def test_j08_j09_source_changes_during_main_model_composition(
         barrier.release.set()
         await asyncio.gather(task, return_exceptions=True)
     await task
-    assert not [row for row in await j.rows() if row.state == "awaiting_approval"]
-    assert j.outputs()[-1]["status"] in {"stale", "blocked"}
+    [row] = await j.rows()
+    assert row.state == "awaiting_approval"
+    assert row.freshness_warning is not None
+    assert row.approval_token is not None
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
@@ -127,7 +129,7 @@ async def test_j10_late_assist_cannot_replace_or_revive_owner_intent(
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-@pytest.mark.xfail(strict=True, reason="needs H10", raises=AssertionError)
+@pytest.mark.xfail(strict=True, reason="needs H4", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("deleted", [False, True])
 async def test_j07_retained_older_target_is_loaded_without_latest_fallback(
@@ -154,6 +156,102 @@ async def test_j07_retained_older_target_is_loaded_without_latest_fallback(
         row = await j.bind_card("k")
         assert row.base_message_id == older_id
     await j.check(CountCheck(artifact="business_attempts", count=0))
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("event", ["arrival", "edit", "delete"])
+@pytest.mark.parametrize("redraft_fails", [False, True])
+@pytest.mark.parametrize(
+    "journey_flags", [JOURNEY_FLAGS - {"tool.propose_owner_message"}], ids=["legacy-writer"]
+)
+async def test_j08_warned_draft_approval_sends_the_shown_version_once(
+    journey: Journey,
+    locale: Locale,
+    event: str,
+    journey_flags: frozenset[str],
+    *,
+    redraft_fails: bool,
+) -> None:
+    """D-S17 through the existing owner tool, writer, card and executor."""
+    # This regression pauses the legacy structured writer. H4 deliberately
+    # retires propose_reply; its main-model path is covered by the production
+    # runtime regression in test_owner_proposal_fences, without a nested writer.
+    assert "tool.propose_owner_message" not in journey_flags
+    j = journey
+    await j.language(locale)
+    await j.event(Contact(alias="base", text="CANARY-SYNTH original question."))
+    base = await j.message_id("base")
+    body = TEXT[locale].generated
+
+    async def changed_during_generation(_request: LLMRequest) -> dict[str, Any]:
+        if event == "arrival":
+            await j.event(Contact(alias="new", text="CANARY-SYNTH new question."))
+        elif event == "edit":
+            await j.event(EditMessage(alias="base", text="CANARY-SYNTH edited question."))
+        else:
+            await j.event(DeleteMessage(alias="base"))
+        return owner_draft_result(text=body)
+
+    j.s.fake.parsed.append(changed_during_generation)
+    await j.owner(
+        owner_input("J08", locale)[0],
+        j.read(),
+        call(
+            "propose_reply",
+            conversation_id=j.chats["k"],
+            contact_id=None,
+            mode="reply",
+            answered_message_id=base,
+            guidance=None,
+            min_words=None,
+            max_words=None,
+        ),
+        text_response(TEXT[locale].outcome),
+    )
+    offered = {tool.name for tool in j.s.fake.requests[0].tools}
+    assert "propose_reply" in offered
+    assert "propose_owner_message" not in offered
+    assert j.s.fake.parsed == []
+    card = await j.bind_card("k")
+    assert card.text == body
+    assert card.freshness_warning is not None
+    [rendered] = [
+        delivered
+        for delivered in j.s.env.sender.delivered_control_sends
+        if delivered["message_id"] == card.card_message_id
+    ]
+    assert "Warning:" in rendered["text"]
+    markup = rendered["reply_markup"]
+    assert markup is not None
+    assert [button.text for line in markup.inline_keyboard for button in line] == [
+        "Approve anyway",
+        "Re-draft",
+        "Discard",
+    ]
+    if redraft_fails:
+        # A real card press queues the registered worker; failure must leave
+        # the same body/version approvable and tell the owner what happened.
+        j.s.fake.parsed.append(LLMError(LLMErrorKind.UNAVAILABLE))
+        await j.tap("k", card.version, "redraft")
+        assert await run_queued(j.s, "replies.draft") == 1
+        restored = await j.action("k")
+        assert restored.version == card.version
+        assert restored.text == body
+        assert [b["text"] for b in j.s.card_buttons(restored)] == [
+            "Approve anyway",
+            "Re-draft",
+            "Discard",
+        ]
+        assert any(
+            "could not create a replacement" in item["text"] for item in j.s.env.sender.sends
+        )
+    await j.tap("k", card.version, "approve")
+    await run_queued(j.s, "actions.execute")
+    await j.tap("k", card.version, "approve")
+    await run_queued(j.s, "actions.execute")
+    await j.check(CountCheck(artifact="business_attempts", count=1))
+    assert (await j.action("k")).state == "succeeded"
+    assert j.s.business_sends()[0]["text"] == body
 
 
 @pytest.mark.xfail(strict=True, reason="needs I13", raises=AssertionError)

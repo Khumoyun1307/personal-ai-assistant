@@ -43,6 +43,7 @@ CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
 #: Deliberately explicit — "everything else" would defeat the check.
 NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
     {
+        ("context_fences", "facts"),
         ("owner_requests", "operation"),
         ("owner_requests", "state"),
         ("owner_requests", "selection_basis"),
@@ -59,6 +60,7 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("actions", "authorship"),
         ("actions", "state"),
         ("actions", "state_reason"),
+        ("actions", "freshness_warning"),
         ("actions", "policy_decision"),
         ("actions", "draft_flags"),
         ("actions", "approval_token"),
