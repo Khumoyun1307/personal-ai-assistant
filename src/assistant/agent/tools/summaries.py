@@ -391,16 +391,24 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
     # (S03.7): each chat's own messages only.
     authors: dict[int, dict[int, str]] = {}
     async with transaction(services.session_factory) as uow:
-        if await uow.session.scalar(
+        # An erasure during the calls (a chat recognised as a bot chat, a
+        # deletion) invalidates the run's earlier fence. The chat itself is
+        # left out with its named reason by the store result, so the read is
+        # still reported; the invalidated run just captures no new fence and
+        # can stage no proposal from it.
+        fenced = not await uow.session.scalar(
             select(AgentRun.sources_invalidated).where(
                 AgentRun.account_id == ctx.account_id, AgentRun.id == ctx.run_id
             )
-        ):
-            return ToolOutcome("error", {"reason": "source_unavailable"})
-        observed = await observe_conversations(
-            uow.session,
-            account_id=ctx.account_id,
-            conversation_ids=tuple(item.conversation_id for item in chosen),
+        )
+        observed = (
+            await observe_conversations(
+                uow.session,
+                account_id=ctx.account_id,
+                conversation_ids=tuple(item.conversation_id for item in chosen),
+            )
+            if fenced
+            else ()
         )
         for item, outcome in zip(chosen, outcomes, strict=True):
             if outcome.summary is not None:
@@ -414,14 +422,15 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
             ctx.account_id,
             [item.conversation_id for item in chosen if item.awaiting_owner_reply],
         )
-        await capture_fence(
-            uow.session,
-            account_id=ctx.account_id,
-            run_id=ctx.run_id,
-            request=None,
-            reads=observed,
-            requested_at=now,
-        )
+        if fenced:
+            await capture_fence(
+                uow.session,
+                account_id=ctx.account_id,
+                run_id=ctx.run_id,
+                request=None,
+                reads=observed,
+                requested_at=now,
+            )
 
     entries: list[dict[str, Any]] = []
     not_summarized: list[dict[str, Any]] = []
@@ -813,14 +822,17 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
     async with transaction(services.session_factory) as uow:
         session = uow.session
         ids = [c.conversation_id for c in candidates]
-        if await session.scalar(
+        # See the catch-up read: an erasure during the inline checks leaves
+        # the chat out with its named reason; the run just captures no new fence.
+        fenced = not await session.scalar(
             select(AgentRun.sources_invalidated).where(
                 AgentRun.account_id == ctx.account_id, AgentRun.id == ctx.run_id
             )
-        ):
-            return ToolOutcome("error", {"reason": "source_unavailable"})
-        observed = await observe_conversations(
-            session, account_id=ctx.account_id, conversation_ids=ids
+        )
+        observed = (
+            await observe_conversations(session, account_id=ctx.account_id, conversation_ids=ids)
+            if fenced
+            else ()
         )
         rolling = await summaries.rolling_summaries(session, ctx.account_id, ids)
         pending = {
@@ -851,14 +863,15 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             conversation_ids=ids,
             limit_per_conversation=catch_up.ATTENTION_TASKS,
         )
-        await capture_fence(
-            session,
-            account_id=ctx.account_id,
-            run_id=ctx.run_id,
-            request=None,
-            reads=observed,
-            requested_at=now,
-        )
+        if fenced:
+            await capture_fence(
+                session,
+                account_id=ctx.account_id,
+                run_id=ctx.run_id,
+                request=None,
+                reads=observed,
+                requested_at=now,
+            )
 
     tz = account.timezone
     can_draft = _draft_offered(ctx)
