@@ -50,7 +50,6 @@ from assistant.inbox.models import InboundUpdate
 from assistant.memory.search import detect_script, guess_lang, normalize
 from assistant.memory.summaries import invalidate_covering
 from assistant.observability.logging import get_logger
-from assistant.privacy.owner_requests import purge_request_sources
 
 logger = get_logger(__name__)
 
@@ -229,6 +228,7 @@ async def _lock_conversation(
         .where(Conversation.account_id == account_id)
         .where(Conversation.business_chat_id == business_chat_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one()
 
@@ -241,6 +241,7 @@ async def _find_conversation(
         .where(Conversation.account_id == account_id)
         .where(Conversation.business_chat_id == business_chat_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()
 
@@ -355,7 +356,17 @@ async def record_message(
             )
 
     # Step 5: something new for the AI to look at, once consent allows.
-    content_changed = effect in (Effect.INSERTED, Effect.UPDATED) and not metadata_only
+    content_changed = (
+        effect in (Effect.INSERTED, Effect.UPDATED, Effect.PRE_COVERAGE_EDIT) and not metadata_only
+    )
+    if (
+        not metadata_only
+        and effect in (Effect.INSERTED, Effect.UPDATED, Effect.PRE_COVERAGE_EDIT)
+        and event.direction in (Direction.CONTACT, Direction.OWNER_MANUAL)
+    ):
+        conversation.content_revision += 1
+    if effect in (Effect.INSERTED, Effect.RESURFACED) and event.direction is Direction.OWNER_MANUAL:
+        conversation.owner_intent_revision += 1
     if effect is Effect.UPDATED and not metadata_only and message_id is not None:
         # The pre-edit text must not live on in a summary either (M03 D66).
         await invalidate_covering(session, conversation, [message_id], now=now)
@@ -363,6 +374,7 @@ async def record_message(
         conversation.pending_ai_since = now
     conversation.updated_at = now
 
+    await session.flush()
     logger.info(
         "business_message_recorded",
         conversation_id=conversation.id,
@@ -530,6 +542,8 @@ async def record_deletion(
         )
     ).all()
     content_lost = tuple(int(row[0]) for row in content_lost_rows)
+    if content_lost:
+        conversation.content_revision += 1
     assistant_sent = tuple(
         int(row[0]) for row in content_lost_rows if row[1] == Direction.ASSISTANT_SENT
     )
@@ -569,16 +583,9 @@ async def record_deletion(
             )
         )
     if purged_ids:
-        # Include already-cleared targets: a repeated deletion must also
-        # remove any surviving request proof and derived body. Ingestion
-        # already holds the conversation lock; do not upgrade its account lock.
-        await purge_request_sources(
-            session,
-            account_id=account_id,
-            message_ids=purged_ids,
-            now=now,
-            locked=True,
-        )
+        # D-S17: deleting a Telegram reply target does not erase the owner's
+        # shown draft. Explicit privacy/retention purges still invalidate and
+        # clear derived work through purge_request_sources.
         await session.execute(
             update(InboundUpdate)
             .where(InboundUpdate.account_id == account_id)
@@ -588,6 +595,7 @@ async def record_deletion(
     # A deleted message must not live on in a summary (S03.2, M03 D63).
     await invalidate_covering(session, conversation, content_lost, now=now)
     conversation.updated_at = now
+    await session.flush()
     logger.info(
         "business_messages_deleted",
         conversation_id=conversation.id,

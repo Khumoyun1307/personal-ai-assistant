@@ -1,15 +1,15 @@
-"""Synthetic C6 settlement seam; production has no passing default."""
+"""Synthetic current-read seam for tests that do not exercise generation races."""
 
 from datetime import datetime
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.actions.owner_fence import StoredOwnerProposalFence
 from assistant.actions.proposals import CurrentOwnerFence, UnavailableOwnerFence
-from assistant.conversations.models import Conversation, Message
+from assistant.conversations.fences import capture_fence, observe_conversations
 
 
-class FakeOwnerFence:
+class FakeOwnerFence(StoredOwnerProposalFence):
     async def check_fence(
         self,
         session: AsyncSession,
@@ -24,32 +24,24 @@ class FakeOwnerFence:
     ) -> CurrentOwnerFence | UnavailableOwnerFence:
         if fence_id not in (None, 1):
             return UnavailableOwnerFence("not_found")
-        await session.scalar(
-            select(Conversation.id)
-            .where(Conversation.account_id == account_id, Conversation.id == conversation_id)
-            .with_for_update()
+        reads = await observe_conversations(
+            session, account_id=account_id, conversation_ids=(conversation_id,)
         )
-        watermark = await session.scalar(
-            select(Message.id)
-            .where(
-                Message.account_id == account_id,
-                Message.conversation_id == conversation_id,
-                Message.direction == "contact",
-            )
-            .order_by(Message.id.desc())
-            .limit(1)
+        issued = await capture_fence(
+            session,
+            account_id=account_id,
+            run_id=run_id,
+            request=None,
+            reads=reads,
+            requested_at=requested_at,
         )
-        return CurrentOwnerFence(1, watermark)
-
-    async def bind_action(
-        self,
-        session: AsyncSession,
-        *,
-        account_id: int,
-        action_id: int,
-        version: int,
-        fence: CurrentOwnerFence,
-        request_id: int,
-        requested_at: datetime,
-    ) -> None:
-        return None
+        return await super().check_fence(
+            session,
+            account_id=account_id,
+            run_id=run_id,
+            fence_id=issued,
+            request_id=request_id,
+            expected_request_version=expected_request_version,
+            conversation_id=conversation_id,
+            requested_at=requested_at,
+        )

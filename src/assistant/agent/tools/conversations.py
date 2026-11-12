@@ -53,6 +53,7 @@ from assistant.agent.tools.registry import (
     ToolRefs,
 )
 from assistant.conversations import read
+from assistant.conversations.fences import capture_fence
 from assistant.conversations.models import Conversation
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
@@ -234,6 +235,14 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
             limit=args.limit or 30,
             message_id=args.message_id,
         )
+        fence_id = await capture_fence(
+            session,
+            account_id=ctx.account_id,
+            run_id=ctx.run_id,
+            request=None,
+            reads=(page.observed,),
+            requested_at=services.clock.now(),
+        )
         stored = await summaries.rolling_summary(session, ctx.account_id, conversation_id)
         preferences = (
             await items.effective_owner_preferences(
@@ -292,6 +301,7 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
         "ok",
         {
             "conversation": _row(page.conversation, tz),
+            "context_fence_id": fence_id,
             "messages": [
                 {
                     "message_id": m.message_id,

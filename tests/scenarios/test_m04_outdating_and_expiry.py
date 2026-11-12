@@ -112,16 +112,29 @@ async def test_revoking_managed_consent_cancels_a_queued_ai_draft(p2: Scenario) 
     assert len(p2.business_sends()) == 1
 
 
-async def test_removing_the_reply_right_blocks_an_approved_draft(p2: Scenario) -> None:
-    row = await p2.seed(state="approved")
+@pytest.mark.parametrize("warned", [False, True])
+async def test_removing_the_reply_right_blocks_an_approved_draft(
+    p2: Scenario, *, warned: bool
+) -> None:
+    row = await p2.seed(state="awaiting_approval" if warned else "approved")
+    if warned:
+        # Reproduce a warning card that is still awaiting the owner's choice
+        # when Telegram removes the right to reply.
+        await deliver(p2.env, business_message(message_id=102, date=p2.date + 1))
+        assert (await p2.action(row.id)).freshness_warning == "new_contact_message"
     await deliver(p2.env, connection_update(rights=()))
     await p2.execute(row.id)
     result = await p2.action(row.id)
     assert result.state in {"blocked", "outdated"}
     assert result.state_reason == "rights_changed"
+    assert result.approval_token is None
+    assert result.freshness_warning is None
     assert p2.business_sends() == []
     await advance(p2, 0, periodic=("system.sync_action_cards",))
     p2.assert_copy_ready(result)
+    assert not any(
+        str(button.get("callback_data", "")).endswith(":ok") for button in p2.card_buttons(result)
+    )
 
 
 async def test_the_window_closing_expires_an_autonomous_draft_with_copy_ready_text(

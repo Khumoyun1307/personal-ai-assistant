@@ -22,6 +22,7 @@ pytestmark = pytest.mark.integration
 SCRATCH = "assistant_migration_test"
 
 EXPECTED_TABLES = {
+    "context_fences",
     "notification_sources",
     "privacy_journal",
     "privacy_journal_heads",
@@ -491,7 +492,7 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0021"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0023"]
 
 
 def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
@@ -512,6 +513,65 @@ def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
             ).fetchone()
             is None
         )
+    run_alembic(scratch_url, "head")
+
+
+def test_0023_fence_erasure_marks_the_run_and_round_trips(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url)) as conn:
+        account, _ = _phase_conversation(conn, 81023)
+        run = conn.execute(
+            "INSERT INTO app.agent_runs (account_id, run_type, model) "
+            "VALUES (%s, 'owner_request', 'synthetic') RETURNING id, sources_invalidated",
+            (account,),
+        ).fetchone()
+        assert run is not None
+        assert run[1] is False
+        conn.execute(
+            "INSERT INTO app.context_fences (account_id, run_id, facts) VALUES (%s, %s, '{}')",
+            (account, run[0]),
+        )
+        conn.execute("DELETE FROM app.context_fences WHERE account_id = %s", (account,))
+        invalidated = conn.execute(
+            "SELECT sources_invalidated FROM app.agent_runs WHERE account_id = %s AND id = %s",
+            (account, run[0]),
+        ).fetchone()
+        assert invalidated == (True,)
+    run_alembic(scratch_url, "0022", down=True)
+    assert "sources_invalidated" not in _columns(scratch_url, "agent_runs")
+    assert "context_fences" in tables_in(scratch_url, "app")
+    assert "privacy_journal" in tables_in(scratch_url, "app")
+    run_alembic(scratch_url, "head")
+    assert "sources_invalidated" in _columns(scratch_url, "agent_runs")
+
+
+def test_0022_source_fences_round_trip_preserves_candidates_and_privacy_journal(
+    scratch_url: str,
+) -> None:
+    run_alembic(scratch_url, "head")
+    assert "context_fences" in tables_in(scratch_url, "app")
+    assert {"content_revision", "owner_intent_revision"} <= _columns(scratch_url, "conversations")
+    assert {
+        "context_fence_id",
+        "requested_at",
+        "owner_request_id",
+        "freshness_warning",
+        "freshness_override",
+    } <= _columns(scratch_url, "actions")
+    run_alembic(scratch_url, "0021", down=True)
+    assert "context_fences" not in tables_in(scratch_url, "app")
+    assert {"content_revision", "owner_intent_revision"}.isdisjoint(
+        _columns(scratch_url, "conversations")
+    )
+    assert {
+        "context_fence_id",
+        "requested_at",
+        "owner_request_id",
+        "freshness_warning",
+        "freshness_override",
+    }.isdisjoint(_columns(scratch_url, "actions"))
+    assert "resolution_candidates" in _columns(scratch_url, "owner_requests")
+    assert {"privacy_journal", "privacy_journal_heads"} <= tables_in(scratch_url, "app")
     run_alembic(scratch_url, "head")
 
 

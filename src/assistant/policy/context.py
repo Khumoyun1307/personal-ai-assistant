@@ -54,6 +54,7 @@ class Freshness:
     base_message_sent_at: datetime | None
     base_message_present: bool
     target_is_assistant_sent: bool | None
+    source_fence_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +75,12 @@ class ActionFacts:
     expires_at: datetime | None
     shown_through_message_id: int | None
     owner_retry: bool
+    requested_at: datetime | None = None
+    context_fence_id: int | None = None
+    generating_run_id: int | None = None
+    owner_request_id: int | None = None
+    expected_request_version: int | None = None
+    freshness_override: bool = False
 
 
 @dataclass(frozen=True, slots=True)

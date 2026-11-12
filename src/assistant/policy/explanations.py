@@ -56,6 +56,13 @@ EXPLANATIONS: Mapping[str, str] = MappingProxyType(
             "sent. Copy the text and send it yourself if you still want to."
         ),
         "takeover": "You replied in this chat yourself after this draft was made.",
+        "fence_takeover": "You replied while this draft was being prepared. Ask for a new draft.",
+        "source_edited": "A message used to prepare this draft changed. Ask for a new draft.",
+        "source_unavailable": "This draft has no current source proof. Ask for a new draft.",
+        "request_changed": "The request changed while this draft was being prepared.",
+        "owner_intent_superseded": "A later owner request took precedence over this draft.",
+        "fence_new_contact": "A new message arrived while this draft was being prepared.",
+        "fence_deleted": "Content used to prepare this draft was deleted or expired.",
         "source_deleted": (
             "The message this draft answers was deleted. Ask for a new draft if you still "
             "want to reply."

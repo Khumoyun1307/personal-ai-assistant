@@ -43,6 +43,7 @@ from assistant.llm.port import LLMRequest
 from assistant.memory.models import ConversationSummary
 from assistant.privacy.deletion import delete_managed_data
 from tests.fakes.llm import FakeLLM
+from tests.integration.actions_env import seed_run
 from tests.integration.agent_env import summarizer
 from tests.integration.business_env import (
     CONTACT,
@@ -156,9 +157,12 @@ def delete(
 
 
 async def tool_ctx(env: Env, fake: FakeLLM, **config: Any) -> ToolContext:
+    owner = await account_id(env)
+    async with env.factory() as session, session.begin():
+        run_id = await seed_run(session, owner)
     return ToolContext(
-        account_id=await account_id(env),
-        run_id=0,
+        account_id=owner,
+        run_id=run_id,
         run_type="owner_request",
         tainted=False,
         services=ToolServices(

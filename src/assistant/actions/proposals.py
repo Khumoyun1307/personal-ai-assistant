@@ -5,9 +5,9 @@ with the proposal-phase policy, whether it becomes an approval card
 (`awaiting_approval`) or is `blocked` with copy-ready text. It never sends,
 never presents a card and never defers a job: callers do that after commit.
 
-Locks follow the global order (account `FOR SHARE`, then the conversation
-`FOR UPDATE`), so concurrent proposals for one chat serialize and the chat
-keeps at most one live card.
+Locks follow the global order: account SHARE, sorted dependency/recipient
+conversations UPDATE, then the linked request. Concurrent proposals for a
+chat serialize and it keeps at most one live card.
 """
 
 from __future__ import annotations
@@ -17,18 +17,25 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.callbacks import new_token
-from assistant.accounts.models import Account
+from assistant.accounts.models import Account, ControlTurn
 from assistant.actions.authorship import VersionAuthorship, generated_authorship, is_ai_generated
 from assistant.actions.config import ActionsConfig
-from assistant.actions.lifecycle import sendable_length, transition
-from assistant.actions.models import Action
+from assistant.actions.lifecycle import (
+    legacy_warning_card_filter,
+    sendable_length,
+    transition,
+    warning_card_filter,
+)
+from assistant.actions.models import Action, ContextFenceRecord
 from assistant.actions.policy_loader import decision_from_record, decision_record, load_context
+from assistant.actions.request_models import OwnerRequest
 from assistant.actions.states import LIVE_CARD, ActionKind, ActionOrigin, ActionState, StateReason
+from assistant.conversations.fences import ContextFence, FenceReason, lock_fence_conversations
 from assistant.conversations.models import Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
@@ -42,6 +49,7 @@ class CurrentOwnerFence:
 
     fence_id: int
     shown_through_message_id: int | None
+    warning: FenceReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +118,10 @@ class ProposalRequest:
     draft_run_id: int | None
     draft_flags: Mapping[str, Any] | None = None
     authorship: VersionAuthorship | None = None
+    context_fence_id: int | None = None
+    requested_at: datetime | None = None
+    owner_request_id: int | None = None
+    expected_request_version: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +162,47 @@ async def propose(
     if (existing := await _by_call(session, request)) is not None:
         return _reused(existing)
     await _lock_account_share(session, request.account_id)
-    await _lock_conversation_update(session, request.account_id, request.conversation_id)
+    # Privacy erasure may have removed only some of this run's proofs.
+    # Surviving fences must never authorize recreating erased derived text.
+    for generating_run_id in {request.run_id, request.draft_run_id} - {None}:
+        invalidated = await session.scalar(
+            text(
+                "SELECT sources_invalidated FROM app.agent_runs "
+                "WHERE account_id = :account_id AND id = :run_id"
+            ),
+            {"account_id": request.account_id, "run_id": generating_run_id},
+        )
+        if invalidated:
+            raise ProposalRefused("source_unavailable")
+    await lock_fence_conversations(
+        session,
+        account_id=request.account_id,
+        conversation_id=request.conversation_id,
+        fence_id=request.context_fence_id,
+    )
+    if request.owner_request_id is not None:
+        owned_request = await session.scalar(
+            select(OwnerRequest.id)
+            .where(
+                OwnerRequest.account_id == request.account_id,
+                OwnerRequest.id == request.owner_request_id,
+            )
+            .with_for_update()
+        )
+        if owned_request is None:
+            raise ProposalRefused("source_unavailable")
+    if request.base_message_id is not None:
+        base = await session.scalar(
+            select(Message).where(
+                Message.account_id == request.account_id,
+                Message.conversation_id == request.conversation_id,
+                Message.id == request.base_message_id,
+            )
+        )
+        if base is None or base.purged_at is not None:
+            raise ProposalRefused("source_unavailable")
+        if base.deleted_at is not None and request.context_fence_id is None:
+            raise ProposalRefused("source_unavailable")
     # A retried owner turn reuses its live card instead of superseding it.
     if (live := await _live_for_turn(session, request)) is not None:
         return _reused(live)
@@ -161,6 +213,26 @@ async def propose(
     if shown_through is None and request.origin is ActionOrigin.OWNER_DICTATED:
         shown_through = await _newest_contact_id(session, request)
     expires_at = now + config.approval_max_age  # owner-approved: max age only (P2-O20)
+    requested_at = request.requested_at
+    if request.context_fence_id is not None:
+        record = await session.scalar(
+            select(ContextFenceRecord).where(
+                ContextFenceRecord.account_id == request.account_id,
+                ContextFenceRecord.id == request.context_fence_id,
+            )
+        )
+        if record is None:
+            # Explicit privacy erasure may remove an in-flight generation's
+            # proof. It must not recreate content derived from the erased scope.
+            raise ProposalRefused("source_unavailable")
+        requested_at = ContextFence.model_validate(record.facts).requested_at
+    elif request.trigger_turn_id is not None:
+        requested_at = await session.scalar(
+            select(ControlTurn.created_at).where(
+                ControlTurn.account_id == request.account_id,
+                ControlTurn.id == request.trigger_turn_id,
+            )
+        )
     facts = ActionFacts(
         action_id=None,
         kind=request.kind,
@@ -172,6 +244,13 @@ async def propose(
         expires_at=expires_at,
         shown_through_message_id=shown_through,
         owner_retry=False,
+        requested_at=requested_at,
+        context_fence_id=request.context_fence_id,
+        generating_run_id=request.draft_run_id or request.run_id,
+        owner_request_id=request.owner_request_id,
+        expected_request_version=request.expected_request_version,
+        # Source freshness is advisory for an owner-reviewable proposal.
+        freshness_override=True,
     )
     # Decisions R3: an owner request is measured from its own creation, never
     # from its base message. A dictated message has a base message only when
@@ -216,7 +295,10 @@ async def propose(
             to_state=ActionState.AWAITING_APPROVAL,
             reason=None,
             now=now,
-            values={"approval_token": new_token()},
+            values={
+                "approval_token": new_token(),
+                "freshness_warning": context.freshness.source_fence_reason,
+            },
             details={"authorship": _authorship(request)},
         )
         return ProposalResult(action_id, ActionState.AWAITING_APPROVAL, False, superseded, decision)
@@ -303,7 +385,7 @@ async def _live_for_turn(session: AsyncSession, request: ProposalRequest) -> Act
             Action.account_id == request.account_id,
             Action.conversation_id == request.conversation_id,
             Action.trigger_turn_id == request.trigger_turn_id,
-            Action.state.in_([state.value for state in LIVE_CARD]),
+            or_(Action.state.in_([state.value for state in LIVE_CARD]), warning_card_filter()),
         )
     )
 
@@ -343,6 +425,9 @@ async def _insert(
             text=request.text,
             base_message_id=base_message_id,
             shown_through_message_id=facts.shown_through_message_id,
+            context_fence_id=request.context_fence_id,
+            requested_at=facts.requested_at,
+            owner_request_id=request.owner_request_id,
             run_id=request.run_id,
             tool_call_id=request.tool_call_id,
             draft_run_id=request.draft_run_id,
@@ -365,6 +450,27 @@ async def _supersede_live(
     session: AsyncSession, request: ProposalRequest, *, new_action_id: int, now: datetime
 ) -> int | None:
     """Outdate the chat's live card, if any (the index allows at most one)."""
+    # A new valid proposal retires any older warning card's approval path.
+    # Its stored body remains copy-ready; it cannot approve a newer version.
+    await session.execute(
+        update(Action)
+        .where(
+            Action.account_id == request.account_id,
+            Action.conversation_id == request.conversation_id,
+            Action.state == ActionState.OUTDATED.value,
+            or_(
+                Action.freshness_warning.is_not(None),
+                legacy_warning_card_filter(include_replaced=True),
+            ),
+        )
+        .values(
+            state_reason=StateReason.SUPERSEDED.value,
+            freshness_warning=None,
+            approval_token=None,
+            card_state=None,
+            updated_at=now,
+        )
+    )
     live = (
         await session.execute(
             select(Action.id, Action.state, Action.version)

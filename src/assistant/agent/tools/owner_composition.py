@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry
@@ -348,6 +348,7 @@ async def _link(
     request.updated_at = ctx.services.clock.now()
     if action.expires_at is not None:
         request.expires_at = action.expires_at
+    await session.flush()
 
 
 async def propose_owner_message_tool(
@@ -421,8 +422,8 @@ async def propose_owner_message_tool(
                     Message.conversation_id == args.conversation_id,
                     Message.id == args.answered_message_id,
                     Message.direction == "contact",
-                    Message.text.is_not(None),
-                    Message.deleted_at.is_(None),
+                    Message.purged_at.is_(None),
+                    or_(Message.text.is_not(None), Message.deleted_at.is_not(None)),
                 )
             )
             if target is None:
@@ -467,6 +468,10 @@ async def propose_owner_message_tool(
                     tool_call_id=ctx.call_id,
                     trigger_turn_id=ctx.turn_id,
                     draft_run_id=None,
+                    context_fence_id=fence.fence_id,
+                    requested_at=request.requested_at,
+                    owner_request_id=request.id,
+                    expected_request_version=args.request_version,
                     draft_flags={
                         "mode": args.mode,
                         "target": "answered" if args.answered_message_id is not None else "none",
@@ -662,6 +667,9 @@ async def revise_owner_draft_tool(ctx: ToolContext, args: ReviseOwnerDraftArgs) 
             draft_flags=action.draft_flags,
             shown_through_message_id=fence.shown_through_message_id,
             base_message_id=action.base_message_id,
+            context_fence_id=fence.fence_id,
+            requested_at=request.requested_at,
+            freshness_warning=fence.warning,
             now=now,
             authorship=VersionAuthorship(
                 version=args.expected_version + 1,

@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from assistant import bootstrap
+from assistant.actions.owner_fence import StoredOwnerProposalFence
 from assistant.agent.monitor_eval import MonitorEvaluator
 from assistant.automation.monitor_trigger import MonitorIngestionListener
 from assistant.automation.monitors import MON_CARD, MonitorMatchRenderer
@@ -85,6 +86,7 @@ def test_an_injected_llm_is_used_as_is(clean_env: None) -> None:
     )
 
     assert runtime._llm is fake
+    assert isinstance(runtime._owner_fence, StoredOwnerProposalFence)
 
 
 @pytest.mark.parametrize("flags", ["", "notifications.deliver"])

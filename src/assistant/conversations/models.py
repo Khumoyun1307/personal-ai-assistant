@@ -98,6 +98,8 @@ class Conversation(Base):
         _enum_check("kind", CONVERSATION_KINDS, "kind"),
         _enum_check("mode", CONVERSATION_MODES, "mode"),
         _enum_check("availability", AVAILABILITY_STATES, "availability"),
+        CheckConstraint("content_revision >= 0", name="content_revision"),
+        CheckConstraint("owner_intent_revision >= 0", name="owner_intent_revision"),
         CheckConstraint(
             "autonomy_paused_reason IS NULL OR "
             "autonomy_paused_reason IN ('takeover', 'ingest_error')",
@@ -108,6 +110,12 @@ class Conversation(Base):
     id: Mapped[IdPk]
     recovery_id: Mapped[RecoveryId]
     account_id: Mapped[int] = _account_fk()
+    content_revision: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=sql_text("0")
+    )
+    owner_intent_revision: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=sql_text("0")
+    )
     kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=sql_text("'business'"))
     business_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     contact_id: Mapped[int] = mapped_column(

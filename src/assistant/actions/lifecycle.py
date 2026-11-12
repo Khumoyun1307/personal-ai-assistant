@@ -18,8 +18,9 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
-from sqlalchemy import func, or_, select, tuple_, update
+from sqlalchemy import ColumnElement, and_, case, false, func, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from assistant.accounts.callbacks import new_token
 from assistant.accounts.models import AuditLogEntry
@@ -37,6 +38,165 @@ from assistant.conversations.models import Conversation
 from assistant.core.delivery import MAX_TEXT_LENGTH
 from assistant.core.reply_window import SAFETY_MARGIN, closes_at, is_open
 
+# Content-free reasons shared by ingestion, settlement and card rendering.
+FRESHNESS_REASONS = frozenset(
+    {
+        "source_edited",
+        "source_deleted",
+        "new_contact_message",
+        "takeover",
+        "owner_edit",
+        "owner_intent_superseded",
+        "request_changed",
+        "source_unavailable",
+    }
+)
+
+
+def legacy_warning_card_filter(*, include_replaced: bool = False) -> ColumnElement[bool]:
+    """Source-stale owner card eligible for a D-S17 approval-path upgrade.
+
+    Supersession includes replaced rows so it can retire them atomically;
+    reconciliation must never reauthorize a card with a newer replacement.
+    """
+    eligible = and_(
+        Action.state == ActionState.OUTDATED.value,
+        Action.origin != ActionOrigin.DELEGATION_AUTO.value,
+        Action.text.is_not(None),
+        or_(Action.state_reason.is_(None), Action.state_reason.in_(FRESHNESS_REASONS)),
+        Action.freshness_warning.is_(None),
+        Action.approval_token.is_(None),
+    )
+    if include_replaced:
+        return eligible
+    replacement = aliased(Action)
+    has_replacement = (
+        select(replacement.id)
+        .where(
+            replacement.account_id == Action.account_id,
+            replacement.conversation_id == Action.conversation_id,
+            replacement.kind == Action.kind,
+            replacement.id > Action.id,
+            or_(
+                replacement.state.in_(
+                    [
+                        state.value
+                        for state in PENDING | {ActionState.EXECUTING, ActionState.SUCCEEDED}
+                    ]
+                ),
+                and_(
+                    replacement.state == ActionState.OUTDATED.value,
+                    replacement.origin != ActionOrigin.DELEGATION_AUTO.value,
+                    replacement.text.is_not(None),
+                    or_(
+                        replacement.state_reason.is_(None),
+                        replacement.state_reason.in_(FRESHNESS_REASONS),
+                    ),
+                    or_(
+                        replacement.freshness_warning.is_not(None),
+                        replacement.approval_token.is_not(None),
+                    ),
+                ),
+            ),
+        )
+        .exists()
+    )
+    return and_(eligible, ~has_replacement)
+
+
+def warning_card_filter() -> ColumnElement[bool]:
+    """A non-superseded owner card whose warning has an approval path."""
+    return and_(
+        Action.state == ActionState.OUTDATED.value,
+        Action.origin != ActionOrigin.DELEGATION_AUTO.value,
+        Action.text.is_not(None),
+        or_(Action.state_reason.is_(None), Action.state_reason.in_(FRESHNESS_REASONS)),
+        or_(Action.freshness_warning.is_not(None), Action.approval_token.is_not(None)),
+    )
+
+
+def is_warning_card(action: Action) -> bool:
+    return (
+        action.state == ActionState.OUTDATED.value
+        and action.origin != ActionOrigin.DELEGATION_AUTO.value
+        and action.text is not None
+        and (action.state_reason is None or action.state_reason in FRESHNESS_REASONS)
+        and (action.freshness_warning is not None or action.approval_token is not None)
+    )
+
+
+async def warn_pending(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    action_ids: Sequence[int],
+    reason: str,
+    now: datetime,
+) -> list[int]:
+    """D-S17: rotate buttons, preserving the exact body and committed claims.
+
+    Approved owner work already has the owner's final say. Autonomous work
+    is excluded and continues through conservative outdating/policy checks.
+    """
+    if reason not in FRESHNESS_REASONS:
+        raise ValueError("unknown freshness warning")
+    changed: list[int] = []
+    for action_id in sorted(set(action_ids)):
+        previous = (
+            await session.execute(
+                select(Action.state, Action.version).where(
+                    Action.account_id == account_id, Action.id == action_id
+                )
+            )
+        ).one_or_none()
+        if previous is None:
+            continue
+        applied = await session.scalar(
+            update(Action)
+            .where(
+                Action.account_id == account_id,
+                Action.id == action_id,
+                Action.state == previous.state,
+                Action.version == previous.version,
+                Action.origin != ActionOrigin.DELEGATION_AUTO.value,
+                or_(
+                    Action.state.in_([state.value for state in LIVE_CARD]),
+                    warning_card_filter() & Action.freshness_warning.is_distinct_from(reason),
+                ),
+                Action.text.is_not(None),
+            )
+            .values(
+                state=ActionState.OUTDATED.value,
+                state_reason=reason,
+                freshness_warning=reason,
+                approval_token=new_token(),
+                card_state=None,
+                updated_at=now,
+            )
+            .returning(Action.id)
+            .execution_options(synchronize_session=False)
+        )
+        if applied is not None:
+            changed.append(applied)
+            session.add(
+                AuditLogEntry(
+                    account_id=account_id,
+                    at=now,
+                    actor="system",
+                    event="action_outdated",
+                    subject_type="action",
+                    subject_id=applied,
+                    details={
+                        "from": previous.state,
+                        "to": "outdated",
+                        "version": previous.version,
+                        "reason": reason,
+                    },
+                )
+            )
+    await session.flush()
+    return changed
+
 
 async def _change_pending(
     session: AsyncSession,
@@ -50,11 +210,20 @@ async def _change_pending(
     origins: frozenset[ActionOrigin] | None = None,
     generated_only: bool = False,
 ) -> list[int]:
+    include_warnings = target is ActionState.CANCELLED or (
+        target is ActionState.OUTDATED and reason.value not in FRESHNESS_REASONS
+    )
     previous = select(
         Action.id.label("old_id"),
         Action.state.label("old_state"),
         Action.version.label("old_version"),
-    ).where(Action.account_id == account_id, Action.state.in_(states))
+    ).where(
+        Action.account_id == account_id,
+        or_(
+            Action.state.in_(states),
+            warning_card_filter() if include_warnings else false(),
+        ),
+    )
     if conversation_ids is not None:
         previous = previous.where(Action.conversation_id.in_(conversation_ids))
     if origins is not None:
@@ -63,7 +232,11 @@ async def _change_pending(
         candidates = (
             await session.execute(
                 select(Action.id, Action.version, Action.authorship).where(
-                    Action.account_id == account_id, Action.state.in_(states)
+                    Action.account_id == account_id,
+                    or_(
+                        Action.state.in_(states),
+                        warning_card_filter() if include_warnings else false(),
+                    ),
                 )
             )
         ).all()
@@ -88,7 +261,15 @@ async def _change_pending(
                 Action.version == source.c.old_version,
             )
             .values(
-                state=target.value, state_reason=reason.value, updated_at=now, approval_token=None
+                state=target.value,
+                state_reason=reason.value,
+                updated_at=now,
+                approval_token=None,
+                freshness_warning=None,
+                # A warned card and a rights-blocked card can both be
+                # OUTDATED. Force reconciliation when the state alone would
+                # otherwise make the old approval buttons look current.
+                card_state=case((Action.state == target.value, None), else_=Action.card_state),
             )
             .returning(Action.id, source.c.old_state, Action.version)
             .execution_options(synchronize_session=False)
@@ -128,6 +309,28 @@ async def outdate_pending(
     now: datetime,
 ) -> list[int]:
     """Invalidate live drafts and, on takeover, approved actions too."""
+    if reason.value in FRESHNESS_REASONS:
+        ids = list(
+            await session.scalars(
+                select(Action.id).where(
+                    Action.account_id == account_id, Action.conversation_id == conversation_id
+                )
+            )
+        )
+        warned = await warn_pending(
+            session, account_id=account_id, action_ids=ids, reason=reason.value, now=now
+        )
+        autonomous = await _change_pending(
+            session,
+            account_id=account_id,
+            conversation_ids=[conversation_id],
+            states=frozenset(PENDING),
+            target=ActionState.OUTDATED,
+            reason=reason,
+            now=now,
+            origins=frozenset({ActionOrigin.DELEGATION_AUTO}),
+        )
+        return sorted({*warned, *autonomous})
     states = LIVE_CARD | ({ActionState.APPROVED} if include_approved else set())
     return await _change_pending(
         session,
@@ -299,8 +502,11 @@ _PRIMITIVE_COLUMNS = frozenset({"id", "account_id", "state", "state_reason", "up
 _OWNER_PAIRS = frozenset(
     {
         (ActionState.AWAITING_APPROVAL, ActionState.APPROVED),
+        (ActionState.OUTDATED, ActionState.APPROVED),
+        (ActionState.OUTDATED, ActionState.REJECTED),
         (ActionState.AWAITING_APPROVAL, ActionState.REJECTED),
         (ActionState.AWAITING_APPROVAL, ActionState.REVISING),
+        (ActionState.OUTDATED, ActionState.REVISING),
     }
 )
 _OUTCOME_EVENTS = MappingProxyType(
@@ -353,7 +559,10 @@ def _event(
         return "action_proposed"
     if pair == (ActionState.REVISING, ActionState.AWAITING_APPROVAL):
         return "action_edited" if new_version else "action_revision_cancelled"
-    if pair == (ActionState.AWAITING_APPROVAL, ActionState.APPROVED):
+    if (
+        from_state in {ActionState.AWAITING_APPROVAL, ActionState.OUTDATED}
+        and to_state is ActionState.APPROVED
+    ):
         return "action_approved"
     if pair == (ActionState.EXECUTING, ActionState.APPROVED):
         return "action_rate_limited"
@@ -398,7 +607,7 @@ async def transition(
     if (from_state, to_state) not in TRANSITIONS:
         raise IllegalTransitionError(f"{from_state} -> {to_state} is not a transition")
     if (
-        from_state is ActionState.AWAITING_APPROVAL
+        from_state in {ActionState.AWAITING_APPROVAL, ActionState.OUTDATED}
         and to_state is ActionState.APPROVED
         and token is None
     ):
@@ -493,17 +702,32 @@ class _Live:
     version: int
     expires_at: datetime | None
     origin: str
+    state: str = ActionState.AWAITING_APPROVAL.value
 
 
 async def _live_by_token(session: AsyncSession, *, account_id: int, token: str) -> _Live | None:
     row = (
         await session.execute(
             select(
-                Action.id, Action.conversation_id, Action.version, Action.expires_at, Action.origin
+                Action.id,
+                Action.conversation_id,
+                Action.version,
+                Action.expires_at,
+                Action.origin,
+                Action.state,
             ).where(
                 Action.account_id == account_id,
                 Action.approval_token == token,
-                Action.state == ActionState.AWAITING_APPROVAL.value,
+                or_(
+                    Action.state == ActionState.AWAITING_APPROVAL.value,
+                    (Action.state == ActionState.OUTDATED.value)
+                    & or_(
+                        Action.state_reason.is_(None),
+                        Action.state_reason != StateReason.SUPERSEDED.value,
+                    )
+                    & (Action.origin != ActionOrigin.DELEGATION_AUTO.value),
+                ),
+                Action.text.is_not(None),
             )
         )
     ).one_or_none()
@@ -551,7 +775,7 @@ async def _expire_live(
         session,
         account_id=account_id,
         action_id=live.id,
-        from_state=ActionState.AWAITING_APPROVAL,
+        from_state=ActionState(live.state),
         to_state=ActionState.EXPIRED,
         reason=reason,
         now=now,
@@ -580,13 +804,19 @@ async def approve(
         session,
         account_id=account_id,
         action_id=live.id,
-        from_state=ActionState.AWAITING_APPROVAL,
+        from_state=ActionState(live.state),
         to_state=ActionState.APPROVED,
         reason=None,
         now=now,
         expected_version=live.version,
         token=token,
-        values={"decided_at": now, "approved_text_hash": _SQL_TEXT_HASH},
+        values={
+            "decided_at": now,
+            "approved_text_hash": _SQL_TEXT_HASH,
+            "freshness_override": (
+                Action.freshness_warning.is_not(None) | (Action.state == ActionState.OUTDATED.value)
+            ),
+        },
     )
     if not applied:
         return ApproveResult(ApproveStatus.NOT_ACTIVE)
@@ -602,7 +832,7 @@ async def reject(session: AsyncSession, *, account_id: int, token: str, now: dat
         session,
         account_id=account_id,
         action_id=live.id,
-        from_state=ActionState.AWAITING_APPROVAL,
+        from_state=ActionState(live.state),
         to_state=ActionState.REJECTED,
         reason=StateReason.OWNER_REJECTED,
         now=now,
@@ -659,29 +889,40 @@ async def start_revision(
     action id and version instead of the card's token. The token is voided as
     by Edit, so Approve while revising answers "no longer active"; a card
     past `expires_at` is expired instead. `details` (ids only) go to the
-    audit row, which makes the request idempotent for its caller."""
+    audit row, which makes the request idempotent for its caller. D-S17 also
+    permits an explicit rewrite of a source-warning card; other outdated
+    cards remain unavailable."""
     row = (
         await session.execute(
             select(
-                Action.id, Action.conversation_id, Action.version, Action.expires_at, Action.origin
+                Action.id,
+                Action.conversation_id,
+                Action.version,
+                Action.expires_at,
+                Action.origin,
+                Action.state,
             ).where(
                 Action.account_id == account_id,
                 Action.id == action_id,
-                Action.state == ActionState.AWAITING_APPROVAL.value,
+                or_(
+                    Action.state == ActionState.AWAITING_APPROVAL.value,
+                    warning_card_filter(),
+                ),
                 Action.version == expected_version,
             )
         )
     ).one_or_none()
     if row is None:
         return RevisionStart.NOT_ACTIVE
-    live = _Live(*row)
+    live = _Live(*row[:5])
+    from_state = ActionState(row.state)
     if _is_past(live.expires_at, now):
         reason = await _expiry_reason(session, account_id=account_id, live=live, now=now)
         expired = await transition(
             session,
             account_id=account_id,
             action_id=live.id,
-            from_state=ActionState.AWAITING_APPROVAL,
+            from_state=from_state,
             to_state=ActionState.EXPIRED,
             reason=reason,
             now=now,
@@ -692,7 +933,7 @@ async def start_revision(
         session,
         account_id=account_id,
         action_id=live.id,
-        from_state=ActionState.AWAITING_APPROVAL,
+        from_state=from_state,
         to_state=ActionState.REVISING,
         reason=None,
         now=now,
@@ -786,6 +1027,9 @@ async def apply_new_version(
     base_message_id: int | None,
     now: datetime,
     authorship: VersionAuthorship | None = None,
+    context_fence_id: int | None = None,
+    requested_at: datetime | None = None,
+    freshness_warning: str | None = None,
 ) -> NewVersion:
     """A revised text becomes version + 1 with a new token.
 
@@ -841,6 +1085,10 @@ async def apply_new_version(
             "authorship": proof.model_dump(mode="json"),
             "approved_text_hash": None,
             "draft_run_id": draft_run_id,
+            "context_fence_id": context_fence_id,
+            "requested_at": requested_at,
+            "freshness_warning": freshness_warning,
+            "freshness_override": False,
             "draft_flags": None if draft_flags is None else dict(draft_flags),
             "shown_through_message_id": shown_through_message_id,
             "base_message_id": base_message_id,
@@ -877,7 +1125,7 @@ async def expire_due(session: AsyncSession, *, now: datetime) -> list[int]:
             )
             .join(Conversation, Conversation.id == Action.conversation_id)
             .where(
-                Action.state.in_([state.value for state in _EXPIRABLE]),
+                or_(Action.state.in_([state.value for state in _EXPIRABLE]), warning_card_filter()),
                 Action.expires_at <= now,
             )
             .order_by(Action.id)

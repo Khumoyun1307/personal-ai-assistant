@@ -35,6 +35,8 @@ class ActionState(StrEnum):
 
 LIVE_CARD = frozenset({ActionState.AWAITING_APPROVAL, ActionState.REVISING})
 PENDING = LIVE_CARD | {ActionState.PROPOSED, ActionState.APPROVED, ActionState.SCHEDULED}
+# OUTDATED remains in retention/history grouping. D-S17 permits its explicitly
+# token-gated owner review path; lifecycle.is_warning_card identifies that case.
 TERMINAL = frozenset(
     {
         ActionState.SUCCEEDED,
@@ -50,6 +52,11 @@ TERMINAL = frozenset(
 TRANSITIONS: frozenset[tuple[ActionState, ActionState]] = frozenset(
     {
         (ActionState.PROPOSED, ActionState.AWAITING_APPROVAL),
+        (ActionState.OUTDATED, ActionState.APPROVED),
+        (ActionState.OUTDATED, ActionState.CANCELLED),
+        (ActionState.OUTDATED, ActionState.REJECTED),
+        (ActionState.OUTDATED, ActionState.EXPIRED),
+        (ActionState.OUTDATED, ActionState.REVISING),
         (ActionState.PROPOSED, ActionState.APPROVED),
         (ActionState.PROPOSED, ActionState.BLOCKED),
         (ActionState.PROPOSED, ActionState.CANCELLED),

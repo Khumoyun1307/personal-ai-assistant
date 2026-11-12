@@ -46,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
 from assistant.actions.authorship import VersionAuthorship, current_authorship, is_ai_generated
+from assistant.actions.lifecycle import is_warning_card
 from assistant.actions.models import Action
 from assistant.actions.proposals import ProposalRefused
 from assistant.actions.request_models import OwnerRequest
@@ -375,16 +376,20 @@ async def _result(
     if action is None:  # pragma: no cover - created or found in this transaction
         raise NotInAccountError("action")
     state = ActionState(action.state)
-    status = _status_of(state)
+    status = "awaiting_approval" if is_warning_card(action) else _status_of(state)
     data: dict[str, Any] = {
         "action_id": action.id,
         "conversation_id": target.conversation_id,
         "contact_name": name(target.display_name),
         "card": CARD_NOTE,
         "sendable_until": (
-            local_time(action.expires_at, target.timezone) if state in LIVE_CARD else None
+            local_time(action.expires_at, target.timezone)
+            if status == "awaiting_approval"
+            else None
         ),
     }
+    if action.freshness_warning is not None:
+        data["freshness_warning"] = action.freshness_warning
     if status == "blocked":
         data["reason"] = action.state_reason
     elif status == "no_longer_pending":

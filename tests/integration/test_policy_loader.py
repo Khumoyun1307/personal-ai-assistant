@@ -332,3 +332,25 @@ async def test_loader_refuses_another_accounts_conversation(db_session: AsyncSes
     # Another account's message as base or target is simply not there.
     foreign_base = await load(db_session, mine, now, base_message_id=theirs.contact_message_id)
     assert foreign_base.freshness.base_message_present is False
+
+
+async def test_legacy_generated_text_has_no_revision_proof(db_session: AsyncSession) -> None:
+    chat = await seed_chat(db_session, NOW)
+    context = await load(db_session, chat, NOW)
+    assert context.freshness.source_fence_reason == "source_unavailable"
+
+
+async def test_loader_rejects_a_fence_from_another_generating_run(db_session: AsyncSession) -> None:
+    from tests.integration.actions_env import seed_run
+
+    chat = await seed_chat(db_session, NOW)
+    different_run = await seed_run(db_session, chat.account_id)
+    context = await load(
+        db_session,
+        chat,
+        NOW,
+        facts=replace(
+            facts(NOW), context_fence_id=chat.context_fence_id, generating_run_id=different_run
+        ),
+    )
+    assert context.freshness.source_fence_reason == "source_unavailable"

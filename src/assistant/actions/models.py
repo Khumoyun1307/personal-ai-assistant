@@ -87,6 +87,10 @@ class Action(Base):
     origin: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default=sql_text("'proposed'"))
     state_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    freshness_warning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    freshness_override: Mapped[bool] = mapped_column(
+        nullable=False, server_default=sql_text("false")
+    )
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sql_text("1"))
     authorship: Mapped[dict[str, Any] | None] = mapped_column(
         JSONB(none_as_null=True), nullable=True
@@ -98,6 +102,15 @@ class Action(Base):
         BigInteger, ForeignKey("app.messages.id", ondelete="SET NULL"), nullable=True
     )
     shown_through_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    context_fence_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("app.context_fences.id", ondelete="SET NULL"), nullable=True
+    )
+    requested_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    owner_request_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("app.owner_requests.id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
+    )
     target_message_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("app.messages.id", ondelete="SET NULL"), nullable=True
     )
@@ -137,3 +150,20 @@ class Action(Base):
     updated_at: Mapped[CreatedAt]
     decided_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     executed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class ContextFenceRecord(Base):
+    """C6 structural read proof. Never stores or extends the life of content."""
+
+    __tablename__ = "context_fences"
+    __table_args__ = (Index("ix_context_fences_account_id", "account_id"),)
+
+    id: Mapped[IdPk] = mapped_column(Identity(always=True))
+    account_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app.accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    run_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("app.agent_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    facts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[CreatedAt]

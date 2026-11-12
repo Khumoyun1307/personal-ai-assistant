@@ -27,6 +27,7 @@ from typing import Literal
 from sqlalchemy import ColumnElement, and_, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.conversations.fences import ObservedConversationRead, observe_conversations
 from assistant.conversations.models import Contact, Conversation, CoverageGap, Message
 from assistant.core.errors import NotInAccountError
 from assistant.memory.search import normalize
@@ -85,6 +86,7 @@ class ConversationPage:
     #: Pass as `before` for the next (older) page; None at the start. The
     #: position of the oldest message shown: `(sent_at, message id)`.
     next_cursor: tuple[datetime, int] | None
+    observed: ObservedConversationRead
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +299,11 @@ async def conversation_page(
     or a selected message that is not retained in this conversation.
     """
     limit = max(1, min(limit, MAX_PAGE))
+    (observed,) = await observe_conversations(
+        session,
+        account_id=account_id,
+        conversation_ids=(conversation_id,),
+    )
     pair = (
         await session.execute(
             select(Conversation, Contact)
@@ -355,6 +362,7 @@ async def conversation_page(
         next_cursor=(rows[-1].sent_at, rows[-1].id)  # type: ignore[arg-type]  # NOT NULL above
         if more and rows
         else None,
+        observed=observed,
     )
 
 

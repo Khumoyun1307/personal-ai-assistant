@@ -11,12 +11,17 @@ removes `propose_reply` from offered tools and switches `revise_draft` to its fl
 API; flag off retains the H3/legacy schemas and behavior. Application-set H9
 authorship, shared durable effects and nullable C2 receipts apply. Generated
 staging/revision requires the typed `OwnerProposalFence` seam in
-`actions/proposals.py`, injected through bootstrap/runtime/ToolServices; there is
-no passing production default. Its check validates account/run/request binding
-and locks dependencies; its bind method atomically associates fence/request time
-with the committed action version. A literal revision may pass a null fence ID
-for a source-only application snapshot, but never bypasses the checker. H10 owns
-the implementation/persistence/execution hooks. H6 owns prompt activation and H8
+`actions/proposals.py`, injected through bootstrap/runtime/ToolServices. H10 now
+implements it in `actions/owner_fence.py` (`StoredOwnerProposalFence`); missing
+checkers still fail closed in explicitly unwired callers. Its check validates
+account/run/request binding, unions the run's observed dependencies and locks them
+in sorted order before request/action settlement. Source changes warn under D-S17
+with Approve anyway / Re-draft / Discard; foreign, forged and unrelated fence IDs
+share one unavailable result. Its bind method atomically associates the original
+request time, generating run and immutable fence with the committed action version
+and post-settlement request CAS version. A literal revision may pass a null fence
+ID for a source-only application snapshot, preserving retained artifact dependencies,
+but never bypasses the checker. H6 owns prompt activation and H8
 card-button cutover. No prompt bytes or migration change in H4; repaired paid
 journey/retrieval evals must pass before enabling the flag.
 

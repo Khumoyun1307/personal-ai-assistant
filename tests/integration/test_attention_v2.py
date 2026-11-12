@@ -36,6 +36,7 @@ from assistant.llm.port import ToolResultItem
 from assistant.memory import catch_up
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import FakeLLM, text_response, tool_response
+from tests.integration.actions_env import seed_run
 from tests.integration.agent_env import args, ask, gated, one_id
 from tests.integration.business_env import (
     CONTACT,
@@ -159,14 +160,19 @@ class Wired:
     def sync_after_commit(self, session: object, action_id: int) -> None:
         raise AssertionError("attention v2 never syncs a card")
 
+    def redraft_failed_after_commit(self, session: object, action_id: int, reason: str) -> None:
+        raise AssertionError("attention v2 never re-drafts a card")
+
 
 async def attention(
     env: Env, account: int, *, flags: frozenset[str] = frozenset(), wired: bool = False
 ) -> ToolOutcome:
     part = Wired() if wired else None
+    async with env.factory() as session, session.begin():
+        run_id = await seed_run(session, account)
     ctx = ToolContext(
         account_id=account,
-        run_id=0,
+        run_id=run_id,
         run_type="owner_request",
         tainted=False,
         services=ToolServices(

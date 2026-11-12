@@ -24,6 +24,7 @@ from assistant.actions.config import ActionsConfig
 from assistant.actions.drafts import assist_trigger, request_draft
 from assistant.actions.executor import ActionExecutor, uncertain_after
 from assistant.actions.ingestion import ActionsIngestionListener
+from assistant.actions.owner_fence import StoredOwnerProposalFence
 from assistant.actions.ports import ApprovalCardPresenter
 from assistant.actions.proposals import OwnerProposalFence
 from assistant.agent.confirmations import ConfirmationApplier
@@ -165,6 +166,7 @@ def build_confirmation_applier(
             actions_config=actions_config,
             notifications_enabled=notifications_enabled,
             card_reviser=card_reviser,
+            owner_fence=StoredOwnerProposalFence(),
         ),
         enabled_flags=settings.feature_flags,
     )
@@ -227,7 +229,7 @@ def build_owner_runtime(
         actions_config=actions_config,
         notifications_enabled=notifications_enabled,
         card_reviser=card_reviser,
-        owner_fence=owner_fence,
+        owner_fence=owner_fence if owner_fence is not None else StoredOwnerProposalFence(),
     )
 
 

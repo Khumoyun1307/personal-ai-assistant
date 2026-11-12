@@ -43,10 +43,28 @@ def test_every_production_migration_is_classified_exactly_once() -> None:
     assert graph["0020"].compatibility == "expand"
     assert graph["0021"].parents == ("0020",)
     assert graph["0021"].compatibility == "expand"
+    assert graph["0022"].parents == ("0021",)
+    assert graph["0022"].compatibility == "expand"
     assert classify(graph, "0019", "0020") == "expand"
     assert classify(graph, "0018", "0020") == "breaking"
     assert classify(graph, "0017", "0020") == "breaking"
     assert classify(graph, "0016", "0020") == "breaking"
+
+
+def test_source_fence_migration_is_additive_after_resolution_candidates() -> None:
+    graph = load_graph(ROOT / "migrations/versions")
+    assert graph["0022"].parents == ("0021",)
+    assert graph["0022"].compatibility == "expand"
+    assert classify(graph, "0021", "0022") == "expand"
+    assert classify(graph, "0020", "0022") == "expand"
+    assert classify(graph, "0019", "0022") == "expand"
+
+
+def test_fence_erasure_trigger_requires_matching_executable() -> None:
+    graph = load_graph(ROOT / "migrations/versions")
+    assert graph["0023"].parents == ("0022",)
+    assert graph["0023"].compatibility == "breaking"
+    assert classify(graph, "0022", "0023") == "breaking"
 
 
 def test_legacy_registry_classifies_immutable_migration(tmp_path: Path) -> None:

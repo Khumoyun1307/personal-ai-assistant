@@ -17,7 +17,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, PendingInput
-from assistant.actions.lifecycle import transition
+from assistant.actions.lifecycle import is_warning_card, transition
 from assistant.actions.models import Action
 from assistant.actions.request_models import (
     TERMINAL_REQUEST_STATES,
@@ -584,12 +584,13 @@ async def cancel_linked_action(
     )
     if action is None:
         return
-    if action.state in PENDING:
+    if action.state in PENDING or is_warning_card(action):
         target = ActionState.CANCELLED
         if reason is StateReason.MAX_AGE and action.state in (
             "awaiting_approval",
             "revising",
             "approved",
+            "outdated",
         ):
             target = ActionState.EXPIRED
         await transition(
@@ -976,7 +977,11 @@ async def expire_requests(session: AsyncSession, *, account_id: int, now: dateti
         elif row.state != "awaiting_approval" and row.expires_at <= now:
             await cancel_linked_action(session, row, now=now, reason=StateReason.MAX_AGE)
             row.state, row.reason, row.ended_at = "expired", "max_age", now
-        elif action is not None and action.state in (TERMINAL | {ActionState.DELIVERY_UNCERTAIN}):
+        elif (
+            action is not None
+            and action.state in (TERMINAL | {ActionState.DELIVERY_UNCERTAIN})
+            and not is_warning_card(action)
+        ):
             if row.state == "suspended" and row.reason == "action_terminal":
                 continue
             row.state, row.reason = "suspended", "action_terminal"
@@ -986,7 +991,10 @@ async def expire_requests(session: AsyncSession, *, account_id: int, now: dateti
             if action.state in ("executing", "approved", "scheduled"):
                 continue
             if (
-                action.state not in ("awaiting_approval", "revising")
+                (
+                    action.state not in ("awaiting_approval", "revising")
+                    and not is_warning_card(action)
+                )
                 or action.version != row.action_version
                 or action.expires_at is None
             ):

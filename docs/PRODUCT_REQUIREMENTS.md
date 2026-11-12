@@ -362,6 +362,9 @@ In a managed chat, the owner taps **Manage Bot** in Telegram's action bar → th
 
 ### 10.6 Drafts, approvals, and sending (DRF)
 
+**Owner decision D-S17 (2026-11-10), freshness amendment:** source changes during generation or after a card exists are warnings for owner-approved drafts. The card offers Approve anyway / Re-draft / Discard and a content-free explanation. Approve anyway sends exactly the shown version once under the policy/claim checks; a deleted reply target sends standalone. Old tokens cannot approve another version. Telegram refusal is definite not-sent with copy-ready text, never retried. This amends FR-DRF-05, the approval flow and the blanket stale-draft acceptance condition below; autonomous freshness checks and explicit privacy erasure remain conservative.
+
+
 | ID | Requirement | Priority | Release |
 |---|---|---|---|
 | FR-DRF-01 | Draft on owner request for a named conversation. | Must | R1 |

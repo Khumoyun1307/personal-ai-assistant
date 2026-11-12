@@ -71,6 +71,9 @@ class AgentRun(Base):
     #: carrying contact-authored text. A tainted run cannot change state
     #: without an owner confirmation card (§6 invariant 3b).
     tainted: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
+    #: Survives deletion of source fences: text already in a model context
+    #: cannot acquire fresh proof after privacy erasure. Content-free, monotonic.
+    sources_invalidated: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
     started_at: Mapped[CreatedAt]
     finished_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     error_class: Mapped[str | None] = mapped_column(Text, nullable=True)

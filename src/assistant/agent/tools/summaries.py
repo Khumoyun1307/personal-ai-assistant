@@ -61,6 +61,7 @@ from assistant.agent import owner_texts
 from assistant.agent.attribution import ATTRIBUTION_RULE, check_attribution
 from assistant.agent.citations import CitableMessage
 from assistant.agent.locales import SupportedLocale, supported_locale
+from assistant.agent.models import AgentRun
 from assistant.agent.summarize import PeriodOutcome, RefreshOutcome, SummaryStatus
 from assistant.agent.tools.common import (
     COVERAGE_RULE,
@@ -87,6 +88,7 @@ from assistant.agent.tools.registry import (
     ToolRefs,
 )
 from assistant.agent.untrusted import Source, wrap
+from assistant.conversations.fences import capture_fence, observe_conversations
 from assistant.conversations.models import Contact, Conversation
 from assistant.core.errors import NotInAccountError
 from assistant.db.uow import transaction
@@ -295,6 +297,20 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
                     )
                 ).scalars()
             ]
+        # Observe before reading any managed fields. The short transaction
+        # ends before the per-chat summary model calls below.
+        observed = await observe_conversations(
+            session,
+            account_id=ctx.account_id,
+            conversation_ids=tuple(
+                await session.scalars(
+                    select(Conversation.id).where(
+                        Conversation.account_id == ctx.account_id,
+                        *([] if scope is None else [Conversation.id.in_(scope)]),
+                    )
+                )
+            ),
+        )
         active = await catch_up.active_in_period(
             session,
             ctx.account_id,
@@ -315,6 +331,21 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
         )
         activity_entries = await _assistant_activity_entries(
             session, ctx.account_id, activity_counts
+        )
+        used = {item.conversation_id for item in active} | {
+            item.conversation_id for item in activity_counts
+        }
+        if not used <= {item.conversation_id for item in observed}:
+            # A new chat appeared after scope enumeration. Do not return
+            # managed data for which this transaction captured no observation.
+            return ToolOutcome("error", {"reason": "source_unavailable"})
+        await capture_fence(
+            session,
+            account_id=ctx.account_id,
+            run_id=ctx.run_id,
+            request=None,
+            reads=tuple(item for item in observed if item.conversation_id in used),
+            requested_at=now,
         )
 
     chosen = active[:MAX_CATCH_UP_CONVERSATIONS]
@@ -360,6 +391,25 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
     # (S03.7): each chat's own messages only.
     authors: dict[int, dict[int, str]] = {}
     async with transaction(services.session_factory) as uow:
+        # An erasure during the calls (a chat recognised as a bot chat, a
+        # deletion) invalidates the run's earlier fence. The chat itself is
+        # left out with its named reason by the store result, so the read is
+        # still reported; the invalidated run just captures no new fence and
+        # can stage no proposal from it.
+        fenced = not await uow.session.scalar(
+            select(AgentRun.sources_invalidated).where(
+                AgentRun.account_id == ctx.account_id, AgentRun.id == ctx.run_id
+            )
+        )
+        observed = (
+            await observe_conversations(
+                uow.session,
+                account_id=ctx.account_id,
+                conversation_ids=tuple(item.conversation_id for item in chosen),
+            )
+            if fenced
+            else ()
+        )
         for item, outcome in zip(chosen, outcomes, strict=True):
             if outcome.summary is not None:
                 authors[item.conversation_id] = await summary_authors(
@@ -372,6 +422,15 @@ async def summarize_period_tool(ctx: ToolContext, args: SummarizePeriodArgs) -> 
             ctx.account_id,
             [item.conversation_id for item in chosen if item.awaiting_owner_reply],
         )
+        if fenced:
+            await capture_fence(
+                uow.session,
+                account_id=ctx.account_id,
+                run_id=ctx.run_id,
+                request=None,
+                reads=observed,
+                requested_at=now,
+            )
 
     entries: list[dict[str, Any]] = []
     not_summarized: list[dict[str, Any]] = []
@@ -655,6 +714,15 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         account = await session.get(Account, ctx.account_id)
         if account is None:
             raise NotInAccountError("account")
+        observed = await observe_conversations(
+            session,
+            account_id=ctx.account_id,
+            conversation_ids=tuple(
+                await session.scalars(
+                    select(Conversation.id).where(Conversation.account_id == ctx.account_id)
+                )
+            ),
+        )
         found = await catch_up.unanswered(
             session,
             ctx.account_id,
@@ -663,6 +731,8 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             include_obligations=True,
         )
         found_ids = [c.conversation_id for c in found]
+        if not set(found_ids) <= {item.conversation_id for item in observed}:
+            return ToolOutcome("error", {"reason": "source_unavailable"})
         rolling = await summaries.rolling_summaries(session, ctx.account_id, found_ids)
         fresh = {
             c.conversation_id: rolling[c.conversation_id].summary
@@ -672,6 +742,14 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
         fresh_authors = await summaries_authors(session, ctx.account_id, fresh)
         asked_before = await catch_up.waiting_questions(session, ctx.account_id, found_ids)
         triaged_before = await catch_up.covering_triage(session, ctx.account_id, found_ids)
+        await capture_fence(
+            session,
+            account_id=ctx.account_id,
+            run_id=ctx.run_id,
+            request=None,
+            reads=tuple(item for item in observed if item.conversation_id in found_ids),
+            requested_at=now,
+        )
 
     # The limit applies after ranking (C1): waiting chats first. A fresh
     # stored summary ranks on the verdict the owner will see (`summary_view`:
@@ -744,6 +822,18 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
     async with transaction(services.session_factory) as uow:
         session = uow.session
         ids = [c.conversation_id for c in candidates]
+        # See the catch-up read: an erasure during the inline checks leaves
+        # the chat out with its named reason; the run just captures no new fence.
+        fenced = not await session.scalar(
+            select(AgentRun.sources_invalidated).where(
+                AgentRun.account_id == ctx.account_id, AgentRun.id == ctx.run_id
+            )
+        )
+        observed = (
+            await observe_conversations(session, account_id=ctx.account_id, conversation_ids=ids)
+            if fenced
+            else ()
+        )
         rolling = await summaries.rolling_summaries(session, ctx.account_id, ids)
         pending = {
             int(conversation_id)
@@ -773,6 +863,15 @@ async def get_attention_list_tool(ctx: ToolContext, args: GetAttentionListArgs) 
             conversation_ids=ids,
             limit_per_conversation=catch_up.ATTENTION_TASKS,
         )
+        if fenced:
+            await capture_fence(
+                session,
+                account_id=ctx.account_id,
+                run_id=ctx.run_id,
+                request=None,
+                reads=observed,
+                requested_at=now,
+            )
 
     tz = account.timezone
     can_draft = _draft_offered(ctx)

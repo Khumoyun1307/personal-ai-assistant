@@ -1,4 +1,5 @@
 # C6 — Source revision fence and owner-intent precedence (H10/H11)
+**Owner amendment D-S17, 2026-11-10:** source freshness is advisory for owner-approved messages. Stale results during generation and changed dependencies after card creation show a fixed warning with Approve anyway / Re-draft / Discard. Approval binds to the exact shown version/hash; deleted reply targets send standalone. Old tokens never approve a replacement. Ordinary approvals still receive execution freshness checks and recover to a warned approval path on a mismatch. Autonomous work retains conservative rejection; explicit privacy erasure clears derived bodies/fence links. This amendment supersedes the owner-stale rejection language below, without changing C7 reader settlement or H11's background precedence work.
 
 D-S10 amends P2 R3: request time, not late action creation time, is the takeover reference. Source IDs detect arrival, not edits. A read snapshot must survive neither changed content nor overtaking owner intent. No lock spans a model call.
 
@@ -50,7 +51,7 @@ async def check_fence(
 | context_fences.run_id | bigint NULL FK agent_runs ON DELETE SET NULL | Account-scoped run; legacy/null cannot grant owner authority. |
 | context_fences.facts | jsonb NOT NULL, strict ContextFence | References/enums/counters/timestamp only; request/conv/source deletion invalidates and removes scoped refs. No text/hash of arbitrary model prose. |
 | context_fences.created_at | timestamptz NOT NULL | UTC; metadata sweep. |
-| actions.context_fence_id | bigint NULL FK context_fences ON DELETE SET NULL | Existing action row retention; NULL legacy means no revision proof for generated text; fail closed/re-draft under new path, not assume fresh. |
+| actions.context_fence_id | bigint NULL FK context_fences ON DELETE SET NULL | Existing action row retention; NULL legacy means no revision proof for generated text; warn and offer exact-version owner approval under D-S17; autonomous work fails closed. |
 | actions.requested_at | timestamptz NULL | Immutable owner-request time; proactive uses its captured trigger reference. Legacy uses existing conservative rule until regenerated, not a fabricated old request time. |
 | actions.owner_request_id | bigint NULL FK owner_requests ON DELETE SET NULL | Account scoped; clear with request deletion; origin alone never proves explicit-current task. |
 
@@ -58,12 +59,16 @@ Metadata loaded into provider requires ai_control; any referenced content retain
 
 ## Revision rules
 
+H10 review repair (2026-11-10): deleting any run fence first persists `agent_runs.sources_invalidated = true` through revision 0023's delete trigger. This content-free marker follows run retention/account deletion and survives scoped fence cleanup. An invalidated run cannot capture a replacement fence or stage a new artifact using surviving proof. Attention and period-summary tools persist observations alongside each managed read, both before and after inline model calls; changing recipient/read tool cannot drop an earlier dependency. No locks span those calls.
+
+Legacy source-stale OUTDATED cards without a token/warning are explicitly selected by the card reconciler and upgraded to D-S17 choices. Superseded, privacy-cleared, rights-failed and autonomous cards are excluded. While an owner Re-draft is pending, a warned original retains all three choices. If the legacy worker produces no replacement, skips a closed window or fails, it restores the current warned original and sends a factual explanation; H8 separately owns full retained-request re-drafting.
+
 | Change | Revision / invalidation |
 |---|---|
 | New retained contact/owner input; meaningful content edit; content deletion/retention purge | Increment content_revision once in ingestion/privacy transaction while conversation locked. Duplicate replay, identical edit and no-op deletion do not increment. Derived assistant send recording alone need not invalidate its own proposal; manual takeover always does. |
 | Main-model multi-chat reads | Merge application read sets. Same chat read at differing revisions requires fresh consistent read or marks fence stale; never silently replace an old observed revision with newest. |
-| Change during model call | Compare snapshot revisions under locks before action creation/revision; no approvable stale result. Explicit selected older message also loaded directly even outside newest-30 window. |
-| Change after card creation | Invalidate pending generated dependencies, including non-base source messages and other chats read by owner model. C6 conversation revision is conservative: any relevant change in captured chat can invalidate. At execution re-check revision and arrival watermark again. |
+| Change during model call | Compare snapshot revisions under locks before action creation/revision; never label stale text current; owner-reviewable text gets all three D-S17 choices. Explicit selected older message also loaded directly even outside newest-30 window. |
+| Change after card creation | Invalidate pending generated dependencies, including non-base source messages and other chats read by owner model. C6 conversation revision is conservative: any relevant change in captured chat can invalidate. At execution re-check revision and arrival watermark again; an owner tap approving the warned exact version overrides source freshness only. |
 | Literal standalone owner copy | No model/chat-source dependency if none was used; copy/source/recipient/takeover checks still apply, then snapshot current arrival watermark under lock. Explicit reply target adds dependency. Never invent a target if selected source is gone. |
 | Previously covered triage/monitor/summary source edited | I3/C7 marks prior verdict stale and puts changed ID back in review, including IDs behind cursor. Cannot call it current from watermark alone. |
 
@@ -78,7 +83,7 @@ Metadata loaded into provider requires ai_control; any referenced content retain
 | Proactive settlement | Must match captured owner_intent_revision; cannot replace explicit owner request/card started before or during generation. Existing live explicit card wins even if older than background attempt; blocked background work never supersedes it. |
 | Assigning owner intent | Bind each explicit selected request/revision to `owner_requests.intent_revision` (C1, H11 addition). A request's own initial selection advances and records its token **before its generation fence is finalized**; it must not invalidate itself merely by selecting its recipient. Later competing intent changes the conversation token and fails settlement; do not overwrite old content revisions to make a fence pass. |
 | Owner settlement | Same-request repeated call follows C2 conflict rules. New explicit owner task may supersede older unclaimed card under the one-live-card constraint, with old/new IDs in receipts. Pending approved/executing work is handled by existing lifecycle/claim, never silently overwritten. |
-| Lost race | Discard generated result; keep request source facts and report exact reason. Re-read/recompute only within bounded operation budget; no blind loop. |
+| Lost race | For source changes on owner-reviewable work, present a warning with all three D-S17 choices; for autonomous work, discard the stale result. Keep request source facts and report exact reason. Re-read/recompute only within bounded operation budget; no blind loop. |
 | Execution | Existing version/hash/token and committed-claim protocol plus updated pure freshness facts. No business retries on uncertainty; a fence is no approval. |
 
 H11 policy facts add `request_reference_at: datetime|None` and captured manual watermark to the pure context; do not make `policy/` perform I/O. Cancellation/rejection that expresses owner intent advances the counter so a late Assist cannot revive the rejected suggestion for the same burst. A genuinely new contact burst may initiate fresh proactive work only under current intent/mode conditions.

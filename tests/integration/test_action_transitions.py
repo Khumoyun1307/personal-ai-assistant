@@ -370,6 +370,11 @@ async def test_cancel_edit_restores_the_same_version_with_a_new_token(
 
 #: The §3.6 event table (R15), pair by pair. `None`: no P2 event (M06 pairs).
 EXPECTED_EVENTS: dict[tuple[ActionState, ActionState], str | None] = {
+    (ActionState.OUTDATED, ActionState.APPROVED): "action_approved",
+    (ActionState.OUTDATED, ActionState.CANCELLED): "action_cancelled",
+    (ActionState.OUTDATED, ActionState.REJECTED): "action_rejected",
+    (ActionState.OUTDATED, ActionState.EXPIRED): "action_expired",
+    (ActionState.OUTDATED, ActionState.REVISING): "action_revision_requested",
     (ActionState.PROPOSED, ActionState.AWAITING_APPROVAL): "action_proposed",
     (ActionState.PROPOSED, ActionState.APPROVED): None,
     (ActionState.PROPOSED, ActionState.BLOCKED): "action_blocked",
@@ -413,7 +418,9 @@ async def seeded(env: Env, state: ActionState) -> tuple[Chat, int]:
             origin="agent_proposal",
             state=state.value,
             text=DRAFT_TEXT,
-            approval_token="synthetic-token" if state is ActionState.AWAITING_APPROVAL else None,
+            approval_token="synthetic-token"
+            if state in {ActionState.AWAITING_APPROVAL, ActionState.OUTDATED}
+            else None,
             created_at=env.clock.now(),
             updated_at=env.clock.now(),
         )
@@ -436,7 +443,11 @@ async def test_each_transition_writes_its_mapped_event(
     chat, action_id = await seeded(env, from_state)
     reason = StateReason.SUPERSEDED if to_state is ActionState.OUTDATED else None
     values = {"attempt_id": "attempt-1"} if from_state is ActionState.EXECUTING else {}
-    token = "synthetic-token" if from_state is ActionState.AWAITING_APPROVAL else None
+    token = (
+        "synthetic-token"
+        if from_state in {ActionState.AWAITING_APPROVAL, ActionState.OUTDATED}
+        else None
+    )
 
     async with env.factory() as session, session.begin():
         if expected is None:
@@ -476,8 +487,9 @@ async def test_each_transition_writes_its_mapped_event(
         assert row.approval_token is None
 
 
-async def test_only_the_cards_token_can_approve_it(env: Env) -> None:
-    chat, action_id = await seeded(env, ActionState.AWAITING_APPROVAL)
+@pytest.mark.parametrize("state", [ActionState.AWAITING_APPROVAL, ActionState.OUTDATED])
+async def test_only_the_cards_token_can_approve_it(env: Env, state: ActionState) -> None:
+    chat, action_id = await seeded(env, state)
 
     async with env.factory() as session, session.begin():
         with pytest.raises(IllegalTransitionError):
@@ -485,14 +497,15 @@ async def test_only_the_cards_token_can_approve_it(env: Env) -> None:
                 session,
                 account_id=chat.account_id,
                 action_id=action_id,
-                from_state=ActionState.AWAITING_APPROVAL,
+                from_state=state,
                 to_state=ActionState.APPROVED,
                 reason=None,
                 now=env.clock.now(),
             )
 
     row = await action(env, action_id)
-    assert row.state == "awaiting_approval"
+    assert row.state == state.value
+    assert row.approval_token == "synthetic-token"
     assert await audit(env, action_id) == []
 
 

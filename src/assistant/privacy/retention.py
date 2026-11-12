@@ -52,8 +52,9 @@ from assistant.accounts.models import (
 from assistant.accounts.service import sweep_expired_cards
 from assistant.actions.models import Action
 from assistant.actions.requests import lock_requests
-from assistant.actions.states import TERMINAL, ActionState
+from assistant.actions.states import TERMINAL, ActionState, StateReason
 from assistant.automation.models import Automation, AutomationOccurrence
+from assistant.conversations.fences import invalidate_fences, sweep_fences
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.jobs import JobScheduler
@@ -297,6 +298,7 @@ async def sweep_all(
     for account_id in await account_settings_from_factory(session_factory):
         async with transaction(session_factory) as uow:
             requests += await sweep_requests(uow.session, account_id=account_id, now=now)
+            await sweep_fences(uow.session, account_id=account_id, now=now)
     turns = await sweep_control_turns(session_factory, clock)
     confirmations = await sweep_tool_confirmations(session_factory, clock)
     accounting_cutoff = now - ACCOUNTING_RETENTION
@@ -673,6 +675,27 @@ async def purge_message_content(
         .returning(Message.conversation_id, Message.id, Message.sent_at)
     )
     rows = purged.all()
+    for conversation_id in sorted({int(row[0]) for row in rows}):
+        conversation_account_id = await session.scalar(
+            select(Conversation.account_id).where(Conversation.id == conversation_id)
+        )
+        assert conversation_account_id is not None
+        await session.execute(
+            update(Conversation)
+            .where(
+                Conversation.account_id == conversation_account_id,
+                Conversation.id == conversation_id,
+            )
+            .values(content_revision=Conversation.content_revision + 1)
+        )
+        await invalidate_fences(
+            session,
+            account_id=conversation_account_id,
+            conversation_id=conversation_id,
+            reason=StateReason.SOURCE_DELETED,
+            now=now,
+            clear=True,
+        )
     covers = await covered_through(session, {int(row[0]) for row in rows})
     newest: dict[int, datetime] = {}
     for conversation_id, message_id, sent_at in rows:

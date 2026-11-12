@@ -29,6 +29,7 @@ from assistant.jobs.reconcile_actions import UnqueuedDrafts
 from assistant.llm.port import LLMRequest, StopReason, TextItem
 from assistant.policy import rules
 from assistant.policy.context import ActionFacts, CheckResult, Phase
+from assistant.telegram.control.approvals import load_card_view, render_card
 from tests.integration.drafting_env import (
     DraftEnv,
     actions_of,
@@ -268,10 +269,10 @@ async def test_an_assist_draft_created_while_an_owner_requested_card_is_live_mar
     assert second.origin == "agent_proposal"
 
 
-async def test_a_contact_message_during_drafting_discards_the_stale_draft_and_redrafts(
+async def test_a_contact_message_during_drafting_warns_and_keeps_the_new_burst_pending(
     denv: DraftEnv,
 ) -> None:
-    _, conversation = await seed_chat(denv)
+    account_id, conversation = await seed_chat(denv)
     await contact_says(denv, "SYNTH-FIRST-QUESTION")
     denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
 
@@ -280,8 +281,25 @@ async def test_a_contact_message_during_drafting_discards_the_stale_draft_and_re
         return output(text="Synthetic answer to the first question only.")
 
     denv.script(contact_writes_again)
-    assert await run_job(denv, conversation) == "stale"
-    assert await actions_of(denv.env, conversation) == []  # nothing proposed
+    # D-S17 preserves the result for owner review instead of silently dropping it.
+    assert await run_job(denv, conversation) == "proposed_awaiting_approval"
+    [warned] = await actions_of(denv.env, conversation)
+    assert warned.text == "Synthetic answer to the first question only."
+    assert warned.freshness_warning == "new_contact_message"
+    assert denv.presenter.presented == [warned.id]
+    async with denv.env.factory() as session:
+        view = await load_card_view(
+            session, account_id=account_id, action_id=warned.id, sending_enabled=True
+        )
+    assert view is not None
+    card = render_card(view)
+    assert "Warning:" in card.text
+    assert card.keyboard is not None
+    assert [button.text for line in card.keyboard.inline_keyboard for button in line] == [
+        "Approve anyway",
+        "Re-draft",
+        "Discard",
+    ]
     assert await pending_flag(denv.env, conversation) is not None  # kept for the new burst
     assert [j["status"] for j in await draft_jobs(denv.env, conversation)] == ["todo"]
 
@@ -289,8 +307,12 @@ async def test_a_contact_message_during_drafting_discards_the_stale_draft_and_re
     denv.script(output(text="Synthetic answer to both."))
     assert await run_job(denv, conversation) == "proposed_awaiting_approval"
     assert "SYNTH-SECOND-QUESTION" in prompt_text(denv.fake.requests[-1])
-    [card] = await actions_of(denv.env, conversation)
-    assert card.state == "awaiting_approval"
+    old, current = await actions_of(denv.env, conversation)
+    assert old.state_reason == "superseded"
+    assert old.approval_token is None
+    assert current.state == "awaiting_approval"
+    assert current.text == "Synthetic answer to both."
+    assert current.freshness_warning is None
 
 
 # ------------------------------------------------------------ a newest message with nothing to show

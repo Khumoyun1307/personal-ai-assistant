@@ -70,6 +70,7 @@ from assistant.memory.models import ConversationSummary
 from tests.fakes.channel import FakeChannel
 from tests.fakes.deletions import RecordingDeleter
 from tests.fakes.llm import FakeLLM, text_response, tool_response
+from tests.integration.actions_env import seed_run
 from tests.integration.agent_env import args, ask, one_id, runtime, summarizer
 from tests.integration.business_env import (
     CONTACT,
@@ -300,9 +301,12 @@ async def summarize_runs(env: Env) -> list[AgentRun]:
 
 # ------------------------------------------------------------ calling tools
 async def tool_context(env: Env, fake: FakeLLM | None) -> ToolContext:
+    owner = await account_id(env)
+    async with env.factory() as session, session.begin():
+        run_id = await seed_run(session, owner)
     return ToolContext(
-        account_id=await account_id(env),
-        run_id=0,
+        account_id=owner,
+        run_id=run_id,
         run_type="owner_request",
         tainted=False,
         services=ToolServices(

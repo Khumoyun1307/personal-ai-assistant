@@ -300,6 +300,8 @@ stateDiagram-v2
 - **As built (M04, S04.4):** Tx B calls `accounts.connections.mark_stale(session, account_id, now, connection_id=<the id the failed call used>)` — the gateway's `send_business_text_with_connection` reports it — a conditional `active → stale` update `WHERE connection_id = <used> AND status = 'active'` plus the audit row `connection_marked_stale` (`subject_type = 'connection'`; its time is "stale since"). The table holds one row per account whose `connection_id` a reconnect rewrites in place, so a reconnect that lands while the call is in flight, or before a late result, leaves the replacement active. Every other approved action of the account then fails Tx A on `connection_active` (`connection_stale` → `blocked`), and the gateway's target resolver refuses a non-active connection anyway. A `business_connection` update or an unknown-id bootstrap reactivates it (`_classify` maps `stale → active` to `reconnected`). `system.mark_uncertain` sends the `connection_stale` alert ("… no new one has arrived for N minutes …", `CONNECTION_STALE_ALERT_MINUTES`) once per stale period (dedupe key `connection_stale:{account}:{stale since}`). `apply_snapshot` also settles pending actions in the same transaction: `disabled` cancels every unsent action (`connection_disabled`); `rights_changed` outdates live cards and approved actions account-wide (`rights_changed`).
 
 ### 6.5 Business message normalization and classification
+**Stabilization H10 / D-S17 (2026-11-10):** `conversations.content_revision` advances once under the conversation lock for meaningful retained contact/manual input, edits (including pre-coverage edits), deletion and privacy/retention loss. Duplicate deliveries, identical edits and no-op deletions do not advance it. `owner_intent_revision` records manual takeover and provides H11's counter seam. Captured dependencies include non-base messages and other chats. Source changes rotate the unclaimed card token and re-render a warning with Approve anyway / Re-draft / Discard; they do not dead-end owner approval. Existing approved work is rechecked at execution; an explicit warned approval keeps its exact body. The historical outdating steps below use this owner-review interpretation. Autonomous activity keeps conservative checks.
+
 
 Classification is the first step for every business message (TF §3.2):
 
@@ -517,6 +519,10 @@ return partial_with_note(run)
 - **`owner_request.v7` (S03.7 fix round, owner decisions 1-3 of 2026-10-26, D109).** v6 word for word, plus: rule 5, a message that is only a name, number, address, phrase or a few keywords with no other request is a search of the owner's chats (`search_messages` with the owner's own words, exactly as written, first, plus variants; ask only if nothing relevant is found; never a note to remember, a message to draft or send, or a general-knowledge question); a name `resolve_contact` cannot find may be someone mentioned inside a chat, so it is searched for across all chats first (backed by the tool's not-found note, §8.2); a search narrowed to one contact that answers nothing is followed by `get_conversation` of that chat before "not there"; rule 6, times, dates, amounts, prices, addresses, phone numbers and place names are copied as the message writes them; rule 16, the whole reply in the owner's preferred language and script (only a short quote or a copied value keeps the message's words). The owner profile in the instructions spells the language tag out with its script, as the `summarize` context does (`- preferred language: uz-Latn (Uzbek written in Latin letters)`, `context.summary_language`; D111). Why: the 2026-10-26 agent-mode run (v6) made no search for 9 bare-phrase or non-contact-name questions, stopped after an empty narrowed search once, and answered 10 of 33 replies outside uz-Latn. v1–v6 kept.
 
 ### 7.3 Context assembly
+**H10 review repairs (2026-11-10):** attention and period catch-up reads capture observations before loading managed questions, summaries, triage reasons, tasks and activity. Each local read transaction persists its dependency set; observations before and after inline summary calls are both retained, so settlement cannot certify earlier content with a later revision. No transaction spans the inline model call. If erasure invalidates the run during that call, the tool returns a content-free unavailable result. Selecting a later recipient fence still includes all earlier observations.
+
+**H10 snapshot fence:** `conversations.fences.observe_conversations` locks account SHARE then sorted conversations SHARE before associated content reads. `ConversationPage.observed` carries the same-snapshot content revision, owner-intent revision, arrival watermark and manual-message watermark for C7 readers (I2/I4). Application-issued `context_fences` union every managed conversation read in the generating run, including search hits and the owner run passed into the legacy draft writer. Mixed revisions remain contradictory; new reads never recertify old text. A fence is scoped to account, generating run and optional request/version. Original request time survives generation and retries. Transactions close before provider calls. Explicit older retained targets are loaded directly outside the newest-message window; unavailable initial targets never fall back to latest.
+
 
 **H13 / C8 effective owner preferences (2026-11-10, D-S2/D-S3/D-S6).**
 `memory.items.effective_owner_preferences` loads active source-exact
@@ -863,12 +869,24 @@ The v10-compatible top-level status is retained with C2 `proposal_status` detail
 Presentation is reported only from recorded evidence, never from a card pointer.
 Normal runtime step recording stays content-free.
 
-The typed `actions.proposals.OwnerProposalFence` seam has **no passing default**.
-H10 must validate the generating account/run/request and all read dependencies,
-hold settlement locks, and atomically bind the fence/request time to the new
-action version. Literal edits may request a source-only snapshot with a null
-model fence id. No proposal/revision proceeds without a checker. H4 adds no
-fence tables, H10/H11 precedence logic, migration, provider or send path.
+The typed `actions.proposals.OwnerProposalFence` seam is implemented by
+`actions.owner_fence.StoredOwnerProposalFence`, injected by bootstrap into the
+owner runtime and confirmation services. It validates the generating account/run
+and selected request/version, unions the run's application-issued read observations
+(including conflicting revisions), and holds sorted dependency/recipient locks
+before request/action settlement. An invalid, foreign or unrelated opaque fence id
+returns the same unavailable result. Source changes produce a D-S17 warning with
+Approve anyway / Re-draft / Discard, rather than blocking the shown draft.
+The new action/version records its fence, original request time, generating run
+and request linkage atomically. A separate immutable binding records the request's
+post-settlement CAS version, so staging itself does not invalidate fresh text.
+Literal edits may request a source-only snapshot with a null model fence id;
+retained artifact dependencies are preserved. Explicit version-checked revisions
+can start from a source-warning `OUTDATED` card; other outdated cards remain
+unavailable. No proposal/revision proceeds
+without a checker. No additional schema, provider or send path is introduced.
+Synthetic H4/H10 integration regressions are authored; lead/CI execution remains
+pending, including the bootstrap runtime interleavings with FakeLLM.
 
 **H3 regression repair (2026-11-09; validation unrun).** A changed source-proposal retry returns the original effect's scoped action receipt (including top-level `action_id`), with applied=false; it creates no new action or version. The immutable effect digest takes precedence over mutable card flags, including when the call key belongs to a literal revision. Effect identity rows use `subject_type=tool_effect` in the existing indexed audit storage, independently of `subject_type=action` lifecycle events; lookups also recognize older identity rows. A deterministic literal revision retains the action lifecycle order `action_revision_requested` then `action_edited`, without an extra action event for effect bookkeeping. The shared unique run/call key, retention and account-deletion rules are unchanged.
 
@@ -950,6 +968,10 @@ class Decision:
 - **Outcomes.** Proposal phase: any failed rule ⇒ `DENY` (the action is `blocked` with copy-ready text), otherwise `REQUIRE_APPROVAL`; `ALLOW_AUTO` never arises in P2. Execution phase: `ALLOW_AUTO` means **"may send now"** for every origin (an owner-approved action already carries its approval; Tx A only asks whether sending is still allowed); `WAIT` only when `inbox_drained` is the sole failure; any other failure ⇒ `DENY`. `policy.engine.execution_target(decision)` maps a failed execution decision to the action's next state (§9.4), so the executor never re-implements it. `policy/explanations.py` gives one owner-facing sentence per reason code (FR-ACT-03).
 
 ### 9.3 Rule catalogue
+**H10 / D-S17 amendment:** `source_revision_current` consumes the loader's structural fence result (`source_edited`, `source_deleted`, `new_contact_message`, `takeover`, `owner_intent_superseded`, `request_changed`, `source_unavailable`). Missing legacy proof is never called current. For owner-reviewable proposals source freshness is advisory and persisted as `freshness_warning`; other proposal rules still apply. Only a tap approving a warned exact version records `freshness_override`, which exempts that owner-approved send from source/takeover freshness vetoes. An ordinary approval still gets the conservative execution check and, if stale, returns to a warning card. This includes request suspension/version changes and owner-intent revisions; the warning preserves the specific fence reason. Independent safety denials take precedence over freshness warnings, including before the first warned approval. Autonomous origins cannot use the override. Connection, ownership, consent, length, expiry, inbox barrier and committed-claim checks remain unchanged.
+
+Missing revision proof (`source_unavailable`) does not mask another concrete execution denial: length, consent, rights, sending-disable and autonomous-pause failures retain their existing failure mapping. Rights/connection/policy outdating is not a freshness warning and offers no Approve anyway path. A rights change also retires an already-warned card's approval token and clears its freshness warning; the text remains copy-ready.
+
 
 **Current-version generated predicate (H9):** generated means a missing,
 malformed or version-mismatched authorship record, `retains_generated_text=true`,
@@ -1020,6 +1042,12 @@ separate consent checks (§14.3).
 A rule that does not apply to the phase or kind is left out of `Decision.checks`. The other autonomy conditions above arrive with M06.
 
 ### 9.4 Action lifecycle and at-most-once execution
+**H10 review recovery:** the reconciler also selects eligible legacy OUTDATED cards whose display already matches the state but whose warning/token are absent. Preparation supplies the fixed reason and approval token without changing the body/version; unrelated terminal, superseded, erased and autonomous work is not reopened. Replacement creation retires eligible legacy cards in the same transaction as modern warning cards. Both reconciler selection and token preparation refuse to upgrade a legacy card with a newer live replacement, including already-existing pairs. Warned cards keep Approve anyway / Re-draft / Discard while a replacement is pending. A no-result, closed-window or failed legacy Re-draft restores the current original card and sends a factual failure explanation. H8 owns retaining the original task/instructions through successful re-drafting; this recovery does not implement that cutover.
+
+**H10 / D-S17 amendment:** an unclaimed source-stale `OUTDATED` card retains its shown body, fixed `freshness_warning`, and a newly rotated approval token. It offers Approve anyway / Re-draft / Discard. Existing source-stale `OUTDATED` cards recover that approval path when presented. Approve and Discard use the exact token/version; re-draft uses the existing single-use card token. A valid new proposal retires older warning-card approval tokens; a superseded version cannot approve another version. Warned approval stores the exact text hash and `freshness_override`; a revised body resets that override and records its own fence/warning. Execution still commits its claim before Telegram and never retries ambiguous delivery. Telegram refusal remains definite not-sent with copy-ready text. Business text currently uses the standalone sender, including a deleted reply target; no missing target is replaced with another message. Privacy erasure clears derived bodies and fence links even on warning cards.
+
+Assist settlement presents a warned result without clearing a newer contact burst's pending flag. That burst retains its existing draft trigger; a later valid proposal supersedes the old warned card and retires its token. A definite first-presentation failure remains recoverable through the existing presentation claim/resolution protocol, including a new warned card with all three choices.
+
 
 **H9 version authorship (2026-11-09, C2 / R2-03):** `apply_new_version` updates
 body, authorship, version, approval token and cleared `approved_text_hash` in the
@@ -1050,6 +1078,11 @@ stateDiagram-v2
     awaiting_approval --> approved: owner approves (token bound to current version)
     awaiting_approval --> revising: owner sends edited text or revision instruction
     revising --> awaiting_approval: new version ready (new token)
+    outdated --> approved: owner presses Approve anyway (exact token/version)
+    outdated --> rejected: owner discards warned draft
+    outdated --> expired: maximum card age
+    outdated --> cancelled: request cancelled / privacy erasure
+    outdated --> revising: explicit version-checked rewrite of source-warning card
     revising --> outdated: new contact msg / takeover / superseded
     awaiting_approval --> rejected: owner rejects
     awaiting_approval --> outdated: new contact msg / takeover / source edit-delete / rights change / superseded
@@ -1218,6 +1251,10 @@ erDiagram
 ```
 
 ### 10.3 Tables (essential columns)
+Revision 0023 adds `agent_runs.sources_invalidated boolean NOT NULL DEFAULT false`, set monotonically by deletion of an account/run's context fence. This structural marker survives fence cleanup; see §10.4 for retention and compatibility. It stores no source identity or content.
+
+**H10 schema, revision 0022 (after 0021 resolution candidates):** additive structural metadata, `COMPATIBILITY = "expand"`; no content columns. `conversations` gains nonnegative bigint `content_revision` and `owner_intent_revision`, both default 0. `context_fences` has identity `id`, account CASCADE FK, nullable run SET NULL FK, strict structural JSONB `facts` and UTC `created_at`, with an account index. `actions` gains nullable fence SET NULL FK, original `requested_at`, optional owner-request SET NULL FK, content-free `freshness_warning`, and boolean `freshness_override` default false. Scoped application validation prevents foreign-account/run/request proof. Authorship remains per-version (0020); no archived body or new content class is introduced. I20's existing content-erasure journal triggers and stable recovery identities remain unchanged.
+
 
 **H13 additive JSON provenance (no migration).** `memory_items.content` remains
 the only preference-text column. Existing `provenance` optionally adds strict
@@ -1308,6 +1345,10 @@ scope, and request source IDs are cleared locally rather than exported.
 **H3 effect identity (revision 0018).** `tool_effect_recorded` audit details contain only `run_id`, bounded `tool_call_id` (at most 256 code points), `semantic_digest`, `effect_action_id` and `effect_version`. A unique partial expression index on `(account_id, details.run_id, details.tool_call_id)` for that event guards each committed effect. Source proposals and successful literal revisions both check this shared identity under the account lock and write the event atomically with their effect; changing tools cannot reuse a committed key. It survives replacement of mutable draft flags. Literal revisions also retain their semantic digest in the existing `action_revision_requested` audit event; H4/H8 own the final generic revision API. No content column/table or argument/body copy is added. The existing audit retention/export/account-deletion rules apply; no source text is pinned. Revision 0016 exclusively owns the control-turn reply/provenance columns; upgrading or downgrading 0018 changes only the audit index. Revision 0018 follows I8's 0017 and declares `COMPATIBILITY = "breaking"` in-file: I23 conservatively treats a unique constraint on existing audit fields as breaking. H3 copying delegates provenance validation to H2's shared `actions.requests.load_source`, using its existing `owner_text_verified` classification rather than a separate authorship flag. The authored migration regression preserves the full control-turn column set and non-default reply/provenance values across 0018 upgrade/downgrade; execution remains pending lead/CI validation.
 
 ### 10.4 Retention (defaults; owner-configurable — PRD R-07)
+**Run invalidation survives fence removal (revision 0023):** `agent_runs.sources_invalidated` is a content-free, monotonic boolean with the run's existing one-year retention and account cascade. A `context_fences` BEFORE DELETE trigger marks the owning account/run before structural references disappear, including request/scope cleanup, retention and I20 replay. The marker contains no erased IDs or text and needs no separate deletion-journal payload. Observation capture, C2 settlement and proposal staging reject invalidated runs, including a run that reads another chat after erasure. The trigger changes existing-table behavior, so 0023 honestly declares `COMPATIBILITY = "breaking"`; downgrade removes the trigger/function before the column. No new content column or retention extension is introduced.
+
+**H10 fence retention:** structural `context_fences` metadata is swept after one year unless linked pending work still needs it; references never extend source-content retention. Scope/managed/everything erasure removes affected fences and derived action text, including cross-chat dependencies. Request erasure removes request-linked fences; account deletion cascades. Message retention advances the conversation revision and clears affected derived work while preserving monotonic counters. I20 replay uses the same ingestion/deletion/retention services, so replay cannot leave restored content certified by an old revision. Telegram message deletion preserves the shown draft under D-S17 and warns; explicit privacy erasure remains a clearing operation. Fences and their structural facts are included in owner-request metadata export. The content-column registry explicitly classifies only `context_fences.facts` and `actions.freshness_warning` as structural text/JSONB additions.
+
 
 **H13 preference evidence.** Independently captured owner text follows curated
 memory retention, until forgotten/deleted; archived items are excluded at once
@@ -1559,6 +1600,8 @@ Custom retry strategy: bounded attempts (default 5), small exponential base (pro
 ---
 
 ## 13. Concurrency and idempotency (summary)
+**H10 lock order:** account SHARE → dependency and recipient conversations in sorted ID order → linked request → action. Settlement rechecks the captured revision and arrival/manual watermarks against original request time. Execution locks the same dependency set and restarts its short transaction if the action's fence/request linkage changed while acquiring locks. Read snapshots take SHARE locks only during loading. No row lock or database transaction spans an LLM or Telegram call. Revision changes, content clearing and fence invalidation share the ingestion/privacy transaction. I2/I4 can compare the captured conversation revision with settlement without inventing a stub revision.
+
 
 **H1 request foundation:** `actions.requests` requires explicit transaction, account and UTC time. Focus changes take account FOR NO KEY UPDATE first, then conversations in id order, request, action and dependent metadata; this first implementation serializes account-local request writes and locks that account's conversations conservatively. It never upgrades an account SHARE lock after taking a conversation. `update_request` compares the request version under the lock and returns applied/stale/unavailable. Same trigger plus identical operation/sources reuses the row; a different task suspends prior focus without transferring its body or recipient. Explicit unknown reply artifacts return unavailable; H2 owns runtime continuation routing and retained card-presentation integration. No request transition grants approval, claims delivery, or proves a business effect.
 
@@ -1880,7 +1923,8 @@ Monitor feedback is scoped by `(kind, contact_id, automation_id)` from the exist
 and chat rewrites move to the main model behind a default-off flag. This amends
 the owner-requested parts of P2 R2/E3 and PF-10/PF-11; tool-less isolated Assist
 and historical writer assets remain. H6 activates a new owner prompt only after
-its dependencies; H10 completes freshness persistence/checks before activation.
+its dependencies; H10 now supplies production freshness settlement for H4,
+with lead/CI validation still required before activation.
 Full repaired journey/retrieval evaluations require separately approved spend
 and must pass before enabling the flag. This worktree has not run those gates.
 

@@ -11,6 +11,7 @@ from assistant.agent.tools.registry import ToolContext, ToolServices
 from assistant.agent.tools.summaries import SummarizePeriodArgs, summarize_period_tool
 from assistant.conversations.models import Contact, Message
 from tests.fakes.clock import FakeClock
+from tests.integration.actions_env import seed_run
 from tests.integration.business_env import Env
 from tests.integration.p2_factories import (
     NOW,
@@ -69,11 +70,12 @@ async def test_catch_up_lists_what_the_assistant_sent_or_drafted_in_the_period(e
             text="Draft awaiting approval",
             created_at=NOW - timedelta(minutes=30),
         )
+        run_id = await seed_run(session, account.id)
         await session.commit()
 
     ctx = ToolContext(
         account_id=account.id,
-        run_id=1,
+        run_id=run_id,
         run_type="owner_request",
         tainted=False,
         services=ToolServices(
@@ -121,11 +123,12 @@ async def test_catch_up_activity_is_empty_when_nothing_happened(env: Env) -> Non
             updated_at=NOW - timedelta(hours=2),
         )
         session.add(msg)
+        run_id = await seed_run(session, account.id)
         await session.commit()
 
     ctx = ToolContext(
         account_id=account.id,
-        run_id=1,
+        run_id=run_id,
         run_type="owner_request",
         tainted=False,
         services=ToolServices(
@@ -163,11 +166,12 @@ async def test_rg21_catch_up_activity_never_includes_another_account(env: Env) -
             created_at=NOW - timedelta(hours=1),
             executed_at=NOW - timedelta(hours=1),
         )
+        run_id = await seed_run(session, acc1.id)
         await session.commit()
 
     ctx = ToolContext(
         account_id=acc1.id,
-        run_id=1,
+        run_id=run_id,
         run_type="owner_request",
         tainted=False,
         services=ToolServices(
@@ -216,11 +220,12 @@ async def test_catch_up_activity_counts_sent_messages_deleted_later(env: Env) ->
             updated_at=NOW - timedelta(minutes=10),
         )
         session.add(msg)
+        run_id = await seed_run(session, account.id)
         await session.commit()
 
     ctx = ToolContext(
         account_id=account.id,
-        run_id=1,
+        run_id=run_id,
         run_type="owner_request",
         tainted=False,
         services=ToolServices(
