@@ -37,6 +37,14 @@ from typing import Final
 
 from assistant.agent.locales import SupportedLocale
 
+#: H7 receipt fallback; wording awaits the owner's I27 locale review.
+DRAFT_TEXT_UNAVAILABLE: Final[dict[SupportedLocale, str]] = {
+    "en": "Text unavailable.",
+    "uz-Latn": "Matn mavjud emas.",
+    "uz-Cyrl": "Матн мавжуд эмас.",
+    "ru": "Текст недоступен.",
+}
+
 #: The owner, in a source line.
 YOU: Final[dict[SupportedLocale, str]] = {
     "en": "you",

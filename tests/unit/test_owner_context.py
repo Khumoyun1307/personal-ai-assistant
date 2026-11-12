@@ -11,13 +11,14 @@ here is synthetic.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 from assistant.accounts.models import Account, ControlTurn
-from assistant.actions.activity import LiveCardFact
+from assistant.actions.activity import ActionReceipt, LiveCardFact, ReceiptPage
 from assistant.actions.requests import (
     Continuation,
     MissingSlot,
@@ -31,14 +32,195 @@ from assistant.agent.context import (
     ContextPart,
     build_owner_request,
     render_live_cards,
+    render_receipts,
     render_refs,
 )
+from assistant.agent.owner_texts import CONTACT_FALLBACK
+from assistant.agent.receipt_texts import no_action_text, receipt_line, receipt_lines
+from assistant.core.control_texts import CATALOGUE, text
 from assistant.llm.port import Provenance, TextItem
 
 NOW = datetime(2026, 10, 30, 9, 0, tzinfo=UTC)
 #: Synthetic texts that must never reach the block.
 SECRET_DRAFT = "SYNTH draft text Dilnoza must not see"
 SECRET_NAME = "Xurshida Synthetic"
+
+
+def test_h7_receipts_have_no_body_names_or_arbitrary_reason_prose() -> None:
+    receipt = ActionReceipt(
+        action_id=41,
+        conversation_id=7,
+        request_id=None,
+        state="outdated",
+        state_reason=SECRET_DRAFT,
+        version=2,
+        authorship=None,
+        mode=SECRET_NAME,
+        answered_message_id=None,
+        text_available=False,
+        presentation="uncertain",
+        presented_version=1,
+        presented_state="awaiting_approval",
+        replaced_by_action_id=None,
+        observed_at=NOW,
+        warning_reason="source_edited",
+        can_approve_anyway=True,
+    )
+    text = render_receipts(ReceiptPage((receipt,), omitted_live=3, omitted_terminal=2))
+    assert SECRET_DRAFT not in text
+    assert SECRET_NAME not in text
+    assert '"state_reason": "unknown"' in text
+    assert '"text_available": false' in text
+    assert '"presentation": "uncertain"' in text
+    assert '"can_approve_anyway": true' in text
+    assert '"omitted_live": 3' in text
+    assert '"omitted_terminal": 2' in text
+
+
+def test_h7_receipts_are_withheld_without_managed_access() -> None:
+    context = build(managed_allowed=False, receipts=ReceiptPage((), 4, 5))
+    assert not any("Action receipts" in i.text for i in context.items if isinstance(i, TextItem))
+
+
+LOCALES = ("en", "uz-Latn", "uz-Cyrl", "ru")
+#: Internals that must never be in what the owner reads.
+INTERNAL = re.compile(r"\baction\b|\bversion\b|_|\d{4}-\d{2}-\d{2}|T\d{2}:\d{2}|\b\d+\b")
+
+
+def receipt(state: str, reason: str | None = None, **changes: Any) -> ActionReceipt:
+    base = ActionReceipt(
+        41, 7, None, state, reason, 2, None, "new_message", None, True,
+        "shown", 2, state, None, NOW,
+    )  # fmt: skip
+    return replace(base, **changes)
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize(
+    ("state", "reason", "marker"),
+    [
+        ("approved", "sending_disabled", "approved_not_sent"),
+        ("executing", None, "executing"),
+        ("succeeded", None, "succeeded"),
+        ("delivery_uncertain", "ambiguous", "uncertain"),
+        ("blocked", "policy_denied", "blocked"),
+        ("failed", "not_delivered", "failed"),
+        ("expired", "max_age", "expired"),
+        ("cancelled", "autonomy_paused", "cancelled"),
+        ("outdated", "new_contact_message", "outdated"),
+        ("rejected", "owner_rejected", "rejected"),
+    ],
+)
+def test_h7_owner_receipt_is_plain_localized_and_exact(
+    locale: str, state: str, reason: str | None, marker: str
+) -> None:
+    line = receipt_line(receipt(state, reason), locale)  # type: ignore[arg-type]
+    assert line == text(f"receipt_{_KEY[marker]}", locale, who="", reason=_reason(reason, locale))
+    assert not INTERNAL.search(line), line
+    assert "SYNTH" not in line
+    sent = text("receipt_succeeded", locale, who="")
+    assert (line == sent) is (state == "succeeded")
+    # Approved / executing are never worded as sent (invariant 11).
+    if state in {"approved", "executing"}:
+        assert line != sent
+        assert text("receipt_approved", locale, who="", reason="") != sent
+
+
+_KEY = {
+    "approved_not_sent": "approved",
+    "executing": "executing",
+    "succeeded": "succeeded",
+    "uncertain": "uncertain",
+    "blocked": "blocked",
+    "failed": "failed",
+    "expired": "expired",
+    "cancelled": "cancelled",
+    "outdated": "outdated",
+    "rejected": "rejected",
+}
+
+
+def _reason(code: str | None, locale: str) -> str:
+    key = f"receipt_reason_{code}"
+    return " " + text(key, locale) if key in CATALOGUE else ""
+
+
+def test_h7_english_owner_receipt_wording_is_exact() -> None:
+    en: Any = "en"
+    assert receipt_line(receipt("rejected"), en) == "Rejected, not sent."
+    assert receipt_line(receipt("approved"), en) == "Approved, but not sent yet."
+    assert receipt_line(receipt("succeeded"), en) == "Sent; Telegram confirmed it."
+    assert "not sent" in receipt_line(receipt("outdated", "new_contact_message"), en)
+    assert "A newer message arrived." in receipt_line(
+        receipt("outdated", "new_contact_message"), en
+    )
+    assert receipt_line(receipt("failed", "not_delivered"), en).endswith(
+        "Telegram did not send it."
+    )
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+def test_h7_owner_receipt_names_awaiting_and_presentation_states(locale: str) -> None:
+    loc: Any = locale
+    shown = receipt("awaiting_approval")
+    pending = replace(shown, presentation="not_attempted", presented_version=None)
+    failed_card = replace(shown, presentation="not_delivered")
+    unsure = replace(shown, presentation="uncertain")
+    lines = {receipt_line(r, loc) for r in (shown, pending, failed_card, unsure)}
+    assert len(lines) == 4
+    assert receipt_line(shown, loc) == text("receipt_awaiting_shown", loc, who="")
+    assert receipt_line(pending, loc) == text("receipt_awaiting_pending", loc, who="")
+    assert all(not INTERNAL.search(line) for line in lines)
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+def test_h7_warned_card_names_the_choice_and_reason_without_internals(locale: str) -> None:
+    loc: Any = locale
+    warned = receipt(
+        "outdated", "new_contact_message", warning_reason="new_contact_message",
+        can_approve_anyway=True,
+    )  # fmt: skip
+    line = receipt_line(warned, loc)
+    assert "Approve anyway / Re-draft / Discard" in line
+    assert text("receipt_reason_new_contact_message", locale) in line
+    assert not INTERNAL.search(line.replace("Approve anyway / Re-draft / Discard", ""))
+    assert line != receipt_line(replace(warned, can_approve_anyway=False), loc)
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+def test_h7_several_drafts_are_told_apart_by_escaped_contact_name(locale: str) -> None:
+    loc: Any = locale
+    a, b = receipt("rejected"), receipt("succeeded", conversation_id=8, action_id=42)
+    lines = receipt_lines([a, b], loc, {7: "Aziza <b>", 8: None})
+    assert lines[0].startswith("Aziza &lt;b&gt;: ")
+    assert lines[1].startswith(CONTACT_FALLBACK[loc].capitalize() + ": ") or lines[1].startswith(
+        CONTACT_FALLBACK[loc] + ": "
+    )
+    # One draft needs no name, and no id/version/timestamp ever appears.
+    assert receipt_lines([a], loc, {7: "Aziza"}) == [receipt_line(a, loc)]
+    assert not any(INTERNAL.search(line) for line in lines)
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+def test_h7_no_action_text_is_localized_and_names_the_real_reason(locale: str) -> None:
+    loc: Any = locale
+    assert no_action_text("needs_input", "content", loc) == text("receipt_needs_content", locale)
+    assert no_action_text("needs_input", "other", loc) == text("receipt_needs_more", locale)
+    assert no_action_text("proposal_conflict", None, loc) == text("receipt_conflict", locale)
+    detail = text("receipt_detail_source_unavailable", locale)
+    assert no_action_text("invalid_arguments", "source_unavailable", loc) == text(
+        "receipt_not_applied", locale, detail=detail
+    )
+    default = text("receipt_detail_default", locale)
+    assert default in no_action_text("invalid_arguments", "anything_else", loc)
+
+
+def test_h7_every_state_reason_code_either_has_a_plain_reason_or_is_a_success_state() -> None:
+    from assistant.actions.states import StateReason
+
+    silent = {"sent", "ambiguous", "stale_executing", "late_result", "owner_rejected"}
+    for code in StateReason:
+        assert code.value in silent or f"receipt_reason_{code.value}" in CATALOGUE, code
 
 
 def turn(**kwargs: Any) -> ControlTurn:

@@ -131,6 +131,9 @@ class ToolExecutor:
     #: Every tool name the registry has, offered or not: a call naming one is
     #: recorded and logged by it; any other name is model output.
     registered: frozenset[str] = frozenset()
+    action_ids: set[int] = field(default_factory=set)
+    artifact_reads: dict[int, int] = field(default_factory=dict)
+    no_action_results: list[tuple[str, str | None]] = field(default_factory=list)
     _done: dict[str, ToolResultItem] = field(default_factory=dict)
     _done_digests: dict[str, str] = field(default_factory=dict)
 
@@ -194,6 +197,44 @@ class ToolExecutor:
             self._log(tool, outcome)
         self.refs = self.refs | outcome.refs
         self.citable.update(outcome.citable)
+        if "tool.propose_owner_message" in self.context.services.enabled_flags:
+            self.artifact_reads.update(outcome.artifact_reads)
+            data = outcome.data
+            # An explicit NULL artifact is authoritative, even with other
+            # live cards in context. Never harvest IDs from model arguments.
+            if "action" in data and data["action"] is None:
+                proposal_status = data.get("proposal_status")
+                raw_reason = data.get("reason")
+                if isinstance(proposal_status, str):
+                    self.no_action_results.append(
+                        (proposal_status, raw_reason if isinstance(raw_reason, str) else None)
+                    )
+            else:
+                if (
+                    data.get("requested_change_applied")
+                    or data.get("proposal_status") == "reused_exact"
+                ):
+                    self.no_action_results.clear()
+                if data.get("proposal_status") in {
+                    "proposal_conflict",
+                    "idempotency_conflict",
+                    "existing_draft_conflict",
+                }:
+                    self.no_action_results.append(("proposal_conflict", None))
+                artifact = data.get("action", data)
+                if isinstance(artifact, Mapping):
+                    action_id = artifact.get("action_id")
+                    if type(action_id) is int and action_id > 0:
+                        self.action_ids.add(action_id)
+                entries = data.get("entries", ())
+                if isinstance(entries, list):
+                    for entry in entries:
+                        if isinstance(entry, Mapping):
+                            action_id = entry.get("action_id")
+                            if type(action_id) is int and action_id > 0:
+                                self.action_ids.add(action_id)
+            if call.name == "get_draft" and outcome.status == "no_draft":
+                self.no_action_results.append(("not_available", "artifact_unavailable"))
         if outcome.status == CHAT_ACCESS_OFF:
             self.saw_chat_access_off = True
         if outcome.taints:

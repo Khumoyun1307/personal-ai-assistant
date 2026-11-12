@@ -7,6 +7,7 @@ generated even when the model used owner dictation to compose them.
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,8 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry
 from assistant.actions import lifecycle
+from assistant.actions.activity import refresh_receipts
 from assistant.actions.authorship import VersionAuthorship, current_authorship, is_ai_generated
-from assistant.actions.card_facts import draft_mode, presentation_facts, state_reason_fact
 from assistant.actions.models import Action
 from assistant.actions.proposals import (
     CurrentOwnerFence,
@@ -109,75 +110,18 @@ async def _receipt(
     await session.refresh(action)
     if action.text is None:
         return source_failure("not_available", "artifact_unavailable", request)
-    proof = current_authorship(action.authorship, version=action.version)
-    facts = await presentation_facts(session, account_id=ctx.account_id, action_ids=[action.id])
-    fact = facts.get(action.id)
-    presentation = (
-        "not_attempted"
-        if fact is None
-        else {"claimed": "in_flight", "shown": "shown", "not_delivered": "not_delivered"}.get(
-            fact.outcome or "", "unknown"
-        )
-    )
-    # A pointer/card_state is not delivery evidence. Only card_presented proves
-    # which state/version the transport actually showed.
-    shown = await session.scalar(
-        select(AuditLogEntry)
-        .where(
-            AuditLogEntry.account_id == ctx.account_id,
-            AuditLogEntry.subject_type == "action",
-            AuditLogEntry.subject_id == action.id,
-            AuditLogEntry.event == "card_presented",
-        )
-        .order_by(AuditLogEntry.id.desc())
-        .limit(1)
-    )
     contact = await session.scalar(
         select(Conversation.contact_id).where(
             Conversation.account_id == ctx.account_id,
             Conversation.id == action.conversation_id,
         )
     )
-    linked_request = await session.scalar(
-        select(OwnerRequest.id)
-        .where(OwnerRequest.account_id == ctx.account_id, OwnerRequest.action_id == action.id)
-        .limit(1)
+    page = await refresh_receipts(
+        session, account_id=ctx.account_id, action_ids=(action.id,), now=ctx.services.clock.now()
     )
-    superseded = await session.scalar(
-        select(AuditLogEntry)
-        .where(
-            AuditLogEntry.account_id == ctx.account_id,
-            AuditLogEntry.subject_type == "action",
-            AuditLogEntry.subject_id == action.id,
-            AuditLogEntry.details["superseded_by"].astext.is_not(None),
-        )
-        .order_by(AuditLogEntry.id.desc())
-        .limit(1)
-    )
-    state_reason, _ = state_reason_fact(action.state_reason)
-    action_fact = {
-        "action_id": action.id,
-        "conversation_id": action.conversation_id,
-        "request_id": linked_request,
-        "state": action.state,
-        "state_reason": state_reason,
-        "version": action.version,
-        "authorship": None if proof is None else proof.kind,
-        "mode": draft_mode(action.draft_flags),
-        "answered_message_id": action.base_message_id,
-        "text_available": True,
-        "presentation": presentation if shown is None or fact is not None else "shown",
-        "presented_version": (
-            (None if fact is None else fact.version)
-            if shown is None
-            else shown.details.get("version")
-        ),
-        "presented_state": None if shown is None else shown.details.get("state"),
-        "replaced_by_action_id": (
-            None if superseded is None else superseded.details.get("superseded_by")
-        ),
-        "observed_at": ctx.services.clock.now(),
-    }
+    if not page.receipts:
+        return source_failure("not_available", "artifact_unavailable", request)
+    action_fact = asdict(page.receipts[0])
     wire_status = "not_drafted"
     if status == "revised" or (
         revision and status == "reused_exact" and action.state == "awaiting_approval"

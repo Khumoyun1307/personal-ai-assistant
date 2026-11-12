@@ -4,22 +4,29 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry
 from assistant.actions.authorship import AuthorshipKind, current_authorship, is_ai_generated
 from assistant.actions.card_facts import (
+    Presentation,
     PresentationFact,
+    ReceiptPresentation,
     draft_mode,
     presentation_facts,
+    receipt_presentations,
     state_reason_fact,
+    warning_reason_fact,
 )
+from assistant.actions.lifecycle import warning_card_filter
 from assistant.actions.models import Action
-from assistant.actions.states import LIVE_CARD, TERMINAL, ActionState
+from assistant.actions.request_models import OwnerRequest
+from assistant.actions.states import LIVE_CARD, PENDING, TERMINAL, ActionState
 from assistant.conversations.models import Contact, Conversation, Message
 
 _GROUP_STATES: dict[str, set[str]] = {
@@ -365,3 +372,242 @@ async def live_cards(
             authorship,
         ) in card_rows
     ]
+
+
+@dataclass(frozen=True, slots=True)
+class ActionReceipt:
+    """An ephemeral C3 observation. Never contains text, names or previews."""
+
+    action_id: int
+    conversation_id: int
+    request_id: int | None
+    state: str
+    state_reason: str | None
+    version: int
+    authorship: AuthorshipKind | None
+    mode: str | None
+    answered_message_id: int | None
+    text_available: bool
+    presentation: Presentation
+    presented_version: int | None
+    presented_state: str | None
+    replaced_by_action_id: int | None
+    observed_at: datetime
+    warning_reason: str | None = None
+    can_approve_anyway: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptPage:
+    receipts: tuple[ActionReceipt, ...]
+    omitted_live: int = 0
+    omitted_terminal: int = 0
+
+
+async def refresh_receipts(
+    session: AsyncSession, *, account_id: int, action_ids: tuple[int, ...], now: datetime
+) -> ReceiptPage:
+    """Read only actual scoped artifacts; missing/foreign IDs return no facts."""
+    if not action_ids:
+        return ReceiptPage(())
+    request_id = (
+        select(OwnerRequest.id)
+        .where(
+            OwnerRequest.account_id == account_id,
+            (OwnerRequest.action_id == Action.id) | (OwnerRequest.id == Action.owner_request_id),
+        )
+        .order_by(OwnerRequest.id.desc())
+        .limit(1)
+        .correlate(Action)
+        .scalar_subquery()
+    )
+    rows = (
+        await session.execute(
+            select(
+                Action.id,
+                Action.conversation_id,
+                request_id,
+                Action.state,
+                Action.state_reason,
+                Action.version,
+                Action.authorship,
+                Action.draft_flags["mode"].astext,
+                Action.base_message_id,
+                Action.text.is_not(None),
+                Action.freshness_warning,
+                warning_card_filter() & Action.approval_token.is_not(None),
+                Action.card_state,
+            )
+            .join(
+                Conversation,
+                (Conversation.id == Action.conversation_id)
+                & (Conversation.account_id == account_id),
+            )
+            .where(Action.account_id == account_id, Action.id.in_(action_ids))
+            .order_by(Action.id)
+        )
+    ).all()
+    presentations = await receipt_presentations(
+        session, account_id=account_id, action_ids=[row[0] for row in rows], now=now
+    )
+    replacements: dict[int, int] = {}
+    # Never trust an unscoped audit ID as an artifact reference.
+    audits = await session.execute(
+        select(AuditLogEntry.subject_id, AuditLogEntry.details)
+        .where(
+            AuditLogEntry.account_id == account_id,
+            AuditLogEntry.subject_type == "action",
+            AuditLogEntry.subject_id.in_(action_ids),
+            AuditLogEntry.details["superseded_by"].astext.is_not(None),
+        )
+        .order_by(AuditLogEntry.id)
+    )
+    for subject_id, details in audits:
+        replacement = details.get("superseded_by")
+        if type(replacement) is int:
+            scoped = await session.scalar(
+                select(Action.id).where(Action.account_id == account_id, Action.id == replacement)
+            )
+            if scoped is not None:
+                replacements[subject_id] = scoped
+    receipts: list[ActionReceipt] = []
+    for row in rows:
+        (
+            action_id,
+            conversation_id,
+            linked_request,
+            state,
+            reason,
+            version,
+            authorship,
+            mode,
+            answered,
+            available,
+            warning,
+            approve_anyway,
+            card_state,
+        ) = row
+        proof = current_authorship(authorship, version=version)
+        presentation = presentations.get(action_id, ReceiptPresentation())
+        outcome = presentation.outcome
+        if (presentation.version is not None and presentation.version != version) or (
+            presentation.state is not None and presentation.state != state
+        ):
+            outcome = "not_attempted"
+        if (
+            outcome == "shown"
+            and presentation.shown_version == version
+            and presentation.shown_state == state
+            and card_state != state
+        ):
+            outcome = "unknown"
+        receipts.append(
+            ActionReceipt(
+                action_id=action_id,
+                conversation_id=conversation_id,
+                request_id=linked_request,
+                state=state,
+                state_reason=warning_reason_fact(reason)[0],
+                version=version,
+                authorship=None if proof is None else proof.kind,
+                mode=mode if mode in {"reply", "new_message", "revise"} else None,
+                answered_message_id=answered,
+                text_available=available,
+                presentation=outcome,
+                presented_version=presentation.shown_version,
+                presented_state=presentation.shown_state,
+                replaced_by_action_id=replacements.get(action_id),
+                observed_at=now,
+                warning_reason=warning_reason_fact(warning)[0],
+                can_approve_anyway=bool(approve_anyway),
+            )
+        )
+    return ReceiptPage(tuple(receipts))
+
+
+async def conversation_names(
+    session: AsyncSession, *, account_id: int, conversation_ids: tuple[int, ...]
+) -> dict[int, str | None]:
+    """Contact display names for owner-visible wording only (never logs or model)."""
+    if not conversation_ids:
+        return {}
+    rows = await session.execute(
+        select(Conversation.id, Contact.display_name)
+        .join(Contact, Contact.id == Conversation.contact_id)
+        .where(
+            Conversation.account_id == account_id,
+            Contact.account_id == account_id,
+            Conversation.id.in_(conversation_ids),
+        )
+    )
+    return dict(rows.tuples().all())
+
+
+async def action_receipts(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    request_ids: tuple[int, ...] = (),
+    conversation_ids: tuple[int, ...] = (),
+    action_ids: tuple[int, ...] = (),
+    now: datetime,
+) -> ReceiptPage:
+    """Explicit refs bypass the fallback cap; relevant recent outcomes survive.
+
+    Only the unselected live-work fallback is capped (20). Counts describe
+    omissions rather than implying that an absent action was sent or deleted.
+    """
+    scoped = (
+        select(Action.id)
+        .join(
+            Conversation,
+            (Conversation.id == Action.conversation_id) & (Conversation.account_id == account_id),
+        )
+        .where(Action.account_id == account_id)
+    )
+    selected = set(await session.scalars(scoped.where(Action.id.in_(action_ids))))
+    linked = select(OwnerRequest.action_id).where(
+        OwnerRequest.account_id == account_id,
+        OwnerRequest.id.in_(request_ids),
+    )
+    selected.update(await session.scalars(scoped.where(Action.id.in_(linked))))
+    live = (
+        Action.state.in_([s.value for s in PENDING | {ActionState.EXECUTING}])
+        | warning_card_filter()
+    )
+    selected.update(
+        await session.scalars(scoped.where(Action.conversation_id.in_(conversation_ids), live))
+    )
+    terminal = ~live
+    recent = (
+        scoped.where(
+            Action.conversation_id.in_(conversation_ids),
+            terminal,
+            Action.updated_at >= now - timedelta(hours=24),
+        )
+        .order_by(Action.conversation_id, Action.updated_at.desc(), Action.id.desc())
+        .ext(distinct_on(Action.conversation_id))
+    )
+    selected.update(await session.scalars(recent))
+    fallback = list(
+        await session.scalars(
+            scoped.where(live, Action.id.not_in(selected))
+            .order_by(Action.updated_at.desc(), Action.id.desc())
+            .limit(20)
+        )
+    )
+    selected.update(fallback)
+    counts = await session.execute(
+        select(live, func.count(Action.id))
+        .join(
+            Conversation,
+            (Conversation.id == Action.conversation_id) & (Conversation.account_id == account_id),
+        )
+        .where(Action.account_id == account_id, Action.id.not_in(selected))
+        .group_by(live)
+    )
+    omitted = {bool(is_live): count for is_live, count in counts}
+    page = await refresh_receipts(
+        session, account_id=account_id, action_ids=tuple(sorted(selected)), now=now
+    )
+    return ReceiptPage(page.receipts, omitted.get(True, 0), omitted.get(False, 0))

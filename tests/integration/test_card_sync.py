@@ -13,7 +13,10 @@ import pytest
 from sqlalchemy import select
 from structlog.testing import capture_logs
 
+from assistant.accounts.models import AuditLogEntry
 from assistant.actions import lifecycle
+from assistant.actions.activity import refresh_receipts
+from assistant.actions.card_facts import PRESENTATION_TIMEOUT
 from assistant.actions.models import Action
 from assistant.actions.states import StateReason
 from assistant.db.uow import transaction
@@ -191,7 +194,7 @@ async def test_sync_retries_a_failed_edit_and_records_card_state(s: Scenario) ->
     row = await s.seed()
     await cancel_outside_the_card_flow(s)
     s.env.sender.edits.clear()
-    s.env.sender.fail_with = network_error()
+    s.env.sender.fail_with = telegram_error("Too Many Requests: retry later", status_code=429)
     await advance(s, 60, periodic=SYNC)
     assert len(s.env.sender.edits) == 1
     assert (await s.action(row.id)).card_state == "awaiting_approval"  # retried next minute
@@ -205,7 +208,7 @@ async def test_the_sync_stops_after_ten_failed_edits_of_one_card(s: Scenario) ->
     row = await s.seed()
     await cancel_outside_the_card_flow(s)
     s.env.sender.edits.clear()
-    s.env.sender.fail_with = network_error()
+    s.env.sender.fail_with = telegram_error("Too Many Requests: retry later", status_code=429)
     for _ in range(SYNC_MAX_FAILURES + 2):
         await advance(s, 60, periodic=SYNC)
     assert len(s.env.sender.edits) == SYNC_MAX_FAILURES
@@ -250,6 +253,13 @@ async def test_a_refused_card_edit_stays_recoverable_with_content_free_logs(
     assert stale.card_message_id == row.card_message_id
     assert stale.card_state == "awaiting_approval"
     assert stale.state == "cancelled"
+    async with s.env.factory() as session:
+        page = await refresh_receipts(
+            session, account_id=s.account_id, action_ids=(row.id,), now=s.env.clock.now()
+        )
+    [receipt] = page.receipts
+    assert receipt.presentation == "not_delivered"
+    assert receipt.presented_state == "awaiting_approval"
     refused = [entry for entry in logs if entry["event"] == "approval_card_edit_failed"]
     assert len(refused) == 1
     [entry] = refused
@@ -267,6 +277,90 @@ async def test_a_refused_card_edit_stays_recoverable_with_content_free_logs(
     assert (await s.action(row.id)).card_state == "cancelled"
     assert len(s.env.sender.sends) == sends_before
     assert s.env.sender.business_calls == 0
+
+
+async def test_h7_uncertain_edit_is_not_automatically_replayed(s: Scenario) -> None:
+    row = await s.seed()
+    await cancel_outside_the_card_flow(s)
+    s.env.sender.edits.clear()
+    s.env.sender.fail_with = network_error()
+    await advance(s, 60, periodic=SYNC)
+    assert len(s.env.sender.edits) == 1
+    s.env.sender.fail_with = None
+    await advance(s, 180, periodic=SYNC)
+    assert len(s.env.sender.edits) == 1
+    async with s.env.factory() as session:
+        page = await refresh_receipts(
+            session, account_id=s.account_id, action_ids=(row.id,), now=s.env.clock.now()
+        )
+    [receipt] = page.receipts
+    assert receipt.presentation == "uncertain"
+    assert receipt.presented_state == "awaiting_approval"
+    assert s.env.sender.business_calls == 0
+
+
+async def test_h7_unresolved_presentation_becomes_uncertain_without_replay(s: Scenario) -> None:
+    async with transaction(s.env.factory) as uow:
+        row = await seed_action(
+            uow.session,
+            account_id=s.account_id,
+            conversation_id=s.conversation_id,
+            state="awaiting_approval",
+            text=DRAFT,
+            created_at=s.env.clock.now(),
+            updated_at=s.env.clock.now(),
+        )
+        uow.session.add(
+            AuditLogEntry(
+                account_id=s.account_id,
+                at=s.env.clock.now(),
+                actor="system",
+                event=approvals.PRESENTATION_CLAIMED,
+                subject_type="action",
+                subject_id=row.id,
+                details={"version": row.version},
+            )
+        )
+    async with s.env.factory() as session:
+        page = await refresh_receipts(
+            session, account_id=s.account_id, action_ids=(row.id,), now=s.env.clock.now()
+        )
+    assert page.receipts[0].presentation == "in_flight"
+    await advance(s, int(PRESENTATION_TIMEOUT.total_seconds()) + 1, periodic=SYNC)
+    async with s.env.factory() as session:
+        page = await refresh_receipts(
+            session, account_id=s.account_id, action_ids=(row.id,), now=s.env.clock.now()
+        )
+    assert page.receipts[0].presentation == "uncertain"
+    assert s.env.sender.sends == []
+
+
+async def test_h7_split_card_maps_both_successful_control_messages(s: Scenario) -> None:
+    # The sender also recorded the onboarding messages; only the card's own sends count.
+    earlier = len(s.env.sender.delivered_control_sends)
+    row = await s.seed(text="SYNTH " * 650)
+    async with s.env.factory() as session:
+        mappings = list(
+            await session.scalars(
+                select(AuditLogEntry).where(
+                    AuditLogEntry.account_id == s.account_id,
+                    AuditLogEntry.subject_type == "action",
+                    AuditLogEntry.subject_id == row.id,
+                    AuditLogEntry.event == "card_presented",
+                )
+            )
+        )
+        page = await refresh_receipts(
+            session, account_id=s.account_id, action_ids=(row.id,), now=s.env.clock.now()
+        )
+    assert len(mappings) == 2
+    assert {m.details["control_message_id"] for m in mappings} == {
+        message["message_id"] for message in s.env.sender.delivered_control_sends[earlier:]
+    }
+    assert any(m.details.get("part") == "full_text" for m in mappings)
+    assert page.receipts[0].presentation == "shown"
+    assert page.receipts[0].presented_version == row.version
+    assert page.receipts[0].presented_state == row.state
 
 
 @pytest.mark.parametrize(
@@ -304,7 +398,7 @@ async def test_the_sync_tries_again_once_the_state_moves_on_after_giving_up(
         )
     assert approved.status is lifecycle.ApproveStatus.APPROVED
     s.env.sender.edits.clear()
-    s.env.sender.fail_with = network_error()
+    s.env.sender.fail_with = telegram_error("Too Many Requests: retry later", status_code=429)
     for _ in range(SYNC_MAX_FAILURES + 2):
         await advance(s, 60, periodic=SYNC)
     assert len(s.env.sender.edits) == SYNC_MAX_FAILURES
@@ -323,7 +417,7 @@ async def test_a_card_the_sync_gave_up_on_never_holds_a_batch_slot(
     second = await s.seed(state="approved")
     await cancel_outside_the_card_flow(s)
     s.env.sender.edits.clear()
-    s.env.sender.fail_with = network_error()
+    s.env.sender.fail_with = telegram_error("Too Many Requests: retry later", status_code=429)
     for _ in range(SYNC_MAX_FAILURES):
         await advance(s, 60, periodic=SYNC)
     assert {edit["message_id"] for edit in s.env.sender.edits} == {first.card_message_id}

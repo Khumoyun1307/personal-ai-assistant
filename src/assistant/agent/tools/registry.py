@@ -246,6 +246,9 @@ class ToolOutcome:
     #: citations in the reply (S03.7 B3, `agent/citations.py`). Read from the
     #: database by the tool; never persisted, never sent to the model.
     citable: Mapping[int, CitableMessage] = field(default_factory=dict)
+    #: Explicit artifact reads, for C3's current-version content proof. Internal
+    #: metadata only; never changes the tool's wire schema or stored trace.
+    artifact_reads: Mapping[int, int] = field(default_factory=dict)
     #: For the executor's one log line when a call does not end `ok` (§8.3):
     #: a fixed code (`not_found`, `hold:args_too_large`, …) and content-free
     #: extras (real field names, pydantic error types, an exception type).

@@ -16,7 +16,7 @@ wrap draft text as untrusted; receipt/log metadata is content-free.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Annotated, Any, Literal, Self
 
@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account, AuditLogEntry
 from assistant.actions import lifecycle
+from assistant.actions.activity import refresh_receipts
 from assistant.actions.authorship import VersionAuthorship, current_authorship, is_ai_generated
 from assistant.actions.card_facts import (
     PresentationFact,
@@ -743,6 +744,15 @@ async def get_draft_tool(ctx: ToolContext, args: GetDraftArgs) -> ToolOutcome:
         presentation = (
             await presentation_facts(session, account_id=ctx.account_id, action_ids=[card.id])
         ).get(card.id, PresentationFact())
+        receipt = None
+        if "tool.propose_owner_message" in ctx.services.enabled_flags:
+            page = await refresh_receipts(
+                session,
+                account_id=ctx.account_id,
+                action_ids=(card.id,),
+                now=ctx.services.clock.now(),
+            )
+            receipt = page.receipts[0] if page.receipts else None
     flags = card.draft_flags or {}
     reason, explanation = state_reason_fact(card.state_reason)
     proof = current_authorship(card.authorship, version=card.version)
@@ -775,12 +785,15 @@ async def get_draft_tool(ctx: ToolContext, args: GetDraftArgs) -> ToolOutcome:
     }
     if card.text is None:
         data["text_removed"] = True
+    if receipt is not None:
+        data["action"] = asdict(receipt)
     return ToolOutcome(
         "ok",
         data,
         contains_managed=True,
         untrusted=True,
         refs=card.refs,
+        artifact_reads={} if card.text is None else {card.id: card.version},
     )
 
 

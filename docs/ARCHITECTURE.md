@@ -493,6 +493,22 @@ There is one agent identity (same principles, memory, policy), invoked in **run 
 
 ### 7.2 Owned agent loop (for `owner_request`)
 
+**Stabilization H7 (2026-11-12, candidate; container validation pending).** With
+`tool.propose_owner_message`, the runtime records actual tool-returned action IDs
+and explicit current continuation references independently of fallback cards.
+It reloads their content-free receipts after tool batches and before accepting a
+final answer, then reads them again immediately before delivery. A changed
+state/version/presentation/warning or purged text discards the unsent answer and
+allows one correction phase with read tools only, within the original run limits.
+No additional provider call is admitted after consent withdrawal or monthly,
+token, iteration or time exhaustion. Another race, an unread current version or
+unavailable text yields fixed receipt-only wording. A verified current artifact
+read permits content narration under v11's existing rules; the final consequential
+status line always comes from the last observation and includes its UTC time.
+C2 NULL-action failures get their actual fixed question/failure, without borrowing
+another card. No used prompt bytes, prompt activation rules or offered production
+schemas change. Flag-off context remains PF-15/Q3.
+
 **H6 staged prompt routing (2026-11-10).** Before creating the run, the runtime
 calls `prompt_registry.active("owner_request", enabled_flags=config.enabled_flags)`.
 `FLAGGED_ACTIVE` selects v11 with H4's `tool.propose_owner_message`, matching the
@@ -676,6 +692,21 @@ Context builders (`agent/context.py`) are explicit, testable functions per run t
 - **As built (S04.2 part b) — what a draft may see, completed.** The isolation list above gains one input for `draft_reply`: **the owner's own instruction for this draft** (`propose_reply`'s `guidance`, ≤ 400 characters), only from an untainted owner run — a tainted run's guidance could restate another chat's text, so `propose_reply` drops it and its result says `guidance_ignored: "tainted_run"` (decisions R2; owner decision B3 E3, 2026-10-26). Guidance shapes the draft's content only: it is never an approval, an edit of a live card or a permission to send. A revision adds the card's current text, wrapped `source="draft"` (a draft written from contact text, `agent/untrusted.py::Source.DRAFT`), and the owner's revision message from the control chat (owner input; a forwarded or third-party message never reaches the edit input, M03 D49).
 - **As changed (PF-11, owner decision D2 of 2026-10-30) — the owner's own words reach the draft.** In production every owner run was tainted (any chat tool's result taints it, and taint carries over through history), so the R2 rule above meant the owner's instructions never reached a draft. Now the **application** supplies them: the runtime puts the current owner turn on `ToolContext.owner_turn` (`agent/tools/registry.py::OwnerTurn`: id, text, `third_party`, `contains_managed`, `quoted`), and `propose_reply` passes that turn's text to `draft_owner` as **the owner's request** (`Provenance.OWNER_CONTROL`, so `ai_control` covers it) whenever the turn is not forwarded, not quoting and carries no managed content — tainted run or not. It is the owner's own text, never contact text (invariant 3b), and one chat per draft (invariant 4). The model-written `guidance` keeps R2: dropped in a tainted run (the result says `guidance_ignored` only when nothing of the owner's reached the draft; `owner_message_used` says whether the turn did). The chat itself stays `MANAGED` (`ai_managed`), contact text stays wrapped, and the run has no tools (invariant 3a). Content-free observability (PF-04): the executor's line for the call carries `instruction_source` (`owner_turn` | `model` | `none` | `dropped_tainted` | `dropped_quoted`), `mode`, `has_answered_target`, `bounds_retry`, `bounds_met`.
 - **As changed (PF-15) — the owner run's working context.** With `ai_managed` (the consent the chat and draft tools need), `build_owner_request` adds one input item after the history and before the new owner message: the account's live approval cards followed by recent terminal/uncertain cards (Q3: shared cap 50 loaded, at most 20 listed and the rest counted; live cards first, then newest updated; `actions/activity.py::live_cards`), each as action id, chat (conversation) id, version, state, origin, the draft mode (only `reply`/`new_message`/`revise`; any other stored value is dropped) and whether it answers a chosen message, fixed state-reason codes/explanations, owner-local created/updated times, and the latest stored presentation outcome with its version — **never the draft's text, never a name**. Presentation `claimed` means only an attempt was recorded; null means no outcome is recorded, and an older-version outcome is not proof the current version was shown. Each history turn also carries a short application note with the integer ids from its `control_turns.refs` (chats, contacts, and the card an Edit-button turn revised — PF-01 stores `revision_action_id` as a list), outside any untrusted block, and also only with `ai_managed`. Both are written by the application, are content-free by construction and carry `OWNER_CONTROL` provenance; they never change taint (the §7.1 rule still decides from forwarded/quoted/managed turns) or any other item's provenance, and the instructions (the cached prefix) are unchanged. Why: continuity across runs was text only, so the model could not tell which chat or card the owner meant (ISSUE-003/006/009).
+
+**H7 / PF-15 extension (candidate flag above).** `actions.activity.action_receipts`
+and `refresh_receipts` extend the existing live-card read model with in-memory C3
+receipts: scoped request/action/conversation IDs, state/reason, version/authorship,
+mode/answer target, text availability, presentation/version/state, supersession,
+observation time and D-S17 warning/Approve-anyway facts. Explicit retained IDs and
+request links bypass the 20-card fallback cap; relevant conversations also supply
+live work and their latest terminal/uncertain outcome from the last 24 hours.
+Omitted live/terminal counts are explicit; a large selection asks for narrowing.
+Only supplied history/source references contribute recent context. Facts contain
+no body, preview, name, approval token or arbitrary persisted explanation and do
+not taint. Managed-associated facts are withheld when managed-tool admission is
+closed. Tool outcomes with `action=null` never acquire synthetic action/version
+fields. `get_draft` supplies the internal action/version read proof; model-written
+proposal text and history are not artifact reads.
 
 ### 7.4 Model configuration and provider behaviour
 
@@ -977,6 +1008,14 @@ Each tool definition: name, description, JSON schema (strict), capability class,
 
 **I11 task correction freshness:** triage captures each open task's PostgreSQL row revision (`xmin`) alongside its context read and carries those revisions only in application memory. Before storing any verdict effects, it re-reads the open task revisions under the account/conversation apply locks. A changed task snapshot discards the verdict as `changed`, preserving owner corrections and their Undo even when timestamps are identical. This also guards implicit task deduplication and task resolution; no schema or prompt change is required.
 
+**H7 receipt seams.** Candidate main proposals/revisions and source proposals use
+the shared C3 reader for their optional C2 artifact. The conflict's
+`requested_change_applied=false` remains independent of its actual artifact's
+current state. Candidate `get_draft` adds the same structural receipt while
+retaining untrusted text wrapping. Internal `ToolOutcome.artifact_reads` and
+executor observations are ephemeral; no text or receipt cache enters step logs.
+The existing tool flags and strict schemas stay unchanged.
+
 ### 8.3 Execution contract
 
 **H4 settlement (2026-11-10; unverified):** generated proposals and flat revisions
@@ -1264,6 +1303,20 @@ Telegram offers no idempotency key (TF §4), so this protocol guarantees **at-mo
 
 ### 9.5 Approval handling
 
+**H7 presentation evidence (2026-11-12, validation pending).** Successful split
+cards record `card_presented` for both the full-text companion (`part=full_text`)
+and controls, only after the complete presentation succeeds. H2's scoped reply
+resolver consumes either mapping. Failed edits create a separate content-free
+`card_presentation_failed` observation (version/state/control-message ID and fixed
+`not_delivered` or `uncertain` outcome), never a successful mapping. Q5's gateway
+classification is authoritative: only success or its narrow not-modified
+equivalence certifies an edit. Uncertain edits are excluded from automatic sync
+for that state/version, including after restart; definite failures retain the
+existing bounded sync. Initial unresolved send claims remain non-replayable and
+are in-flight for two minutes, then uncertain. Old-version/state evidence and an
+invalidated `card_state` do not prove current controls were shown. Explicit
+recovery remains I27's responsibility and must not replay business effects.
+
 **H4 / D-S17 (owner, 2026-11-10).** Main-model rewrites and literal edits use
 `start_revision` → `apply_new_version` in one transaction, preserving target and
 expiry, rotating the token and clearing the old approval hash. Failed/cancelled
@@ -1466,6 +1519,15 @@ scope, and request source IDs are cleared locally rather than exported.
 **H3 effect identity (revision 0018).** `tool_effect_recorded` audit details contain only `run_id`, bounded `tool_call_id` (at most 256 code points), `semantic_digest`, `effect_action_id` and `effect_version`. A unique partial expression index on `(account_id, details.run_id, details.tool_call_id)` for that event guards each committed effect. Source proposals and successful literal revisions both check this shared identity under the account lock and write the event atomically with their effect; changing tools cannot reuse a committed key. It survives replacement of mutable draft flags. Literal revisions also retain their semantic digest in the existing `action_revision_requested` audit event; H4/H8 own the final generic revision API. No content column/table or argument/body copy is added. The existing audit retention/export/account-deletion rules apply; no source text is pinned. Revision 0016 exclusively owns the control-turn reply/provenance columns; upgrading or downgrading 0018 changes only the audit index. Revision 0018 follows I8's 0017 and declares `COMPATIBILITY = "breaking"` in-file: I23 conservatively treats a unique constraint on existing audit fields as breaking. H3 copying delegates provenance validation to H2's shared `actions.requests.load_source`, using its existing `owner_text_verified` classification rather than a separate authorship flag. The authored migration regression preserves the full control-turn column set and non-default reply/provenance values across 0018 upgrade/downgrade; execution remains pending lead/CI validation.
 
 ### 10.4 Retention (defaults; owner-configurable — PRD R-07)
+
+**H7 receipt metadata.** Receipts/read proofs exist only within a run. Existing
+`control_turns.refs.action_ids` holds scoped structural references; it follows
+control-turn retention and conversation erasure. Presentation failure observations
+and full-text mappings use existing audit JSON, classified structural in
+`privacy/content_columns.py`, with the existing one-year audit ceiling. Structural
+export includes outcome/part/event; scope/action/everything erasure removes both
+successful mappings and failed-presentation references. No new content column,
+table, migration, processor or content-retention extension is introduced.
 **Run invalidation survives fence removal (revision 0023):** `agent_runs.sources_invalidated` is a content-free, monotonic boolean with the run's existing one-year retention and account cascade. A `context_fences` BEFORE DELETE trigger marks the owning account/run before structural references disappear, including request/scope cleanup, retention and I20 replay. The marker contains no erased IDs or text and needs no separate deletion-journal payload. Observation capture, C2 settlement and proposal staging reject invalidated runs, including a run that reads another chat after erasure. The trigger changes existing-table behavior, so 0023 honestly declares `COMPATIBILITY = "breaking"`; downgrade removes the trigger/function before the column. No new content column or retention extension is introduced.
 
 **H10 fence retention:** structural `context_fences` metadata is swept after one year unless linked pending work still needs it; references never extend source-content retention. Scope/managed/everything erasure removes affected fences and derived action text, including cross-chat dependencies. Request erasure removes request-linked fences; account deletion cascades. Message retention advances the conversation revision and clears affected derived work while preserving monotonic counters. I20 replay uses the same ingestion/deletion/retention services, so replay cannot leave restored content certified by an old revision. Telegram message deletion preserves the shown draft under D-S17 and warns; explicit privacy erasure remains a clearing operation. Fences and their structural facts are included in owner-request metadata export. The content-column registry explicitly classifies only `context_fences.facts` and `actions.freshness_warning` as structural text/JSONB additions.
@@ -1972,6 +2034,12 @@ CI (GitHub Actions): ruff, mypy, import-linter and pip-audit in `lint`; unit + i
 ---
 
 ## 17. Observability and operations
+
+H7's receipt observations expose fixed state/reason/version/presentation/warning
+facts, never text, contact names or raw transport errors. They are not execution
+claims or a durable cache. Manual Telegram checks, paid evaluations and owner
+review of the minimal unavailable-text fallback translations remain unrun; I27
+owns broader recovery and localized card/button wording.
 
 **CP4 synchronous system alerts (ICR #132).** `OwnerAlerts` delegates to `inbox/system_notifications.py`: it commits an `uncertain/claimed` notification plus `system_alert_claimed` audit `{kind,key,notification_id,attempt_ms}` before sending. Rendered values and buttons remain ephemeral. It appends one immutable legacy `system_alert` resolution `{kind,key,delivered,uncertain?,claim_id,notification_id}` even if the notification was deleted meanwhile. Success → `sent`, ambiguous → `uncertain`, definite failure → terminal `failed` for that attempt; callers retain retry ownership. Standard notifications keep their bounded queued retries. Historical successful/uncertain audits retain cooldown dedupe; unresolved claims block a new attempt and return `AlertResult(False, 'in_progress', uncertain=False)`, preventing a premature policy-notice settlement; a once-ever key (`cooldown=None`, e.g. `uncertain:{action_id}`) stays blocked, while for a key with a cooldown an unresolved claim older than the cooldown counts as an uncertain alert at its claim time, so recurring alerts (`ingestion_stall`, `backup_stale`, `backup_upload_stale`) alert again after the cooldown (TL amendment on #134). All predicates/joins include account scope. Audit-based dedupe survives the 30-day notification sweep using existing one-year audit retention. `attempt_ms=max(clock_epoch_ms,prior_claim_attempt_ms+1)` skips any existing key collision. No schema/content column or runtime flag changes.
 

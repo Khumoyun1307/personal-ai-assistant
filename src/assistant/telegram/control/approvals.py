@@ -922,6 +922,25 @@ def _pending_presentation() -> Exists:
     )
 
 
+def _uncertain_card_edit() -> Exists:
+    """A lost edit response cannot authorize replay of that presentation."""
+    attempt = aliased(AuditLogEntry)
+    return (
+        select(attempt.id)
+        .where(
+            attempt.account_id == Action.account_id,
+            attempt.subject_type == "action",
+            attempt.subject_id == Action.id,
+            attempt.event == "card_presentation_failed",
+            attempt.details["version"].as_integer() == Action.version,
+            attempt.details["state"].as_string() == Action.state,
+            attempt.details["outcome"].as_string() == "uncertain",
+        )
+        .correlate(Action)
+        .exists()
+    )
+
+
 # ------------------------------------------------------------ the presenter
 class ApprovalCards:
     """`ApprovalCardPresenter` (F0-interfaces §8.2), the `act` press handler,
@@ -1091,6 +1110,7 @@ class ApprovalCards:
         if claim_id is None:
             return SendResult(ErrorClass.AMBIGUOUS, error_code="presentation_uncertain")
         full_text_delivered = False
+        full_text_message_id: int | None = None
         if card.full_text is not None:
             first = await self._gateway.send_text(target, card.full_text)
             if not first.ok:
@@ -1101,6 +1121,7 @@ class ApprovalCards:
                     await self._gateway.edit_control_text(target, replacing, render_not_shown(view))
                 return first
             full_text_delivered = True
+            full_text_message_id = first.message_id
         result = await self._gateway.send_text(target, card.text, keyboard=card.keyboard)
         if not result.ok or result.message_id is None:
             if full_text_delivered or result.ok:
@@ -1110,7 +1131,12 @@ class ApprovalCards:
             self._count_failure(view, "approval_card_not_sent", result)
             return result
         self._failures.pop(view.action_id, None)
-        recorded = await self._record(view, message_id=result.message_id, claim_id=claim_id)
+        recorded = await self._record(
+            view,
+            message_id=result.message_id,
+            claim_id=claim_id,
+            full_text_message_id=full_text_message_id,
+        )
         logger.info("approval_card_sent", action_id=view.action_id, state=view.state.value)
         if recorded and replacing is not None and replacing != result.message_id:
             await self._gateway.edit_control_text(target, replacing, RETIRED_CARD_TEXT)
@@ -1168,7 +1194,12 @@ class ApprovalCards:
             event=PRESENTATION_RESOLVED,
             subject_type="action",
             subject_id=view.action_id,
-            details={"version": view.version, "claim_id": claim_id, "outcome": outcome},
+            details={
+                "version": view.version,
+                "state": view.state.value,
+                "claim_id": claim_id,
+                "outcome": outcome,
+            },
         )
 
     async def _resolve_not_delivered(self, view: ApprovalCardView, claim_id: int) -> None:
@@ -1190,22 +1221,54 @@ class ApprovalCards:
         target = self._target(view)
         if target is None or view.card_message_id is None:
             return None
+        async with self._sf() as session:
+            uncertain = await session.scalar(
+                select(Action.id).where(
+                    Action.account_id == view.account_id,
+                    Action.id == view.action_id,
+                    _uncertain_card_edit(),
+                )
+            )
+        if uncertain is not None:
+            return SendResult(ErrorClass.AMBIGUOUS, error_code="presentation_uncertain")
         card = render_card(view)
         result = await self._gateway.edit_control_text(
             target, view.card_message_id, card.text, keyboard=card.keyboard
         )
         # The gateway treats only "message is not modified" as an already
-        # successful edit. Other refusals leave the recorded presentation
-        # untouched so the bounded sync can recover it.
+        # successful edit. Refusals do not replace the successful reply map;
+        # their separate outcome prevents treating the old presentation as current.
         if result.ok:
             self._failures.pop(view.action_id, None)
             await self._record(view, message_id=view.card_message_id)
             return result
+        async with transaction(self._sf) as uow:
+            uow.session.add(
+                AuditLogEntry(
+                    account_id=view.account_id,
+                    at=self._clock.now(),
+                    actor="system",
+                    event="card_presentation_failed",
+                    subject_type="action",
+                    subject_id=view.action_id,
+                    details={
+                        "version": view.version,
+                        "state": view.state.value,
+                        "control_message_id": view.card_message_id,
+                        "outcome": "uncertain" if result.delivery_uncertain else "not_delivered",
+                    },
+                )
+            )
         self._count_failure(view, "approval_card_edit_failed", result)
         return result
 
     async def _record(
-        self, view: ApprovalCardView, *, message_id: int, claim_id: int | None = None
+        self,
+        view: ApprovalCardView,
+        *,
+        message_id: int,
+        claim_id: int | None = None,
+        full_text_message_id: int | None = None,
     ) -> bool:
         """The card `message_id` shows `view` (its version and state). Bound
         to the version (QA B1): a presenter that rendered an older version
@@ -1231,6 +1294,25 @@ class ApprovalCards:
                 .execution_options(synchronize_session=False)
             )
             if getattr(result, "rowcount", 0):
+                if full_text_message_id is not None:
+                    uow.session.add(
+                        AuditLogEntry(
+                            account_id=view.account_id,
+                            at=self._clock.now(),
+                            actor="system",
+                            event="card_presented",
+                            subject_type="action",
+                            subject_id=view.action_id,
+                            details={
+                                "action_id": view.action_id,
+                                "version": view.version,
+                                "state": view.state.value,
+                                "control_message_id": full_text_message_id,
+                                "claim_id": claim_id,
+                                "part": "full_text",
+                            },
+                        )
+                    )
                 uow.session.add(
                     AuditLogEntry(
                         account_id=view.account_id,
@@ -1635,6 +1717,7 @@ class ApprovalCards:
                 lifecycle.legacy_warning_card_filter(),
             ),
             ~_pending_presentation(),
+            ~_uncertain_card_edit(),
         )
         lost_cards = select(Action.id).where(
             Action.card_message_id.is_(None),

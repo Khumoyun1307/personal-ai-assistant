@@ -89,6 +89,32 @@ H2/H7 extend existing **structural audit details** (no new table) with a `card_p
 
 H2 implements the controls-message mapping in `ApprovalCards._record` and account-local selection in `actions/continuations.py`. Refused edits and unsuccessful/in-flight presentations add no mapping. Reply/component metadata and mappings participate in the structural export seam, scope erasure and retention cleanup. Full-text companion mappings and H7's broader fresh-receipt narration are not activated by H2. Fixture regressions are authored; container validation and manual Telegram checks remain unrun in the restricted worktree.
 
+H7 implementation (2026-11-12; validation pending): `actions/activity.py` supplies
+the typed receipt/page and scoped initial/final readers. The candidate runtime
+uses them under `tool.propose_owner_message`, preserving production PF-15/Q3
+context and tool schemas when the flag is off. Successful full-text companions
+now receive mappings alongside controls. Failed edits record
+`card_presentation_failed` with a fixed outcome; they never create success maps.
+Uncertain edits are not automatically replayed for the same state/version.
+Unresolved initial claims become uncertain after two minutes and retain the
+existing no-replay guard. The current card-state invalidation can disqualify old
+success evidence, but a pointer/card_state alone never proves delivery.
+`presented_version`/`presented_state` describe successful mappings, never the state
+an unsuccessful edit tried to show. Older-version/state outcomes do not certify
+a presentation attempt for the current artifact.
+Receipts add `warning_reason` and `can_approve_anyway` for D-S17; they grant no
+approval or execution authority. The runtime refreshes real tool-returned/current
+explicit references, admits one read-only correction phase inside the original
+limits, and uses deterministic status-only wording when current body proof is
+missing or correction cannot run. C2 NULL results remain separate fixed
+questions/failures. The I27 recovery command and I13 delivery ordering remain
+outside H7. No prompt version or durable receipt cache is added.
+Owner-visible deterministic wording is plain, one line per in-scope draft, from the
+shared control-chat catalogue (`core/control_texts.json`, keys `receipt_*`, four
+locales, `agent/receipt_texts.py`): no ids, versions, enum names or timestamps; the
+contact display name appears only when several drafts are reported. The English,
+id-bearing receipts remain model context only. Wording awaits the owner's I27 review.
+
 | Storage | Type / nullability | Retention / deletion / consent |
 |---|---|---|
 | Audit keys above | Required ints/enums, nullable claim_id; strict allow-list JSON | Existing audit row 1 year; account scoped. Scope/everything purge removes mapping references as required; no retained source content. ai_control; managed read gates apply when resolving related artifacts. |

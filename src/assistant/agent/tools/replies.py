@@ -37,7 +37,7 @@ untrusted; content-free receipts do not introduce taint.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
@@ -45,6 +45,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account
+from assistant.actions.activity import refresh_receipts
 from assistant.actions.authorship import VersionAuthorship, current_authorship, is_ai_generated
 from assistant.actions.lifecycle import is_warning_card
 from assistant.actions.models import Action
@@ -736,6 +737,16 @@ async def _source_receipt(
             data["reason"] = "no_longer_pending"
     else:
         data.update({"action_id": action.id, "state": action.state, "rule": CONFLICT_RULE})
+    if "tool.propose_owner_message" in ctx.services.enabled_flags:
+        page = await refresh_receipts(
+            session,
+            account_id=ctx.account_id,
+            action_ids=(action.id,),
+            now=ctx.services.clock.now(),
+        )
+        if not page.receipts:
+            return source_failure("not_available", "artifact_unavailable", request)
+        data["action"] = asdict(page.receipts[0])
     return ToolOutcome(
         status,
         data,
