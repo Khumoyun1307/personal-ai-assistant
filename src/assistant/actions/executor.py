@@ -462,14 +462,21 @@ class ActionExecutor:
         warning = None
         if to_state is ActionState.OUTDATED:
             warning = reason.value
-            if (
-                any(
-                    check.reason == "source_unavailable" and not check.passed
+            advisory = next(
+                (
+                    check.reason
                     for check in decision.checks
-                )
-                and reason is StateReason.SOURCE_DELETED
-            ):
-                warning = "source_unavailable"
+                    if not check.passed
+                    and check.reason
+                    in {"request_changed", "owner_intent_superseded", "source_unavailable"}
+                ),
+                None,
+            )
+            if (
+                reason is StateReason.SOURCE_EDITED
+                and advisory in {"request_changed", "owner_intent_superseded"}
+            ) or (reason is StateReason.SOURCE_DELETED and advisory == "source_unavailable"):
+                warning = advisory
         applied = await transition(
             session,
             account_id=action.account_id,

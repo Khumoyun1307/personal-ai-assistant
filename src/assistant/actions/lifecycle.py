@@ -20,6 +20,7 @@ from typing import Any
 
 from sqlalchemy import ColumnElement, and_, case, false, func, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from assistant.accounts.callbacks import new_token
 from assistant.accounts.models import AuditLogEntry
@@ -52,9 +53,13 @@ FRESHNESS_REASONS = frozenset(
 )
 
 
-def legacy_warning_card_filter() -> ColumnElement[bool]:
-    """Source-stale owner card eligible for a D-S17 approval-path upgrade."""
-    return and_(
+def legacy_warning_card_filter(*, include_replaced: bool = False) -> ColumnElement[bool]:
+    """Source-stale owner card eligible for a D-S17 approval-path upgrade.
+
+    Supersession includes replaced rows so it can retire them atomically;
+    reconciliation must never reauthorize a card with a newer replacement.
+    """
+    eligible = and_(
         Action.state == ActionState.OUTDATED.value,
         Action.origin != ActionOrigin.DELEGATION_AUTO.value,
         Action.text.is_not(None),
@@ -62,6 +67,41 @@ def legacy_warning_card_filter() -> ColumnElement[bool]:
         Action.freshness_warning.is_(None),
         Action.approval_token.is_(None),
     )
+    if include_replaced:
+        return eligible
+    replacement = aliased(Action)
+    has_replacement = (
+        select(replacement.id)
+        .where(
+            replacement.account_id == Action.account_id,
+            replacement.conversation_id == Action.conversation_id,
+            replacement.kind == Action.kind,
+            replacement.id > Action.id,
+            or_(
+                replacement.state.in_(
+                    [
+                        state.value
+                        for state in PENDING | {ActionState.EXECUTING, ActionState.SUCCEEDED}
+                    ]
+                ),
+                and_(
+                    replacement.state == ActionState.OUTDATED.value,
+                    replacement.origin != ActionOrigin.DELEGATION_AUTO.value,
+                    replacement.text.is_not(None),
+                    or_(
+                        replacement.state_reason.is_(None),
+                        replacement.state_reason.in_(FRESHNESS_REASONS),
+                    ),
+                    or_(
+                        replacement.freshness_warning.is_not(None),
+                        replacement.approval_token.is_not(None),
+                    ),
+                ),
+            ),
+        )
+        .exists()
+    )
+    return and_(eligible, ~has_replacement)
 
 
 def warning_card_filter() -> ColumnElement[bool]:

@@ -149,6 +149,8 @@ def merged(*overrides: dict[str, Any]) -> dict[str, Any]:
         (EXECUTION_FAILURES["takeover"], (OUTDATED, StateReason.TAKEOVER)),
         (EXECUTION_FAILURES["new_contact_message"], (OUTDATED, StateReason.NEW_CONTACT_MESSAGE)),
         (EXECUTION_FAILURES["source_deleted"], (OUTDATED, StateReason.SOURCE_DELETED)),
+        (EXECUTION_FAILURES["request_changed"], (OUTDATED, StateReason.SOURCE_EDITED)),
+        (EXECUTION_FAILURES["owner_intent_superseded"], (OUTDATED, StateReason.SOURCE_EDITED)),
         (merged(AUTONOMOUS, WINDOW_CLOSED), (EXPIRED, StateReason.WINDOW_CLOSED)),
         (EXECUTION_FAILURES["max_age"], (EXPIRED, StateReason.MAX_AGE)),
         (EXECUTION_FAILURES["consent_missing"], (BLOCKED, StateReason.CONSENT_REVOKED)),
@@ -178,7 +180,7 @@ def merged(*overrides: dict[str, Any]) -> dict[str, Any]:
         ),
         (
             merged(AUTONOMOUS, WINDOW_CLOSED, EXECUTION_FAILURES["takeover"]),
-            (OUTDATED, StateReason.TAKEOVER),
+            (EXPIRED, StateReason.WINDOW_CLOSED),
         ),
         (
             merged(EXECUTION_FAILURES["takeover"], EXECUTION_FAILURES["new_contact_message"]),
@@ -218,13 +220,32 @@ def test_execution_failure_maps_to_its_state(
 
 
 @pytest.mark.parametrize(
+    "freshness",
+    [
+        "source_unavailable",
+        "source_edited",
+        "source_deleted",
+        "new_contact_message",
+        "takeover",
+        "fence_takeover",
+        "fence_new_contact",
+        "fence_deleted",
+        "request_changed",
+        "owner_intent_superseded",
+    ],
+)
+@pytest.mark.parametrize(
     ("overrides", "expected"),
     [
         (EXECUTION_FAILURES["too_long"], (BLOCKED, StateReason.TOO_LONG)),
         (EXECUTION_FAILURES["empty_text"], (BLOCKED, StateReason.TOO_LONG)),
         (EXECUTION_FAILURES["no_reply_right"], (BLOCKED, StateReason.POLICY_DENIED)),
+        (EXECUTION_FAILURES["no_connection"], (BLOCKED, StateReason.POLICY_DENIED)),
+        (EXECUTION_FAILURES["connection_disabled"], (BLOCKED, StateReason.POLICY_DENIED)),
+        (EXECUTION_FAILURES["connection_stale"], (BLOCKED, StateReason.POLICY_DENIED)),
         (EXECUTION_FAILURES["consent_missing"], (BLOCKED, StateReason.CONSENT_REVOKED)),
         (EXECUTION_FAILURES["sending_disabled"], (BLOCKED, StateReason.SENDING_DISABLED)),
+        (EXECUTION_FAILURES["max_age"], (EXPIRED, StateReason.MAX_AGE)),
         (
             merged(AUTONOMOUS, {"account": {"autonomy_paused": True}}),
             (ActionState.CANCELLED, StateReason.AUTONOMY_PAUSED),
@@ -232,11 +253,11 @@ def test_execution_failure_maps_to_its_state(
     ],
 )
 def test_missing_revision_proof_does_not_mask_an_execution_safety_failure(
-    overrides: dict[str, Any], expected: tuple[ActionState, StateReason]
+    freshness: str, overrides: dict[str, Any], expected: tuple[ActionState, StateReason]
 ) -> None:
-    decision = decide(ctx(**merged(EXECUTION_FAILURES["source_unavailable"], overrides)))
+    decision = decide(ctx(**merged(EXECUTION_FAILURES[freshness], overrides)))
     assert decision.outcome is Outcome.DENY
-    assert "source_unavailable" in failed_reasons(decision)
+    assert freshness in failed_reasons(decision)
     assert execution_target(decision) == expected
 
 

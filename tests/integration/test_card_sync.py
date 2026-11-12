@@ -108,6 +108,53 @@ async def test_legacy_outdated_card_is_upgraded_even_when_its_display_state_matc
     assert (await s.action(row.id)).state == "approved"
 
 
+@pytest.mark.parametrize("reason", [None, "source_edited", "source_deleted", "new_contact_message"])
+async def test_replacement_before_legacy_reconciliation_retires_the_old_card(
+    s: Scenario, reason: str | None
+) -> None:
+    row = await s.seed(state="outdated", state_reason=reason)
+    async with transaction(s.env.factory) as uow:
+        legacy = await uow.session.get(Action, row.id)
+        assert legacy is not None
+        legacy.freshness_warning = None
+        legacy.approval_token = None
+        legacy.card_state = "outdated"
+    replacement = await s.propose(dictated=True)
+    retired = await s.action(row.id)
+    assert retired.state_reason == "superseded"
+    assert retired.approval_token is None
+    await advance(s, 60, periodic=SYNC)
+    retired = await s.action(row.id)
+    assert retired.approval_token is None
+    assert retired.freshness_warning is None
+    approvable = [row.id for row in await s.rows() if row.approval_token is not None]
+    assert approvable == [replacement.id]
+    await press_action(s, replacement.id, "ok")
+    assert (await s.action(replacement.id)).state == "approved"
+
+
+async def test_legacy_reconciliation_never_grants_a_token_with_a_live_replacement(
+    s: Scenario,
+) -> None:
+    row = await s.seed(state="outdated", state_reason="source_edited")
+    replacement = await s.propose(dictated=True)
+    # Simulate a pre-fix pair of rows, including a queued direct sync.
+    async with transaction(s.env.factory) as uow:
+        legacy = await uow.session.get(Action, row.id)
+        assert legacy is not None
+        legacy.state_reason = "source_edited"
+        legacy.freshness_warning = None
+        legacy.approval_token = None
+        legacy.card_state = "outdated"
+    await advance(s, 60, periodic=SYNC)
+    assert (await s.action(row.id)).approval_token is None
+    cards = s.wiring.approval_cards
+    assert isinstance(cards, approvals.ApprovalCards)
+    await cards.sync(row.id)
+    assert (await s.action(row.id)).approval_token is None
+    assert (await s.action(replacement.id)).approval_token is not None
+
+
 async def test_a_card_lost_between_proposal_and_send_is_presented_by_the_sync(
     s: Scenario,
 ) -> None:

@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select, text
 
+from assistant.accounts.models import BusinessConnection
 from assistant.actions import lifecycle
 from assistant.actions.models import Action, ContextFenceRecord
 from assistant.actions.owner_fence import StoredOwnerProposalFence
@@ -16,11 +17,12 @@ from assistant.agent.tools.registry import ToolContext
 from assistant.bootstrap import build_owner_runtime
 from assistant.config import Settings
 from assistant.conversations.fences import ContextFence, capture_fence, observe_conversations
-from assistant.conversations.models import Message
+from assistant.conversations.models import Conversation, Message
 from assistant.core.errors import NotInAccountError
 from assistant.llm.port import LLMRequest, LLMResponse, ToolResultItem
 from assistant.privacy.deletion import purge_conversation
-from assistant.telegram.control.approvals import load_card_view, render_card
+from assistant.telegram.control.approvals import ApprovalCards, load_card_view, render_card
+from assistant.telegram.gateway import OutboundGateway
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import text_response, tool_response
 from tests.integration.actions_env import seed_chat as seed_other_account
@@ -134,6 +136,105 @@ async def test_main_model_settles_observed_sources_into_reviewable_card(
     await target.execute(action.id)
     assert target.sender.business_calls == 1
     assert target.sender.plain_sends[0]["text"] == args["text"]
+
+
+@pytest.mark.parametrize("change", ["request_changed", "owner_intent_superseded"])
+@pytest.mark.parametrize("remove_rights", [None, "before_warning", "after_warning"])
+async def test_changed_request_card_warns_and_approve_anyway_rechecks_rights(
+    denv: DraftEnv, change: str, remove_rights: str | None
+) -> None:
+    ctx, args = await prepare(denv)
+    result = await call(ctx, "propose_owner_message", flags=FLAGS, **args)
+    assert result["proposal_status"] == "staged"
+    [original] = await actions_of(denv.env, args["conversation_id"])
+    assert original.freshness_warning is None
+    assert original.approval_token is not None
+    if change == "request_changed":
+        async with denv.env.factory() as session:
+            request = await session.get(OwnerRequest, args["request_id"])
+            assert request is not None
+            version = request.version
+        # A new request suspends A without replacing A's still-visible card.
+        await generated_message_args(denv, ctx.account_id, args["conversation_id"])
+        async with denv.env.factory() as session:
+            request = await session.get(OwnerRequest, args["request_id"])
+            assert request is not None
+            assert request.state == "suspended"
+            assert request.version == version + 1
+    else:
+        async with denv.env.factory() as session, session.begin():
+            conversation = await session.get(Conversation, args["conversation_id"])
+            assert conversation is not None
+            conversation.owner_intent_revision += 1
+    if remove_rights == "before_warning":
+        async with denv.env.factory() as session, session.begin():
+            connection = await session.scalar(
+                select(BusinessConnection).where(BusinessConnection.account_id == ctx.account_id)
+            )
+            assert connection is not None
+            connection.rights = []
+    await approve_card(denv, original.id)
+    await caught_up(denv.env)
+    target = harness(denv.env)
+    first = await target.execute(original.id)
+    assert target.sender.business_calls == 0
+    if remove_rights == "before_warning":
+        assert first.state.value == "blocked"
+        return
+    assert first.state.value == "outdated"
+    # The harness records presentation; use production card preparation to
+    # mint the warned card's approval token, as its after-commit sync would.
+    cards = ApprovalCards(
+        session_factory=denv.env.factory,
+        gateway=OutboundGateway(target.sender, target.sleep, sleep=target.sleep.sleep),
+        clock=denv.env.clock,
+        config=denv.config,
+    )
+    view = await cards._prepare(original.id)
+    [warned] = await actions_of(denv.env, args["conversation_id"])
+    assert warned.text == original.text
+    assert warned.version == original.version
+    assert warned.freshness_warning == change
+    assert warned.approval_token is not None
+    assert warned.approval_token != original.approval_token
+    async with denv.env.factory() as session, session.begin():
+        stale_press = await lifecycle.approve(
+            session,
+            account_id=ctx.account_id,
+            token=original.approval_token,
+            now=denv.env.clock.now(),
+        )
+        assert stale_press.status is lifecycle.ApproveStatus.NOT_ACTIVE
+    assert view is not None
+    card = render_card(view)
+    assert "Warning:" in card.text
+    assert card.keyboard is not None
+    assert [b.text for row in card.keyboard.inline_keyboard for b in row] == [
+        "Approve anyway",
+        "Re-draft",
+        "Discard",
+    ]
+    if remove_rights == "after_warning":
+        async with denv.env.factory() as session, session.begin():
+            connection = await session.scalar(
+                select(BusinessConnection).where(BusinessConnection.account_id == ctx.account_id)
+            )
+            assert connection is not None
+            connection.rights = []
+    await approve_card(denv, original.id)
+    second = await target.execute(original.id)
+    await target.execute(original.id)
+    [settled] = await actions_of(denv.env, args["conversation_id"])
+    assert settled.freshness_override is True
+    assert settled.text == original.text
+    assert settled.version == original.version
+    if remove_rights == "after_warning":
+        assert second.state.value == "blocked"
+        assert target.sender.business_calls == 0
+    else:
+        assert second.state.value == "succeeded"
+        assert target.sender.business_calls == 1
+        assert target.sender.plain_sends[0]["text"] == original.text
 
 
 @pytest.mark.parametrize("identity", ["missing", "other_run", "foreign", "wrong_request"])

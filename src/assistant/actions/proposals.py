@@ -25,7 +25,12 @@ from assistant.accounts.callbacks import new_token
 from assistant.accounts.models import Account, ControlTurn
 from assistant.actions.authorship import VersionAuthorship, generated_authorship, is_ai_generated
 from assistant.actions.config import ActionsConfig
-from assistant.actions.lifecycle import sendable_length, transition, warning_card_filter
+from assistant.actions.lifecycle import (
+    legacy_warning_card_filter,
+    sendable_length,
+    transition,
+    warning_card_filter,
+)
 from assistant.actions.models import Action, ContextFenceRecord
 from assistant.actions.policy_loader import decision_from_record, decision_record, load_context
 from assistant.actions.request_models import OwnerRequest
@@ -453,7 +458,10 @@ async def _supersede_live(
             Action.account_id == request.account_id,
             Action.conversation_id == request.conversation_id,
             Action.state == ActionState.OUTDATED.value,
-            Action.freshness_warning.is_not(None),
+            or_(
+                Action.freshness_warning.is_not(None),
+                legacy_warning_card_filter(include_replaced=True),
+            ),
         )
         .values(
             state_reason=StateReason.SUPERSEDED.value,

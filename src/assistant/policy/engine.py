@@ -10,6 +10,20 @@ from assistant.policy.context import Decision, Outcome, Phase, PolicyContext
 from assistant.policy.rules import RULES
 
 _WAIT_RULE = "inbox_drained"
+_FRESHNESS_FAILURES = frozenset(
+    {
+        "takeover",
+        "fence_takeover",
+        "new_contact_message",
+        "fence_new_contact",
+        "source_deleted",
+        "fence_deleted",
+        "source_edited",
+        "source_unavailable",
+        "request_changed",
+        "owner_intent_superseded",
+    }
+)
 
 type ExecutionTarget = tuple[ActionState, StateReason]
 
@@ -17,6 +31,7 @@ type ExecutionTarget = tuple[ActionState, StateReason]
 #: with `None` means "leave the action as it is". The order puts the facts the
 #: owner can act on first: someone else already holds the action, then the chat
 #: moved on (outdated), then time ran out (expired), then a named block.
+#: Independent safety failures take precedence over advisory freshness below.
 _EXECUTION_TARGETS: tuple[tuple[frozenset[str], ExecutionTarget | None], ...] = (
     (frozenset({"already_claimed"}), None),
     (frozenset({"takeover", "fence_takeover"}), (ActionState.OUTDATED, StateReason.TAKEOVER)),
@@ -29,6 +44,10 @@ _EXECUTION_TARGETS: tuple[tuple[frozenset[str], ExecutionTarget | None], ...] = 
         (ActionState.OUTDATED, StateReason.SOURCE_DELETED),
     ),
     (frozenset({"source_edited"}), (ActionState.OUTDATED, StateReason.SOURCE_EDITED)),
+    (
+        frozenset({"request_changed", "owner_intent_superseded"}),
+        (ActionState.OUTDATED, StateReason.SOURCE_EDITED),
+    ),
     (frozenset({"source_unavailable"}), (ActionState.OUTDATED, StateReason.SOURCE_DELETED)),
     (frozenset({"window_closed"}), (ActionState.EXPIRED, StateReason.WINDOW_CLOSED)),
     (frozenset({"max_age"}), (ActionState.EXPIRED, StateReason.MAX_AGE)),
@@ -71,21 +90,25 @@ def execution_target(decision: Decision) -> ExecutionTarget | None:
     action must stay as it is: the decision allows sending (`ALLOW_AUTO`), it
     only waits for ingestion (`WAIT`: the job re-defers), or another worker
     already claimed the action (`already_claimed`, whatever else failed). Callers
-    tell these apart by `decision.outcome`. Otherwise the first matching row of
+    tell these apart by `decision.outcome`. Independent safety failures take
+    precedence over freshness warnings; otherwise the first matching row of
     the spec §3.2 table wins, and any failure it does not name blocks with
     `policy_denied`; the failed checks themselves are kept in the stored decision.
     """
     if decision.outcome is not Outcome.DENY:
         return None
     failed = {check.reason for check in decision.checks if not check.passed}
-    if "source_unavailable" in failed and failed - {
-        "source_unavailable",
-        "inbox_pending",
-        "barrier_pending",
-    }:
-        # Missing legacy proof is advisory for owner review. It must not
-        # hide a concrete safety denial behind another approvable warning.
-        failed.remove("source_unavailable")
+    if (
+        failed
+        - _FRESHNESS_FAILURES
+        - {
+            "inbox_pending",
+            "barrier_pending",
+        }
+    ):
+        # Freshness is advisory for owner review. No warning may hide an
+        # independent safety denial behind an approvable card.
+        failed -= _FRESHNESS_FAILURES
     for reasons, target in _EXECUTION_TARGETS:
         if failed & reasons:
             return target

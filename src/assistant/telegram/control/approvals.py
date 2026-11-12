@@ -1009,6 +1009,11 @@ class ApprovalCards:
                         Action.state == view.state.value,
                         Action.version == view.version,
                         Action.approval_token.is_(None),
+                        or_(
+                            Action.state != ActionState.OUTDATED.value,
+                            lifecycle.warning_card_filter(),
+                            lifecycle.legacy_warning_card_filter(),
+                        ),
                     )
                     .values(
                         approval_token=token,
