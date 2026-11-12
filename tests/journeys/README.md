@@ -190,7 +190,7 @@ not an implemented or approved product command.
 | J18 | `test_privacy_and_taint`: restore cancels approval/revokes authority; lost withdrawal + unknown continuity | Unmarked; I20 recovery satisfied |
 | J19/J25 | `test_continuations`: topic cancellation vs source reuse; advice/list edit | H4; advice unmarked |
 | J20/J27 | `test_privacy_and_taint`: exact owner preference, stale derived taint, configure confirmation | Unmarked current behavior |
-| J21–J23 | `test_card_facts`: redraft/restart; read/final race and purge; uncertain card recovery | H8/H7/I27 |
+| J21–J23 | `test_card_facts`: redraft/restart; read/final race and purge; uncertain card recovery | J22 H7 unmarked (container validation pending); J21 H8 / J23 I27 |
 | J24 | `test_budgets`: nested-call token admission/partial result, unpriced route | I15/I16 |
 | J26/J28 | `test_privacy_and_taint`: foreign request/source/recipient/fence/action, missing source, main-context canary, isolated tool-less Assist | Reads/Assist unmarked; H6 classification/H4/H10 |
 

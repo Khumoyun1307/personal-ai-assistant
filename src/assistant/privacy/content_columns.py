@@ -132,6 +132,8 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("audit_log", "subject_type"),
         ("audit_log", "details"),
         # H2 card_presented: action/version/state/control-message/claim only.
+        # H7 adds full_text part and card_presentation_failed outcome enums;
+        # no bodies, names or transport error prose. Same audit retention/purge.
         ("agent_runs", "run_type"),
         ("agent_runs", "trigger_ref"),
         ("agent_runs", "model"),

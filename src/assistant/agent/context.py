@@ -30,8 +30,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from assistant.accounts.models import Account, ControlTurn
 from assistant.accounts.preferences import current
-from assistant.actions.activity import LiveCardFact
-from assistant.actions.card_facts import state_reason_fact
+from assistant.actions.activity import LIVE_CARDS_LOADED, LiveCardFact, ReceiptPage
+from assistant.actions.card_facts import state_reason_fact, warning_reason_fact
 from assistant.actions.requests import OwnerContinuation, OwnerRequestView, ValidatedSource
 from assistant.agent.attribution import FALLBACK_NAMES, clean_name, you_word
 from assistant.agent.draft_owner_schemas import OWNER_DRAFT_MODES
@@ -248,6 +248,7 @@ def build_owner_request(
     managed_allowed: bool = False,
     memory: Sequence[MemoryView] = (),
     live_cards: Sequence[LiveCardFact] | None = None,
+    receipts: ReceiptPage | None = None,
     continuation: OwnerContinuation | None = None,
     selected_artifacts: Sequence[ContextPart] = (),
     preferences: Sequence[EffectivePreference] = (),
@@ -323,7 +324,9 @@ def build_owner_request(
                 Provenance.OWNER_CONTROL,
             )
         )
-    if live_cards is not None and managed_allowed:
+    if receipts is not None and managed_allowed:
+        items.append(TextItem("user", render_receipts(receipts), Provenance.OWNER_CONTROL))
+    elif live_cards is not None and managed_allowed:
         # Volatile, so after the history (prompt caching): current card facts.
         # Fixed facts only, so it carries no managed text and is
         # the owner's own control data; it never changes taint (PF-15).
@@ -429,6 +432,46 @@ def render_continuation(continuation: OwnerContinuation, *, managed_allowed: boo
 
 #: At most this many live/recent terminal cards are listed in an owner run's context.
 LIVE_CARDS_SHOWN = 20
+
+
+def render_receipts(page: ReceiptPage) -> str:
+    """C3 trusted metadata: explicitly enumerate fields, never serialize an ORM row."""
+    header = "Action receipts (application facts as of observed_at; history is historical):\n"
+    return header + json.dumps(
+        {
+            "receipts": [
+                {
+                    "action_id": r.action_id,
+                    "conversation_id": r.conversation_id,
+                    "request_id": r.request_id,
+                    "state": _enum_word(r.state),
+                    "state_reason": warning_reason_fact(r.state_reason)[0],
+                    "version": r.version,
+                    "authorship": r.authorship,
+                    "mode": r.mode if r.mode in OWNER_DRAFT_MODES else None,
+                    "answered_message_id": r.answered_message_id,
+                    "text_available": r.text_available,
+                    "presentation": r.presentation,
+                    "presented_version": r.presented_version,
+                    "presented_state": r.presented_state,
+                    "replaced_by_action_id": r.replaced_by_action_id,
+                    "warning_reason": warning_reason_fact(r.warning_reason)[0],
+                    "can_approve_anyway": r.can_approve_anyway,
+                    "observed_at": r.observed_at.isoformat(),
+                }
+                for r in page.receipts
+            ],
+            "omitted_live": page.omitted_live,
+            "omitted_terminal": page.omitted_terminal,
+            "selection_note": (
+                "Many explicit/relevant artifacts are included; ask for a narrower selection."
+                if len(page.receipts) > LIVE_CARDS_LOADED
+                else None
+            ),
+        },
+        sort_keys=True,
+    )
+
 
 LIVE_CARDS_HEADER = (
     "Live approval cards now and recent terminal cards (application data, not a message "

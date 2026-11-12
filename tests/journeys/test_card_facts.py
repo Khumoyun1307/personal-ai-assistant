@@ -196,7 +196,6 @@ async def test_j12_rewrite_has_generated_authorship_and_revocation_cancels(
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-@pytest.mark.xfail(strict=True, reason="needs H7", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("purge", [False, True])
 async def test_j22_final_answer_refreshes_after_artifact_read(

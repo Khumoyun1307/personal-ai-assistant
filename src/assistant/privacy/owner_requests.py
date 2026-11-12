@@ -190,7 +190,7 @@ async def purge_request_sources(
         )
         presented_messages = select(AuditLogEntry.details["control_message_id"].as_integer()).where(
             AuditLogEntry.account_id == account_id,
-            AuditLogEntry.event == "card_presented",
+            AuditLogEntry.event.in_(("card_presented", "card_presentation_failed")),
             AuditLogEntry.subject_type == "action",
             AuditLogEntry.subject_id.in_(action_scope),
         )
@@ -228,7 +228,7 @@ async def purge_request_sources(
     await session.execute(
         delete(AuditLogEntry).where(
             AuditLogEntry.account_id == account_id,
-            AuditLogEntry.event == "card_presented",
+            AuditLogEntry.event.in_(("card_presented", "card_presentation_failed")),
             AuditLogEntry.subject_type == "action",
             AuditLogEntry.subject_id.in_(action_scope),
         )
@@ -320,7 +320,7 @@ async def unlink_request_actions(
     await session.execute(
         delete(AuditLogEntry).where(
             AuditLogEntry.account_id == account_id,
-            AuditLogEntry.event == "card_presented",
+            AuditLogEntry.event.in_(("card_presented", "card_presentation_failed")),
             AuditLogEntry.subject_type == "action",
             AuditLogEntry.subject_id.in_(action_ids),
         )

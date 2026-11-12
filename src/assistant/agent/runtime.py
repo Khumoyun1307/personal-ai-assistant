@@ -44,7 +44,14 @@ from assistant.accounts.service import (
     ConsentMissingError,
     active_consent,
 )
-from assistant.actions.activity import live_cards
+from assistant.actions.activity import (
+    ActionReceipt,
+    ReceiptPage,
+    action_receipts,
+    conversation_names,
+    live_cards,
+    refresh_receipts,
+)
 from assistant.actions.request_models import OwnerRequest
 from assistant.actions.requests import OwnerContinuation
 from assistant.agent import owner_texts, prompt_registry
@@ -55,6 +62,8 @@ from assistant.agent.context import (
     build_owner_request,
     carries_third_party,
     render_continuation,
+    render_receipts,
+    select_owner_context,
 )
 from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.agent.models import AgentRun
@@ -69,10 +78,12 @@ from assistant.agent.persistence import (
     month_start,
 )
 from assistant.agent.ports import ControlChannel
+from assistant.agent.receipt_texts import no_action_text, receipt_lines
 from assistant.agent.summarize import Summarizer
 from assistant.agent.tools.executor import StepRecorder, TaintRecorder, ToolExecutor
 from assistant.agent.tools.owner_composition import PROPOSE_OWNER_MESSAGE_FLAG
 from assistant.agent.tools.registry import (
+    CapabilityClass,
     CapabilityTier,
     OwnerTurn,
     ToolContext,
@@ -81,6 +92,7 @@ from assistant.agent.tools.registry import (
     ToolServices,
 )
 from assistant.core.clock import Clock
+from assistant.core.control_texts import text as operational_text
 from assistant.core.model_routes import processor_for_model
 from assistant.db.uow import transaction
 from assistant.inbox.connection_alerts import send_managed_consent_card
@@ -223,6 +235,15 @@ class _RunState:
     cited_ids: tuple[int, ...] = ()
     unverified_citations: int = 0
     continuation: OwnerContinuation | None = None
+    action_ids: set[int] = field(default_factory=set)
+    #: Artifacts a tool result named this run; they, not merely-referenced
+    #: cards, are what the final answer is about when there are any.
+    touched_ids: set[int] = field(default_factory=set)
+    receipts: dict[int, ActionReceipt] = field(default_factory=dict)
+    artifact_reads: dict[int, int] = field(default_factory=dict)
+    receipt_correction: bool = False
+    final_receipts: dict[int, ActionReceipt] | None = None
+    no_action_results: list[tuple[str, str | None]] = field(default_factory=list)
 
 
 def _managed_refs(parts: tuple[ContextPart, ...]) -> ToolRefs:
@@ -232,6 +253,29 @@ def _managed_refs(parts: tuple[ContextPart, ...]) -> ToolRefs:
         if part.managed:
             refs = refs | ToolRefs(frozenset(part.conversation_ids), frozenset(part.contact_ids))
     return refs
+
+
+def _reference_ids(value: object) -> set[int]:
+    if not isinstance(value, list):
+        return set()
+    return {i for i in value if type(i) is int and i > 0}
+
+
+def _scope(state: _RunState) -> set[int]:
+    return state.touched_ids or state.action_ids
+
+
+def _receipt_changes(
+    previous: dict[int, ActionReceipt], current: dict[int, ActionReceipt], action_ids: set[int]
+) -> bool:
+    for action_id in action_ids:
+        before, after = previous.get(action_id), current.get(action_id)
+        if before is None or after is None:
+            if before != after:
+                return True
+        elif replace(before, observed_at=after.observed_at) != after:
+            return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -435,6 +479,54 @@ class OwnerRequestRuntime:
                 managed_allowed=managed_ok,
             )
             preference_capture_enabled = "tool.remember_owner_sources" in self._config.enabled_flags
+            receipt_page: ReceiptPage | None = None
+            referenced_actions: set[int] = set()
+            if PROPOSE_OWNER_MESSAGE_FLAG in self._config.enabled_flags and managed_ok:
+                selected = select_owner_context(
+                    history=history,
+                    turn=turn,
+                    request=continuation.request,
+                    validated_sources=continuation.sources,
+                    managed_allowed=managed_ok,
+                )
+                supplied_turns = {i for part in selected.parts for i in part.source_turn_ids}
+                request_ids: set[int] = set()
+                conversations: set[int] = set()
+                for supplied in [*history, turn]:
+                    if supplied.id not in supplied_turns:
+                        continue
+                    refs = supplied.refs or {}
+                    referenced_actions.update(_reference_ids(refs.get("revision_action_id")))
+                    referenced_actions.update(_reference_ids(refs.get("action_ids")))
+                    request_ids.update(_reference_ids(refs.get("owner_request_ids")))
+                    conversations.update(_reference_ids(refs.get("conversation_ids")))
+                current_refs = turn.refs or {}
+                current_actions = _reference_ids(current_refs.get("revision_action_id"))
+                current_actions.update(_reference_ids(current_refs.get("action_ids")))
+                current_requests = _reference_ids(current_refs.get("owner_request_ids"))
+                if continuation.selection.action_id is not None:
+                    referenced_actions.add(continuation.selection.action_id)
+                    current_actions.add(continuation.selection.action_id)
+                if continuation.request is not None:
+                    request_ids.add(continuation.request.request_id)
+                    current_requests.add(continuation.request.request_id)
+                    if continuation.request.conversation_id is not None:
+                        conversations.add(continuation.request.conversation_id)
+                receipt_page = await action_receipts(
+                    session,
+                    account_id=account_id,
+                    request_ids=tuple(request_ids),
+                    conversation_ids=tuple(conversations),
+                    action_ids=tuple(referenced_actions),
+                    now=self._clock.now(),
+                )
+                # Request-linked artifacts are explicit; fallback live cards
+                # are context only, never substituted for a tool's NULL action.
+                referenced_actions = {
+                    r.action_id
+                    for r in receipt_page.receipts
+                    if r.action_id in current_actions or r.request_id in current_requests
+                }
             context = build_owner_request(
                 prompt=prompt,
                 account=account,
@@ -483,6 +575,7 @@ class OwnerRequestRuntime:
                 live_cards=(
                     await live_cards(session, account_id=account_id) if managed_ok else None
                 ),
+                receipts=receipt_page,
             )
             # Tainted from the start when the context already carries
             # third-party text or managed content (§7.1, M03 D45).
@@ -506,6 +599,10 @@ class OwnerRequestRuntime:
                 timezone=account.timezone,
                 may_ask_managed=not managed_state.granted,
                 continuation=continuation,
+                action_ids=referenced_actions,
+                receipts=(
+                    {} if receipt_page is None else {r.action_id: r for r in receipt_page.receipts}
+                ),
             )
             return _Started(
                 account_id,
@@ -558,7 +655,15 @@ class OwnerRequestRuntime:
                 model=self._config.model,
                 instructions=state.instructions,
                 items=tuple(state.items),
-                tools=tools,
+                tools=(
+                    tuple(
+                        t.spec()
+                        for t in executor.offered.values()
+                        if t.capability is CapabilityClass.READ
+                    )
+                    if state.receipt_correction
+                    else tools
+                ),
                 effort=self._config.effort,
                 max_output_tokens=self._config.max_output_tokens,
                 timeout_seconds=min(self._config.call_timeout_seconds, remaining),
@@ -606,11 +711,81 @@ class OwnerRequestRuntime:
                         and state.continuation.request is not None
                     ):
                         await self._refresh_request(state, executor)
+                    if PROPOSE_OWNER_MESSAGE_FLAG in self._config.enabled_flags:
+                        state.action_ids.update(executor.action_ids)
+                        state.touched_ids.update(executor.action_ids)
+                        state.artifact_reads.update(executor.artifact_reads)
+                        state.no_action_results = list(executor.no_action_results)
+                        page = await self._observe_receipts(state)
+                        state.receipts.update({r.action_id: r for r in page.receipts})
+                        if page.receipts:
+                            state.items.append(
+                                TextItem("user", render_receipts(page), Provenance.OWNER_CONTROL)
+                            )
                 case StopReason.COMPLETED:
+                    if await self._correct_receipts(state, executor, deadline):
+                        continue
                     text = self._reply_text(state, executor, response.text)
                     return await self._finish(state, text, RunStatus.SUCCEEDED)
 
         return await self._finish(state, TEXT_LIMITS, RunStatus.FAILED, "run_limits")
+
+    async def _observe_receipts(self, state: _RunState) -> ReceiptPage:
+        async with transaction(self._session_factory) as uow:
+            return await refresh_receipts(
+                uow.session,
+                account_id=state.account_id,
+                action_ids=tuple(sorted(state.action_ids)),
+                now=self._clock.now(),
+            )
+
+    async def _correct_receipts(
+        self, state: _RunState, executor: ToolExecutor, deadline: datetime
+    ) -> bool:
+        if PROPOSE_OWNER_MESSAGE_FLAG not in self._config.enabled_flags:
+            return False
+        page = await self._observe_receipts(state)
+        current = {r.action_id: r for r in page.receipts}
+        changed = _receipt_changes(state.receipts, current, _scope(state))
+        state.final_receipts = current
+        if not changed or state.receipt_correction:
+            return False
+        if (
+            state.iterations >= self._config.max_iterations
+            or state.tokens >= self._config.run_token_budget
+            or self._clock.now() >= deadline
+        ):
+            return False
+        async with transaction(self._session_factory) as uow:
+            control = await active_consent(uow.session, state.account_id, kind=CONSENT_AI_CONTROL)
+            managed = await active_consent(uow.session, state.account_id, kind=CONSENT_AI_MANAGED)
+            if (
+                not control.granted
+                or not managed.granted
+                or processor_for_model(self._config.model) not in managed.processors
+                or await self._over_budget(uow.session, state.account_id)
+            ):
+                return False
+        state.receipt_correction = True
+        state.receipts.update(current)
+        state.items.append(
+            TextItem(
+                "user",
+                "The unsent final answer used older artifact facts. Discard it. "
+                "Use these fresh receipts; missing artifacts are unavailable. "
+                "Only read tools remain available. For content/topic/tone claims, read "
+                "get_draft for the actual current version first. If text is unavailable, "
+                "say so without reconstructing it. Otherwise give status facts only.\n"
+                + render_receipts(page),
+                Provenance.OWNER_CONTROL,
+            )
+        )
+        # The offer check must agree with the correction request, so even a
+        # scripted/model-invented write is refused during the repair pass.
+        executor.offered = {
+            name: t for name, t in executor.offered.items() if t.capability is CapabilityClass.READ
+        }
+        return True
 
     async def _refresh_request(self, state: _RunState, executor: ToolExecutor) -> None:
         """A recipient tool can fill the last slot; expose the new CAS version.
@@ -713,6 +888,53 @@ class OwnerRequestRuntime:
         error_class: str | None = None,
     ) -> RunOutcome:
         """Reply to the owner, then close the run and record the assistant turn."""
+        if PROPOSE_OWNER_MESSAGE_FLAG in self._config.enabled_flags:
+            scope = _scope(state)
+            page = await self._observe_receipts(state)
+            current = {r.action_id: r for r in page.receipts}
+            baseline = state.final_receipts if state.final_receipts is not None else state.receipts
+            changed = _receipt_changes(baseline, current, scope)
+            stale_answer = _receipt_changes(state.receipts, current, scope)
+            in_scope = [r for r in page.receipts if r.action_id in scope]
+            unread = any(
+                not r.text_available or state.artifact_reads.get(r.action_id) != r.version
+                for r in in_scope
+            )
+            # The model's own (localized) answer stands while every artifact
+            # it could speak about is unchanged and was read at this version;
+            # otherwise the status comes from the final observation alone.
+            if scope and (changed or stale_answer or unread or status is not RunStatus.SUCCEEDED):
+                names: dict[int, str | None] = {}
+                if len(in_scope) > 1:
+                    async with transaction(self._session_factory) as uow:
+                        names = await conversation_names(
+                            uow.session,
+                            account_id=state.account_id,
+                            conversation_ids=tuple(r.conversation_id for r in in_scope),
+                        )
+                lines = receipt_lines(in_scope, state.locale, names)
+                if in_scope:
+                    state.refs = state.refs | ToolRefs(
+                        conversation_ids=frozenset(r.conversation_id for r in in_scope)
+                    )
+                    state.used_managed = True
+                if scope - current.keys():
+                    lines.append(operational_text("receipt_missing", state.locale))
+                text = "\n".join(lines)
+                state.cited_ids, state.unverified_citations = (), 0
+                if unread and all(r.text_available for r in in_scope):
+                    text += "\n" + operational_text("receipt_unread", state.locale)
+                if any(not r.text_available for r in in_scope):
+                    text = owner_texts.DRAFT_TEXT_UNAVAILABLE[state.locale] + "\n" + text
+            if state.no_action_results:
+                questions = [
+                    no_action_text(result, reason, state.locale)
+                    for result, reason in state.no_action_results
+                ]
+                text = "\n".join(questions + ([text] if state.action_ids else []))
+                if not state.action_ids:
+                    state.cited_ids, state.unverified_citations = (), 0
+            state.final_receipts = current
         if error_class is not None and status is not RunStatus.SUCCEEDED:
             logger.warning(
                 "agent_run_not_succeeded",
@@ -770,6 +992,11 @@ class OwnerRequestRuntime:
                     refs={
                         **state.refs.as_json(),
                         **continuation_refs,
+                        **(
+                            {"action_ids": sorted(state.final_receipts or {})}
+                            if PROPOSE_OWNER_MESSAGE_FLAG in self._config.enabled_flags
+                            else {}
+                        ),
                     },
                 )
             )

@@ -879,7 +879,8 @@ async def test_reply_metadata_export_and_deletion_are_scoped(env: Env) -> None:
         assert foreign.reply_to_telegram_message_id == 999
 
 
-async def test_presentation_mapping_removed_on_scope_purge(env: Env) -> None:
+@pytest.mark.parametrize("event", ["card_presented", "card_presentation_failed"])
+async def test_presentation_mapping_removed_on_scope_purge(env: Env, event: str) -> None:
     account, conversation, _, _ = await seed_request(env)
     async with env.factory() as session, session.begin():
         action = Action(
@@ -897,7 +898,7 @@ async def test_presentation_mapping_removed_on_scope_purge(env: Env) -> None:
                 account_id=account,
                 at=env.clock.now(),
                 actor="system",
-                event="card_presented",
+                event=event,
                 subject_type="action",
                 subject_id=action.id,
                 details={
@@ -906,6 +907,7 @@ async def test_presentation_mapping_removed_on_scope_purge(env: Env) -> None:
                     "state": "awaiting_approval",
                     "control_message_id": 990,
                     "claim_id": None,
+                    "outcome": "not_delivered" if event == "card_presentation_failed" else "shown",
                 },
             )
         )
@@ -913,6 +915,10 @@ async def test_presentation_mapping_removed_on_scope_purge(env: Env) -> None:
     async with env.factory() as session, session.begin():
         exported = await export_owner_requests(session, account_id=account)
         assert exported["card_presentations"][0]["control_message_id"] == 990
+        assert exported["card_presentations"][0]["event"] == event
+        assert exported["card_presentations"][0]["outcome"] == (
+            "not_delivered" if event == "card_presentation_failed" else "shown"
+        )
         await purge_request_sources(
             session,
             account_id=account,
@@ -922,7 +928,7 @@ async def test_presentation_mapping_removed_on_scope_purge(env: Env) -> None:
         assert (
             await session.scalar(
                 select(AuditLogEntry.id).where(
-                    AuditLogEntry.account_id == account, AuditLogEntry.event == "card_presented"
+                    AuditLogEntry.account_id == account, AuditLogEntry.event == event
                 )
             )
             is None

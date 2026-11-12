@@ -844,7 +844,14 @@ async def test_inflight_old_presentation_cannot_record_or_resolve_over_a_new_ver
     assert [details for details in resolutions if details["claim_id"] == old_claim] == (
         []
         if late_outcome == "success"
-        else [{"version": row.version, "claim_id": old_claim, "outcome": "not_delivered"}]
+        else [
+            {
+                "version": row.version,
+                "state": "awaiting_approval",
+                "claim_id": old_claim,
+                "outcome": "not_delivered",
+            }
+        ]
     )
     new_resolutions = [details for details in resolutions if details["version"] == newer.version]
     assert len(new_resolutions) == 1

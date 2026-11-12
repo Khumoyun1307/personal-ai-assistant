@@ -1027,5 +1027,359 @@
     "task_evidence": {"en":"Evidence: {evidence}","uz-Latn":"Dalil: {evidence}","uz-Cyrl":"Далил: {evidence}","ru":"Подтверждение: {evidence}"},
     "task_status_done": {"en":"done","uz-Latn":"bajarilgan","uz-Cyrl":"бажарилган","ru":"выполнено"},
     "task_status_cancelled": {"en":"cancelled","uz-Latn":"bekor qilingan","uz-Cyrl":"бекор қилинган","ru":"отменено"},
-    "task_status_expired": {"en":"expired","uz-Latn":"muddati oʻtgan","uz-Cyrl":"муддати ўтган","ru":"срок истёк"}
+    "task_status_expired": {"en":"expired","uz-Latn":"muddati oʻtgan","uz-Cyrl":"муддати ўтган","ru":"срок истёк"},
+    "receipt_awaiting_shown": {
+        "en": "{who}Awaiting your approval.",
+        "uz-Latn": "{who}Tasdig'ingizni kutmoqda.",
+        "uz-Cyrl": "{who}Тасдиғингизни кутмоқда.",
+        "ru": "{who}Ждёт вашего подтверждения."
+    },
+    "receipt_awaiting_pending": {
+        "en": "{who}The draft is saved, but its approval card has not been shown yet.",
+        "uz-Latn": "{who}Qoralama saqlandi, lekin tasdiqlash kartochkasi hali ko'rsatilmadi.",
+        "uz-Cyrl": "{who}Қоралама сақланди, лекин тасдиқлаш карточкаси ҳали кўрсатилмади.",
+        "ru": "{who}Черновик сохранён, но карточка подтверждения ещё не показана."
+    },
+    "receipt_awaiting_not_delivered": {
+        "en": "{who}The draft is saved, but its approval card could not be shown.",
+        "uz-Latn": "{who}Qoralama saqlandi, lekin tasdiqlash kartochkasini ko'rsatib bo'lmadi.",
+        "uz-Cyrl": "{who}Қоралама сақланди, лекин тасдиқлаш карточкасини кўрсатиб бўлмади.",
+        "ru": "{who}Черновик сохранён, но карточку подтверждения показать не удалось."
+    },
+    "receipt_awaiting_uncertain": {
+        "en": "{who}The draft is saved, but I am not sure its approval card reached the chat. It will not be resent automatically.",
+        "uz-Latn": "{who}Qoralama saqlandi, lekin tasdiqlash kartochkasi yetib borgani noma'lum. U avtomatik qayta yuborilmaydi.",
+        "uz-Cyrl": "{who}Қоралама сақланди, лекин тасдиқлаш карточкаси етиб боргани номаълум. У автоматик қайта юборилмайди.",
+        "ru": "{who}Черновик сохранён, но неизвестно, дошла ли карточка подтверждения. Автоматически она повторно не отправляется."
+    },
+    "receipt_not_final": {
+        "en": "{who}The draft is not final yet; nothing has been sent.",
+        "uz-Latn": "{who}Qoralama hali tayyor emas; hech narsa yuborilmadi.",
+        "uz-Cyrl": "{who}Қоралама ҳали тайёр эмас; ҳеч нарса юборилмади.",
+        "ru": "{who}Черновик ещё не готов; ничего не отправлено."
+    },
+    "receipt_approved": {
+        "en": "{who}Approved, but not sent yet.{reason}",
+        "uz-Latn": "{who}Tasdiqlandi, lekin hali yuborilmadi.{reason}",
+        "uz-Cyrl": "{who}Тасдиқланди, лекин ҳали юборилмади.{reason}",
+        "ru": "{who}Подтверждено, но ещё не отправлено.{reason}"
+    },
+    "receipt_executing": {
+        "en": "{who}Being sent now; Telegram has not confirmed it yet.",
+        "uz-Latn": "{who}Hozir yuborilmoqda; Telegram hali tasdiqlamadi.",
+        "uz-Cyrl": "{who}Ҳозир юбориляпти; Telegram ҳали тасдиқламади.",
+        "ru": "{who}Отправляется сейчас; Telegram пока не подтвердил."
+    },
+    "receipt_succeeded": {
+        "en": "{who}Sent; Telegram confirmed it.",
+        "uz-Latn": "{who}Yuborildi, Telegram tasdiqladi.",
+        "uz-Cyrl": "{who}Юборилди, Telegram тасдиқлади.",
+        "ru": "{who}Отправлено, Telegram подтвердил отправку."
+    },
+    "receipt_uncertain": {
+        "en": "{who}Delivery is uncertain. Check the chat before trying again; it will not be resent automatically.",
+        "uz-Latn": "{who}Yetkazilgani noma'lum. Qayta urinishdan oldin chatni tekshiring; u avtomatik qayta yuborilmaydi.",
+        "uz-Cyrl": "{who}Етказилгани номаълум. Қайта уринишдан олдин чатни текширинг; у автоматик қайта юборилмайди.",
+        "ru": "{who}Неясно, доставлено ли сообщение. Проверьте чат, прежде чем пробовать снова; автоматически оно повторно не отправляется."
+    },
+    "receipt_rejected": {
+        "en": "{who}Rejected, not sent.",
+        "uz-Latn": "{who}Rad etildi, yuborilmadi.",
+        "uz-Cyrl": "{who}Рад этилди, юборилмади.",
+        "ru": "{who}Отклонено, не отправлено."
+    },
+    "receipt_cancelled": {
+        "en": "{who}Cancelled, not sent.{reason}",
+        "uz-Latn": "{who}Bekor qilindi, yuborilmadi.{reason}",
+        "uz-Cyrl": "{who}Бекор қилинди, юборилмади.{reason}",
+        "ru": "{who}Отменено, не отправлено.{reason}"
+    },
+    "receipt_expired": {
+        "en": "{who}Expired, not sent.{reason}",
+        "uz-Latn": "{who}Muddati tugadi, yuborilmadi.{reason}",
+        "uz-Cyrl": "{who}Муддати тугади, юборилмади.{reason}",
+        "ru": "{who}Срок истёк, не отправлено.{reason}"
+    },
+    "receipt_outdated": {
+        "en": "{who}Outdated, not sent.{reason}",
+        "uz-Latn": "{who}Eskirdi, yuborilmadi.{reason}",
+        "uz-Cyrl": "{who}Эскирди, юборилмади.{reason}",
+        "ru": "{who}Устарело, не отправлено.{reason}"
+    },
+    "receipt_outdated_warned": {
+        "en": "{who}Outdated, not sent yet.{reason} The card still offers: Approve anyway / Re-draft / Discard.",
+        "uz-Latn": "{who}Eskirdi, hali yuborilmadi.{reason} Kartochkada tugmalar saqlanib turibdi: Approve anyway / Re-draft / Discard.",
+        "uz-Cyrl": "{who}Эскирди, ҳали юборилмади.{reason} Карточкада тугмалар сақланиб турибди: Approve anyway / Re-draft / Discard.",
+        "ru": "{who}Устарело, пока не отправлено.{reason} На карточке остаются кнопки: Approve anyway / Re-draft / Discard."
+    },
+    "receipt_failed": {
+        "en": "{who}Failed, not sent.{reason}",
+        "uz-Latn": "{who}Yuborilmadi: xatolik yuz berdi.{reason}",
+        "uz-Cyrl": "{who}Юборилмади: хатолик юз берди.{reason}",
+        "ru": "{who}Не отправлено: произошла ошибка.{reason}"
+    },
+    "receipt_blocked": {
+        "en": "{who}Blocked, not sent.{reason}",
+        "uz-Latn": "{who}Bloklandi, yuborilmadi.{reason}",
+        "uz-Cyrl": "{who}Блокланди, юборилмади.{reason}",
+        "ru": "{who}Заблокировано, не отправлено.{reason}"
+    },
+    "receipt_unread": {
+        "en": "I have not read the current draft text, so this only reports its status.",
+        "uz-Latn": "Qoralamaning joriy matnini o'qimadim, shuning uchun bu faqat holat haqida.",
+        "uz-Cyrl": "Қораламанинг жорий матнини ўқимадим, шунинг учун бу фақат ҳолат ҳақида.",
+        "ru": "Я не открывал актуальный текст черновика, поэтому здесь только его статус."
+    },
+    "receipt_missing": {
+        "en": "That draft is no longer available.",
+        "uz-Latn": "Bu qoralama endi mavjud emas.",
+        "uz-Cyrl": "Бу қоралама энди мавжуд эмас.",
+        "ru": "Этот черновик больше недоступен."
+    },
+    "receipt_reason_superseded": {
+        "en": "A newer draft replaced it.",
+        "uz-Latn": "Uning o'rniga yangiroq qoralama keldi.",
+        "uz-Cyrl": "Унинг ўрнига янгироқ қоралама келди.",
+        "ru": "Его заменил более новый черновик."
+    },
+    "receipt_reason_new_contact_message": {
+        "en": "A newer message arrived.",
+        "uz-Latn": "Yangi xabar keldi.",
+        "uz-Cyrl": "Янги хабар келди.",
+        "ru": "Пришло новое сообщение."
+    },
+    "receipt_reason_takeover": {
+        "en": "You replied in the chat yourself.",
+        "uz-Latn": "Siz chatda o'zingiz javob berdingiz.",
+        "uz-Cyrl": "Сиз чатда ўзингиз жавоб бердингиз.",
+        "ru": "Вы сами ответили в чате."
+    },
+    "receipt_reason_owner_edit": {
+        "en": "You edited a message in the chat.",
+        "uz-Latn": "Siz chatdagi xabarni tahrir qildingiz.",
+        "uz-Cyrl": "Сиз чатдаги хабарни таҳрир қилдингиз.",
+        "ru": "Вы изменили сообщение в чате."
+    },
+    "receipt_reason_source_edited": {
+        "en": "A message it was based on was edited.",
+        "uz-Latn": "Qoralama asoslangan xabar tahrirlandi.",
+        "uz-Cyrl": "Қоралама асосланган хабар таҳрирланди.",
+        "ru": "Сообщение, на котором он основан, изменили."
+    },
+    "receipt_reason_source_deleted": {
+        "en": "A message it was based on was deleted.",
+        "uz-Latn": "Qoralama asoslangan xabar o'chirildi.",
+        "uz-Cyrl": "Қоралама асосланган хабар ўчирилди.",
+        "ru": "Сообщение, на котором он основан, удалили."
+    },
+    "receipt_reason_source_unavailable": {
+        "en": "A message it was based on is no longer available.",
+        "uz-Latn": "Qoralama asoslangan xabar endi mavjud emas.",
+        "uz-Cyrl": "Қоралама асосланган хабар энди мавжуд эмас.",
+        "ru": "Сообщение, на котором он основан, больше недоступно."
+    },
+    "receipt_reason_request_changed": {
+        "en": "Your request changed after the draft was made.",
+        "uz-Latn": "So'rovingiz qoralama tayyorlangandan keyin o'zgardi.",
+        "uz-Cyrl": "Сўровингиз қоралама тайёрланганидан кейин ўзгарди.",
+        "ru": "Ваш запрос изменился после создания черновика."
+    },
+    "receipt_reason_owner_intent_superseded": {
+        "en": "A later request of yours takes precedence.",
+        "uz-Latn": "Keyingi so'rovingiz ustuvor.",
+        "uz-Cyrl": "Кейинги сўровингиз устувор.",
+        "ru": "Приоритет у вашего более позднего запроса."
+    },
+    "receipt_reason_rights_changed": {
+        "en": "The connection's permissions changed.",
+        "uz-Latn": "Ulanish huquqlari o'zgardi.",
+        "uz-Cyrl": "Уланиш ҳуқуқлари ўзгарди.",
+        "ru": "Изменились права подключения."
+    },
+    "receipt_reason_connection_disabled": {
+        "en": "Chat Automation is disconnected or off.",
+        "uz-Latn": "Chat Automation uzilgan yoki o'chirilgan.",
+        "uz-Cyrl": "Chat Automation узилган ёки ўчирилган.",
+        "ru": "Chat Automation отключён или выключен."
+    },
+    "receipt_reason_connection_invalid": {
+        "en": "Telegram no longer accepts the connection.",
+        "uz-Latn": "Telegram bu ulanishni endi qabul qilmaydi.",
+        "uz-Cyrl": "Telegram бу уланишни энди қабул қилмайди.",
+        "ru": "Telegram больше не принимает это подключение."
+    },
+    "receipt_reason_ignore_mode": {
+        "en": "The chat is set to Ignore.",
+        "uz-Latn": "Chat Ignore rejimida.",
+        "uz-Cyrl": "Чат Ignore режимида.",
+        "ru": "Для чата включён режим Ignore."
+    },
+    "receipt_reason_data_deleted": {
+        "en": "The data it was based on was deleted.",
+        "uz-Latn": "Qoralama asoslangan ma'lumotlar o'chirildi.",
+        "uz-Cyrl": "Қоралама асосланган маълумотлар ўчирилди.",
+        "ru": "Данные, на которых он основан, удалены."
+    },
+    "receipt_reason_consent_revoked": {
+        "en": "AI permission for chats was withdrawn.",
+        "uz-Latn": "Chatlar uchun AI roziligi qaytarib olindi.",
+        "uz-Cyrl": "Чатлар учун AI розилиги қайтариб олинди.",
+        "ru": "Разрешение на ИИ для чатов отозвано."
+    },
+    "receipt_reason_ingest_error": {
+        "en": "A message in the chat could not be processed, so the draft may be outdated.",
+        "uz-Latn": "Chatdagi xabarni qayta ishlab bo'lmadi, shuning uchun qoralama eskirgan bo'lishi mumkin.",
+        "uz-Cyrl": "Чатдаги хабарни қайта ишлаб бўлмади, шунинг учун қоралама эскирган бўлиши мумкин.",
+        "ru": "Сообщение в чате не удалось обработать, поэтому черновик мог устареть."
+    },
+    "receipt_reason_restored_from_backup": {
+        "en": "A backup was restored; check the chat first.",
+        "uz-Latn": "Zaxira nusxa tiklandi; avval chatni tekshiring.",
+        "uz-Cyrl": "Захира нусха тикланди; аввал чатни текширинг.",
+        "ru": "Восстановлена резервная копия; сначала проверьте чат."
+    },
+    "receipt_reason_window_closed": {
+        "en": "Telegram's 24-hour reply window has closed.",
+        "uz-Latn": "Telegramning 24 soatlik javob oynasi yopildi.",
+        "uz-Cyrl": "Telegramнинг 24 соатлик жавоб ойнаси ёпилди.",
+        "ru": "Закрылось 24-часовое окно ответа Telegram."
+    },
+    "receipt_reason_max_age": {
+        "en": "Its approval time ran out.",
+        "uz-Latn": "Tasdiqlash muddati tugadi.",
+        "uz-Cyrl": "Тасдиқлаш муддати тугади.",
+        "ru": "Время на подтверждение истекло."
+    },
+    "receipt_reason_policy_denied": {
+        "en": "A required sending check did not pass.",
+        "uz-Latn": "Yuborishning majburiy tekshiruvidan o'tmadi.",
+        "uz-Cyrl": "Юборишнинг мажбурий текширувидан ўтмади.",
+        "ru": "Не пройдена обязательная проверка отправки."
+    },
+    "receipt_reason_sending_disabled": {
+        "en": "Sending is off; you can copy the text and send it yourself.",
+        "uz-Latn": "Yuborish o'chirilgan; matnni nusxalab o'zingiz yuborishingiz mumkin.",
+        "uz-Cyrl": "Юбориш ўчирилган; матнни нусхалаб ўзингиз юборишингиз мумкин.",
+        "ru": "Отправка отключена; текст можно скопировать и отправить самому."
+    },
+    "receipt_reason_too_long": {
+        "en": "The reply must be 1 to 4096 characters long.",
+        "uz-Latn": "Javob 1 dan 4096 gacha belgidan iborat bo'lishi kerak.",
+        "uz-Cyrl": "Жавоб 1 дан 4096 гача белгидан иборат бўлиши керак.",
+        "ru": "Ответ должен содержать от 1 до 4096 символов."
+    },
+    "receipt_reason_autonomy_paused": {
+        "en": "Automatic replies are paused.",
+        "uz-Latn": "Avtomatik javoblar to'xtatilgan.",
+        "uz-Cyrl": "Автоматик жавоблар тўхтатилган.",
+        "ru": "Автоматические ответы приостановлены."
+    },
+    "receipt_reason_not_delivered": {
+        "en": "Telegram did not send it.",
+        "uz-Latn": "Telegram uni yubormadi.",
+        "uz-Cyrl": "Telegram уни юбормади.",
+        "ru": "Telegram не отправил его."
+    },
+    "receipt_needs_content": {
+        "en": "What would you like the message to say?",
+        "uz-Latn": "Xabarda nima deyilsin?",
+        "uz-Cyrl": "Хабарда нима дейилсин?",
+        "ru": "Что должно быть в сообщении?"
+    },
+    "receipt_needs_recipient": {
+        "en": "Who should receive the message?",
+        "uz-Latn": "Xabar kimga yuborilsin?",
+        "uz-Cyrl": "Хабар кимга юборилсин?",
+        "ru": "Кому отправить сообщение?"
+    },
+    "receipt_needs_target": {
+        "en": "Which message should the reply answer?",
+        "uz-Latn": "Qaysi xabarga javob berilsin?",
+        "uz-Cyrl": "Қайси хабарга жавоб берилсин?",
+        "ru": "На какое сообщение отвечать?"
+    },
+    "receipt_needs_more": {
+        "en": "More information is needed before a proposal can be stored.",
+        "uz-Latn": "Qoralamani saqlash uchun ko'proq ma'lumot kerak.",
+        "uz-Cyrl": "Қоралама сақлаш учун кўпроқ маълумот керак.",
+        "ru": "Нужно больше информации, чтобы сохранить черновик."
+    },
+    "receipt_conflict": {
+        "en": "The requested change was not applied: it conflicts with an existing proposal.",
+        "uz-Latn": "So'ralgan o'zgartirish qo'llanmadi: u mavjud qoralama bilan to'qnashadi.",
+        "uz-Cyrl": "Сўралган ўзгартириш қўлланмади: у мавжуд қоралама билан тўқнашади.",
+        "ru": "Изменение не применено: оно противоречит существующему черновику."
+    },
+    "receipt_not_applied": {
+        "en": "The requested change was not applied: {detail}.",
+        "uz-Latn": "So'ralgan o'zgartirish qo'llanmadi: {detail}.",
+        "uz-Cyrl": "Сўралган ўзгартириш қўлланмади: {detail}.",
+        "ru": "Изменение не применено: {detail}."
+    },
+    "receipt_detail_source_unavailable": {
+        "en": "the selected source is unavailable",
+        "uz-Latn": "tanlangan manba mavjud emas",
+        "uz-Cyrl": "танланган манба мавжуд эмас",
+        "ru": "выбранный источник недоступен"
+    },
+    "receipt_detail_invalid_source": {
+        "en": "the selected source is invalid",
+        "uz-Latn": "tanlangan manba yaroqsiz",
+        "uz-Cyrl": "танланган манба яроқсиз",
+        "ru": "выбранный источник недопустим"
+    },
+    "receipt_detail_artifact_unavailable": {
+        "en": "the referenced draft is unavailable",
+        "uz-Latn": "ko'rsatilgan qoralama mavjud emas",
+        "uz-Cyrl": "кўрсатилган қоралама мавжуд эмас",
+        "ru": "указанный черновик недоступен"
+    },
+    "receipt_detail_request_unavailable": {
+        "en": "the request is unavailable",
+        "uz-Latn": "so'rov mavjud emas",
+        "uz-Cyrl": "сўров мавжуд эмас",
+        "ru": "запрос недоступен"
+    },
+    "receipt_detail_request_changed": {
+        "en": "the request changed",
+        "uz-Latn": "so'rov o'zgargan",
+        "uz-Cyrl": "сўров ўзгарган",
+        "ru": "запрос изменился"
+    },
+    "receipt_detail_recipient_mismatch": {
+        "en": "the recipient does not match the request",
+        "uz-Latn": "qabul qiluvchi so'rovga mos kelmaydi",
+        "uz-Cyrl": "қабул қилувчи сўровга мос келмайди",
+        "ru": "получатель не совпадает с запросом"
+    },
+    "receipt_detail_target_mismatch": {
+        "en": "the reply target does not match the request",
+        "uz-Latn": "javob beriladigan xabar so'rovga mos kelmaydi",
+        "uz-Cyrl": "жавоб бериладиган хабар сўровга мос келмайди",
+        "ru": "сообщение для ответа не совпадает с запросом"
+    },
+    "receipt_detail_length_not_met": {
+        "en": "the requested length was not met",
+        "uz-Latn": "so'ralgan uzunlikka erishilmadi",
+        "uz-Cyrl": "сўралган узунликка эришилмади",
+        "ru": "запрошенная длина не соблюдена"
+    },
+    "receipt_detail_fence_unavailable": {
+        "en": "the source snapshot is unavailable",
+        "uz-Latn": "manba nusxasi mavjud emas",
+        "uz-Cyrl": "манба нусхаси мавжуд эмас",
+        "ru": "снимок источника недоступен"
+    },
+    "receipt_detail_not_found": {
+        "en": "the requested item is unavailable",
+        "uz-Latn": "so'ralgan narsa mavjud emas",
+        "uz-Cyrl": "сўралган нарса мавжуд эмас",
+        "ru": "запрошенное недоступно"
+    },
+    "receipt_detail_default": {
+        "en": "invalid arguments or unavailable sources",
+        "uz-Latn": "noto'g'ri parametrlar yoki mavjud bo'lmagan manbalar",
+        "uz-Cyrl": "нотўғри параметрлар ёки мавжуд бўлмаган манбалар",
+        "ru": "неверные параметры или недоступные источники"
+    }
 }

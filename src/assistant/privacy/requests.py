@@ -126,7 +126,7 @@ async def export_owner_requests(
         select(AuditLogEntry)
         .where(
             AuditLogEntry.account_id == account_id,
-            AuditLogEntry.event == "card_presented",
+            AuditLogEntry.event.in_(("card_presented", "card_presentation_failed")),
             AuditLogEntry.subject_type == "action",
         )
         .order_by(AuditLogEntry.id)
@@ -141,6 +141,9 @@ async def export_owner_requests(
             "state": row.details.get("state"),
             "control_message_id": row.details.get("control_message_id"),
             "claim_id": row.details.get("claim_id"),
+            "part": row.details.get("part"),
+            "event": row.event,
+            "outcome": row.details.get("outcome"),
         }
         for row in presentations
     ]

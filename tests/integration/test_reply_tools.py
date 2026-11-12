@@ -132,6 +132,10 @@ async def test_main_proposal_exact_retry_conflict_and_request_dedupe(denv: Draft
     assert conflict["proposal_status"] == "idempotency_conflict"
     assert conflict["action"]["action_id"] == staged["action_id"]
     assert conflict["effect_version"] is None
+    assert conflict["requested_change_applied"] is False
+    assert conflict["action"]["state_reason"] is None
+    assert conflict["action"]["text_available"] is True
+    assert conflict["action"]["presentation"] == "not_attempted"
     conflict = await call(ctx, "propose_owner_message", call_id="new-key", flags=flags, **changed)
     assert conflict["proposal_status"] == "proposal_conflict"
     assert conflict["requested_change_applied"] is False
