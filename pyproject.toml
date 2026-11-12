@@ -103,6 +103,9 @@ allowed-confusables = ["ʻ", "ʼ", "‘", "’"]
 "tests/scenarios/test_find_the_agreed_meeting_time.py" = ["RUF001", "RUF002", "RUF003"]
 # S03.7: the localized fixed texts of the retrieval answer (Uzbek Cyrillic, Russian).
 "src/assistant/agent/owner_texts.py" = ["RUF001"]
+# The deterministic owner-intent grammar and its samples include core locales.
+"src/assistant/agent/owner_requests.py" = ["RUF001"]
+"tests/unit/test_owner_request_stabilization.py" = ["RUF001"]
 # M03 fix round C4: the localized onboarding texts (Uzbek Cyrillic, Russian).
 "src/assistant/telegram/control/onboarding_texts.py" = ["RUF001"]
 "tests/unit/test_citations.py" = ["RUF001"]

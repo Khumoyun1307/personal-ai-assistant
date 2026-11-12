@@ -725,6 +725,10 @@ async def test_agent_mode_runs_the_owner_request_runtime_with_the_shipped_prompt
     result = await agent_target(corpus, "r01").run(context(oracle, ledger))
 
     shipped = prompt_registry.active("owner_request")
+    assert shipped.label == "owner_request.v10"
+    assert prompt_registry.manifest()[shipped.label].sha256 == (
+        "9b0442834a0765f43454e0e9b650264121f70a1134c2c756b9c432a595172efe"
+    )
     first = oracle.requests[0]
     assert first.purpose == "owner_request"
     assert first.instructions.startswith(shipped.text)
@@ -734,6 +738,11 @@ async def test_agent_mode_runs_the_owner_request_runtime_with_the_shipped_prompt
     }
     offered_tools = {tool.name for tool in first.tools}
     assert offered_tools == expected_tools
+    assert {tool.name: tool.parameters for tool in first.tools} == {
+        tool.name: tool.spec().parameters
+        for tool in registered_tools
+        if tool.release_flag in PRODUCTION_FLAGS
+    }
     assert {tool.release_flag for tool in registered_tools} <= (
         PRODUCTION_FLAGS | TASK_FLAGS | CANDIDATE_FLAGS
     )

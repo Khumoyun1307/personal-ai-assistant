@@ -78,6 +78,54 @@ def test_a_dictated_card_with_the_exact_text_passes() -> None:
     assert check_case(dictated, result) == ()
 
 
+def test_main_composition_grader_requires_the_new_route_and_standalone_target() -> None:
+    composed = case(
+        card_expectation(origin="agent_proposal", mode="new_message", includes=["book"]),
+        expect={
+            **case_record()["expect"],
+            "tools_called": ["propose_owner_message"],
+            "tools_not_called": ["propose_reply"],
+        },
+    )
+    good = seen(tool("propose_owner_message"), new=(card_row("SYNTH book Friday?"),))
+    assert check_case(composed, good) == ()
+    old_topic = seen(
+        tool("propose_reply"), new=(card_row("SYNTH invoice accepted", answered="m1"),)
+    )
+    problems = check_case(composed, old_topic)
+    assert "routing:missing_tool:propose_owner_message" in problems
+    assert "routing:forbidden_tool:propose_reply" in problems
+    assert "card:answers_a_message" in problems
+    assert "card:missing:book" in problems
+
+
+def test_missing_content_grader_rejects_a_card_even_if_reply_asks_the_right_question() -> None:
+    collecting = case(
+        None,
+        expect={
+            **case_record()["expect"],
+            "tools_called": [],
+            "tools_not_called": ["propose_owner_message", "propose_message", "propose_reply"],
+        },
+    )
+    assert check_case(collecting, seen(reply="SYNTH what should I write?")) == ()
+    premature = seen(
+        tool("propose_owner_message"),
+        reply="SYNTH what should I write?",
+        new=(card_row("SYNTH invented invoice answer"),),
+    )
+    assert check_case(collecting, premature) == (
+        "routing:forbidden_tool:propose_owner_message",
+        "routing:unexpected_card",
+    )
+
+
+def test_conflict_receipt_does_not_count_as_a_successful_revision() -> None:
+    wanted = live_case(card_expectation(same_card=True, fewer_words=True))
+    unchanged = seen(tool("revise_draft", status="not_drafted"), after=LIVE, before=LIVE)
+    assert "routing:live_card_not_revised" in check_case(wanted, unchanged)
+
+
 @pytest.mark.parametrize(
     "changed",
     [

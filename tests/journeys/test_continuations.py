@@ -6,21 +6,59 @@ from tests.fakes.llm import text_response
 from tests.journeys.harness import Journey, call
 from tests.journeys.locales import BOOK_QUESTION, CONSTRAINT_QUESTION, QUERIES, TEXT
 from tests.journeys.matrix import owner_input
-from tests.journeys.models import LOCALES, CountCheck, Locale, RequestCheck, Restart
+from tests.journeys.models import LOCALES, CardCheck, CountCheck, Locale, RequestCheck, Restart
 
 pytestmark = [pytest.mark.integration, pytest.mark.journey]
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+async def test_runtime_opens_dictation_and_continues_real_recipient_question(
+    journey: Journey, locale: Locale
+) -> None:
+    """No fixture-created request or manually classified sources (H6 ingress)."""
+    j = journey
+    await j.language(locale)
+    await j.directory("k", "Kamola Ziyo")
+    await j.directory("other-kamola", "Kamola Safo")
+    original = await j.owner(
+        TEXT[locale].dictate,
+        call("resolve_contact", name=QUERIES[locale], limit=None),
+        text_response(TEXT[locale].recipient_question),
+    )
+    request = await j.request()
+    source_ids = await j.source_ids()
+    assert source_ids
+    await j.check(RequestCheck(state="collecting", slot="recipient"))
+    await j.event(Restart())
+    await j.owner(TEXT[locale].choice, j.source_proposal(), text_response(TEXT[locale].choice))
+    continued = await j.request()
+    assert continued.request_id == request.request_id
+    assert continued.requested_at == request.requested_at
+    assert original in {source.span.turn_id for source in continued.sources}
+    assert await j.source_ids() == source_ids
+    assert continued.conversation_id == j.chats["k"]
+    assert continued.selection_basis == "owner_choice"
+    assert continued.state == "awaiting_approval", j.outputs()[-1]
+    assert j.outputs()[-1]["proposal_status"] == "staged"
+    await j.bind_card("k")
+    await j.check(
+        CardCheck(
+            alias="k",
+            text=TEXT[locale].dictate.split(": ", 1)[1],
+            origin="owner_dictated",
+            authorship="owner_dictated",
+        )
+    )
+    await j.check(CountCheck(artifact="nested_writers", count=0))
+    await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize(
     "case_id",
     [
-        pytest.param(
-            "J01", marks=pytest.mark.xfail(strict=True, reason="needs H6", raises=AssertionError)
-        ),
-        pytest.param(
-            "J03", marks=pytest.mark.xfail(strict=True, reason="needs H4", raises=AssertionError)
-        ),
+        "J01",
+        "J03",
         pytest.param(
             "J06", marks=pytest.mark.xfail(strict=True, reason="needs H4", raises=AssertionError)
         ),
@@ -125,6 +163,8 @@ async def test_h6_chat_cutover_offers_main_writer_and_retires_nested_writer(
     await j.owner(owner_input("J04", locale)[0], text_response(TEXT[locale].content_question))
     [request] = j.s.fake.requests
     offered = {tool.name for tool in request.tools}
+    assert request.prompt_cache_key == "owner_request:owner_request.v11"
+    assert (await j.runs())[-1].prompt_version == "owner_request.v11"
     assert "propose_owner_message" in offered
     assert "propose_reply" not in offered
     revision = next(tool for tool in request.tools if tool.name == "revise_draft")

@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from assistant.accounts.models import ControlTurn
+from assistant.agent import prompt_registry
 from assistant.llm.port import TextItem
 from tests.fakes.llm import text_response
 from tests.integration.business_env import OWNER
@@ -101,13 +102,18 @@ async def test_restart_and_manifest_keep_selected_writer_flags(
     offered = {tool.name for tool in request.tools}
     revision = next(tool for tool in request.tools if tool.name == "revise_draft")
     if "tool.propose_owner_message" in journey_flags:
+        selected = prompt_registry.load("owner_request", "v11")
         assert "propose_owner_message" in offered
         assert "propose_reply" not in offered
         assert "expected_version" in revision.parameters["properties"]
     else:
+        selected = prompt_registry.load("owner_request", "v10")
         assert "propose_owner_message" not in offered
         assert "propose_reply" in offered
         assert "literal" in revision.parameters["properties"]
+    assert request.instructions.startswith(selected.text)
+    assert request.prompt_cache_key == f"owner_request:{selected.label}"
+    assert (await j.runs())[-1].prompt_version == selected.label
     assert (await j.manifest())["flags"] == sorted(journey_flags)
 
 

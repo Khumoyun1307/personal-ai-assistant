@@ -1,4 +1,4 @@
-"""PF-10, PF-11, PF-12, PF-04: owner-requested drafting (2026-10-30 owner playtest fixes).
+"""Owner drafting: legacy PF-10 to PF-12 and H4/H6's staged one-brain cutover.
 
 The owner's own words reach the draft writer (`draft_owner`) even in a
 tainted run, an explicit owner request is never vetoed as "no reply
@@ -6,7 +6,8 @@ needed", a reply can target a named message or be a new message, and a
 "dictated" text must really be the owner's. Calls go through the real
 `ToolExecutor` (and, where the bug lived, the whole owner runtime) with the
 production LLM wiring over a scripted `FakeLLM`. Synthetic text and names
-only.
+only. Flag-on regressions use the strict main-model tools and v11; flag-off
+regressions retain the historical writer and v10.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from structlog.testing import capture_logs
 
 from assistant.accounts.models import Account, ControlTurn
 from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
-from assistant.actions.requests import RequestApplied, SetState, update_request
+from assistant.actions.requests import RequestApplied, SetState, load_request, update_request
 from assistant.agent import prompt_registry
 from assistant.agent.draft_owner_schemas import WordBounds
 from assistant.agent.drafting import DraftStatus
@@ -33,7 +34,14 @@ from assistant.agent.tools.replies import REQUEST_DIGEST
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.errors import NotInAccountError
 from assistant.core.jobs import DraftReason
-from assistant.llm.port import LLMRequest, Provenance, StopReason, TextItem
+from assistant.llm.port import (
+    LLMRequest,
+    LLMResponse,
+    Provenance,
+    StopReason,
+    TextItem,
+    ToolResultItem,
+)
 from assistant.telegram.control.approvals import load_card_view, render_card
 from tests.fakes.channel import FakeChannel
 from tests.fakes.llm import text_response, tool_response
@@ -50,6 +58,7 @@ from tests.integration.drafting_env import (
     owner_says,
     seed_chat,
 )
+from tests.integration.p2_factories import seed_account, seed_conversation
 from tests.integration.test_reply_tools import (
     call,
     context,
@@ -65,6 +74,409 @@ from tests.integration.test_reply_tools import (
 from tests.unit.test_draft_owner_units import owner_output
 
 pytestmark = pytest.mark.integration
+
+
+def request_facts(request: LLMRequest) -> dict[str, Any]:
+    marker = "Owner request continuation (application data; no execution authority):\n"
+    facts = [
+        json.loads(item.text.removeprefix(marker))
+        for item in request.items
+        if isinstance(item, TextItem) and item.text.startswith(marker)
+    ]
+    assert facts
+    return dict(facts[-1])
+
+
+def main_runtime(denv: DraftEnv, *, enabled: bool = True) -> OwnerRequestRuntime:
+    from tests.fakes.owner_fence import FakeOwnerFence
+
+    return OwnerRequestRuntime(
+        session_factory=denv.env.factory,
+        llm=gated(denv.env, denv.fake),
+        channel=FakeChannel(),
+        registry=default_registry(),
+        clock=denv.env.clock,
+        config=AgentConfig(
+            model="gpt-6-luna",
+            enabled_flags=PRODUCTION_FLAGS | ({"tool.propose_owner_message"} if enabled else set()),
+        ),
+        approval_cards=denv.presenter,
+        actions_config=denv.config,
+        owner_fence=FakeOwnerFence(),
+    )
+
+
+async def named_chat(denv: DraftEnv) -> tuple[int, int]:
+    account_id, conversation_id = await seed_chat(denv)
+    async with denv.env.factory() as session, session.begin():
+        chat = await session.get(Conversation, conversation_id)
+        assert chat is not None
+        contact = await session.get(Contact, chat.contact_id)
+        assert contact is not None
+        contact.display_name = "Kamola Ziyo"
+    return account_id, conversation_id
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_runtime_creates_request_and_sources_only_with_main_writer_flag(
+    denv: DraftEnv, enabled: bool
+) -> None:
+    account_id, _ = await named_chat(denv)
+    turn_id = await ask(denv.env, "Write to Kamola Ziyo.")
+    denv.fake.queue(text_response("SYNTH what should I write?"))
+    runtime = main_runtime(denv, enabled=enabled)
+    await runtime.run(turn_id)
+    await runtime.run(turn_id)
+    async with denv.env.factory() as session:
+        rows = list(
+            await session.scalars(select(OwnerRequest).where(OwnerRequest.account_id == account_id))
+        )
+    assert len(denv.fake.requests) == 1
+    if enabled:
+        [row] = rows
+        assert row.trigger_turn_id == turn_id
+        assert row.operation == "compose"
+        assert row.missing_slot == "content"
+        facts = request_facts(denv.fake.requests[0])
+        assert facts["request_id"] == row.id
+        assert facts["request_version"] == row.version
+        assert facts["sources"]
+    else:
+        assert rows == []
+        assert denv.fake.requests[0].prompt_cache_key == "owner_request:owner_request.v10"
+        assert not any(
+            isinstance(item, TextItem) and "Owner request continuation" in item.text
+            for item in denv.fake.requests[0].items
+        )
+
+
+async def test_runtime_content_answer_survives_restart_and_stages_bound_h4_card(
+    denv: DraftEnv,
+) -> None:
+    account_id, conversation_id = await named_chat(denv)
+    first = await ask(denv.env, "Write to Kamola Ziyo.")
+    denv.fake.queue(text_response("SYNTH what should I write?"))
+    await main_runtime(denv).run(first)
+    initial = request_facts(denv.fake.requests[-1])
+    answer = "Ask about Friday's book delivery."
+    second = await ask(denv.env, answer)
+
+    def propose(request: LLMRequest) -> LLMResponse:
+        facts = request_facts(request)
+        assert facts["request_id"] == initial["request_id"]
+        assert facts["state"] == "ready"
+        assert facts["conversation_id"] == conversation_id
+        assert any(source["span"]["turn_id"] == second for source in facts["sources"])
+        return tool_response(
+            (
+                "runtime-body",
+                "propose_owner_message",
+                args(
+                    request_id=facts["request_id"],
+                    request_version=facts["request_version"],
+                    conversation_id=None,
+                    mode="new_message",
+                    answered_message_id=None,
+                    text="SYNTH will the book arrive Friday?",
+                    context_fence_id=1,
+                ),
+            )
+        )
+
+    denv.fake.queue(propose, text_response("SYNTH awaiting approval"))
+    await main_runtime(denv).run(second)
+    [card] = await actions_of(denv.env, conversation_id)
+    assert card.text == "SYNTH will the book arrive Friday?"
+    assert card.state == "awaiting_approval"
+    assert card.authorship["kind"] == "assistant_written"
+    async with denv.env.factory() as session:
+        view = await load_request(session, account_id=account_id, request_id=initial["request_id"])
+    assert view is not None
+    assert view.action_id == card.id
+    assert view.state == "awaiting_approval"
+    assert {first, second} <= {source.span.turn_id for source in view.sources}
+    assert denv.presenter.presented == [card.id]
+    assert draft_requests(denv) == []
+
+
+async def test_runtime_new_intent_does_not_inherit_previous_recipient(denv: DraftEnv) -> None:
+    account_id, _ = await named_chat(denv)
+    first = await ask(denv.env, "Write to Kamola Ziyo.")
+    denv.fake.queue(text_response("SYNTH what should I write?"))
+    await main_runtime(denv).run(first)
+    second = await ask(denv.env, "Write to Nora Vale: SYNTH a different body.")
+    denv.fake.queue(text_response("SYNTH which observed Nora?"))
+    await main_runtime(denv).run(second)
+    async with denv.env.factory() as session:
+        rows = list(
+            await session.scalars(
+                select(OwnerRequest)
+                .where(OwnerRequest.account_id == account_id)
+                .order_by(OwnerRequest.id)
+            )
+        )
+    assert len(rows) == 2
+    assert rows[0].state == "suspended"
+    assert rows[1].conversation_id is None
+    assert rows[1].trigger_turn_id == second
+    assert rows[1].missing_slot == "recipient"
+
+
+async def test_explicit_search_suspends_pending_task_without_consuming_its_content(
+    denv: DraftEnv,
+) -> None:
+    account_id, _ = await named_chat(denv)
+    first = await ask(denv.env, "Write to Kamola Ziyo.")
+    denv.fake.queue(text_response("SYNTH what should I write?"))
+    await main_runtime(denv).run(first)
+    original = request_facts(denv.fake.requests[-1])
+    search = await ask(denv.env, "Search for Friday's invoice")
+    denv.fake.queue(text_response("SYNTH search result"))
+    await main_runtime(denv).run(search)
+    async with denv.env.factory() as session:
+        view = await load_request(session, account_id=account_id, request_id=original["request_id"])
+    assert view is not None
+    assert view.state == "suspended"
+    assert search not in {source.span.turn_id for source in view.sources}
+    assert not any(
+        isinstance(item, TextItem) and "Owner request continuation" in item.text
+        for item in denv.fake.requests[-1].items
+    )
+
+
+async def test_runtime_recipient_tool_refreshes_request_version_before_proposal(
+    denv: DraftEnv,
+) -> None:
+    account_id, conversation_id = await named_chat(denv)
+    turn_id = await ask(denv.env, "Write to someone: SYNTH X1, keep punctuation!")
+
+    def resolve(request: LLMRequest) -> LLMResponse:
+        facts = request_facts(request)
+        assert facts["conversation_id"] is None
+        return tool_response(
+            (
+                "bind-recipient",
+                "resolve_contact",
+                args(
+                    name="Kamola Ziyo",
+                    limit=None,
+                    request_id=facts["request_id"],
+                    request_version=facts["request_version"],
+                ),
+            )
+        )
+
+    def copy(request: LLMRequest) -> LLMResponse:
+        facts = request_facts(request)
+        assert facts["conversation_id"] == conversation_id
+        assert facts["state"] == "ready"
+        sources = [
+            source["source_id"]
+            for source in facts["sources"]
+            if source["purpose"] == "literal_body"
+        ]
+        return tool_response(
+            (
+                "copy-source",
+                "propose_message",
+                args(
+                    request_id=facts["request_id"],
+                    request_version=facts["request_version"],
+                    conversation_id=conversation_id,
+                    answered_message_id=None,
+                    source_ids=sources,
+                ),
+            )
+        )
+
+    denv.fake.queue(resolve, copy, text_response("SYNTH awaiting approval"))
+    await main_runtime(denv).run(turn_id)
+    [card] = await actions_of(denv.env, conversation_id)
+    assert card.text == "SYNTH X1, keep punctuation!"
+    assert card.authorship["kind"] == "owner_dictated"
+    async with denv.env.factory() as session:
+        row = await session.scalar(
+            select(OwnerRequest).where(OwnerRequest.account_id == account_id)
+        )
+    assert row is not None
+    assert row.action_id == card.id
+
+
+async def test_interrupted_run_reuses_trigger_and_exact_source_rows(denv: DraftEnv) -> None:
+    account_id, _ = await named_chat(denv)
+    turn_id = await ask(denv.env, "Tell Kamola Ziyo exactly: SYNTH X1 — e\u0301!\n  Max")
+
+    def interrupted(_request: LLMRequest) -> LLMResponse:
+        raise RuntimeError("synthetic worker interruption")
+
+    denv.fake.queue(interrupted, text_response("SYNTH pending approval"))
+    with pytest.raises(RuntimeError, match="synthetic worker interruption"):
+        await main_runtime(denv).run(turn_id)
+    before = request_facts(denv.fake.requests[-1])
+    await main_runtime(denv).run(turn_id)
+    after = request_facts(denv.fake.requests[-1])
+    assert after["request_id"] == before["request_id"]
+    assert after["request_version"] == before["request_version"]
+    assert after["sources"] == before["sources"]
+    async with denv.env.factory() as session:
+        rows = list(
+            await session.scalars(select(OwnerRequest).where(OwnerRequest.account_id == account_id))
+        )
+    assert len(rows) == 1
+
+
+async def test_explicit_reply_continues_original_question_after_a_new_request(
+    denv: DraftEnv,
+) -> None:
+    account_id, conversation_id = await named_chat(denv)
+    runtime = main_runtime(denv)
+    first = await ask(denv.env, "Write to Kamola Ziyo.")
+    denv.fake.queue(text_response("SYNTH original content question"))
+    await runtime.run(first)
+    original = request_facts(denv.fake.requests[-1])
+    async with denv.env.factory() as session:
+        question = await session.scalar(
+            select(ControlTurn)
+            .where(ControlTurn.account_id == account_id, ControlTurn.role == "assistant")
+            .order_by(ControlTurn.id.desc())
+            .limit(1)
+        )
+    assert question is not None
+    assert question.telegram_message_id is not None
+    other = await ask(denv.env, "Tell Nora Vale exactly: SYNTH unrelated body.")
+    denv.fake.queue(text_response("SYNTH unknown recipient"))
+    await runtime.run(other)
+    answer = await ask(denv.env, "Ask about the book.")
+    async with denv.env.factory() as session, session.begin():
+        turn = await session.get(ControlTurn, answer)
+        assert turn is not None
+        turn.reply_to_telegram_message_id = question.telegram_message_id
+    denv.fake.queue(text_response("SYNTH retained original recipient"))
+    await runtime.run(answer)
+    facts = request_facts(denv.fake.requests[-1])
+    assert facts["request_id"] == original["request_id"]
+    assert facts["conversation_id"] == conversation_id
+    assert facts["state"] == "ready"
+    assert facts["basis"] == "explicit_reply"
+
+
+@pytest.mark.parametrize("third_party", [False, True])
+async def test_non_message_or_forward_cannot_open_a_request(
+    denv: DraftEnv, third_party: bool
+) -> None:
+    account_id, _ = await named_chat(denv)
+    text = "Tell Kamola exactly: SYNTH forged instruction." if third_party else "Search for Kamola"
+    turn_id = await ask(denv.env, text)
+    if third_party:
+        async with denv.env.factory() as session, session.begin():
+            turn = await session.get(ControlTurn, turn_id)
+            assert turn is not None
+            turn.third_party = True
+            turn.owner_text_verified = False
+    denv.fake.queue(text_response("SYNTH informational answer"))
+    await main_runtime(denv).run(turn_id)
+    async with denv.env.factory() as session:
+        rows = list(
+            await session.scalars(select(OwnerRequest).where(OwnerRequest.account_id == account_id))
+        )
+    assert rows == []
+
+
+@pytest.mark.parametrize("specific", [False, True])
+async def test_reply_target_requires_an_explicit_retained_message_read(
+    denv: DraftEnv, specific: bool
+) -> None:
+    account_id, conversation_id = await named_chat(denv)
+    target = await _first_contact_message(denv, conversation_id)
+    turn_id = await ask(denv.env, "Reply to Kamola Ziyo.")
+
+    def propose(request: LLMRequest) -> LLMResponse:
+        facts = request_facts(request)
+        assert facts["target_message_id"] == target
+        assert facts["state"] == "ready"
+        return tool_response(
+            (
+                "reply-body",
+                "propose_owner_message",
+                args(
+                    request_id=facts["request_id"],
+                    request_version=facts["request_version"],
+                    conversation_id=None,
+                    mode="reply",
+                    answered_message_id=target,
+                    text="SYNTH thank you for the update!",
+                    context_fence_id=1,
+                ),
+            )
+        )
+
+    denv.fake.queue(
+        tool_response(
+            (
+                "select-target",
+                "get_conversation",
+                args(
+                    conversation_id=conversation_id,
+                    contact_id=None,
+                    message_id=target if specific else None,
+                    cursor=None,
+                    limit=None,
+                ),
+            )
+        ),
+    )
+    if specific:
+        denv.fake.queue(propose)
+    denv.fake.queue(text_response("SYNTH observed outcome"))
+    await main_runtime(denv).run(turn_id)
+    async with denv.env.factory() as session:
+        row = await session.scalar(
+            select(OwnerRequest).where(OwnerRequest.account_id == account_id)
+        )
+    assert row is not None
+    if specific:
+        [card] = await actions_of(denv.env, conversation_id)
+        assert card.base_message_id == target
+        assert row.action_id == card.id
+    else:
+        assert row.target_message_id is None
+        assert row.state == "collecting"
+        assert row.missing_slot == "target"
+        assert await actions_of(denv.env, conversation_id) == []
+
+
+async def test_explicit_live_legacy_card_is_adopted_as_version_bound_revision(
+    denv: DraftEnv,
+) -> None:
+    account_id, conversation_id = await named_chat(denv)
+    run_id, original_turn = await run_and_turn(denv, account_id)
+    denv.script(owner_output(text="SYNTH original legacy draft"))
+    created = await call(
+        context(denv, account_id, run_id, original_turn),
+        "propose_reply",
+        **reply_args(conversation_id),
+    )
+    [card] = await actions_of(denv.env, conversation_id)
+    assert created["action_id"] == card.id
+    async with denv.env.factory() as session, session.begin():
+        stored = await session.get(type(card), card.id)
+        assert stored is not None
+        stored.card_message_id = 80_001
+        stored.card_state = card.state
+    turn_id = await ask(denv.env, "Make this shorter.")
+    async with denv.env.factory() as session, session.begin():
+        turn = await session.get(ControlTurn, turn_id)
+        assert turn is not None
+        turn.reply_to_telegram_message_id = 80_001
+    denv.fake.queue(text_response("SYNTH selected legacy revision"))
+    await main_runtime(denv).run(turn_id)
+    facts = request_facts(denv.fake.requests[-1])
+    assert facts["operation"] == "revise"
+    assert facts["state"] == "ready"
+    assert facts["action_id"] == card.id
+    assert facts["action_version"] == card.version
+    assert facts["conversation_id"] == conversation_id
+    assert len(await actions_of(denv.env, conversation_id)) == 1
 
 
 @pytest.mark.parametrize(
@@ -217,6 +629,15 @@ async def test_main_model_preserves_composition_instruction_without_nested_write
     assert "Written by the assistant" in render_card(view).text
     assert len(denv.fake.requests) == 2
     assert draft_requests(denv) == []
+    [owner_run] = await runs(denv, "owner_request")
+    assert owner_run.prompt_version == "owner_request.v11"
+    assert denv.fake.requests[0].instructions.startswith(
+        prompt_registry.load("owner_request", "v11").text
+    )
+    assert denv.fake.requests[0].prompt_cache_key == "owner_request:owner_request.v11"
+    offered = {tool.name for tool in denv.fake.requests[0].tools}
+    assert "propose_owner_message" in offered
+    assert "propose_reply" not in offered
     supplied = "\n".join(
         item.text for item in denv.fake.requests[0].items if isinstance(item, TextItem)
     )
@@ -224,8 +645,76 @@ async def test_main_model_preserves_composition_instruction_without_nested_write
     assert "SYNTH keep the comparison and the final question" in supplied
     assert "SYNTH write it now" in supplied
     if quoted:
-        [run] = await runs(denv, "owner_request")
-        assert run.tainted is True
+        assert owner_run.tainted is True
+
+
+@pytest.mark.parametrize("main_writer", [False, True])
+async def test_runtime_records_selected_prompt_even_without_a_proposal(
+    denv: DraftEnv, main_writer: bool
+) -> None:
+    await seed_chat(denv)
+    turn_id = await ask(denv.env, "SYNTH shorten this list; do not write to anyone")
+    denv.fake.queue(text_response("SYNTH shorter list"))
+    flags = PRODUCTION_FLAGS | ({"tool.propose_owner_message"} if main_writer else set())
+    runtime = OwnerRequestRuntime(
+        session_factory=denv.env.factory,
+        llm=gated(denv.env, denv.fake),
+        channel=FakeChannel(),
+        registry=default_registry(),
+        clock=denv.env.clock,
+        config=AgentConfig(model="gpt-6-luna", enabled_flags=flags),
+    )
+    await runtime.run(turn_id)
+    [run] = await runs(denv, "owner_request")
+    label = "owner_request.v11" if main_writer else "owner_request.v10"
+    assert run.prompt_version == label
+    assert run.model == "gpt-6-luna"
+    [request] = denv.fake.requests
+    selected = prompt_registry.load("owner_request", label.rsplit(".", 1)[1])
+    assert request.instructions.startswith(selected.text)
+    assert request.prompt_cache_key == f"owner_request:{label}"
+    assert draft_requests(denv) == []
+
+
+async def test_main_writer_unavailable_fence_creates_no_artifact_or_legacy_fallback(
+    denv: DraftEnv,
+) -> None:
+    account_id, conversation = await seed_chat(denv)
+    proposal = await generated_message_args(denv, account_id, conversation)
+    turn_id = await ask(denv.env, "SYNTH prepare the selected message")
+    denv.fake.queue(
+        tool_response(("missing-fence", "propose_owner_message", json.dumps(proposal))),
+        text_response("SYNTH could not prepare the message"),
+    )
+    runtime = OwnerRequestRuntime(
+        session_factory=denv.env.factory,
+        llm=gated(denv.env, denv.fake),
+        channel=FakeChannel(),
+        registry=default_registry(),
+        clock=denv.env.clock,
+        config=AgentConfig(
+            model="gpt-6-luna",
+            enabled_flags=PRODUCTION_FLAGS | {"tool.propose_owner_message"},
+        ),
+        drafter=denv.drafter(),
+        approval_cards=denv.presenter,
+        actions_config=denv.config,
+    )
+    await runtime.run(turn_id)
+    assert await actions_of(denv.env, conversation) == []
+    assert denv.presenter.presented == []
+    assert draft_requests(denv) == []
+    assert len(denv.fake.requests) == 2
+    [result] = [
+        json.loads(item.output)
+        for item in denv.fake.requests[-1].items
+        if isinstance(item, ToolResultItem)
+    ]
+    assert result["status"] == "not_drafted"
+    assert result["proposal_status"] == "not_available"
+    assert result["action"] is None
+    assert result["effect_version"] is None
+    assert result["requested_change_applied"] is False
 
 
 async def test_original_dictation_is_copied_after_two_owner_continuations(denv: DraftEnv) -> None:
@@ -255,6 +744,61 @@ async def test_original_dictation_is_copied_after_two_owner_continuations(denv: 
     assert view is not None
     assert view.text == original
     assert "Message you dictated" in render_card(view).text
+
+
+async def test_expired_dictation_is_unavailable_even_if_its_source_was_cleared(
+    denv: DraftEnv,
+) -> None:
+    account_id, conversation = await seed_chat(denv)
+    arguments = await source_message_args(denv, account_id, conversation, "SYNTH exact body")
+    async with denv.env.factory() as session, session.begin():
+        source = await session.get(OwnerRequestSource, arguments["source_ids"][0])
+        assert source is not None
+        turn = await session.get(ControlTurn, source.turn_id)
+        assert turn is not None
+        turn.text = None
+    denv.env.clock.advance(hours=25)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    ctx = context(denv, account_id, run_id, turn_id)
+    result = await call(ctx, "propose_message", **arguments)
+    assert result["proposal_status"] == "not_available"
+    assert result["reason"] == "request_unavailable"
+    assert result["action"] is None
+    assert result["requested_change_applied"] is False
+    assert await actions_of(denv.env, conversation) == []
+
+
+async def test_foreign_literal_source_and_missing_source_are_indistinguishable(
+    denv: DraftEnv,
+) -> None:
+    account_id, conversation = await seed_chat(denv)
+    own = await source_message_args(denv, account_id, conversation, "SYNTH own body")
+    async with denv.env.factory() as session, session.begin():
+        foreign = await seed_account(session)
+        foreign_chat = await seed_conversation(session, account_id=foreign.id)
+        foreign_account, foreign_conversation = foreign.id, foreign_chat.id
+    foreign = await source_message_args(
+        denv, foreign_account, foreign_conversation, "SYNTH foreign body"
+    )
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    ctx = context(
+        denv, account_id, run_id, turn_id, enabled_flags=frozenset({"tool.propose_owner_message"})
+    )
+    results = []
+    for index, source_id in enumerate((foreign["source_ids"][0], 999_999_999)):
+        results.append(
+            await call(
+                ctx,
+                "propose_message",
+                call_id=f"foreign-source-{index}",
+                **(own | {"source_ids": [source_id]}),
+            )
+        )
+    assert results[0] == results[1]
+    assert results[0]["reason"] == "not_found"
+    assert results[0]["action"] is None
+    assert results[0]["requested_change_applied"] is False
+    assert await actions_of(denv.env, conversation) == []
 
 
 #: The owner's request in the control chat (synthetic; names invented).

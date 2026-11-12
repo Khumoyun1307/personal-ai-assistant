@@ -11,9 +11,7 @@ from tests.scenarios.p2_drive import run_queued
 pytestmark = [pytest.mark.integration, pytest.mark.journey]
 
 
-# H3 consumes C1 selections; runtime classification still needs H6, and the
-# version-specific authorship assertions below additionally need H9.
-@pytest.mark.xfail(strict=True, reason="needs H6/H9", raises=AssertionError)
+# Runtime classification (H6), H3 exact copying and H9 per-version authorship.
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("trial", range(3), ids=lambda trial: f"trial-{trial + 1}")
 async def test_i01_j01_dictation_survives_recipient_answer_and_restart(
@@ -66,7 +64,6 @@ async def test_i01_j01_dictation_survives_recipient_answer_and_restart(
 
 # No baseline fixture selection here: exercise runtime classification (H6)
 # and the per-version authorship proof (H9) as well as H3's exact copying.
-@pytest.mark.xfail(strict=True, reason="needs H6/H9", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("mutation", ["x1", "Mah", "folded-punctuation"])
 async def test_source_copy_cannot_be_replaced_by_model_normalization(

@@ -23,7 +23,7 @@ from assistant.accounts.models import ControlTurn, PendingInput
 from assistant.accounts.service import ConsentState, active_consent
 from assistant.actions.models import Action
 from assistant.actions.recipient_resolution import select_candidate_answer
-from assistant.actions.request_models import OwnerRequest
+from assistant.actions.request_models import TERMINAL_REQUEST_STATES, OwnerRequest
 from assistant.actions.requests import (
     Continuation,
     OwnerContinuation,
@@ -125,6 +125,7 @@ async def load_owner_continuation(
     turn: ControlTurn,
     now: datetime,
     managed_allowed: bool,
+    selection: Continuation | None = None,
 ) -> OwnerContinuation:
     """Reload durable state, including source spans outside recent history.
 
@@ -133,13 +134,15 @@ async def load_owner_continuation(
     """
     if turn.account_id != account_id or not await lock_requests(session, account_id=account_id):
         return OwnerContinuation(Continuation("unavailable", code="not_available"))
-    selection = await resolve_continuation(
-        session,
-        account_id=account_id,
-        turn_id=turn.id,
-        reply_to_message_id=turn.reply_to_telegram_message_id,
-        now=now,
-    )
+    supplied_selection = selection is not None
+    if selection is None:
+        selection = await resolve_continuation(
+            session,
+            account_id=account_id,
+            turn_id=turn.id,
+            reply_to_message_id=turn.reply_to_telegram_message_id,
+            now=now,
+        )
     if selection.status != "selected":
         return OwnerContinuation(selection)
     if selection.request_id is None:
@@ -161,6 +164,17 @@ async def load_owner_continuation(
     request = await load_request(session, account_id=account_id, request_id=selection.request_id)
     if request is None:
         return OwnerContinuation(Continuation("unavailable", code="not_available"))
+    if supplied_selection:
+        if request.state in TERMINAL_REQUEST_STATES or request.expires_at <= now:
+            return OwnerContinuation(Continuation("unavailable", code="not_available"))
+        if request.action_id is not None:
+            version = await session.scalar(
+                select(Action.version).where(
+                    Action.account_id == account_id, Action.id == request.action_id
+                )
+            )
+            if version != request.action_version:
+                return OwnerContinuation(Continuation("unavailable", code="stale"))
     sources: list[ValidatedSource] = []
     source_withheld = False
     for source in request.sources:

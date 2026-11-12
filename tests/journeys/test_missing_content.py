@@ -11,7 +11,6 @@ from tests.journeys.models import LOCALES, CardCheck, Contact, CountCheck, Local
 pytestmark = [pytest.mark.integration, pytest.mark.journey]
 
 
-@pytest.mark.xfail(strict=True, reason="needs H4", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("trial", range(3), ids=lambda trial: f"trial-{trial + 1}")
 async def test_i02_j03_content_question_then_brief_is_same_request(
@@ -54,7 +53,6 @@ async def test_i02_j03_content_question_then_brief_is_same_request(
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-@pytest.mark.xfail(strict=True, reason="needs H4", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 async def test_j04_standalone_book_request_does_not_answer_old_invoice(
     journey: Journey, locale: Locale

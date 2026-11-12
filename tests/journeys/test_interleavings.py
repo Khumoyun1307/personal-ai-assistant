@@ -26,7 +26,6 @@ from tests.scenarios.p2_drive import draft_result, owner_draft_result, run_queue
 pytestmark = [pytest.mark.integration, pytest.mark.journey]
 
 
-@pytest.mark.xfail(strict=True, reason="needs H4/H6", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("event", ["arrival", "edit-base", "edit-other", "delete", "manual"])
 async def test_j08_j09_source_changes_during_main_model_composition(
@@ -46,10 +45,13 @@ async def test_j08_j09_source_changes_during_main_model_composition(
         assert callable(proposal)
         return await proposal(request)
 
+    # C1: a page read cannot choose a reply target; the model selects the
+    # question it answers with an explicit retained-message read.
     task = asyncio.create_task(
         j.owner(
             owner_input("J09" if event == "manual" else "J08", locale)[0],
             j.read(),
+            j.read(message_id=base),
             held,
             text_response(TEXT[locale].outcome),
         )
@@ -77,7 +79,9 @@ async def test_j08_j09_source_changes_during_main_model_composition(
         barrier.release.set()
         await asyncio.gather(task, return_exceptions=True)
     await task
-    [row] = await j.rows()
+    rows = await j.rows()
+    assert len(rows) == 1, j.outputs()[-1]
+    [row] = rows
     assert row.state == "awaiting_approval"
     assert row.freshness_warning is not None
     assert row.approval_token is not None

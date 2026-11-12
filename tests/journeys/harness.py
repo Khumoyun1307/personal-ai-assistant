@@ -493,7 +493,20 @@ class Journey:
 
         return proposal
 
-    def read(self, chat: str = "k", *, limit: int = 30) -> LLMResponse:
+    def read(
+        self, chat: str = "k", *, limit: int = 30, message_id: int | None = None
+    ) -> LLMResponse:
+        # A page read never selects a reply target (C1); an explicit retained
+        # message read does, and it is combined with neither cursor nor limit.
+        if message_id is not None:
+            return call(
+                "get_conversation",
+                conversation_id=self.chats[chat],
+                contact_id=None,
+                message_id=message_id,
+                cursor=None,
+                limit=None,
+            )
         return call(
             "get_conversation",
             conversation_id=self.chats[chat],
@@ -637,6 +650,9 @@ class Journey:
                     message_id=self._message_number,
                     message_text=step.text,
                     date=self.s.date,
+                    # Telegram repeats the chat's profile name on every message;
+                    # keep the directory name instead of a placeholder rename.
+                    first_name=self.names.get(step.chat, "Synthetic"),
                 ),
             )
             self.messages[step.alias] = (step.chat, self._message_number)
@@ -672,6 +688,7 @@ class Journey:
                     edit=True,
                     date=original_date,
                     edit_date=self.s.date,
+                    first_name=self.names.get(chat_alias, "Synthetic"),
                 )
             else:
                 payload = deleted_messages(chat_id=telegram_chat, message_ids=[telegram_message])

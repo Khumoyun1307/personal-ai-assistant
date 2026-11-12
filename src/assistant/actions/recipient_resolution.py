@@ -115,6 +115,13 @@ async def select_candidate_answer(
         # a fresh weak guess never constitutes owner confirmation.
         directory = await read.contact_directory(session, account_id)
         resolved = read.resolve_contacts(directory, turn.text, limit=10)
+        if resolved.verdict in ("none", "weak_only"):
+            # A sentence-final full stop is not part of the selected name.
+            # Try the original first so a real identifier ending in punctuation
+            # retains precedence; never turn an ambiguity into a selection.
+            answer = turn.text.strip().rstrip(".!?").rstrip()
+            if answer != turn.text.strip():
+                resolved = read.resolve_contacts(directory, answer, limit=10)
         if resolved.verdict == "unique_strong":
             match = resolved.strong[0].entry
             selected = next(

@@ -24,6 +24,8 @@ from assistant.actions.requests import (
     CandidatePair,
     RecordCandidates,
     SelectRecipient,
+    SetTarget,
+    lock_requests,
     update_request,
 )
 from assistant.agent.citations import CitableMessage
@@ -216,6 +218,16 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
     services = ctx.services
     async with transaction(services.session_factory) as uow:
         session = uow.session
+        owner_request = ctx.continuation.request if ctx.continuation is not None else None
+        bind_target = (
+            "tool.propose_owner_message" in services.enabled_flags
+            and owner_request is not None
+            and owner_request.operation == "reply"
+            and owner_request.target_message_id is None
+            and args.message_id is not None
+        )
+        if bind_target:
+            await lock_requests(session, account_id=ctx.account_id)
         account = await _account(ctx, session)
         conversation_id = args.conversation_id
         if conversation_id is None:
@@ -243,6 +255,25 @@ async def get_conversation_tool(ctx: ToolContext, args: GetConversationArgs) -> 
             reads=(page.observed,),
             requested_at=services.clock.now(),
         )
+        if (
+            bind_target
+            and owner_request is not None
+            and owner_request.conversation_id == conversation_id
+            and args.message_id is not None
+            and any(
+                m.message_id == args.message_id and m.direction == "contact" for m in page.messages
+            )
+        ):
+            # An explicitly read retained target can fill C1's reply slot.
+            # A page/newest message is never an implicit target selection.
+            await update_request(
+                session,
+                account_id=ctx.account_id,
+                request_id=owner_request.request_id,
+                expected_version=owner_request.version,
+                update=SetTarget(message_id=args.message_id),
+                now=services.clock.now(),
+            )
         stored = await summaries.rolling_summary(session, ctx.account_id, conversation_id)
         preferences = (
             await items.effective_owner_preferences(

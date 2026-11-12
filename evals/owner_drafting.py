@@ -190,7 +190,16 @@ CATEGORIES: tuple[str, ...] = get_args(Category)
 #: Tools whose call stages or changes a card.
 CARD_TOOLS = ("propose_reply", "propose_message", "revise_draft")
 _KNOWN_TOOLS = frozenset(
-    {*CARD_TOOLS, "get_draft", "resolve_contact", "get_conversation", "list_conversations"}
+    {
+        *CARD_TOOLS,
+        # Accept candidate routing expectations without changing the frozen
+        # production dataset, flags or evaluator writer path.
+        "propose_owner_message",
+        "get_draft",
+        "resolve_contact",
+        "get_conversation",
+        "list_conversations",
+    }
 )
 
 

@@ -7,6 +7,20 @@ proposal/card lifecycle, policy and job bodies; FakeLLM, FakeClock and the recor
 Telegram transport. No poller, provider SDK client or external connection starts.
 Every string is synthetic. Do not load `.env`, `var/`, dumps or real conversations.
 
+H6 (2026-11-10) selects `owner_request.v11` with the existing H4 candidate flag;
+the flag-off path keeps v10. The cutover/restart guards check actual run labels,
+model instructions and cache keys beside the offered schemas. Grader negatives
+cover cross-chat canaries and all non-succeeded states misreported as sent.
+No H6 xfail is removed without running the full marked trajectory; general
+runtime request/source classification is now wired behind the same flag, while
+H10 read fences remain prerequisites for generated proposals/revisions in
+I02/J03/J04/J05/J06/J28. The new raw-turn recipient-question regression in
+`test_continuations.py` uses runtime-created requests/spans across a restart;
+it is unrun, so no existing expected-failure marker was removed. J25 remains a
+no-action trajectory.
+These deterministic tests and paid behavioral trials are unrun in the restricted
+worktree; this is implementation inventory, not H6-7 acceptance.
+
 Isolation is function-scoped for both `journey` and `background`, including every
 locale, trial and xfailed variant. Each environment creates fresh sender/clock,
 failure scripts, model queue, runtime and job adapters and clears synthetic

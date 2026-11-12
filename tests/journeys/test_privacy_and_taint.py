@@ -403,8 +403,7 @@ async def test_j26_foreign_action_read_has_uniform_not_found_and_no_effect(
 
 
 # The first owner turn must establish real C1 sources via runtime classification
-# (H6). Keep this strict: baseline fixture setup would bypass that trajectory.
-@pytest.mark.xfail(strict=True, reason="needs H6", raises=AssertionError)
+# (H6); baseline fixture setup would bypass that trajectory.
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("loss", ["cleared", "deleted", "expired"])
 async def test_j26_lost_source_never_reconstructs_from_assistant_memory(
@@ -516,9 +515,9 @@ async def test_j28_main_model_approved_body_has_no_other_chat_canary(
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-# Own request/source classification still needs H6; the generated-proposal
-# fence variant also needs H4. Never substitute invented own source IDs.
-@pytest.mark.xfail(strict=True, reason="needs H6/H4", raises=AssertionError)
+# Own request/source classification comes from H6 runtime ingress; the
+# generated-proposal fence variant uses H10's context fences. Never
+# substitute invented own source IDs.
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("foreign_kind", ["request", "source", "recipient", "fence"])
 async def test_j26_foreign_proposal_references_are_rejected_one_at_a_time(

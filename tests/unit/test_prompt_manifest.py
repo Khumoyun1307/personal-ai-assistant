@@ -44,7 +44,11 @@ def test_every_prompt_matches_manifest_and_registry() -> None:
         assert hashlib.sha256(raw).hexdigest() == asset.sha256
         assert prompt_registry.load_bytes(name, version) == raw
         assert prompt_registry.load(name, version).text == raw.decode("utf-8").strip()
-        assert asset.active == (prompt_registry.ACTIVE.get(name) == version)
+        flagged = prompt_registry.FLAGGED_ACTIVE.get(name)
+        assert asset.active == (
+            prompt_registry.ACTIVE.get(name) == version
+            or (flagged is not None and flagged[1] == version)
+        )
         assert (path.parent == prompt_registry.PROMPT_DIR) == asset.active
         assert bool(asset.structured_outputs) == (name != "owner_request")
         for record in asset.eval_records:
@@ -56,6 +60,10 @@ def test_every_prompt_matches_manifest_and_registry() -> None:
     assert actual_paths == expected_paths
     for name, version in prompt_registry.ACTIVE.items():
         assert prompt_registry.active(name).label == f"{name}.{version}"
+    for name, (flag, version) in prompt_registry.FLAGGED_ACTIVE.items():
+        assert prompt_registry.active(name, enabled_flags=frozenset({flag})).label == (
+            f"{name}.{version}"
+        )
 
 
 def test_static_prompt_references_cannot_outlive_manifest_entries() -> None:
