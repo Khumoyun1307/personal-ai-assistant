@@ -532,6 +532,7 @@ async def propose_reply_tool(ctx: ToolContext, args: ProposeReplyArgs) -> ToolOu
             account_id=ctx.account_id,
             conversation_id=target.conversation_id,
             owner_run_id=ctx.run_id,
+            owner_turn_id=ctx.turn_id,
             mode=args.mode,
             instruction=instruction,
             guidance=guidance,
@@ -899,6 +900,8 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
                 dictated_text=copied.text if dictated else None,
                 suggested_text=None if dictated else copied.text,
                 answered_message_id=answered,
+                owner_request_id=request.id,
+                expected_request_version=args.request_version,
                 authorship=VersionAuthorship(
                     version=1,
                     kind="owner_dictated" if dictated else "agent_proposal_selected",

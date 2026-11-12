@@ -30,6 +30,8 @@ from typing import Literal
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from assistant.accounts.models import Account
+from assistant.conversations.intent import advance_intent
 from assistant.conversations.models import Conversation
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
@@ -101,10 +103,13 @@ async def request_draft(
 
         after_commit(session, defer)
         return
+    await session.execute(
+        select(Account.id).where(Account.id == account_id).with_for_update(read=True)
+    )
     found = await session.scalar(
-        select(Conversation.id).where(
-            Conversation.account_id == account_id, Conversation.id == conversation_id
-        )
+        select(Conversation.id)
+        .where(Conversation.account_id == account_id, Conversation.id == conversation_id)
+        .with_for_update()
     )
     if found is None:
         raise NotInAccountError("conversation not found in this account")
@@ -127,3 +132,6 @@ async def request_draft(
         await savepoint.rollback()
     else:
         await savepoint.commit()
+        # The owner's explicit re-draft wins before the slow worker starts.
+        # A duplicate queued tap is a no-op and must not advance the token.
+        await advance_intent(session, account_id=account_id, conversation_id=conversation_id)

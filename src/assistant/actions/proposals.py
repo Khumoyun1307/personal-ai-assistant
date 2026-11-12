@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.callbacks import new_token
-from assistant.accounts.models import Account, ControlTurn
+from assistant.accounts.models import Account, AuditLogEntry, ControlTurn
 from assistant.actions.authorship import VersionAuthorship, generated_authorship, is_ai_generated
 from assistant.actions.config import ActionsConfig
 from assistant.actions.lifecycle import (
@@ -36,6 +36,7 @@ from assistant.actions.policy_loader import decision_from_record, decision_recor
 from assistant.actions.request_models import OwnerRequest
 from assistant.actions.states import LIVE_CARD, ActionKind, ActionOrigin, ActionState, StateReason
 from assistant.conversations.fences import ContextFence, FenceReason, lock_fence_conversations
+from assistant.conversations.intent import advance_intent, select_legacy_intent
 from assistant.conversations.models import Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
@@ -122,6 +123,7 @@ class ProposalRequest:
     requested_at: datetime | None = None
     owner_request_id: int | None = None
     expected_request_version: int | None = None
+    explicit_owner_work: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,17 +182,24 @@ async def propose(
         conversation_id=request.conversation_id,
         fence_id=request.context_fence_id,
     )
+    owned_request: OwnerRequest | None = None
     if request.owner_request_id is not None:
         owned_request = await session.scalar(
-            select(OwnerRequest.id)
+            select(OwnerRequest)
             .where(
                 OwnerRequest.account_id == request.account_id,
                 OwnerRequest.id == request.owner_request_id,
+                OwnerRequest.conversation_id == request.conversation_id,
             )
             .with_for_update()
         )
         if owned_request is None:
             raise ProposalRefused("source_unavailable")
+        if (
+            request.expected_request_version is not None
+            and owned_request.version != request.expected_request_version
+        ):
+            raise ProposalRefused("request_changed")
     if request.base_message_id is not None:
         base = await session.scalar(
             select(Message).where(
@@ -226,6 +235,9 @@ async def propose(
             # proof. It must not recreate content derived from the erased scope.
             raise ProposalRefused("source_unavailable")
         requested_at = ContextFence.model_validate(record.facts).requested_at
+    elif request.owner_request_id is not None:
+        assert owned_request is not None
+        requested_at = owned_request.requested_at
     elif request.trigger_turn_id is not None:
         requested_at = await session.scalar(
             select(ControlTurn.created_at).where(
@@ -256,7 +268,10 @@ async def propose(
     # from its base message. A dictated message has a base message only when
     # the owner named the message it answers (PF-F); the card then quotes it.
     owner_requested = (
-        request.origin is ActionOrigin.OWNER_DICTATED or request.trigger_turn_id is not None
+        request.origin is ActionOrigin.OWNER_DICTATED
+        or request.trigger_turn_id is not None
+        or request.owner_request_id is not None
+        or request.explicit_owner_work
     )
     base_message_id = request.base_message_id
     context = await load_context(
@@ -275,6 +290,54 @@ async def propose(
     )
     decision = decide(context)
 
+    if not owner_requested:
+        # D-S10: background work yields before inserting/presenting anything.
+        # D-S17's warning override belongs to owner review, not to Assist's
+        # authority to replace an explicit task. No owner approval is vetoed.
+        if context.freshness.source_fence_reason in {"takeover", "owner_intent_superseded"}:
+            raise ProposalRefused(context.freshness.source_fence_reason)
+        explicit = await session.scalar(
+            select(Action.id).where(
+                Action.account_id == request.account_id,
+                Action.conversation_id == request.conversation_id,
+                or_(
+                    Action.origin == ActionOrigin.OWNER_DICTATED.value,
+                    Action.trigger_turn_id.is_not(None),
+                    Action.owner_request_id.is_not(None),
+                    Action.state == ActionState.REVISING.value,
+                    Action.state.in_([ActionState.APPROVED.value, ActionState.EXECUTING.value]),
+                    select(AuditLogEntry.id)
+                    .where(
+                        AuditLogEntry.account_id == request.account_id,
+                        AuditLogEntry.subject_type == "action",
+                        AuditLogEntry.subject_id == Action.id,
+                        or_(
+                            AuditLogEntry.event == "action_revision_requested",
+                            (AuditLogEntry.event == "action_proposed")
+                            & AuditLogEntry.details["owner_requested"].as_boolean().is_(True),
+                        ),
+                    )
+                    .correlate(Action)
+                    .exists(),
+                ),
+                or_(
+                    Action.state.in_([state.value for state in LIVE_CARD]),
+                    warning_card_filter(),
+                    Action.state.in_([ActionState.APPROVED.value, ActionState.EXECUTING.value]),
+                ),
+            )
+        )
+        selected_request = await session.scalar(
+            select(OwnerRequest.id).where(
+                OwnerRequest.account_id == request.account_id,
+                OwnerRequest.conversation_id == request.conversation_id,
+                OwnerRequest.state.in_(["collecting", "ready", "preparing"]),
+                OwnerRequest.expires_at > now,
+            )
+        )
+        if explicit is not None or selected_request is not None:
+            raise ProposalRefused("owner_intent_superseded")
+
     action_id = await _insert(
         session, request, facts, decision, base_message_id=base_message_id, now=now
     )
@@ -286,6 +349,24 @@ async def propose(
         return _reused(existing)
 
     if decision.outcome is Outcome.REQUIRE_APPROVAL:
+        if (
+            owner_requested
+            and request.owner_request_id is None
+            and request.draft_run_id is None
+            and not request.explicit_owner_work
+        ):
+            if request.trigger_turn_id is None:
+                await advance_intent(
+                    session, account_id=request.account_id, conversation_id=request.conversation_id
+                )
+            else:
+                await select_legacy_intent(
+                    session,
+                    account_id=request.account_id,
+                    conversation_id=request.conversation_id,
+                    turn_id=request.trigger_turn_id,
+                    now=now,
+                )
         superseded = await _supersede_live(session, request, new_action_id=action_id, now=now)
         await transition(
             session,
@@ -299,7 +380,10 @@ async def propose(
                 "approval_token": new_token(),
                 "freshness_warning": context.freshness.source_fence_reason,
             },
-            details={"authorship": _authorship(request)},
+            details={
+                "authorship": _authorship(request),
+                **({"owner_requested": True} if request.explicit_owner_work else {}),
+            },
         )
         return ProposalResult(action_id, ActionState.AWAITING_APPROVAL, False, superseded, decision)
     # A draft that cannot be sent never destroys a card that can.
@@ -452,7 +536,7 @@ async def _supersede_live(
     """Outdate the chat's live card, if any (the index allows at most one)."""
     # A new valid proposal retires any older warning card's approval path.
     # Its stored body remains copy-ready; it cannot approve a newer version.
-    await session.execute(
+    retired = await session.execute(
         update(Action)
         .where(
             Action.account_id == request.account_id,
@@ -470,7 +554,28 @@ async def _supersede_live(
             card_state=None,
             updated_at=now,
         )
+        .returning(Action.id, Action.version)
     )
+    retired_ids: list[int] = []
+    for old_id, version in retired:
+        retired_ids.append(old_id)
+        session.add(
+            AuditLogEntry(
+                account_id=request.account_id,
+                at=now,
+                actor="system",
+                event="action_superseded",
+                subject_type="action",
+                subject_id=old_id,
+                details={
+                    "from": "outdated",
+                    "to": "outdated",
+                    "version": version,
+                    "reason": "superseded",
+                    "superseded_by": new_action_id,
+                },
+            )
+        )
     live = (
         await session.execute(
             select(Action.id, Action.state, Action.version)
@@ -483,7 +588,7 @@ async def _supersede_live(
         )
     ).one_or_none()
     if live is None:
-        return None
+        return min(retired_ids, default=None)
     applied = await transition(
         session,
         account_id=request.account_id,

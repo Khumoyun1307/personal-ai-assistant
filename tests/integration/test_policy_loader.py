@@ -235,17 +235,68 @@ async def test_barrier_passes_only_for_this_process_run_after_catch_up(
     assert (await ingestion_state(db_session, process_run_id=None)).barrier_passed is False
 
 
-async def test_loader_uses_created_at_as_the_takeover_reference_for_owner_requested_actions(
+async def test_loader_uses_original_request_time_for_owner_requested_actions(
     db_session: AsyncSession,
 ) -> None:
     now = NOW
     chat = await seed_chat(db_session, now)
 
     proactive = await load(db_session, chat, now, owner_requested=False)
-    requested = await load(db_session, chat, now, owner_requested=True)
+    await message(db_session, chat, "owner_manual", now - timedelta(minutes=5))
+    requested = await load(
+        db_session,
+        chat,
+        now,
+        owner_requested=True,
+        facts=replace(facts(now), requested_at=now - timedelta(minutes=10)),
+        ai_generated=False,
+    )
 
     assert proactive.freshness.base_message_sent_at == now - timedelta(hours=1)
     assert requested.freshness.base_message_sent_at is None
+    assert requested.freshness.request_reference_at == now - timedelta(minutes=10)
+    assert requested.freshness.source_fence_reason == "takeover"
+
+
+@pytest.mark.parametrize("sent_offset", [0, -60])
+async def test_loader_exposes_captured_manual_watermark_for_same_second_takeover(
+    db_session: AsyncSession, sent_offset: int
+) -> None:
+    from assistant.conversations.fences import capture_fence, observe_conversations
+    from assistant.policy.rules import no_takeover_since
+    from tests.integration.actions_env import seed_run
+
+    chat = await seed_chat(db_session, NOW)
+    run_id = await seed_run(db_session, chat.account_id)
+    observations = await observe_conversations(
+        db_session, account_id=chat.account_id, conversation_ids=(chat.conversation_id,)
+    )
+    fence_id = await capture_fence(
+        db_session,
+        account_id=chat.account_id,
+        run_id=run_id,
+        request=None,
+        reads=observations,
+        requested_at=NOW,
+    )
+    manual = await message(db_session, chat, "owner_manual", NOW + timedelta(seconds=sent_offset))
+    context = await load(
+        db_session,
+        chat,
+        NOW + timedelta(minutes=2),
+        owner_requested=True,
+        facts=replace(
+            facts(NOW + timedelta(minutes=2)),
+            requested_at=NOW,
+            context_fence_id=fence_id,
+            generating_run_id=run_id,
+        ),
+    )
+    assert context.freshness.request_reference_at == NOW
+    assert context.freshness.newest_owner_manual_id == manual
+    assert context.freshness.captured_owner_manual_id == 0
+    assert context.freshness.source_fence_reason == "takeover"
+    assert no_takeover_since(context).reason == "takeover"
 
 
 async def test_loader_checks_managed_consent_for_the_draft_routes_processor(

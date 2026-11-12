@@ -1,5 +1,14 @@
 # P2 decisions and interface-change log
 
+**D-S10/D-S17 supersession (H11, 2026-11-12; validation pending):** R3's
+action-creation reference and last-settlement precedence are historical.
+Owner work uses original request time plus its first captured manual watermark.
+Late proactive Assist yields to explicit selection/revision/cancellation and
+manual takeover before creating a replacement card. A valid new explicit task
+may supersede unclaimed old work, with old/new action linkage in receipts.
+Owner-requested source changes remain warnings with exact-version approval under
+D-S17; H11 adds no approval veto, uncertain-send retry or permanent Assist disable.
+
 *Owner approvals and Technical Lead decisions for phase P2. Engineers follow these; a decision that seems wrong is raised with the TL (ORG §5), never silently changed. New entries are appended; nothing is rewritten.*
 
 **D-S6 supersession (H4, owner decision 2026-11-09; implementation 2026-11-10,

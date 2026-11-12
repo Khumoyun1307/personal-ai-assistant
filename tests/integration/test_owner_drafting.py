@@ -982,6 +982,116 @@ async def test_an_owner_request_where_no_reply_seems_needed_still_gets_a_card(
     assert prompt_registry.active("draft_reply").text not in request.instructions
 
 
+@pytest.mark.parametrize("delayed_seconds", [0, -60])
+async def test_manual_reply_mid_generation_warns_using_original_request_reference(
+    denv: DraftEnv, delayed_seconds: int
+) -> None:
+    """D-S10 takeover remains factual; D-S17 keeps the owner's exact choice."""
+    account_id, conversation = await seed_chat(denv, mode="observe")
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    requested_at = denv.env.clock.now()
+    async with denv.env.factory() as session, session.begin():
+        await session.execute(
+            update(ControlTurn).where(ControlTurn.id == turn_id).values(created_at=requested_at)
+        )
+
+    async def manual_reply(_request: LLMRequest) -> dict[str, Any]:
+        await owner_says(
+            denv,
+            "SYNTH manual takeover",
+            date=int(requested_at.timestamp()) + delayed_seconds,
+        )
+        denv.env.clock.advance(minutes=2)
+        return owner_output(text="SYNTH owner-requested exact result")
+
+    denv.script(manual_reply)
+    result = await call(
+        context(denv, account_id, run_id, turn_id, said="SYNTH write a new message"),
+        "propose_reply",
+        **reply_args(conversation, mode="new_message"),
+    )
+    assert result["status"] == "awaiting_approval"
+    [card] = await actions_of(denv.env, conversation)
+    assert card.requested_at == requested_at
+    assert card.created_at > requested_at
+    assert card.freshness_warning == "takeover"
+    assert card.approval_token is not None
+    assert card.text == "SYNTH owner-requested exact result"
+    never_says_sent(result)
+
+
+async def test_owner_generation_selects_intent_before_call_without_invalidating_itself(
+    denv: DraftEnv,
+) -> None:
+    from assistant.actions.proposals import ProposalRefused
+    from assistant.actions.states import ActionOrigin
+    from assistant.agent.drafting import propose_draft
+
+    account_id, conversation = await seed_chat(denv)
+    denv.script(output(text="SYNTH obsolete Assist result"))
+    background = await denv.drafter().draft(
+        account_id=account_id, conversation_id=conversation, reason=DraftReason.ASSIST_INGESTION
+    )
+    run_id, turn_id = await run_and_turn(denv, account_id)
+
+    async def background_settles_while_owner_generates(_request: LLMRequest) -> dict[str, Any]:
+        async with denv.env.factory() as session, session.begin():
+            with pytest.raises(ProposalRefused, match="owner_intent_superseded"):
+                await propose_draft(
+                    session,
+                    account_id=account_id,
+                    conversation_id=conversation,
+                    outcome=background,
+                    origin=ActionOrigin.AGENT_PROPOSAL,
+                    run_id=None,
+                    tool_call_id=None,
+                    trigger_turn_id=None,
+                    clock=denv.env.clock,
+                    config=denv.config,
+                    presenter=denv.presenter,
+                )
+        assert await actions_of(denv.env, conversation) == []
+        return owner_output(text="SYNTH current owner result")
+
+    denv.script(background_settles_while_owner_generates)
+    result = await call(
+        context(denv, account_id, run_id, turn_id, said="SYNTH write a new message"),
+        "propose_reply",
+        **reply_args(conversation, mode="new_message"),
+    )
+    assert result["status"] == "awaiting_approval"
+    [card] = await actions_of(denv.env, conversation)
+    assert card.text == "SYNTH current owner result"
+    assert card.freshness_warning is None
+
+
+async def test_literal_proposal_after_clarification_keeps_original_request_and_manual_proof(
+    denv: DraftEnv,
+) -> None:
+    account_id, conversation = await seed_chat(denv, mode="observe")
+    arguments = await source_message_args(denv, account_id, conversation, "SYNTH exact owner body")
+    async with denv.env.factory() as session:
+        original = await session.get(OwnerRequest, arguments["request_id"])
+        assert original is not None
+        requested_at = original.requested_at
+    await owner_says(denv, "SYNTH delayed manual reply", date=int(requested_at.timestamp()))
+    denv.env.clock.set(requested_at)
+    denv.env.clock.advance(minutes=2)
+    run_id, turn_id = await run_and_turn(denv, account_id)
+    result = await call(
+        context(denv, account_id, run_id, turn_id, said="SYNTH yes, use those words"),
+        "propose_message",
+        **arguments,
+    )
+    assert result["status"] == "awaiting_approval"
+    [card] = await actions_of(denv.env, conversation)
+    assert card.owner_request_id == arguments["request_id"]
+    assert card.requested_at == requested_at
+    assert card.created_at > requested_at
+    assert card.text == "SYNTH exact owner body"
+    assert card.freshness_warning == "takeover"
+
+
 async def test_assist_still_drafts_with_draft_reply_v1_and_its_veto(denv: DraftEnv) -> None:
     """RG-01's path is untouched: Assist (and every non-owner draft) uses
     `draft_reply.v1` with `DraftResult`, and "no reply needed" makes no card."""

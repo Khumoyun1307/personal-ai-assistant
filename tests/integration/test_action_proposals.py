@@ -175,6 +175,62 @@ async def test_a_blocked_proposal_does_not_supersede_the_live_card(env: Env) -> 
     assert (await action(env, blocked.action_id)).state_reason == "too_long"
 
 
+async def test_new_explicit_owner_task_supersedes_unclaimed_work_with_receipt_link(
+    env: Env,
+) -> None:
+    from assistant.actions.activity import refresh_receipts
+
+    chat = await new_chat(env)
+    _, first_turn = await run_and_turn(env, chat)
+    first = await propose_in(
+        env, request(chat, origin=ActionOrigin.OWNER_DICTATED, trigger_turn_id=first_turn)
+    )
+    _, next_turn = await run_and_turn(env, chat)
+    replacement = await propose_in(
+        env,
+        request(
+            chat,
+            origin=ActionOrigin.OWNER_DICTATED,
+            trigger_turn_id=next_turn,
+            text="SYNTH deliberate new task",
+        ),
+    )
+    assert replacement.superseded_action_id == first.action_id
+    async with env.factory() as session:
+        page = await refresh_receipts(
+            session, account_id=chat.account_id, action_ids=(first.action_id,), now=env.clock.now()
+        )
+    [receipt] = page.receipts
+    assert receipt.state == "outdated"
+    assert receipt.replaced_by_action_id == replacement.action_id
+    assert receipt.can_approve_anyway is False
+    assert (await action(env, replacement.action_id)).state == "awaiting_approval"
+
+
+@pytest.mark.parametrize("claimed_state", ["approved", "executing", "delivery_uncertain"])
+async def test_new_explicit_task_never_resets_approved_executing_or_uncertain_work(
+    env: Env, claimed_state: str
+) -> None:
+    from sqlalchemy import update
+
+    chat = await new_chat(env)
+    _, first_turn = await run_and_turn(env, chat)
+    first = await propose_in(
+        env, request(chat, origin=ActionOrigin.OWNER_DICTATED, trigger_turn_id=first_turn)
+    )
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            update(Action).where(Action.id == first.action_id).values(state=claimed_state)
+        )
+    _, next_turn = await run_and_turn(env, chat)
+    replacement = await propose_in(
+        env, request(chat, origin=ActionOrigin.OWNER_DICTATED, trigger_turn_id=next_turn)
+    )
+    assert replacement.superseded_action_id is None
+    assert (await action(env, first.action_id)).state == claimed_state
+    assert (await action(env, replacement.action_id)).state == "awaiting_approval"
+
+
 @pytest.mark.parametrize("origin", [ActionOrigin.OWNER_DICTATED, ActionOrigin.AGENT_PROPOSAL])
 @pytest.mark.parametrize("contact_wrote", [timedelta(hours=25), None], ids=["closed", "unknown"])
 async def test_a_closed_or_unknown_window_still_makes_an_approval_card(
@@ -268,14 +324,14 @@ async def test_a_dictated_message_after_the_owners_own_manual_reply_is_a_normal_
         env, request(chat, origin=ActionOrigin.OWNER_DICTATED, trigger_turn_id=next_turn)
     )
     # A proactive draft based on the contact message *is* overtaken by it.
-    proactive = await propose_in(env, request(chat))
+    with pytest.raises(ProposalRefused, match="takeover"):
+        await propose_in(env, request(chat))
 
     assert dictated.state is ActionState.AWAITING_APPROVAL
     assert (await action(env, dictated.action_id)).base_message_id is None
     assert answering.state is ActionState.AWAITING_APPROVAL
     assert (await action(env, answering.action_id)).base_message_id == chat.contact_message_id
-    assert proactive.state is ActionState.AWAITING_APPROVAL
-    assert (await action(env, proactive.action_id)).freshness_warning == "takeover"
+    assert len(await actions_of(env, chat)) == 2
 
 
 async def test_only_dictated_text_is_marked_fresh_through_the_newest_contact_message(
@@ -357,11 +413,10 @@ async def test_proposal_waits_for_a_conversation_lock_held_by_ingestion(env: Env
             sent_at=env.clock.now() - timedelta(minutes=1),
         )
         await ingestion.commit()
-    result = await proposal
-
     # The proposal read the chat only after ingestion committed: a takeover.
-    assert result.state is ActionState.AWAITING_APPROVAL
-    assert (await action(env, result.action_id)).freshness_warning == "takeover"
+    with pytest.raises(ProposalRefused, match="takeover"):
+        await proposal
+    assert await actions_of(env, chat) == []
 
 
 async def test_proposal_audit_rows_are_content_free(env: Env) -> None:

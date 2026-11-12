@@ -1,4 +1,15 @@
 # C6 — Source revision fence and owner-intent precedence (H10/H11)
+
+H11 implementation (2026-11-12; unverified) adds revision 0024's structural
+request intent token and first manual watermark. Request selection/revision/
+cancellation, card edits/rejection and queued Re-draft advance precedence under
+lock. Assist settlement yields before inserting an action when manual takeover
+or explicit owner intent wins; rejection cannot revive the same burst. New
+contact arrivals may flag fresh work. Owner-requested results retain D-S17's
+warned exact-version approval path. Legacy explicit runs use content-free scoped
+selection/binding audit identities, preserving content/manual snapshots while
+recognizing their own selection token. Tests/migration/lint/type checks are unrun;
+H8 integration and the owner playtest remain pending.
 **Owner amendment D-S17, 2026-11-10:** source freshness is advisory for owner-approved messages. Stale results during generation and changed dependencies after card creation show a fixed warning with Approve anyway / Re-draft / Discard. Approval binds to the exact shown version/hash; deleted reply targets send standalone. Old tokens never approve a replacement. Ordinary approvals still receive execution freshness checks and recover to a warned approval path on a mismatch. Autonomous work retains conservative rejection; explicit privacy erasure clears derived bodies/fence links. This amendment supersedes the owner-stale rejection language below, without changing C7 reader settlement or H11's background precedence work.
 
 D-S10 amends P2 R3: request time, not late action creation time, is the takeover reference. Source IDs detect arrival, not edits. A read snapshot must survive neither changed content nor overtaking owner intent. No lock spans a model call.

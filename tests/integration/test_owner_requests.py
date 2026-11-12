@@ -82,6 +82,106 @@ async def seed_request(env: Env) -> tuple[int, int, int, int]:
         return chat.account_id, chat.conversation_id, turn.id, request.request_id
 
 
+async def test_selected_request_intent_is_scoped_and_retry_does_not_advance_it(env: Env) -> None:
+    account, conversation, _, request_id = await seed_request(env)
+    other_account, other_conversation, _, _ = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        chat = await session.get(Conversation, conversation)
+        assert chat is not None
+        selection = SelectRecipient(
+            contact_id=chat.contact_id, conversation_id=conversation, basis="unique_strong"
+        )
+        selected = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=1,
+            update=selection,
+            now=env.clock.now(),
+        )
+        assert selected.status == "applied"
+        await session.refresh(chat)
+        token = chat.owner_intent_revision
+        assert token == 1
+        row = await session.get(OwnerRequest, request_id)
+        assert row is not None
+        assert row.intent_revision == token
+        assert row.manual_watermark == 0
+        retry = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=selected.view.version,
+            update=selection,
+            now=env.clock.now(),
+        )
+        assert retry.status == "applied"
+        await session.refresh(chat)
+        assert chat.owner_intent_revision == token
+        cancelled = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=retry.view.version,
+            update=SetState(state="cancelled", reason="owner_cancelled"),
+            now=env.clock.now(),
+        )
+        assert cancelled.status == "applied"
+        await session.refresh(chat)
+        assert chat.owner_intent_revision == token + 1
+        foreign = await session.get(Conversation, other_conversation)
+        assert foreign is not None
+        assert foreign.account_id == other_account
+        assert foreign.owner_intent_revision == 0
+
+
+async def test_clarification_keeps_the_first_manual_watermark(env: Env) -> None:
+    from assistant.conversations.fences import capture_fence, check_fence, observe_conversations
+    from tests.integration.actions_env import seed_run
+
+    account, conversation, _, request_id = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        chat = await session.get(Conversation, conversation)
+        assert chat is not None
+        selected = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=1,
+            update=SelectRecipient(
+                contact_id=chat.contact_id, conversation_id=conversation, basis="owner_choice"
+            ),
+            now=env.clock.now(),
+        )
+        assert selected.status == "applied"
+        # A same-second manual message was ingested before the next model
+        # run/read. Its new snapshot must not erase the task's original proof.
+        await add_message(
+            session, account, conversation, direction="owner_manual", sent_at=env.clock.now()
+        )
+        run_id = await seed_run(session, account)
+        observations = await observe_conversations(
+            session, account_id=account, conversation_ids=(conversation,)
+        )
+        fence_id = await capture_fence(
+            session,
+            account_id=account,
+            run_id=run_id,
+            request=selected.view,
+            reads=observations,
+            requested_at=env.clock.now(),
+        )
+        checked = await check_fence(
+            session,
+            account_id=account,
+            fence_id=fence_id,
+            request_id=request_id,
+            expected_request_version=selected.view.version,
+            run_id=run_id,
+        )
+        assert checked.reason == "takeover"
+
+
 async def test_dictation_survives_name_continuation_and_new_session(env: Env) -> None:
     account, conversation, turn, request_id = await seed_request(env)
     original_time = env.clock.now()
@@ -754,6 +854,10 @@ async def test_target_source_loss_never_selects_a_newer_message(env: Env) -> Non
         assert view is not None
         assert view.state == "cancelled"
         assert view.target_message_id is None
+        row = await session.get(OwnerRequest, request_id)
+        assert row is not None
+        assert row.intent_revision is None
+        assert row.manual_watermark is None
 
 
 @pytest.mark.parametrize("action_state", ["awaiting_approval", "executing"])

@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.accounts.models import Account
+from assistant.accounts.models import Account, AuditLogEntry
 from assistant.actions.lifecycle import transition, warn_pending
 from assistant.actions.models import Action, ContextFenceRecord
 from assistant.actions.request_models import TERMINAL_REQUEST_STATES, OwnerRequest
@@ -273,6 +273,7 @@ async def check_fence(
         return FenceResult("source_unavailable")
     if facts.request_id != request_id or facts.request_version != expected_request_version:
         return FenceResult("request_changed")
+    request: OwnerRequest | None = None
     if request_id is not None:
         request = await session.scalar(
             select(OwnerRequest)
@@ -308,14 +309,44 @@ async def check_fence(
                 )
             )
         ).one()
+        captured_manual = observed.newest_owner_manual_id or 0
         if (
-            newest_manual is not None and newest_manual > (observed.newest_owner_manual_id or 0)
-        ) or (manual_at is not None and manual_at > facts.requested_at):
+            request is not None
+            and request.conversation_id == observed.conversation_id
+            and request.manual_watermark is not None
+        ):
+            captured_manual = min(captured_manual, request.manual_watermark)
+        if (newest_manual is not None and newest_manual > captured_manual) or (
+            manual_at is not None and manual_at > facts.requested_at
+        ):
             return FenceResult("takeover")
+        expected_intent = observed.owner_intent_revision
+        if (
+            request is not None
+            and request.conversation_id == observed.conversation_id
+            and request.intent_revision is not None
+        ):
+            # Initial recipient selection belongs to this request. Its token
+            # may advance after a directory/read snapshot, without rewriting
+            # any captured content revision or manual watermark.
+            expected_intent = request.intent_revision
+        elif request is None:
+            legacy_intent = await session.scalar(
+                select(AuditLogEntry.details["intent_revision"].as_integer()).where(
+                    AuditLogEntry.account_id == account_id,
+                    AuditLogEntry.event == "owner_intent_bound",
+                    AuditLogEntry.subject_type == "agent_run",
+                    AuditLogEntry.subject_id == record.run_id,
+                    AuditLogEntry.details["conversation_id"].astext
+                    == str(observed.conversation_id),
+                )
+            )
+            if legacy_intent is not None:
+                expected_intent = int(legacy_intent)
+        if row.owner_intent_revision != expected_intent:
+            return FenceResult("owner_intent_superseded")
         if newest_contact is not None and newest_contact > (observed.shown_through_message_id or 0):
             return FenceResult("new_contact_message")
-        if row.owner_intent_revision != observed.owner_intent_revision:
-            return FenceResult("owner_intent_superseded")
         if row.content_revision != observed.content_revision:
             lost = await session.scalar(
                 select(Message.id)

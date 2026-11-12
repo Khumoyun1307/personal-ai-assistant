@@ -492,7 +492,34 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0023"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0024"]
+
+
+def test_0024_owner_intent_round_trip(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema = 'app' AND table_name = 'owner_requests' "
+            "AND column_name = 'intent_revision'"
+        ).fetchone() == ("bigint", "YES")
+        assert conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema = 'app' AND table_name = 'owner_requests' "
+            "AND column_name = 'manual_watermark'"
+        ).fetchone() == ("bigint", "YES")
+        constraints = conn.execute(
+            "SELECT conname FROM pg_constraint WHERE conrelid = 'app.owner_requests'::regclass"
+        ).fetchall()
+        assert {"ck_owner_requests_intent_revision", "ck_owner_requests_manual_watermark"} <= {
+            row[0] for row in constraints
+        }
+    run_alembic(scratch_url, "0023", down=True)
+    assert "intent_revision" not in _columns(scratch_url, "owner_requests")
+    assert "manual_watermark" not in _columns(scratch_url, "owner_requests")
+    run_alembic(scratch_url, "head")
+    assert "intent_revision" in _columns(scratch_url, "owner_requests")
+    assert "manual_watermark" in _columns(scratch_url, "owner_requests")
 
 
 def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:

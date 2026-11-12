@@ -27,6 +27,7 @@ from assistant.accounts.service import CONSENT_AI_MANAGED, active_consent
 from assistant.actions.authorship import is_ai_generated
 from assistant.actions.config import ActionsConfig
 from assistant.actions.models import Action, ContextFenceRecord
+from assistant.actions.request_models import OwnerRequest
 from assistant.actions.states import ActionKind
 from assistant.conversations.fences import ContextFence, check_fence
 from assistant.conversations.models import Contact, Conversation, Message
@@ -186,6 +187,9 @@ async def _freshness(
     newest_owner = await session.scalar(
         select(func.max(Message.sent_at)).where(*scope, Message.direction == "owner_manual")
     )
+    newest_owner_id = await session.scalar(
+        select(func.max(Message.id)).where(*scope, Message.direction == "owner_manual")
+    )
     newest_contact = await session.scalar(
         select(func.max(Message.id)).where(*scope, Message.direction == "contact")
     )
@@ -224,6 +228,7 @@ async def _freshness(
         base_message_sent_at=base_sent_at,
         base_message_present=base_present,
         target_is_assistant_sent=target_is_assistant_sent,
+        newest_owner_manual_id=newest_owner_id,
     )
 
 
@@ -291,13 +296,57 @@ async def load_context(
         target_message_id=target_message_id,
         owner_requested=owner_requested,
     )
-    if fence_reason is None:
-        reference = freshness.base_message_sent_at or facts.requested_at or facts.created_at
-        owner_at = freshness.newest_owner_manual_sent_at
+    reference = freshness.base_message_sent_at or facts.requested_at or facts.created_at
+    captured_manual: int | None = None
+    if facts.context_fence_id is not None:
+        proof = await session.scalar(
+            select(ContextFenceRecord).where(
+                ContextFenceRecord.account_id == account_id,
+                ContextFenceRecord.id == facts.context_fence_id,
+                ContextFenceRecord.run_id == facts.generating_run_id,
+            )
+        )
+        if proof is not None:
+            try:
+                snapshot = ContextFence.model_validate(proof.facts)
+            except ValidationError:
+                snapshot = None
+            if snapshot is not None:
+                reference = snapshot.requested_at if owner_requested else reference
+                manuals = [
+                    item.newest_owner_manual_id or 0
+                    for item in snapshot.conversations
+                    if item.conversation_id == conversation_id
+                ]
+                if manuals:
+                    captured_manual = min(manuals)
+    if facts.owner_request_id is not None:
+        selected = await session.scalar(
+            select(OwnerRequest).where(
+                OwnerRequest.account_id == account_id,
+                OwnerRequest.conversation_id == conversation_id,
+                OwnerRequest.id == facts.owner_request_id,
+            )
+        )
+        if selected is not None:
+            reference = selected.requested_at
+            if selected.manual_watermark is not None:
+                captured_manual = (
+                    selected.manual_watermark
+                    if captured_manual is None
+                    else min(captured_manual, selected.manual_watermark)
+                )
+    manual_arrived = (
+        captured_manual is not None
+        and freshness.newest_owner_manual_id is not None
+        and freshness.newest_owner_manual_id > captured_manual
+    )
+    owner_at = freshness.newest_owner_manual_sent_at
+    if manual_arrived or (owner_at is not None and owner_at > reference):
+        fence_reason = "takeover"
+    elif fence_reason is None:
         newest = freshness.newest_contact_message_id
-        if owner_at is not None and owner_at > reference:
-            fence_reason = "takeover"
-        elif not freshness.base_message_present:
+        if not freshness.base_message_present:
             fence_reason = "source_deleted"
         elif newest is not None and newest > (facts.shown_through_message_id or 0):
             fence_reason = "new_contact_message"
@@ -307,7 +356,12 @@ async def load_context(
         account=await _account(session, account_id, config),
         connection=await _connection(session, account_id),
         conversation=conversation,
-        freshness=replace(freshness, source_fence_reason=fence_reason),
+        freshness=replace(
+            freshness,
+            source_fence_reason=fence_reason,
+            request_reference_at=reference,
+            captured_owner_manual_id=captured_manual,
+        ),
         ingestion=await ingestion_state(session, process_run_id=process_run_id),
         action=facts,
         ai_generated=ai_generated,
