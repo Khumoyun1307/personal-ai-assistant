@@ -255,7 +255,7 @@ async def get_llm_job_indicators(
 
     failed_query = text("""
         SELECT j.task_name,
-               count(j.id) AS count,
+               count(DISTINCT j.id) AS count,
                EXTRACT(EPOCH FROM (:now - min(e.at))) AS oldest_age
         FROM procrastinate.procrastinate_jobs AS j
         JOIN procrastinate.procrastinate_events AS e
@@ -524,18 +524,15 @@ def evaluate_degradation(
     ):
         reasons.append("retention_sweep_stale")
 
-    if (
-        backup_required
-        and indicators.last_backup_age_seconds is not None
-        and indicators.last_backup_age_seconds > thresholds.backup_max_age_hours * 3600
+    if backup_required and (
+        indicators.last_backup_age_seconds is None
+        or indicators.last_backup_age_seconds > thresholds.backup_max_age_hours * 3600
     ):
         reasons.append("backup_stale")
 
-    if (
-        backup_upload_required
-        and indicators.last_backup_upload_age_seconds is not None
-        and indicators.last_backup_upload_age_seconds
-        > thresholds.backup_upload_max_age_hours * 3600
+    if backup_upload_required and (
+        indicators.last_backup_upload_age_seconds is None
+        or indicators.last_backup_upload_age_seconds > thresholds.backup_upload_max_age_hours * 3600
     ):
         reasons.append("backup_upload_stale")
 
@@ -610,7 +607,7 @@ async def compute_service_indicators(
         base,
         t,
         backup_required=backup_status_path is not None,
-        backup_upload_required=backup_upload_required,
+        backup_upload_required=bool(backup_upload_required and backup_status_path is not None),
     )
 
     return ServiceIndicators(
@@ -661,6 +658,8 @@ async def check_service_monitoring(
 
         current_consecutive = int(state_row.value.get("consecutive_degraded_checks", 0))
         currently_alerted = bool(state_row.value.get("currently_alerted", False))
+        raw_incident = state_row.value.get("incident_started_at")
+        incident_started_at: str | None = str(raw_incident) if raw_incident else None
 
         indicators = await compute_service_indicators(
             uow.session,
@@ -675,48 +674,78 @@ async def check_service_monitoring(
 
         if indicators.degraded:
             new_consecutive = current_consecutive + 1
+            if incident_started_at is None:
+                incident_started_at = now.isoformat()
             if new_consecutive >= t.consecutive_checks and not currently_alerted:
                 should_alert = True
-                new_alerted = True
-            else:
-                new_alerted = currently_alerted
         else:
             new_consecutive = 0
             if currently_alerted:
                 should_recover = True
-            new_alerted = False
+            else:
+                incident_started_at = None
 
         state_row.value = {
             "consecutive_degraded_checks": new_consecutive,
-            "currently_alerted": new_alerted,
+            "currently_alerted": currently_alerted,
+            "incident_started_at": incident_started_at,
             "degraded_reasons": list(indicators.degradation_reasons),
             "last_check_at": now.isoformat(),
         }
 
-    # Deliver alerts outside the state transaction
+    alerted = False
+    recovered = False
+
+    # Deliver alerts outside the state transaction (never hold a DB lock across Telegram)
     if should_alert:
         logger.warning(
             "service_degraded_alert",
             reasons=indicators.degradation_reasons,
             consecutive=new_consecutive,
         )
-        await alerts.notify_all_owners(
+        dedupe_key = f"service_degraded:{incident_started_at}"
+        sent = await alerts.notify_all_owners(
             AlertKind.SERVICE_DEGRADED,
-            dedupe_key=f"service_degraded:{int(now.timestamp())}",
+            dedupe_key=dedupe_key,
             cooldown=timedelta(minutes=15),
         )
+        if sent > 0:
+            alerted = True
+            async with transaction(session_factory) as uow:
+                row = await uow.session.get(
+                    SystemState, KEY_SERVICE_MONITORING, with_for_update=True
+                )
+                if row is not None:
+                    row.value = {
+                        **row.value,
+                        "currently_alerted": True,
+                    }
     elif should_recover:
         logger.info("service_recovered_alert")
-        await alerts.notify_all_owners(
+        recovery_incident_key = incident_started_at or now.isoformat()
+        dedupe_key = f"service_recovered:{recovery_incident_key}"
+        sent = await alerts.notify_all_owners(
             AlertKind.SERVICE_RECOVERED,
-            dedupe_key=f"service_recovered:{int(now.timestamp())}",
+            dedupe_key=dedupe_key,
             cooldown=timedelta(minutes=15),
         )
+        if sent > 0:
+            recovered = True
+            async with transaction(session_factory) as uow:
+                row = await uow.session.get(
+                    SystemState, KEY_SERVICE_MONITORING, with_for_update=True
+                )
+                if row is not None:
+                    row.value = {
+                        **row.value,
+                        "currently_alerted": False,
+                        "incident_started_at": None,
+                    }
 
     return ServiceMonitoringOutcome(
         indicators=indicators,
-        alerted=should_alert,
-        recovered=should_recover,
+        alerted=alerted,
+        recovered=recovered,
         consecutive_checks=new_consecutive,
     )
 

@@ -220,6 +220,36 @@ def test_check_backup_markers_missing(tmp_path: Path) -> None:
     assert status is None
 
 
+def test_evaluate_degradation_missing_backup_markers_when_required() -> None:
+    t = ServiceMonitoringThresholds()
+    indicators = ServiceIndicators(
+        last_retention_sweep_age_seconds=60,
+        last_backup_age_seconds=None,
+        last_backup_upload_age_seconds=None,
+        journal_status="acknowledged",
+    )
+    # When backup_required is False, missing markers are silently healthy (dev mode)
+    degraded, reasons = evaluate_degradation(
+        indicators, t, backup_required=False, backup_upload_required=False
+    )
+    assert not degraded
+    assert not reasons
+
+    # When backup_required is True, missing last_backup_age_seconds is degraded (backup_stale)
+    degraded_bk, reasons_bk = evaluate_degradation(
+        indicators, t, backup_required=True, backup_upload_required=False
+    )
+    assert degraded_bk
+    assert "backup_stale" in reasons_bk
+
+    # When backup_upload_required is True, missing last_backup_upload_age_seconds is degraded
+    degraded_up, reasons_up = evaluate_degradation(
+        indicators, t, backup_required=False, backup_upload_required=True
+    )
+    assert degraded_up
+    assert "backup_upload_stale" in reasons_up
+
+
 @pytest.mark.parametrize("locale", LOCALES)
 def test_operational_texts_for_service_monitoring(locale: str) -> None:
     assert text("alert_service_degraded", locale)

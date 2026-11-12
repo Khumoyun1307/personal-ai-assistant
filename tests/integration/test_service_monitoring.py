@@ -24,7 +24,11 @@ from assistant.actions.states import ActionKind, ActionOrigin, ActionState
 from assistant.agent.models import AgentRun
 from assistant.core.jobs import OWNER_REQUEST_TASK, owner_control_lock
 from assistant.db.engine import build_engine, build_session_factory
-from assistant.db.models import KEY_LAST_RETENTION_SWEEP_OK, SystemState
+from assistant.db.models import (
+    KEY_LAST_RETENTION_SWEEP_OK,
+    KEY_SERVICE_MONITORING,
+    SystemState,
+)
 from assistant.db.uow import transaction
 from assistant.inbox.notify import ALERT_TEXT, AlertKind, OwnerAlerts
 from assistant.jobs.app import build_app
@@ -759,3 +763,216 @@ async def test_each_indicator_alerts_once_after_window_then_recovers(
     quiet = await check_service_monitoring(factory, clock, alerts, thresholds=thresholds)
     assert not quiet.recovered
     assert len(channel.sends) == 2
+
+
+async def test_failed_llm_job_multiple_events_counted_once(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock
+) -> None:
+    """A retried job generates multiple failed events; it must be counted once (DISTINCT)."""
+    await setup_owner(factory, clock)
+    thresholds = ServiceMonitoringThresholds(failed_reviews_threshold=2, review_window_seconds=3600)
+
+    # Insert a single failed job with 3 failed events (simulating 3 retries)
+    async with factory() as session, session.begin():
+        job_id = (
+            await session.execute(
+                text(
+                    "INSERT INTO procrastinate.procrastinate_jobs "
+                    "(queue_name, task_name, priority, args, status) "
+                    "VALUES ('llm', 'inbox.triage', 0, CAST('{}' AS jsonb), "
+                    "CAST('failed' AS procrastinate.procrastinate_job_status)) "
+                    "RETURNING id"
+                )
+            )
+        ).scalar_one()
+        for minutes_ago in (5, 10, 15):
+            await session.execute(
+                text(
+                    "INSERT INTO procrastinate.procrastinate_events (job_id, type, at) "
+                    "VALUES (:job_id, "
+                    "CAST('failed' AS procrastinate.procrastinate_job_event_type), :at)"
+                ),
+                {"job_id": job_id, "at": clock.now() - timedelta(minutes=minutes_ago)},
+            )
+
+    async with factory() as session:
+        indicators = await compute_service_indicators(session, clock.now(), thresholds=thresholds)
+
+    # Must be 1 distinct job, not 3 events
+    assert indicators.failed_llm_jobs["triage"] == 1
+    assert sum(indicators.failed_llm_jobs.values()) == 1
+    assert not indicators.degraded
+
+
+async def test_service_monitoring_missing_backup_markers_degraded(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock, tmp_path: Path
+) -> None:
+    """When backup status path is configured but markers are missing, service is degraded."""
+    await setup_owner(factory, clock)
+    empty_backup_dir = tmp_path / "empty_backup_status"
+    empty_backup_dir.mkdir(parents=True, exist_ok=True)
+
+    async with transaction(factory) as uow:
+        uow.session.add(
+            SystemState(
+                key=KEY_LAST_RETENTION_SWEEP_OK,
+                value={"swept_at": clock.now().isoformat()},
+            )
+        )
+
+    # With backup_status_path configured and upload required: missing markers count as degraded
+    async with factory() as session:
+        indicators = await compute_service_indicators(
+            session,
+            clock.now(),
+            backup_status_path=empty_backup_dir,
+            backup_upload_required=True,
+        )
+    assert indicators.degraded
+    assert "backup_stale" in indicators.degradation_reasons
+    assert "backup_upload_stale" in indicators.degradation_reasons
+
+    # In local dev (backup_status_path is None): stays silent
+    async with factory() as session:
+        dev_indicators = await compute_service_indicators(
+            session,
+            clock.now(),
+            backup_status_path=None,
+            backup_upload_required=False,
+        )
+    assert not dev_indicators.degraded
+    assert "backup_stale" not in dev_indicators.degradation_reasons
+    assert "backup_upload_stale" not in dev_indicators.degradation_reasons
+
+
+async def test_service_monitoring_delivery_failure_retries_and_second_incident(
+    factory: async_sessionmaker[AsyncSession], clock: FakeClock, tmp_path: Path
+) -> None:
+    """Delivery failure leaves state unalerted so the next check retries.
+    A second incident shortly after recovery still alerts (unique per-incident key).
+    """
+    await setup_owner(factory, clock)
+    channel = FakeChannel()
+    alerts = OwnerAlerts(factory, channel, clock)
+    backup_dir = create_backup_dir(tmp_path, clock.now())
+
+    # Seed stale retention sweep
+    stale_time = clock.now() - timedelta(hours=5)
+    async with transaction(factory) as uow:
+        uow.session.add(
+            SystemState(
+                key=KEY_LAST_RETENTION_SWEEP_OK,
+                value={"swept_at": stale_time.isoformat()},
+            )
+        )
+
+    thresholds = ServiceMonitoringThresholds(consecutive_checks=3, retention_sweep_max_age_hours=4)
+
+    # Check 1 and 2
+    for _ in range(2):
+        outcome = await check_service_monitoring(
+            factory,
+            clock,
+            alerts,
+            thresholds=thresholds,
+            backup_status_path=backup_dir,
+            backup_upload_required=True,
+        )
+        assert outcome.indicators.degraded
+        assert not outcome.alerted
+        clock.advance(minutes=1)
+
+    # Check 3: Degradation sustained, but delivery fails!
+    channel.deliver = False
+    outcome3 = await check_service_monitoring(
+        factory,
+        clock,
+        alerts,
+        thresholds=thresholds,
+        backup_status_path=backup_dir,
+        backup_upload_required=True,
+    )
+    assert outcome3.indicators.degraded
+    assert not outcome3.alerted
+
+    # Verify currently_alerted was NOT marked true in the DB
+    async with factory() as session:
+        state_row = await session.get(SystemState, KEY_SERVICE_MONITORING)
+        assert state_row is not None
+        assert not state_row.value.get("currently_alerted")
+
+    # Check 4: Next check, channel restored -> delivery succeeds!
+    channel.deliver = True
+    clock.advance(minutes=1)
+    outcome4 = await check_service_monitoring(
+        factory,
+        clock,
+        alerts,
+        thresholds=thresholds,
+        backup_status_path=backup_dir,
+        backup_upload_required=True,
+    )
+    assert outcome4.indicators.degraded
+    assert outcome4.alerted
+    assert len(channel.sends) == 2  # 1 failed attempt, 1 successful send
+    assert ALERT_TEXT[AlertKind.SERVICE_DEGRADED] in channel.sends[1]
+
+    # Verify currently_alerted IS now marked true in the DB
+    async with factory() as session:
+        state_row = await session.get(SystemState, KEY_SERVICE_MONITORING)
+        assert state_row is not None
+        assert state_row.value.get("currently_alerted")
+
+    # Clear degradation
+    async with transaction(factory) as uow:
+        state = await uow.session.get(SystemState, KEY_LAST_RETENTION_SWEEP_OK)
+        assert state is not None
+        state.value = {"swept_at": clock.now().isoformat()}
+
+    # Recovery check
+    clock.advance(minutes=1)
+    outcome_rec = await check_service_monitoring(
+        factory,
+        clock,
+        alerts,
+        thresholds=thresholds,
+        backup_status_path=backup_dir,
+        backup_upload_required=True,
+    )
+    assert not outcome_rec.indicators.degraded
+    assert outcome_rec.recovered
+    assert ALERT_TEXT[AlertKind.SERVICE_RECOVERED] in channel.sends[-1]
+
+    # Advance clock by only 2 minutes (within the 15-minute cooldown window)
+    clock.advance(minutes=2)
+
+    # Second incident begins
+    async with transaction(factory) as uow:
+        state = await uow.session.get(SystemState, KEY_LAST_RETENTION_SWEEP_OK)
+        assert state is not None
+        state.value = {"swept_at": (clock.now() - timedelta(hours=6)).isoformat()}
+
+    for _ in range(2):
+        out_sub = await check_service_monitoring(
+            factory,
+            clock,
+            alerts,
+            thresholds=thresholds,
+            backup_status_path=backup_dir,
+            backup_upload_required=True,
+        )
+        assert out_sub.indicators.degraded
+        assert not out_sub.alerted
+        clock.advance(minutes=1)
+
+    # Third check of second incident: should alert, NOT swallowed by cooldown
+    out_second_inc = await check_service_monitoring(
+        factory,
+        clock,
+        alerts,
+        thresholds=thresholds,
+        backup_status_path=backup_dir,
+        backup_upload_required=True,
+    )
+    assert out_second_inc.indicators.degraded
+    assert out_second_inc.alerted
