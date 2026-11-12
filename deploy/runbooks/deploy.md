@@ -13,7 +13,7 @@ never rebuilt; a conflicting full-SHA image label refuses the operation.
 just deploy <ip>          # fetch main on laptop, print selected SHA, verify CI, deploy exactly it
 just deploy <ip> <sha>    # select a specific main ancestor (7–40 hex; resolved to full SHA)
 just prod-rollback <ip>   # previous recorded images/SHA; no build or migration; expand-only head differences allowed
-just prod-status <ip>     # current/previous SHA, image tags, heads; containers, health, backup markers
+just prod-status <ip>     # current/previous SHA, image tags, heads; containers, health, service status, backup markers, disk
 just prod-logs <ip>       # last 200 app log lines, content-free (AGENTS §9)
 just prod-backup <ip>     # a backup now (exit 3: dump ok, off-site upload failed)
 just prod <ip> restart-timing
@@ -387,6 +387,13 @@ Rules:
   PRD R2 #7), each with a count and a verdict. It reads
   `deploy/sql/nfr05.sql` in a read-only transaction: timestamps, ids, run
   types, kinds, statuses and feedback codes only, never a content column.
+- **Service-completion monitoring (I26).** `just prod-status <ip>` reports
+  service-completion indicators (oldest pending owner request, unanswered turns,
+  queued/failed LLM jobs, failed reviews, executing/uncertain actions,
+  unresolved card presentations, retention sweep age, backup/upload ages,
+  privacy journal shipping) and free data volume disk space. When sustained
+  degradation is detected across consecutive checks, the assistant alerts the
+  owner's control chat.
 
 - **P2 verification and daily trial audit.** `just prod <ip> p2-verify release` reports the
   schema, effective flag names, model and reasoning effort for every configured

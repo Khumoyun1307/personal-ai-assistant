@@ -18,6 +18,7 @@ queue, lock and schedule. Job arguments are ids only (AGENTS §13).
 | `system.remove_old_jobs` | system | daily |
 | `system.heartbeat_ping` | system | every 5 minutes |
 | `system.backup_check` | system | daily |
+| `system.service_monitoring` | system | every minute |
 
 Periodic tasks carry a queueing lock so a slow run never piles up copies.
 """
@@ -26,7 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import html
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -52,6 +53,7 @@ from assistant.core.jobs import (
     JobScheduler,
     owner_control_lock,
 )
+from assistant.db.models import KEY_LAST_RETENTION_SWEEP_OK, SystemState
 from assistant.db.uow import transaction
 from assistant.inbox.backup_check import BackupReport, check_backup, deliver_restore_notice
 from assistant.inbox.connection_alerts import notify_connection_change
@@ -73,6 +75,11 @@ from assistant.jobs.tasks_inbox import InboxJobHandlers, register_inbox_tasks
 from assistant.memory import summaries
 from assistant.observability import heartbeat
 from assistant.observability.logging import get_logger
+from assistant.observability.service_monitoring import (
+    ServiceMonitoringOutcome,
+    ServiceMonitoringThresholds,
+    check_service_monitoring,
+)
 from assistant.privacy.retention import SweepReport, sweep_all
 
 logger = get_logger(__name__)
@@ -174,6 +181,9 @@ class JobHandlers:
     inbox: InboxJobHandlers | None = None
     automation: AutomationJobHandlers | None = None
     reconcilers: tuple[Reconciler, ...] = ()
+    service_monitoring_thresholds: ServiceMonitoringThresholds = field(
+        default_factory=ServiceMonitoringThresholds
+    )
 
     async def delete_data(
         self,
@@ -340,6 +350,15 @@ class JobHandlers:
             # The rollup is a background summary: same flag (M03 D61, D72).
             rollups_enabled=self.summaries_enabled,
         )
+        async with transaction(self.session_factory) as uow:
+            state = await uow.session.get(SystemState, KEY_LAST_RETENTION_SWEEP_OK)
+            now_iso = self.clock.now().isoformat()
+            if state is None:
+                uow.session.add(
+                    SystemState(key=KEY_LAST_RETENTION_SWEEP_OK, value={"swept_at": now_iso})
+                )
+            else:
+                state.value = {"swept_at": now_iso}
         if report.total:
             logger.info(
                 "retention_swept",
@@ -378,6 +397,17 @@ class JobHandlers:
             logger.warning("heartbeat_ping_skipped", detail="ingestion not healthy")
             return False
         return await heartbeat.ping(self.heartbeat_url)
+
+    async def service_monitoring(self) -> ServiceMonitoringOutcome:
+        """Every minute: compute service indicators and alert on sustained degradation."""
+        return await check_service_monitoring(
+            self.session_factory,
+            self.clock,
+            self.alerts,
+            thresholds=self.service_monitoring_thresholds,
+            backup_status_path=self.backup_status_path,
+            backup_upload_required=self.backup_upload_required,
+        )
 
 
 def _seconds(value: object) -> int | None:
@@ -509,3 +539,12 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
     @app.task(name="system.backup_check", queue=QUEUE_SYSTEM, queueing_lock="system.backup_check")
     async def backup_check(timestamp: int) -> None:
         await handlers.backup_check()
+
+    @app.periodic(cron="* * * * *")
+    @app.task(
+        name="system.service_monitoring",
+        queue=QUEUE_SYSTEM,
+        queueing_lock="system.service_monitoring",
+    )
+    async def service_monitoring(timestamp: int) -> None:
+        await handlers.service_monitoring()

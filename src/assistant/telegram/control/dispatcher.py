@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -40,6 +41,7 @@ from assistant.db.uow import after_commit
 from assistant.inbox.connection_alerts import VISIBILITY
 from assistant.memory.undo import UNDO_CARD
 from assistant.observability.logging import get_logger
+from assistant.observability.service_monitoring import ServiceMonitoringThresholds
 from assistant.observability.status import build_status
 from assistant.telegram.control import deeplinks, handlers, panels
 from assistant.telegram.control.approvals import DRAFT_EDIT
@@ -81,6 +83,9 @@ class ControlDispatcher:
         policy_url: str | None = None,
         monthly_budget_usd: Decimal | None = None,
         routes: ControlRoutes | None = None,
+        backup_status_path: Path | None = None,
+        backup_upload_required: bool = False,
+        thresholds: ServiceMonitoringThresholds | None = None,
     ) -> None:
         self._gateway = gateway
         self._clock = clock
@@ -89,6 +94,9 @@ class ControlDispatcher:
         self._policy_url = policy_url
         self._budget = monthly_budget_usd
         self._routes = routes or ControlRoutes()
+        self._backup_status_path = backup_status_path
+        self._backup_upload_required = backup_upload_required
+        self._thresholds = thresholds
 
     async def dispatch(self, session: AsyncSession, message: IncomingMessage) -> DispatchOutcome:
         # A forwarded message is someone else's text: it is never a command,
@@ -394,6 +402,9 @@ class ControlDispatcher:
                     self._clock.now(),
                     monthly_budget_usd=self._budget,
                     in_flight_rows=1,  # this command's own inbox row
+                    backup_status_path=self._backup_status_path,
+                    backup_upload_required=self._backup_upload_required,
+                    thresholds=self._thresholds,
                 )
                 return await handlers.handle_status(
                     self._gateway, account, message, report, visibility=VISIBILITY

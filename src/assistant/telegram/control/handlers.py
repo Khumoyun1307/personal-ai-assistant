@@ -1076,6 +1076,7 @@ def render_status(report: StatusReport, *, visibility: str, locale: str | None =
         # S04.4 §3.9: counts only.
         escape(report.actions.line),
         escape(report.notifications_line),
+        escape(report.service.line),
         f"Timezone: {escape(tz)}",
         "",
         "<b>Connection</b>",

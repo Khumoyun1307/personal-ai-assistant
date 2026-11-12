@@ -1,8 +1,8 @@
 """Command-line entrypoint: `python -m assistant <command>`.
 
 Commands: `healthcheck`, `migrate`, `inbox requeue|status`, `run` (the
-long-running process, S01.5), `post-restore` (after a backup restore, S02.5)
-and `reindex-search` (after a search-normalizer change, S03.1).
+long-running process, S01.5), `post-restore` (after a backup restore, S02.5),
+`reindex-search` (after a search-normalizer change, S03.1) and `service-status` (I26).
 """
 
 from __future__ import annotations
@@ -56,6 +56,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--backup-taken-at",
         required=True,
         help="when the restored dump was taken (ISO 8601, UTC), e.g. 2026-10-21T02:00:00Z",
+    )
+
+    sub.add_parser(
+        "service-status",
+        help="show service-completion monitoring indicators (ARCHITECTURE §17)",
     )
     return parser
 
@@ -362,6 +367,48 @@ def post_restore_command(args: argparse.Namespace) -> int:
     return asyncio.run(run_it())
 
 
+def service_status() -> int:
+    """Show service-completion monitoring indicators (ARCHITECTURE §17)."""
+    from assistant.config import Settings
+    from assistant.core.clock import SystemClock
+    from assistant.db.engine import build_engine, build_session_factory
+    from assistant.observability.service_monitoring import (
+        ServiceMonitoringThresholds,
+        compute_service_indicators,
+        format_service_status,
+    )
+
+    try:
+        settings = Settings()  # type: ignore[call-arg]
+    except ValidationError as error:
+        print("Configuration invalid:", file=sys.stderr)
+        for item in error.errors(include_input=False, include_url=False):
+            location = ".".join(str(part) for part in item["loc"]) or "<settings>"
+            print(f"  {location.upper()}: {item['msg']}", file=sys.stderr)
+        return EXIT_FAILED
+
+    async def run_it() -> int:
+        engine = build_engine(settings.database_url.get_secret_value())
+        factory = build_session_factory(engine)
+        clock = SystemClock()
+        thresholds = ServiceMonitoringThresholds.from_settings(settings)
+        try:
+            async with factory() as session:
+                indicators = await compute_service_indicators(
+                    session,
+                    clock.now(),
+                    thresholds=thresholds,
+                    backup_status_path=settings.backup_status_path,
+                    backup_upload_required=settings.backup_remote is not None,
+                )
+            print(format_service_status(indicators))
+            return EXIT_OK
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(run_it())
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "healthcheck":
@@ -376,6 +423,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return post_restore_command(args)
     if args.command == "reindex-search":
         return reindex_search_command(args)
+    if args.command == "service-status":
+        return service_status()
     print(
         f"'{args.command}' is not implemented yet; see docs/IMPLEMENTATION_PLAN.md",
         file=sys.stderr,

@@ -136,6 +136,19 @@ class Settings(BaseSettings):
     #: when the off-site upload marker goes stale.
     backup_remote: str | None = None
 
+    # --- Service-completion monitoring (I26) ---------------------------------
+    service_monitoring_owner_request_age_seconds: int = Field(default=300, ge=1)
+    service_monitoring_unanswered_turns_threshold: int = Field(default=1, ge=1)
+    service_monitoring_unanswered_turn_age_seconds: int = Field(default=300, ge=1)
+    service_monitoring_llm_job_age_seconds: int = Field(default=600, ge=1)
+    service_monitoring_review_window_seconds: int = Field(default=3600, ge=1)
+    service_monitoring_failed_reviews_threshold: int = Field(default=5, ge=1)
+    service_monitoring_action_unresolved_seconds: int = Field(default=300, ge=1)
+    service_monitoring_retention_sweep_max_age_hours: int = Field(default=4, ge=1)
+    service_monitoring_backup_max_age_hours: int = Field(default=26, ge=1)
+    service_monitoring_backup_upload_max_age_hours: int = Field(default=26, ge=1)
+    service_monitoring_consecutive_checks: int = Field(default=3, ge=1)
+
     @field_validator(
         "test_database_url",
         "bot_token",

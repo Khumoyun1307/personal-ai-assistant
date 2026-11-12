@@ -165,7 +165,7 @@ smoke-recovery:
 prod-logs ip lines="200":
     {{ ops }} deploy/oci/ssh.sh {{ ip }} logs {{ lines }}
 
-# Production health: containers, healthcheck, backup and off-site upload markers, data dir.
+# Production health: containers, healthcheck, service-completion indicators, backup and off-site upload markers, data dir.
 prod-status ip:
     {{ ops }} deploy/oci/ssh.sh {{ ip }} status
 
