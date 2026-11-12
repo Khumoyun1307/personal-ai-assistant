@@ -25,6 +25,10 @@ KEY_NORMALIZER_VERSION = "normalizer_version"
 #: Unlike the heartbeat it is never written at startup, so the interval
 #: between two values is a real outage (ARCHITECTURE §6.6).
 KEY_LAST_POLL_OK = "last_poll_ok"
+#: When retention sweep last completed successfully (I26).
+KEY_LAST_RETENTION_SWEEP_OK = "last_retention_sweep_ok"
+#: State for service-completion monitoring: consecutive failures, alert status (I26).
+KEY_SERVICE_MONITORING = "service_monitoring"
 
 
 class SystemState(Base):

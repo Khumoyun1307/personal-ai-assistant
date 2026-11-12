@@ -61,6 +61,10 @@ class AlertKind(StrEnum):
     #: The privacy policy changed since the owner consented (AGENTS §16; policy
     #: v4). Sent once per version by `inbox.policy_notice`.
     POLICY_UPDATED = "policy_updated"
+    #: Service degradation detected across background jobs, turns, actions, or backups (I26).
+    SERVICE_DEGRADED = "service_degraded"
+    #: Service degradation cleared and operating normally again (I26).
+    SERVICE_RECOVERED = "service_recovered"
 
 
 #: Owner-facing text per kind. Plain statements of fact (§6 invariant 11).
@@ -122,6 +126,13 @@ ALERT_TEXT: dict[AlertKind, str] = {
     #: The body is per version (`inbox.policy_notice.POLICY_CHANGES`): it has
     #: to say what that version changes and how to opt out of it.
     AlertKind.POLICY_UPDATED: "📄 {body}",
+    AlertKind.SERVICE_DEGRADED: (
+        "⚠️ Service degradation detected: background tasks or replies are delayed or failing. "
+        "I am continuing to monitor and will notify you when service recovers."
+    ),
+    AlertKind.SERVICE_RECOVERED: (
+        "✅ Service recovered: background tasks and replies are operating normally."
+    ),
 }
 
 

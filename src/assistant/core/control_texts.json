@@ -776,6 +776,18 @@
                                  "uz-Cyrl":  "♻️ База {backup_taken_at} вақтидаги захирадан тикланди. Кейинги қарорлар ортга қайтди: автономия тўхтатилди, очиқ тасдиқлар бекор қилинди, узилиш пайтидаги хабарлар етишмаслиги мумкин (қамров узилиши қайд этилган). Тикланган AI розиликлари бекор қилинди; қайта ишлаш учун янги розилик керак. Захирадан кейинги ўчиришлар ва розиликни бекор қилишлар ортга қайтган бўлиши мумкин: /settings ёки ҳаммаси учун /privacy delete орқали қайта ўчиринг; /privacy revoke орқали розиликни бекор қилинг. Қайта розилик беришдан олдин буни текширинг: бу чат учун /start, кейин уланган чатлар учун /privacy managed. /status ни текшириб, кейинги ўзгартирган созлама ва тўхтатишларингизни қайта қўлланг.{actions}",
                                  "ru":  "♻️ База восстановлена из копии от {backup_taken_at}. Более поздние решения отменены: автономия приостановлена, открытые одобрения отменены, сообщения за пробел могут отсутствовать (пробел охвата записан). Восстановленные согласия ИИ отозваны; нужно новое согласие. Удаления и отзывы согласия после копии могли отмениться: повторите удаление через /settings или /privacy delete для всего, отзовите согласие через /privacy revoke. Проверьте это перед новым согласием через /start для этого чата, затем /privacy managed для подключённых чатов. Проверьте /status и повторите изменения настроек и паузы после времени копии.{actions}"
                              },
+    "alert_service_degraded":  {
+                                   "en":  "⚠️ Service degradation detected: background tasks or replies are delayed or failing. I am continuing to monitor and will notify you when service recovers.",
+                                   "uz-Latn":  "⚠️ Xizmat faoliyatida pasayish aniqlandi: orqa fon vazifalari yoki javoblar kechikmoqda yoxud xatolik bermoqda. Kuzatishni davom ettiraman va holat tiklanganda xabar beraman.",
+                                   "uz-Cyrl":  "⚠️ Хизмат фаолиятида пасайиш аниқланди: орқа фон вазифалари ёки жавоблар кечикмоқда ёхуд хатолик бермоқда. Кузатишни давом эттираман ва ҳолат тикланганда хабар бераман.",
+                                   "ru":  "⚠️ Зафиксировано ухудшение работы: фоновые задачи или ответы задерживаются либо завершаются сбоем. Я продолжаю наблюдение и сообщу о восстановлении."
+                               },
+    "alert_service_recovered":  {
+                                    "en":  "✅ Service recovered: background tasks and replies are operating normally.",
+                                    "uz-Latn":  "✅ Xizmat faoliyati tiklandi: orqa fon vazifalari va javoblar odatdagi tartibda ishlamoqda.",
+                                    "uz-Cyrl":  "✅ Хизмат фаолияти тикланди: орқа фон вазифалари ва жавоблар одатдаги тартибда ишламоқда.",
+                                    "ru":  "✅ Работа сервиса восстановлена: фоновые задачи и ответы работают в обычном режиме."
+                                },
     "arriving_note":  {
                           "en":  "A message arriving at the moment of deletion may still be stored.",
                           "uz-Latn":  "Oʻchirish paytida kelgan xabar baribir saqlanishi mumkin.",

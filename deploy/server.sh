@@ -5,7 +5,7 @@
 #
 #   deploy/server.sh deploy SHA      fetch/check out exactly SHA, build, migrate, restart
 #   deploy/server.sh rollback        use previous images across expand-only migrations
-#   deploy/server.sh status          containers, app healthcheck, backup markers
+#   deploy/server.sh status          containers, healthcheck, service status, backup markers
 #   deploy/server.sh logs [N]        last N (default 200) app log lines (content-free)
 #   deploy/server.sh backup          a backup now (exit 3: dump ok, upload failed)
 #   deploy/server.sh db-roles        explicit role/grant upgrade (app/backup stopped)
@@ -126,9 +126,11 @@ case "$action" in
     require_data_volume
     release_status
     printf 'data dir: %s (sentinel present)\n' "$(findmnt -no SOURCE,TARGET --target "$data_dir/postgres")"
+    df -h "$data_dir" | awk 'NR==2 { printf "data disk: %s used of %s (%s free)\n", $3, $2, $4 }'
     compose ps
     compose run --rm --no-deps -T app python -m assistant.privacy.recovery_cli status
     compose exec -T app python -m assistant healthcheck || true
+    compose exec -T app python -m assistant service-status || true
     for marker in last_success last_upload_success last_journal_upload_success journal_status; do
       printf '%s: %s\n' "$marker" \
         "$(compose exec -T backup cat "/backups/$marker" 2> /dev/null || echo never)"

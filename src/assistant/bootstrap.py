@@ -72,6 +72,7 @@ from assistant.llm.metering import MeteredLLMClient
 from assistant.llm.openai_adapter import OpenAIClient
 from assistant.llm.port import LLMClient
 from assistant.memory.summaries import SummaryRefreshTrigger
+from assistant.observability.service_monitoring import ServiceMonitoringThresholds
 from assistant.privacy.post_restore import assert_not_restore_pending
 from assistant.privacy.requests import RequestedDeletions
 from assistant.process import InboxRole, PollerRole, WorkerRole, worker_heartbeat_probe
@@ -682,6 +683,9 @@ async def running_process(
                     inbox=wiring.inbox,
                     automation=wiring.automation,
                     reconcilers=tuple(wiring.reconcilers),
+                    service_monitoring_thresholds=ServiceMonitoringThresholds.from_settings(
+                        settings
+                    ),
                 ),
             )
         async with jobs_app.open_async():
@@ -724,6 +728,9 @@ async def running_process(
                         policy_url=settings.privacy_policy_url,
                         monthly_budget_usd=settings.llm_monthly_budget_usd,
                         routes=wiring.routes,
+                        backup_status_path=settings.backup_status_path,
+                        backup_upload_required=settings.backup_remote is not None,
+                        thresholds=ServiceMonitoringThresholds.from_settings(settings),
                     ),
                     gateway,
                     RefusalLimiter(clock),

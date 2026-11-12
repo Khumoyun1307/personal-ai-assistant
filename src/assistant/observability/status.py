@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import ColumnElement, func, select, text
@@ -39,6 +40,10 @@ from assistant.db.models import KEY_RESTORE_PENDING, SystemState
 from assistant.inbox.notifications import NotificationCounts, notification_counts
 from assistant.inbox.processor import inbox_backlog_for
 from assistant.inbox.watchdog import poller_heartbeat_at
+from assistant.observability.service_monitoring import (
+    ServiceMonitoringThresholds,
+    compute_service_indicators,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +131,44 @@ class ActionsStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class ServiceStatusReport:
+    """Service-completion monitoring indicators (I26, ARCHITECTURE §17).
+
+    Counts and ages only, never message text or contact identifiers.
+    """
+
+    oldest_pending_owner_request_age_seconds: int | None = None
+    unanswered_owner_turns: int = 0
+    oldest_unanswered_owner_turn_age_seconds: int | None = None
+    queued_llm_jobs: int = 0
+    oldest_queued_llm_job_age_seconds: int | None = None
+    failed_llm_jobs: int = 0
+    oldest_failed_llm_job_age_seconds: int | None = None
+    failed_reviews_window: int = 0
+    actions_executing: int = 0
+    actions_delivery_uncertain: int = 0
+    unresolved_card_presentations: int = 0
+    last_retention_sweep_age_seconds: int | None = None
+    last_backup_age_seconds: int | None = None
+    last_backup_upload_age_seconds: int | None = None
+    journal_status: str | None = None
+    degraded: bool = False
+    degradation_reasons: tuple[str, ...] = ()
+
+    @property
+    def line(self) -> str:
+        """The `/status` line for service health."""
+        if self.degraded:
+            if self.degradation_reasons:
+                n = len(self.degradation_reasons)
+                suffix = f" ({n} issue{'s' if n != 1 else ''})"
+            else:
+                suffix = ""
+            return f"⚠️ Service: degraded{suffix}"
+        return "Service: normal"
+
+
+@dataclass(frozen=True, slots=True)
 class StatusReport:
     account_status: str
     timezone: str
@@ -138,6 +181,8 @@ class StatusReport:
     actions: ActionsStatus
     #: M05 alerts (S05.2 §3.8): counts by state, never content.
     notifications: NotificationCounts = field(default_factory=NotificationCounts)
+    #: I26 service indicators (ARCHITECTURE §17): counts and ages only.
+    service: ServiceStatusReport = field(default_factory=ServiceStatusReport)
 
     @property
     def notifications_line(self) -> str:
@@ -193,6 +238,9 @@ async def build_status(
     *,
     monthly_budget_usd: Decimal | None,
     in_flight_rows: int = 0,
+    backup_status_path: Path | None = None,
+    backup_upload_required: bool = False,
+    thresholds: ServiceMonitoringThresholds | None = None,
 ) -> StatusReport:
     """`in_flight_rows`: inbox rows the caller knows are being handled right
     now (the `/status` command itself), so they do not read as a backlog."""
@@ -309,6 +357,38 @@ async def build_status(
         monthly_limit_usd=None if monthly_budget_usd is None else f"{monthly_budget_usd}",
     )
 
+    service_indicators = await compute_service_indicators(
+        session,
+        now,
+        account_id=account_id,
+        thresholds=thresholds,
+        backup_status_path=backup_status_path,
+        backup_upload_required=backup_upload_required,
+    )
+    service_status = ServiceStatusReport(
+        oldest_pending_owner_request_age_seconds=(
+            service_indicators.oldest_pending_owner_request_age_seconds
+        ),
+        unanswered_owner_turns=service_indicators.unanswered_owner_turns,
+        oldest_unanswered_owner_turn_age_seconds=(
+            service_indicators.oldest_unanswered_owner_turn_age_seconds
+        ),
+        queued_llm_jobs=sum(service_indicators.queued_llm_jobs.values()),
+        oldest_queued_llm_job_age_seconds=service_indicators.oldest_queued_llm_job_age_seconds,
+        failed_llm_jobs=sum(service_indicators.failed_llm_jobs.values()),
+        oldest_failed_llm_job_age_seconds=service_indicators.oldest_failed_llm_job_age_seconds,
+        failed_reviews_window=service_indicators.failed_reviews_window,
+        actions_executing=service_indicators.actions_executing,
+        actions_delivery_uncertain=service_indicators.actions_delivery_uncertain,
+        unresolved_card_presentations=service_indicators.unresolved_card_presentations,
+        last_retention_sweep_age_seconds=service_indicators.last_retention_sweep_age_seconds,
+        last_backup_age_seconds=service_indicators.last_backup_age_seconds,
+        last_backup_upload_age_seconds=service_indicators.last_backup_upload_age_seconds,
+        journal_status=service_indicators.journal_status,
+        degraded=service_indicators.degraded,
+        degradation_reasons=service_indicators.degradation_reasons,
+    )
+
     return StatusReport(
         account_status=account.status,
         timezone=account.timezone,
@@ -322,6 +402,7 @@ async def build_status(
         budget=budget,
         notifications=await notification_counts(session, account_id=account_id, now=now),
         actions=await actions_status(session, account_id, now),
+        service=service_status,
     )
 
 
