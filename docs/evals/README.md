@@ -4,6 +4,29 @@ This folder records the results of real-model evaluation runs (IMPLEMENTATION_PL
 §10, §10.1). The datasets, schema and runner live in [`evals/`](../../evals/README.md).
 Unit tests never call a real model; the runs recorded here are manual.
 
+**H6 candidate inventory — 2026-11-10, results pending.**
+`owner_request.v11`, SHA-256
+`d5e1def0181002c7df2c45afebe820780096596bd705a844bb21e5d90cbbbbae`,
+is selected by `tool.propose_owner_message` only; production flag off retains
+`owner_request.v10`. Schema pairing: tool-calling owner output (no structured
+final schema), H4 `ProposeOwnerMessageArgs` / `ReviseOwnerDraftArgs` and H3
+source-only `ProposeMessageArgs`. No new `draft_owner` prompt or model switch.
+
+| Evidence field | Current record |
+|---|---|
+| Candidate commit SHA | Pending lead commit; implementation left uncommitted |
+| Config / routes / effort / flags | No defaults changed; record exact candidate configuration and all hashes at each run |
+| Deterministic tests / CI | Authored, unrun in restricted worktree; lead/container and CI required |
+| Paid sets required | Full affected `owner_drafting`; retrieval with `--mode agent`; actual successive-turn journeys (I01–I04 × applicable four locales × at least three trials, J03/J04/J05/J06/J25/J28 and affected matrix) |
+| Runner readiness | Existing owner-drafting/retrieval targets pin production flags; candidate wiring, H10 fences and remaining dependent cutovers must land before a v11 run. H6 now wires C1 runtime source/request creation behind the H4 flag; its regressions remain unrun. A production v10 run is not candidate evidence |
+| Results / failures / tokens / USD / latency | Pending; no paid calls made and no pass/fail rates inferred |
+| Owner-confirmed intent / language quality | Pending separately; fakes and partial pre-screens do not establish H6-7 |
+| Spend / D-S7 | Each run needs specific owner spend approval; later Luna/Sol comparison only, no switch now |
+
+Keep the candidate tool flag off until the repaired full gates pass. Add generated
+JSON report links to the v11 manifest entry only after actual runs; do not create
+a fabricated result record for this pending inventory.
+
 ## How results are recorded
 
 `python -m evals run …` (see [`evals/README.md`](../../evals/README.md) *Running*)

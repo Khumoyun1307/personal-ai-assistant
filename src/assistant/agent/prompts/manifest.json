@@ -48,6 +48,13 @@
     "schema_notes": "",
     "eval_records": ["docs/evals/2026-10-30-owner-drafting-effort-low-gpt-6-luna.json","docs/evals/2026-10-30-owner-drafting-effort-low-gpt-6-luna-trial.json","docs/evals/2026-10-30-owner-drafting-effort-medium-gpt-6-luna.json","docs/evals/2026-10-30-owner-drafting-effort-medium-gpt-6-luna-trial.json","docs/evals/2026-10-30-owner-drafting-effort-medium-gpt-6-luna-trial-2.json","docs/evals/2026-10-30-retrieval-agent-gpt-6-luna.json","docs/evals/2026-10-30-retrieval-agent-gpt-6-luna-trial.json"]
   },
+  "owner_request.v11": {
+    "sha256": "d5e1def0181002c7df2c45afebe820780096596bd705a844bb21e5d90cbbbbae",
+    "active": true,
+    "structured_outputs": [],
+    "schema_notes": "H6 candidate selected only with tool.propose_owner_message: strict C2 ProposeOwnerMessageArgs and ReviseOwnerDraftArgs; source-only ProposeMessageArgs. v10 remains the flag-off production default. Paid behavioral gates pending.",
+    "eval_records": []
+  },
   "owner_request.v2": {
     "sha256": "c884a298cf67a390fdcf32ed3ed68ecfa08ae9be155e39b2f3e8bffae656f4df",
     "active": false,

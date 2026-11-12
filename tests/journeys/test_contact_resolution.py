@@ -108,8 +108,6 @@ async def test_h5_real_match_verdict_precedes_page_cap(
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-# H3 requires a classified C1 request; resolve_contact does not open/bind one.
-@pytest.mark.xfail(strict=True, reason="needs H6", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("trial", range(3), ids=lambda trial: f"trial-{trial + 1}")
 async def test_i03_unique_contact_bound_across_next_owner_turn(

@@ -8,7 +8,9 @@ and failed evaluations are included. An empty list means no linked record exists
 Historical schema notes matter: a current class name does not recreate an older
 schema revision. Archiving preserves prompt assets; it does not implement replay.
 
-Active files live here; inactive files live in `archive/`. Use
+Runtime-selectable files live here; inactive files live in `archive/`. Both
+branches of a flag-gated cutover count as active assets, not as a passed eval.
+Use
 `prompt_registry.load(name, version)` for model-facing text, which keeps the
 existing UTF-8 decoding and whitespace stripping, or `load_bytes(name, version)`
 for the exact bytes. Both locations resolve through the manifest and hashes are
@@ -16,9 +18,14 @@ checked before decoding. Stored `agent_runs.prompt_version` labels never change.
 
 A version that has been used is immutable. To change a prompt, allocate the next
 unused version, add its file and manifest entry, and run the affected eval gate
-with the owner's cost approval. When activating it, update `ACTIVE` in
-`prompt_registry.py`, set the two manifest active flags, and move the previous
-active file to `archive/` without rewriting it. Never regenerate an old hash to
+with the owner's cost approval. For an unconditional activation, update `ACTIVE`
+in `prompt_registry.py`, set the two manifest active flags, and move the previous
+active file to `archive/` without rewriting it. A staged cutover uses
+`FLAGGED_ACTIVE` and `active(name, enabled_flags=...)`; keep the fallback asset
+active and unmoved until no runtime branch selects it. H6 selects
+`owner_request.v11` only with `tool.propose_owner_message`; flag off selects
+`owner_request.v10` unchanged. Its new inventory entry has no eval record yet.
+Never regenerate an old hash to
 accept changed text. The unit tests check the full inventory, hashes, registry,
 schema pairing and static references in code/tests/evals. Keep historical entries
 and files: static checks cannot establish that an operator database has no retained

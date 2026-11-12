@@ -54,9 +54,11 @@ from assistant.agent.context import (
     ContextPart,
     build_owner_request,
     carries_third_party,
+    render_continuation,
 )
 from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.agent.models import AgentRun
+from assistant.agent.owner_requests import prepare_owner_request, refresh_owner_request
 from assistant.agent.persistence import (
     AgentRunRepository,
     ControlTurnRepository,
@@ -69,6 +71,7 @@ from assistant.agent.persistence import (
 from assistant.agent.ports import ControlChannel
 from assistant.agent.summarize import Summarizer
 from assistant.agent.tools.executor import StepRecorder, TaintRecorder, ToolExecutor
+from assistant.agent.tools.owner_composition import PROPOSE_OWNER_MESSAGE_FLAG
 from assistant.agent.tools.registry import (
     CapabilityTier,
     OwnerTurn,
@@ -90,6 +93,7 @@ from assistant.llm.port import (
     LLMResponse,
     Provenance,
     StopReason,
+    TextItem,
 )
 
 if TYPE_CHECKING:
@@ -278,7 +282,7 @@ class OwnerRequestRuntime:
         self._owner_fence = owner_fence
 
     async def run(self, turn_id: int) -> RunOutcome:
-        prompt = prompt_registry.active(RUN_TYPE)
+        prompt = prompt_registry.active(RUN_TYPE, enabled_flags=self._config.enabled_flags)
         started = await self._start(turn_id, prompt)
         if isinstance(started, RunOutcome):
             return started
@@ -418,7 +422,12 @@ class OwnerRequestRuntime:
             history = await ControlTurnRepository(session, account_id).recent_before(
                 turn_id, limit=OWNER_HISTORY_TURNS, include_managed=managed_ok
             )
-            continuation = await load_owner_continuation(
+            load_continuation = (
+                prepare_owner_request
+                if PROPOSE_OWNER_MESSAGE_FLAG in self._config.enabled_flags
+                else load_owner_continuation
+            )
+            continuation = await load_continuation(
                 session,
                 account_id=account_id,
                 turn=turn,
@@ -591,11 +600,44 @@ class OwnerRequestRuntime:
                     state.chat_access_off = executor.saw_chat_access_off
                     if any(result.provenance is Provenance.MANAGED for result in results):
                         state.used_managed = True
+                    if (
+                        PROPOSE_OWNER_MESSAGE_FLAG in self._config.enabled_flags
+                        and state.continuation is not None
+                        and state.continuation.request is not None
+                    ):
+                        await self._refresh_request(state, executor)
                 case StopReason.COMPLETED:
                     text = self._reply_text(state, executor, response.text)
                     return await self._finish(state, text, RunStatus.SUCCEEDED)
 
         return await self._finish(state, TEXT_LIMITS, RunStatus.FAILED, "run_limits")
+
+    async def _refresh_request(self, state: _RunState, executor: ToolExecutor) -> None:
+        """A recipient tool can fill the last slot; expose the new CAS version.
+
+        Append only structural facts after the entire tool-result batch. Owner
+        source text was already supplied at start; refreshing never loads more
+        contact text or changes taint, permissions, approval or send authority.
+        """
+        previous = state.continuation
+        assert previous is not None
+        async with transaction(self._session_factory) as uow:
+            current = await refresh_owner_request(
+                uow.session,
+                account_id=state.account_id,
+                continuation=previous,
+                now=self._clock.now(),
+            )
+        state.continuation = current
+        executor.context = replace(executor.context, continuation=current)
+        if current != previous:
+            state.items.append(
+                TextItem(
+                    "user",
+                    render_continuation(current, managed_allowed=executor.context.managed_ok),
+                    Provenance.OWNER_CONTROL,
+                )
+            )
 
     def _reply_text(self, state: _RunState, executor: ToolExecutor, model_text: str | None) -> str:
         """The model's answer with verified sources (B3), plus the fixed
@@ -689,8 +731,7 @@ class OwnerRequestRuntime:
                 run.iterations = state.iterations
                 run.finished_at = self._clock.now()
                 run.error_class = error_class or (None if delivery.ok else "reply_not_delivered")
-            # A request may have been opened by this run's future H3/H4
-            # tools after _start. Link the delivered answer to those facts,
+            # Link the delivered answer to this turn's durable request,
             # without storing a model summary or adding delivery state.
             request_ids = list(
                 await uow.session.scalars(

@@ -1,9 +1,8 @@
 """Versioned prompts (ARCHITECTURE §7.6, AGENTS §8).
 
-Prompts are manifest-listed files in `agent/prompts/` and its `archive/`. `ACTIVE` says which
-version each run type uses, and that version is stored on every `agent_runs`
-row. A version that has been used in a run is never edited: add the next
-version and switch it here.
+Prompts are manifest-listed files in `agent/prompts/` and its `archive/`.
+`ACTIVE` selects production defaults; `FLAGGED_ACTIVE` selects staged cutovers.
+The selected version is stored on every `agent_runs` row. Used bytes never change.
 """
 
 from __future__ import annotations
@@ -57,7 +56,8 @@ ACTIVE: dict[str, str] = {
     # no "ask again in a new message", no lasting "not sent yet"; rules 26-28:
     # the working context (live cards, turn refs; PF-15), "chat partners" and
     # weak candidates confirmed, list edits are not messaging. v1-v9 stay.
-    # P3's PR-OR10 bump becomes v11 (P3-T152).
+    # H6 reserves v11 for the flag-bound stabilization cutover below.
+    # P3's on-hold PR-OR10 must allocate a later unused version.
     "owner_request": "v10",
     # v1 (S03.2): one chat, rolling or period; cite message ids; no tools.
     # v2 (S03.3): the owner's notes about this contact are background, never
@@ -111,6 +111,12 @@ ACTIVE: dict[str, str] = {
     # message named, the draft writer says which shown contact message the
     # owner's request answers (checked by `chosen_answer`). v1, v2 stay.
     "draft_owner": "v3",
+}
+
+# Both branches stay live in the manifest: disabling the H4 tool flag must
+# restore the shipped prompt as well as the legacy tool definitions.
+FLAGGED_ACTIVE: dict[str, tuple[str, str]] = {
+    "owner_request": ("tool.propose_owner_message", "v11"),
 }
 
 
@@ -172,5 +178,9 @@ def load(name: str, version: str) -> Prompt:
     return Prompt(name=name, version=version, text=text)
 
 
-def active(name: str) -> Prompt:
-    return load(name, ACTIVE[name])
+def active(name: str, *, enabled_flags: frozenset[str] = frozenset()) -> Prompt:
+    version = ACTIVE[name]
+    flagged = FLAGGED_ACTIVE.get(name)
+    if flagged is not None and flagged[0] in enabled_flags:
+        version = flagged[1]
+    return load(name, version)

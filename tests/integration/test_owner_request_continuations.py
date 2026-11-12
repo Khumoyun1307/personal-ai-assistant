@@ -34,7 +34,8 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.parametrize(
-    "text", ["2", "the second one", "ikkinchisi", "иккинчиси", "вторая", "Kamola Ziyo"]
+    "text",
+    ["2", "the second one", "ikkinchisi", "иккинчиси", "вторая", "Kamola Ziyo", "Kamola Ziyo."],
 )
 async def test_h5_numeric_choice_survives_restart(env: Env, text: str) -> None:
     account, conversation, _, request_id = await seed_request(env)

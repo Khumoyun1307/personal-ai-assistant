@@ -447,7 +447,9 @@ It stages that body with `propose_owner_message`, without `Drafter.draft_owner`.
 Multi-chat owner context is permitted for this path; recipient plus full body
 on the approval card is the boundary. Contact-triggered Assist remains isolated
 and tool-less. With the flag off the legacy writer and schema remain available.
-H6 owns prompt activation; H8 owns the card-button dispatcher cutover.
+H6 couples `owner_request.v11` selection to that same flag; H8 owns the
+card-button dispatcher cutover. With the flag off, `owner_request.v10` is the
+unchanged production default. Candidate selection is not release acceptance.
 The content-brief requirement applies to standalone composition only. A ready
 reply uses its selected retained/read target without a separate instruction
 source. A ready revision may use literal change sources under C1; rewriting
@@ -490,6 +492,72 @@ There is one agent identity (same principles, memory, policy), invoked in **run 
 **Stabilization H2 (2026-11-09, D-S2/D-S4):** each owner run reloads an account-local `OwnerContinuation` before model I/O. Selection order is explicit control artifact → active request question → focused request → no continuation (standalone routing). The runtime and `ToolContext.continuation` receive the selected request/card/version, fixed missing-slot and selection-basis enums, source references and separately validated exact source text. Forwarded text cannot fill an owner slot. A classified mixed turn can retain its own outer instruction while its quote remains untrusted; legacy mixed turns fail closed. H12 owns the broader history/taint reselection, H3/H4 consume the source/target seam, H5 binds actual recipient choices, and H6 activates semantic routing, clarification and topic-switch rules. H2 changes no prompt or proposal tool and introduces no search/name/topic heuristic.
 
 ### 7.2 Owned agent loop (for `owner_request`)
+
+**H6 staged prompt routing (2026-11-10).** Before creating the run, the runtime
+calls `prompt_registry.active("owner_request", enabled_flags=config.enabled_flags)`.
+`FLAGGED_ACTIVE` selects v11 with H4's `tool.propose_owner_message`, matching the
+registry's generated-body tool and flat revision schema; without it, `ACTIVE`
+keeps v10. The selected label is persisted and used in the prompt-cache key.
+There is no new release flag, model/effort override or context builder. Stable
+rules precede the existing volatile owner context. Both assets remain immutable
+and runtime-selectable in the I31 manifest. Tests cover both flag states and
+managed-consent stubs through real runtime wiring with the fake model.
+
+**Dated routing supersessions (D-S2–D-S6, 2026-11-09; implemented as H6's
+candidate on 2026-11-10).** D109's bare-phrase search applies after explicit
+artifact selection/pending clarification/focused continuation. PF-10's always
+draft rule becomes fulfill when sufficiently specified: missing standalone
+substance asks one content question, identifiable replies need no separate
+brief. PF-11/PF-12 use retained exact owner sources rather than model paraphrase
+or current-turn-only/fuzzy dictation. PF-03's weak-candidate ambiguity no longer
+overrides a unique strong match. H5 request binding/version and displayed
+candidate order are authoritative. Advice/list edits create no message action;
+revisions select an actual action/version, never another newest card. Errors do
+not authorize legacy regeneration, a different recipient or a newest-message
+fallback. These amendments describe flag-on v11; flag-off historical prompt
+bytes and their existing routing remain unchanged for production parity.
+
+**H6 runtime ingress amendment (2026-11-10; validation pending).** With the same
+H4 flag, `agent/owner_requests.py::prepare_owner_request` runs after control
+consent and before model I/O. Explicit messaging imperatives open C1 requests;
+command framing is retained separately from substantive instructions and exact
+literal-body spans (original Unicode offsets and whole-field hashes). A bare
+recipient command has no composition brief. The deterministic grammar covers
+explicit English/Russian and Uzbek Latin/Cyrillic forms; unrecognized prose
+stays ordinary chat. C1/C2 define no model-facing request-opening tool, and H6
+adds none. Forwarded/unclassified managed text is never parsed as owner intent.
+An explicit Russian recipient plus `дословно:` is also dictation. For a saved
+recipient question, the original answer is matched first; sentence-final
+punctuation may be removed for a second match only when the original has no
+strong match. The selection must still be unique and among the saved candidates.
+
+Explicit H2 reply selection takes precedence; pending answers continue the
+selected request, and saved H5 candidates bind before adding the answer's
+sources. New messaging intents open a distinct request without transferring
+recipient/body. Clear searches/settings switches suspend unfinished focus.
+Restart lookup uses the scoped trigger/source turn before focus, preventing
+duplicate requests/spans. Unique parsed recipients use C5's real-match verdict
+only, under managed consent; ambiguous/weak identities still need resolution.
+For those, ingress records the same request-local candidates `resolve_contact`
+would record (never a binding), so a partial name can be answered with the
+full name of one saved candidate. Russian commands name the recipient in the
+dative (`Напиши Камоле`): only when the parsed form has no strong match, its
+nominative forms are extra C5 lookups, and they bind only when all strong
+matches are one person. An Uzbek possessive reply command
+(`Kamolaning savoliga javob tayyorla`) names the genitive owner as recipient.
+A page read never fills a reply target; a retained-message read does (C1).
+An explicit reply to a live legacy card adopts that exact selected version into
+a revision request. Stale/unavailable explicit replies never fall back.
+
+H2 context rendering exposes request ID/version, operation/state/missing slot,
+bound recipient/target, and scoped source IDs beside separately validated text.
+After each complete tool-result batch the runtime re-reads that request,
+promotes only validated ready inputs, updates `ToolContext.continuation`, and
+appends changed structural CAS facts. It never rewrites provider items or
+replays contact text. Flag off still calls the original continuation loader and
+adds no request creation, source capture or refresh items. H10 fences and full
+acceptance remain dependencies. Tests/journeys are authored but unrun here;
+existing strict xfails remain until the lead executes their full trajectories.
 
 A small, explicit loop over the `LLMClient` port (≈150 lines), chosen over the SDK's beta tool runner because the loop must be **provider-neutral**, **persist every step**, **enforce budgets**, and **scope tools per run** (ADR-07).
 
@@ -556,6 +624,21 @@ Historical unmarked notes retain their production flag-off behavior.
 Explicit `list_memories` reads also retain production text/rules with the flag
 off; existing managed/tainted wrapping and confirmation gates apply in both states.
 
+**H6 prompt consumer (2026-11-10; candidate).** v11 consumes H2/H12's exact
+retained owner sources beside separately untrusted quotes and derived prose;
+it grants no new authority to either. C8 effective preferences retain provenance
+and scope: current request constraints override saved defaults, selected scoped
+preferences override owner-global defaults, current settings supply fallback.
+H13's source-backed capture/loader integration remains independently gated.
+Main-model proposals use the existing whole owner context (D-S6 multi-chat
+leakage risk); recipient/full-body review and current-version approval remain
+required, with no expansion of isolated tool-less contact-triggered context.
+Text/topic/length claims require the actual `get_draft` version; fresh C3 facts
+override history, `action=null` proves no artifact, and storage/presentation/send
+are distinct. H7/H10 enforce freshness in application code. D-S17 (2026-11-10)
+requires truthful warnings without a new dead-end approval state; prompt text
+adds no policy veto or execution bypass.
+
 **H4 composition input (2026-11-10).** H2/H12 continue supplying exact owner
 instructions independently of recent history and separately from untrusted
 contact/quoted prose. Composition adds no second context builder or model call.
@@ -565,6 +648,11 @@ global. Main-model text is always generated, even when based on owner dictation.
 No main transcript is passed to proactive Assist.
 
 **Stabilization H3, 2026-11-09 (D-S2).** Dictation is resolved from C1 request source rows, including earlier owner turns; a clarification turn need not repeat the body. Only explicitly classified `literal_body` owner `text` spans can become owner wording. Separate `quoted_text` and forwarded text remain untrusted and cannot supply a literal body. Field hashes detect edits; they never authorize a source alone. No historical fuzzy substring search is used for authorship. H6 owns context/prompt activation; H9 owns current-version provenance.
+
+For a new literal proposal, an expired request returns `request_unavailable` before attempting to copy its sources. A still-live request with cleared sources returns `source_unavailable`. Completed exact retries continue to return the existing artifact's facts without recreating text.
+With the H4 flag on, a foreign or nonexistent source reference produces the same
+content-free `not_found` response; a known request invalidated by source
+clearing retains the explicit `source_unavailable` outcome.
 
 Context builders (`agent/context.py`) are explicit, testable functions per run type. Rules:
 
@@ -590,6 +678,12 @@ Context builders (`agent/context.py`) are explicit, testable functions per run t
 - **As changed (PF-15) — the owner run's working context.** With `ai_managed` (the consent the chat and draft tools need), `build_owner_request` adds one input item after the history and before the new owner message: the account's live approval cards followed by recent terminal/uncertain cards (Q3: shared cap 50 loaded, at most 20 listed and the rest counted; live cards first, then newest updated; `actions/activity.py::live_cards`), each as action id, chat (conversation) id, version, state, origin, the draft mode (only `reply`/`new_message`/`revise`; any other stored value is dropped) and whether it answers a chosen message, fixed state-reason codes/explanations, owner-local created/updated times, and the latest stored presentation outcome with its version — **never the draft's text, never a name**. Presentation `claimed` means only an attempt was recorded; null means no outcome is recorded, and an older-version outcome is not proof the current version was shown. Each history turn also carries a short application note with the integer ids from its `control_turns.refs` (chats, contacts, and the card an Edit-button turn revised — PF-01 stores `revision_action_id` as a list), outside any untrusted block, and also only with `ai_managed`. Both are written by the application, are content-free by construction and carry `OWNER_CONTROL` provenance; they never change taint (the §7.1 rule still decides from forwarded/quoted/managed turns) or any other item's provenance, and the instructions (the cached prefix) are unchanged. Why: continuity across runs was text only, so the model could not tell which chat or card the owner meant (ISSUE-003/006/009).
 
 ### 7.4 Model configuration and provider behaviour
+
+**H6 / D-S7 (2026-11-10).** No model or effort changes. Comparison of
+`gpt-6-luna` and `gpt-6.1-sol` follows repairs and requires separate run-specific
+spend approval; candidate prompt activation alone grants none. Full affected
+owner-drafting, retrieval agent-mode and actual successive-turn journey gates,
+including owner-confirmed language/intent ratings, remain pending.
 
 - `LLM_DEFAULT_MODEL=gpt-6-luna`; per-route overrides: `LLM_ROUTE_<RUN_TYPE>_MODEL`. **As built (S03.1):** one setting per run type (`config.py`, `Settings.model_routes`), empty = the default; `core/model_routes.py` maps a model id to its **processor** (`gpt-*` → OpenAI, `claude-*` → Anthropic, `gemini-*` → Google — the single table). The consent wrapper resolves the processor of each request's model and refuses the call when the model is unknown, served by a processor other than the adapter's, or not named in the required consent (§14.3), so a route switched to another provider cannot send anything before re-consent. Settings validation (startup and `healthcheck`) also refuses a model no known processor serves, and the owner runtime offers managed tools and history only when `ai_managed` names the route's processor.
 - Initial efforts: **light by default** (owner decision 2026-10-18). Every route starts at `low` and moves up only when an evaluation shows it, with the decision recorded in `docs/evals/` alongside any model change. **Moved up so far:** `owner_request` (`LLM_OWNER_REQUEST_EFFORT`) and the draft writer (`LLM_DRAFT_REPLY_EFFORT`: Assist's `draft_reply.v1` and `draft_owner`) default to `medium` since owner decision D10 (2026-10-30), on the `owner_drafting` eval (27/31 cases at medium vs 26/31 at low, about +3 % cost; `docs/evals/README.md`). E2's eval baseline keeps its fixed `low` pin (`evals/live._FIXED_EFFORTS`), so its runs stay one series. Which effort levels `gpt-6-luna` accepts is verified at the first live call; an empty setting sends no effort parameter. An owner-facing quality/cost choice is not planned (owner, 2026-10-18).
@@ -710,6 +804,11 @@ class AutomationSpec(BaseModel):
 
 ### 7.6 Prompts
 
+**H6 allocation amendment (2026-11-10, D-S1/D-S6).** v11 is now the
+stabilization candidate described in §7.2, not the on-hold P3 PR-OR10 reservation
+in the historical v10 note below. P3 must allocate the next unused version when
+rebased. Used v10 and all archived prompt bytes remain unchanged.
+
 Prompts are versioned text templates in `agent/prompts/` (e.g., `triage.v1.md`), loaded by name+version; the version is stored on every `agent_runs` row so evaluations and behaviour changes are traceable. Prompts state rules (isolation, honesty about coverage, disclosure, never claim to be human), not wording rules.
 
 **Stabilization I31 — immutable inventory and archive.** `agent/prompts/manifest.json`
@@ -717,6 +816,9 @@ lists every prompt label, SHA-256 of the exact bytes, active flag, structured-ou
 schema family with historical revision notes, and repository-relative eval-record
 links where available (including trials and failures; a link is not gate approval).
 Active assets stay at the top level; inactive assets live in `prompts/archive/`.
+For H6, both v10 (production fallback) and v11 (H4-flag candidate) are active
+assets; `FLAGGED_ACTIVE` records the conditional selection. The previous asset
+is archived only once no supported flag state selects it. No used bytes change.
 `prompt_registry.load_bytes` resolves either location from the manifest and checks
 the hash; `load` preserves the existing UTF-8 decoding and whitespace stripping.
 Stored labels and all prompt bytes are unchanged. This preserves lookup, not
@@ -747,6 +849,25 @@ Echoed = executed, then shown to the owner with an Undo button.
 There is **no** tool that sends a message directly. Owner-dictated sends always produce an approval card in Personal v1 (R-05).
 
 ### 8.2 Tool catalogue (owner_request runs)
+
+**H6 strict prompt cutover (2026-11-10).** The H4 flag selects v11 together
+with `propose_owner_message` and flat `revise_draft`; `propose_reply` is omitted.
+Literal `propose_message` takes ordered request source IDs, never retyped text.
+Composition supplies the full generated body; revision reads `get_draft` and
+uses `expected_version`, a full rewrite or exact literal edit sources. Request
+binding is necessary even when candidate refs are known. `proposal_status`,
+nullable `action`, applied/effect version and fresh receipts determine factual
+reporting; conflicts apply nothing, and a stored/queued card is not presented or
+sent. Consent-off tools remain blocked stubs. H10's missing checker fails closed;
+the flag stays off before full acceptance. No tool/schema/flag or data-class
+addition in H6; H4 owns the APIs and H8 the card-button cutover.
+
+H6's flag-on request integration also lets `get_conversation` bind a reply
+request's missing target when it explicitly reads one retained contact
+`message_id` in the already selected conversation, through C1 version CAS.
+A page read never selects its newest message implicitly. The runtime then
+exposes the refreshed target/request version. This structural selection grants
+no approval or send authority and does not implement H10's read fence.
 
 **H5 part B (2026-11-10; implementation unverified).** `resolve_contact` accepts
 paired nullable `request_id`/`request_version`, falling back to the active unbound

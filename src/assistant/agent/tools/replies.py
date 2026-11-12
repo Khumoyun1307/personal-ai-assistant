@@ -49,7 +49,7 @@ from assistant.actions.authorship import VersionAuthorship, current_authorship, 
 from assistant.actions.lifecycle import is_warning_card
 from assistant.actions.models import Action
 from assistant.actions.proposals import ProposalRefused
-from assistant.actions.request_models import OwnerRequest
+from assistant.actions.request_models import OwnerRequest, OwnerRequestSource
 from assistant.actions.requests import PositiveId, lock_requests
 from assistant.actions.source_copy import CopyUnavailable, copy_request_body
 from assistant.actions.states import LIVE_CARD, ActionOrigin, ActionState
@@ -814,6 +814,22 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
                 REQUEST_DIGEST
             ) == _request_digest(args):
                 return await _source_receipt(session, ctx, target, existing, args, request=request)
+        if request.expires_at <= services.clock.now():
+            return source_failure("not_available", "request_unavailable", request)
+        if request.reason == "source_unavailable":
+            return source_failure("invalid_arguments", "source_unavailable", request)
+        if "tool.propose_owner_message" in services.enabled_flags:
+            available_sources = set(
+                await session.scalars(
+                    select(OwnerRequestSource.id).where(
+                        OwnerRequestSource.account_id == ctx.account_id,
+                        OwnerRequestSource.request_id == request.id,
+                        OwnerRequestSource.id.in_(args.source_ids),
+                    )
+                )
+            )
+            if set(args.source_ids) - available_sources:
+                return source_failure("not_available", "not_found")
         copied = await copy_request_body(
             session,
             account_id=ctx.account_id,
@@ -826,10 +842,7 @@ async def propose_message_tool(ctx: ToolContext, args: ProposeMessageArgs) -> To
             return await _source_receipt(session, ctx, target, existing, args, request=request)
         if request.version != args.request_version:
             return source_failure("stale", "request_changed", request)
-        if (
-            request.state not in ("ready", "preparing")
-            or request.expires_at <= services.clock.now()
-        ):
+        if request.state not in ("ready", "preparing"):
             return source_failure("not_available", "request_unavailable", request)
         if (request.conversation_id, request.contact_id) != (
             target.conversation_id,
