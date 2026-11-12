@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, PendingInput
@@ -25,6 +25,7 @@ from assistant.actions.request_models import (
     OwnerRequestSource,
 )
 from assistant.actions.states import PENDING, TERMINAL, ActionState, StateReason
+from assistant.conversations.intent import advance_intent
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.errors import NotInAccountError
 
@@ -674,6 +675,7 @@ async def update_request(
     if unfinished and row.requested_at + REQUEST_TTL <= now:
         return RequestUnavailable("not_available")
     sources = await _sources(session, account_id=account_id, request_id=request_id)
+    changes_intent = False
     for source in () if ending else sources:
         if isinstance(
             await load_source(session, account_id=account_id, source=source), SourceUnavailable
@@ -688,6 +690,7 @@ async def update_request(
             ):
                 return RequestUnavailable("source_unavailable")
         _append_sources(session, row, update.sources, len(sources))
+        changes_intent = bool(update.sources)
         owner_turns = await session.scalars(
             select(ControlTurn.id).where(
                 ControlTurn.account_id == account_id,
@@ -730,6 +733,7 @@ async def update_request(
             )
         )
         row.last_turn_id = max(row.last_turn_id, instruction.span.turn_id)
+        changes_intent = True
     elif isinstance(update, RecordCandidates):
         if row.contact_id is not None or row.state not in ("collecting", "suspended"):
             return RequestUnavailable("invalid_state")
@@ -802,6 +806,18 @@ async def update_request(
                 return RequestUnavailable("invalid_reference")
         row.contact_id = update.contact_id
         row.conversation_id = update.conversation_id
+        if row.intent_revision is None:
+            row.intent_revision = await advance_intent(
+                session, account_id=account_id, conversation_id=conversation.id
+            )
+        if row.manual_watermark is None:
+            row.manual_watermark = await session.scalar(
+                select(func.coalesce(func.max(Message.id), 0)).where(
+                    Message.account_id == account_id,
+                    Message.conversation_id == conversation.id,
+                    Message.direction == "owner_manual",
+                )
+            )
         row.selection_basis = row.selection_basis or update.basis
         row.resolution_candidates = None
         if row.state in ("collecting", "suspended"):
@@ -833,9 +849,12 @@ async def update_request(
         )
         if target is None:
             return RequestUnavailable("invalid_reference")
+        changes_intent = row.target_message_id != target.id
         row.target_message_id = target.id
     elif isinstance(update, SetConstraints):
-        row.constraints = update.constraints.model_dump(mode="json")
+        constraints = update.constraints.model_dump(mode="json")
+        changes_intent = row.constraints != constraints
+        row.constraints = constraints
     elif isinstance(update, LinkAction):
         action = await session.scalar(
             select(Action)
@@ -880,6 +899,7 @@ async def update_request(
                 row.expires_at = action.expires_at
         if update.state in ("cancelled", "superseded", "expired"):
             await cancel_linked_action(session, row, now=now)
+        changes_intent = update.state == "cancelled"
         row.state = update.state
         row.reason = update.reason
         if unfinished:
@@ -897,6 +917,12 @@ async def update_request(
             row.focused = True
         if row.state in (*TERMINAL_REQUEST_STATES, "suspended"):
             await _clear_question(session, row)
+    # Only actual owner substance/target changes and cancellation advance
+    # precedence. UI recovery, action linkage and exact selection retries do not.
+    if row.conversation_id is not None and changes_intent:
+        row.intent_revision = await advance_intent(
+            session, account_id=account_id, conversation_id=row.conversation_id
+        )
     row.version += 1
     if row.resolution_candidates is not None:
         if row.missing_slot != "recipient" or row.state not in ("collecting", "suspended"):

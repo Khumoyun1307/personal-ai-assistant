@@ -80,6 +80,7 @@ from assistant.conversations.fences import (
     lock_fence_conversations,
     observe_conversations,
 )
+from assistant.conversations.intent import select_legacy_intent
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
@@ -356,6 +357,7 @@ class Drafter:
         account_id: int,
         conversation_id: int,
         owner_run_id: int | None = None,
+        owner_turn_id: int | None = None,
         mode: OwnerDraftMode = "reply",
         instruction: str | None = None,
         guidance: str | None = None,
@@ -416,7 +418,7 @@ class Drafter:
                 run_tainted=run_tainted,
                 owner=ask,
                 reference_run_id=owner_run_id,
-                reference_turn_id=revise_turn_id,
+                reference_turn_id=revise_turn_id or owner_turn_id,
             )
         )
 
@@ -492,6 +494,19 @@ class Drafter:
             await session.execute(
                 select(Account.id).where(Account.id == account_id).with_for_update(read=True)
             )
+            # Select explicit legacy work before releasing the generation
+            # snapshot. A retried turn retains its first selection/reference.
+            intent_turn = request.reference_turn_id or request.turn_id
+            intent_revision: int | None = None
+            if intent_turn is not None:
+                await _lock_for_proposal(session, account_id, conversation_id)
+                intent_revision = await select_legacy_intent(
+                    session,
+                    account_id=account_id,
+                    conversation_id=conversation_id,
+                    turn_id=intent_turn,
+                    now=self._clock.now(),
+                )
             observed = await observe_conversations(
                 session,
                 account_id=account_id,
@@ -692,6 +707,22 @@ class Drafter:
                 )
             )
             await session.flush()
+            if intent_revision is not None:
+                session.add(
+                    AuditLogEntry(
+                        account_id=account_id,
+                        at=self._clock.now(),
+                        actor="owner",
+                        event="owner_intent_bound",
+                        subject_type="agent_run",
+                        subject_id=run.id,
+                        details={
+                            "conversation_id": conversation_id,
+                            "intent_revision": intent_revision,
+                            "turn_id": intent_turn,
+                        },
+                    )
+                )
             fence_id = await capture_fence(
                 session,
                 account_id=account_id,
@@ -1075,6 +1106,9 @@ async def propose_draft(
     suggested_text: str | None = None,
     answered_message_id: int | None = None,
     authorship: VersionAuthorship | None = None,
+    explicit_owner_work: bool = False,
+    owner_request_id: int | None = None,
+    expected_request_version: int | None = None,
 ) -> ProposalResult | Stale:
     """One proposal, in the caller's transaction (§3.4).
 
@@ -1157,6 +1191,9 @@ async def propose_draft(
             requested_at=outcome.requested_at,
             draft_flags=flags,
             authorship=authorship,
+            explicit_owner_work=explicit_owner_work,
+            owner_request_id=owner_request_id,
+            expected_request_version=expected_request_version,
         ),
         clock=clock,
         config=config,
@@ -1422,10 +1459,17 @@ class AssistDraftJob:
                         clock=self._clock,
                         config=self._config,
                         presenter=self._presenter,
+                        explicit_owner_work=why is DraftReason.REDRAFT,
                     )
                 except ProposalRefused as refused:
                     code = f"proposal_{refused.code}"
-                    await self._clear(session, account_id, conversation_id, flagged=flagged)
+                    await self._clear(
+                        session,
+                        account_id,
+                        conversation_id,
+                        flagged=flagged,
+                        unless_newer_than=outcome.shown_through_message_id,
+                    )
                     _audit(session, account_id, conversation_id, EVENT_DRAFT_FAILED, code, why, now)
                     return code
                 if isinstance(proposal, Stale):

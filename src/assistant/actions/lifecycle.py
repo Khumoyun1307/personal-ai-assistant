@@ -23,9 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from assistant.accounts.callbacks import new_token
-from assistant.accounts.models import AuditLogEntry
+from assistant.accounts.models import Account, AuditLogEntry
 from assistant.actions.authorship import VersionAuthorship, generated_authorship, is_ai_generated
 from assistant.actions.models import Action
+from assistant.actions.request_models import OwnerRequest
 from assistant.actions.states import (
     LIVE_CARD,
     PENDING,
@@ -34,6 +35,7 @@ from assistant.actions.states import (
     ActionState,
     StateReason,
 )
+from assistant.conversations.intent import advance_intent
 from assistant.conversations.models import Conversation
 from assistant.core.delivery import MAX_TEXT_LENGTH
 from assistant.core.reply_window import SAFETY_MARGIN, closes_at, is_open
@@ -581,6 +583,31 @@ def _event(
     raise IllegalTransitionError(f"{from_state} -> {to_state} has no P2 audit event")
 
 
+async def _lock_intent_conversation(
+    session: AsyncSession, *, account_id: int, action_id: int
+) -> int | None:
+    await session.execute(
+        select(Account.id).where(Account.id == account_id).with_for_update(read=True)
+    )
+    conversation_id = await session.scalar(
+        select(Conversation.id)
+        .join(Action, Action.conversation_id == Conversation.id)
+        .where(
+            Conversation.account_id == account_id,
+            Action.account_id == account_id,
+            Action.id == action_id,
+        )
+        .with_for_update(of=Conversation)
+    )
+    await session.execute(
+        select(OwnerRequest.id)
+        .where(OwnerRequest.account_id == account_id, OwnerRequest.action_id == action_id)
+        .order_by(OwnerRequest.id)
+        .with_for_update()
+    )
+    return conversation_id
+
+
 async def transition(
     session: AsyncSession,
     *,
@@ -617,6 +644,14 @@ async def transition(
     if reserved := _PRIMITIVE_COLUMNS & values.keys():
         raise IllegalTransitionError(f"values may not set {sorted(reserved)}")
     event = _event(from_state, to_state, reason=reason, new_version="version" in values)
+    owner_intent = to_state in {ActionState.REJECTED, ActionState.REVISING}
+    intent_conversation: int | None = None
+    if owner_intent:
+        # Serialize the intent change with background settlement before
+        # locking the action. A failed CAS must never advance precedence.
+        intent_conversation = await _lock_intent_conversation(
+            session, account_id=account_id, action_id=action_id
+        )
     statement = update(Action).where(
         Action.id == action_id, Action.account_id == account_id, Action.state == from_state.value
     )
@@ -642,6 +677,15 @@ async def transition(
     ).one_or_none()
     if row is None:
         return False
+    if intent_conversation is not None:
+        intent_revision = await advance_intent(
+            session, account_id=account_id, conversation_id=intent_conversation
+        )
+        await session.execute(
+            update(OwnerRequest)
+            .where(OwnerRequest.account_id == account_id, OwnerRequest.action_id == action_id)
+            .values(intent_revision=intent_revision)
+        )
     audit: dict[str, Any] = {
         "from": from_state.value,
         "to": to_state.value,
@@ -992,13 +1036,26 @@ async def cancel_edit(
     session: AsyncSession, *, account_id: int, action_id: int, expected_version: int, now: datetime
 ) -> str | None:
     """Back to the same version's card with a new token; None when stale."""
-    return await _back_to_card(
+    conversation_id = await _lock_intent_conversation(
+        session, account_id=account_id, action_id=action_id
+    )
+    token = await _back_to_card(
         session,
         account_id=account_id,
         action_id=action_id,
         expected_version=expected_version,
         now=now,
     )
+    if token is not None and conversation_id is not None:
+        revision = await advance_intent(
+            session, account_id=account_id, conversation_id=conversation_id
+        )
+        await session.execute(
+            update(OwnerRequest)
+            .where(OwnerRequest.account_id == account_id, OwnerRequest.action_id == action_id)
+            .values(intent_revision=revision)
+        )
+    return token
 
 
 async def revision_failed(

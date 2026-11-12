@@ -68,6 +68,8 @@ class OwnerRequest(Base):
         enum_check("missing_slot", MISSING_SLOTS),
         enum_check("reason", REQUEST_REASONS),
         CheckConstraint("version >= 1", name="version"),
+        CheckConstraint("intent_revision >= 0", name="intent_revision"),
+        CheckConstraint("manual_watermark >= 0", name="manual_watermark"),
         CheckConstraint(
             "(contact_id IS NULL) = (conversation_id IS NULL) AND "
             "(contact_id IS NULL) = (selection_basis IS NULL)",
@@ -108,6 +110,8 @@ class OwnerRequest(Base):
     contact_id: Mapped[int | None] = reference("contacts")
     conversation_id: Mapped[int | None] = reference("conversations")
     selection_basis: Mapped[str | None] = mapped_column(Text)
+    intent_revision: Mapped[int | None] = mapped_column(BigInteger)
+    manual_watermark: Mapped[int | None] = mapped_column(BigInteger)
     resolution_candidates: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     missing_slot: Mapped[str | None] = mapped_column(Text)
     question_input_id: Mapped[int | None] = reference("pending_inputs", ondelete="SET NULL")

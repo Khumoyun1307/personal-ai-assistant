@@ -18,9 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry, Consent
 from assistant.actions.drafts import assist_trigger, request_draft
+from assistant.actions.lifecycle import reject
 from assistant.actions.models import Action
 from assistant.actions.policy_loader import load_context
-from assistant.actions.states import ActionKind, ActionOrigin, ActionState, StateReason
+from assistant.actions.states import ActionKind, ActionOrigin, ActionState
 from assistant.agent.drafting import DraftOutcome, DraftStatus, Stale, propose_draft
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.jobs import DraftReason
@@ -40,6 +41,7 @@ from tests.integration.drafting_env import (
     drafting_environment,
     finish_draft_jobs,
     output,
+    owner_says,
     pending_flag,
     seed_chat,
 )
@@ -232,8 +234,11 @@ async def test_a_lost_defer_is_recovered_by_the_reconciler(denv: DraftEnv) -> No
 
 
 # ------------------------------------------------------------ races
-async def test_an_assist_draft_created_while_an_owner_requested_card_is_live_marks_it_outdated_superseded(  # noqa: E501
+@pytest.mark.parametrize("reject_card", [False, True])
+async def test_late_assist_yields_to_owner_card_even_after_rejection(
     denv: DraftEnv,
+    *,
+    reject_card: bool,
 ) -> None:
     account_id, conversation = await seed_chat(denv)
     await contact_says(denv)
@@ -258,15 +263,170 @@ async def test_an_assist_draft_created_while_an_owner_requested_card_is_live_mar
             )
             assert not isinstance(proposal, Stale)
             owner_card.append(proposal.action_id)
+        if reject_card:
+            [card] = await actions_of(denv.env, conversation)
+            assert card.approval_token is not None
+            async with transaction(denv.env.factory) as uow:
+                assert await reject(
+                    uow.session,
+                    account_id=account_id,
+                    token=card.approval_token,
+                    now=denv.env.clock.now(),
+                )
         return output(text="Synthetic assist draft.")
 
     denv.script(owner_dictates_while_the_model_runs)
-    assert await run_job(denv, conversation) == "proposed_awaiting_approval"
-    first, second = await actions_of(denv.env, conversation)
+    assert await run_job(denv, conversation) == "proposal_owner_intent_superseded"
+    [first] = await actions_of(denv.env, conversation)
     assert first.id == owner_card[0]
-    assert (first.state, first.state_reason) == ("outdated", StateReason.SUPERSEDED.value)
-    assert second.state == "awaiting_approval"
-    assert second.origin == "agent_proposal"
+    assert first.state == ("rejected" if reject_card else "awaiting_approval")
+    assert first.text == "SYNTH-DICTATED"
+    assert await pending_flag(denv.env, conversation) is None
+    before = len(denv.fake.requests)
+    assert await run_job(denv, conversation) == "no_flag"
+    assert len(denv.fake.requests) == before
+    [receipt] = await audits(denv, "draft_failed")
+    assert receipt.details["code"] == "proposal_owner_intent_superseded"
+    if reject_card:
+        # The rejection consumes this burst; it does not disable Assist.
+        await contact_says(denv, "SYNTH genuinely new question")
+        denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+        denv.script(output(text="Synthetic fresh reply to the new question."))
+        assert await run_job(denv, conversation) == "proposed_awaiting_approval"
+        rejected, fresh = await actions_of(denv.env, conversation)
+        assert rejected.state == "rejected"
+        assert fresh.state == "awaiting_approval"
+
+
+@pytest.mark.parametrize("cancel_request", [False, True])
+async def test_explicit_selection_without_a_card_overtakes_assist(
+    denv: DraftEnv, *, cancel_request: bool
+) -> None:
+    from assistant.actions.requests import SetState, update_request
+    from tests.integration.test_reply_tools import source_message_args
+
+    account_id, conversation = await seed_chat(denv)
+    await contact_says(denv)
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+
+    async def owner_selects(_request: LLMRequest) -> dict[str, object]:
+        selected = await source_message_args(
+            denv, account_id, conversation, "SYNTH explicit owner task"
+        )
+        if cancel_request:
+            async with transaction(denv.env.factory) as uow:
+                result = await update_request(
+                    uow.session,
+                    account_id=account_id,
+                    request_id=selected["request_id"],
+                    expected_version=selected["request_version"],
+                    update=SetState(state="cancelled", reason="owner_cancelled"),
+                    now=denv.env.clock.now(),
+                )
+                assert result.status == "applied"
+        return output(text="Synthetic obsolete Assist text.")
+
+    denv.script(owner_selects)
+    assert await run_job(denv, conversation) == "proposal_owner_intent_superseded"
+    assert await actions_of(denv.env, conversation) == []
+    assert await pending_flag(denv.env, conversation) is None
+
+
+@pytest.mark.parametrize("delayed_seconds", [0, -60])
+async def test_manual_reply_during_assist_discards_even_same_second_or_delayed_ingestion(
+    denv: DraftEnv, delayed_seconds: int
+) -> None:
+    _, conversation = await seed_chat(denv)
+    await contact_says(denv)
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+
+    async def manual_reply(_request: LLMRequest) -> dict[str, object]:
+        await owner_says(
+            denv,
+            "SYNTH manual reply",
+            date=int(denv.env.clock.now().timestamp()) + delayed_seconds,
+        )
+        return output(text="Synthetic obsolete background reply.")
+
+    denv.script(manual_reply)
+    assert await run_job(denv, conversation) == "proposal_takeover"
+    assert await actions_of(denv.env, conversation) == []
+    assert await pending_flag(denv.env, conversation) is None
+    [receipt] = await audits(denv, "draft_failed")
+    assert receipt.details["code"] == "proposal_takeover"
+
+
+@pytest.mark.parametrize("owner_operation", ["redraft", "edit_cancel"])
+async def test_live_owner_work_on_an_assist_card_beats_a_later_background_attempt(
+    denv: DraftEnv, owner_operation: str
+) -> None:
+    from assistant.actions.lifecycle import cancel_edit, start_edit
+
+    account_id, conversation = await seed_chat(denv)
+    await contact_says(denv)
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+    denv.script(output(text="Synthetic owner-reviewed body."))
+    reason = "redraft" if owner_operation == "redraft" else "assist_ingestion"
+    assert await run_job(denv, conversation, reason) == "proposed_awaiting_approval"
+    [original] = await actions_of(denv.env, conversation)
+    if owner_operation == "edit_cancel":
+        assert original.approval_token is not None
+        async with transaction(denv.env.factory) as uow:
+            version = await start_edit(
+                uow.session,
+                account_id=account_id,
+                token=original.approval_token,
+                now=denv.env.clock.now(),
+            )
+            assert version == 1
+            token = await cancel_edit(
+                uow.session,
+                account_id=account_id,
+                action_id=original.id,
+                expected_version=version,
+                now=denv.env.clock.now(),
+            )
+            assert token is not None
+    await contact_says(denv, "SYNTH later contact input")
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+    denv.script(output(text="Synthetic unwanted background replacement."))
+    assert await run_job(denv, conversation) == "proposal_owner_intent_superseded"
+    [retained] = await actions_of(denv.env, conversation)
+    assert retained.id == original.id
+    assert retained.text == original.text
+    assert retained.state_reason != "superseded"
+    assert retained.approval_token is not None
+
+
+async def test_another_accounts_owner_intent_does_not_overtake_assist(denv: DraftEnv) -> None:
+    from assistant.actions.proposals import propose
+    from tests.integration.actions_env import request, seed_turn
+    from tests.integration.actions_env import seed_chat as seed_other_account
+
+    account_id, conversation = await seed_chat(denv)
+    await contact_says(denv)
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+
+    async def other_owner(_request: LLMRequest) -> dict[str, object]:
+        async with transaction(denv.env.factory) as uow:
+            other = await seed_other_account(uow.session, denv.env.clock.now())
+            assert other.account_id != account_id
+            turn = await seed_turn(uow.session, other.account_id)
+            result = await propose(
+                uow.session,
+                request(other, origin=ActionOrigin.OWNER_DICTATED, trigger_turn_id=turn),
+                clock=denv.env.clock,
+                config=denv.config,
+            )
+            assert result.state is ActionState.AWAITING_APPROVAL
+        return output(text="Synthetic original account reply.")
+
+    denv.script(other_owner)
+    assert await run_job(denv, conversation) == "proposed_awaiting_approval"
+    [current] = await actions_of(denv.env, conversation)
+    assert current.account_id == account_id
+    assert current.text == "Synthetic original account reply."
+    assert current.freshness_warning is None
 
 
 async def test_a_contact_message_during_drafting_warns_and_keeps_the_new_burst_pending(
@@ -524,8 +684,16 @@ async def test_request_draft_for_a_redraft_sets_no_flag_and_defers_in_the_transa
     # Committed with the press; a second tap while one is queued rolls back
     # only its savepoint and the press transaction still commits.
     async with transaction(denv.env.factory) as uow:
+        before = await uow.session.scalar(
+            select(Conversation.owner_intent_revision).where(Conversation.id == conversation)
+        )
+        assert before == 0  # the rolled-back press did not advance intent
         await redraft(uow.session)
         await redraft(uow.session)
+        after = await uow.session.scalar(
+            select(Conversation.owner_intent_revision).where(Conversation.id == conversation)
+        )
+        assert after == 1  # duplicate queued tap is a no-op
         uow.session.add(
             AuditLogEntry(
                 account_id=account_id,

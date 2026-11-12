@@ -70,6 +70,7 @@ async def test_changed_sources_during_generation_warn_without_holding_locks(
     change: str,
 ) -> None:
     account_id, conversation_id = await seed_chat(denv, mode="observe")
+    _, turn_id = await run_and_turn(denv, account_id)
     base = await contact_says(denv, "SYNTH-BASE")
 
     async def during_call(_: LLMRequest) -> dict[str, Any]:
@@ -124,7 +125,7 @@ async def test_changed_sources_during_generation_warn_without_holding_locks(
             origin=ActionOrigin.AGENT_PROPOSAL,
             run_id=None,
             tool_call_id=None,
-            trigger_turn_id=None,
+            trigger_turn_id=turn_id,
             clock=denv.env.clock,
             config=denv.config,
             presenter=None,
