@@ -1251,6 +1251,14 @@ class _Checked:
         return self.code == "proceed"
 
 
+_COVERING = LIVE_CARD | {
+    ActionState.APPROVED,
+    ActionState.EXECUTING,
+    ActionState.SUCCEEDED,
+    ActionState.DELIVERY_UNCERTAIN,
+}
+
+
 class AssistDraftJob:
     """`replies.draft(conversation_id, reason)` (§3.9).
 
@@ -1401,7 +1409,9 @@ class AssistDraftJob:
                 .where(
                     Action.account_id == account_id,
                     Action.conversation_id == conversation_id,
-                    Action.state.in_([state.value for state in LIVE_CARD]),
+                    # A live card, or a send that already answered the burst
+                    # (approved/claimed/sent/uncertain), covers it (H11-4).
+                    Action.state.in_([state.value for state in _COVERING]),
                     Action.shown_through_message_id >= (newest.id if newest is not None else 0),
                 )
             )

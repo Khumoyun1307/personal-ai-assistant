@@ -713,6 +713,38 @@ def fresh_cards(s: Scenario) -> ApprovalCards:
     )
 
 
+@pytest.mark.parametrize("newer_card", [False, True])
+async def test_an_approval_denied_at_execution_gets_no_token_beside_a_newer_card(
+    s: Scenario, *, newer_card: bool
+) -> None:
+    """D-S17 / H11 review: an approved card that fails its execution check
+    becomes a warning card; it offers Approve anyway only while no newer
+    card for the chat exists, so two cards are never approvable at once."""
+    from assistant.actions.states import ActionState, StateReason
+
+    approved = await s.seed(state="approved")
+    newer = await s.seed() if newer_card else None
+    async with transaction(s.env.factory) as uow:
+        assert await lifecycle.transition(
+            uow.session,
+            account_id=s.account_id,
+            action_id=approved.id,
+            from_state=ActionState.APPROVED,
+            to_state=ActionState.OUTDATED,
+            reason=StateReason.NEW_CONTACT_MESSAGE,
+            now=s.env.clock.now(),
+            expected_version=approved.version,
+            values={"freshness_warning": "new_contact_message"},
+        )
+    view = await fresh_cards(s)._prepare(approved.id)
+    assert view is not None
+    warned = await s.action(approved.id)
+    assert warned.freshness_warning == "new_contact_message"
+    assert (warned.approval_token is None) is newer_card
+    if newer is not None:
+        assert (await s.action(newer.id)).approval_token == newer.approval_token
+
+
 async def test_warned_card_with_definite_presentation_failure_is_recovered_with_approval(
     s: Scenario,
 ) -> None:

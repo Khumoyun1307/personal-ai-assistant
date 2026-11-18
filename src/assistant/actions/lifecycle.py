@@ -71,8 +71,17 @@ def legacy_warning_card_filter(*, include_replaced: bool = False) -> ColumnEleme
     )
     if include_replaced:
         return eligible
+    return and_(eligible, ~has_newer_replacement())
+
+
+def has_newer_replacement() -> ColumnElement[bool]:
+    """A newer pending, sent or still-approvable card exists in the same chat.
+
+    D-S17: a newer proposal retires older warning cards' approval paths, so
+    no approval token may be issued to such an older card.
+    """
     replacement = aliased(Action)
-    has_replacement = (
+    return (
         select(replacement.id)
         .where(
             replacement.account_id == Action.account_id,
@@ -103,7 +112,6 @@ def legacy_warning_card_filter(*, include_replaced: bool = False) -> ColumnEleme
         )
         .exists()
     )
-    return and_(eligible, ~has_replacement)
 
 
 def warning_card_filter() -> ColumnElement[bool]:

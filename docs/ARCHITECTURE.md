@@ -1226,8 +1226,13 @@ advance `owner_intent_revision` under the conversation lock. Repeated selection,
 stale CAS/token calls and duplicate queued Re-draft do not advance it. Explicit
 intent consumes only the pending background burst covered by the affected
 card's `shown_through_message_id`; a newer contact arrival keeps its pending
-flag, including across Edit / Cancel edit, request changes and Re-draft.
-A new selection without a card consumes the current burst. At settlement Assist
+flag across Reject, Edit / Cancel edit and request changes. A queued Re-draft
+reads the chat afresh, so it consumes the whole pending burst; later arrivals
+flag again. A new selection without a card consumes the current burst. The
+Assist job's "already covered" check counts live cards and approved, executing,
+succeeded or delivery-uncertain sends whose watermark reaches the newest
+contact message. An action denied at execution regains an Approve anyway token
+only while no newer card exists in the chat (D-S17). At settlement Assist
 compares its captured intent and manual
 watermarks, and yields to a live explicit card or selected unfinished request.
 Only a live explicit card (or warning card) blocks Assist: an approved or executing

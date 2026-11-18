@@ -426,27 +426,59 @@ async def test_rejecting_an_old_card_keeps_a_new_arrival_for_assist(denv: DraftE
     assert await pending_flag(denv.env, conversation) is None
 
 
-async def test_an_approved_card_does_not_block_assist_for_a_newer_burst(denv: DraftEnv) -> None:
-    """H11-4/H11-6: approval hands the old card to the claim protocol; it is
-    not a live explicit card, so a genuinely new burst still gets a card."""
+async def approve_card(denv: DraftEnv, account_id: int, card: Action) -> None:
     from assistant.actions.lifecycle import approve
 
+    assert card.approval_token is not None
+    async with transaction(denv.env.factory) as uow:
+        approved = await approve(
+            uow.session, account_id=account_id, token=card.approval_token, now=denv.env.clock.now()
+        )
+        assert approved.status.value == "approved"
+
+
+async def assist_card_for_first_question(denv: DraftEnv) -> tuple[int, int, Action]:
     account_id, conversation = await seed_chat(denv)
     await contact_says(denv, "SYNTH-FIRST-QUESTION")
     denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
     denv.script(output(text="Synthetic answer to the first question."))
     assert await run_job(denv, conversation) == "proposed_awaiting_approval"
     await finish_draft_jobs(denv.env, conversation)
-    [first] = await actions_of(denv.env, conversation)
-    assert first.approval_token is not None
-    async with transaction(denv.env.factory) as uow:
-        approved = await approve(
-            uow.session,
-            account_id=account_id,
-            token=first.approval_token,
-            now=denv.env.clock.now(),
-        )
-        assert approved.status.value == "approved"
+    [card] = await actions_of(denv.env, conversation)
+    return account_id, conversation, card
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_an_approved_card_does_not_block_assist_for_a_newer_burst(
+    denv: DraftEnv, *, explicit: bool
+) -> None:
+    """H11-4/H11-6: approval hands the old card to the claim protocol; it is
+    not a live explicit card, so a genuinely new burst still gets a card."""
+    if explicit:
+        account_id, conversation = await seed_chat(denv)
+        await contact_says(denv, "SYNTH-FIRST-QUESTION")
+        async with transaction(denv.env.factory) as uow:
+            proposal = await propose_draft(
+                uow.session,
+                account_id=account_id,
+                conversation_id=conversation,
+                outcome=DraftOutcome(DraftStatus.DRAFTED),
+                origin=ActionOrigin.OWNER_DICTATED,
+                run_id=None,
+                tool_call_id=None,
+                trigger_turn_id=None,
+                clock=denv.env.clock,
+                config=denv.config,
+                presenter=denv.presenter,
+                dictated_text="SYNTH-DICTATED",
+            )
+            assert not isinstance(proposal, Stale)
+        await finish_draft_jobs(denv.env, conversation)
+        [first] = await actions_of(denv.env, conversation)
+        assert first.origin == "owner_dictated"
+    else:
+        account_id, conversation, first = await assist_card_for_first_question(denv)
+    await approve_card(denv, account_id, first)
     await contact_says(denv, "SYNTH-SECOND-QUESTION")
     denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
     denv.script(output(text="Synthetic answer to the second question."))
@@ -455,6 +487,87 @@ async def test_an_approved_card_does_not_block_assist_for_a_newer_burst(denv: Dr
     assert (sending.id, sending.state, sending.version) == (first.id, "approved", first.version)
     assert fresh.state == "awaiting_approval"
     assert fresh.text == "Synthetic answer to the second question."
+
+
+async def test_a_redraft_consumes_the_burst_it_answers_and_later_input_still_drafts(
+    denv: DraftEnv,
+) -> None:
+    """H11 review: a Re-draft reads the chat afresh, so the deferred Assist job
+    for the same burst must not draft a second card once the re-draft was
+    approved; a message after the re-draft's coverage still gets one."""
+    account_id, conversation, first = await assist_card_for_first_question(denv)
+    await contact_says(denv, "SYNTH-SECOND-QUESTION")  # warns the card, flags, defers
+    assert await pending_flag(denv.env, conversation) is not None
+    async with transaction(denv.env.factory) as uow:
+        await request_draft(
+            uow.session,
+            account_id=account_id,
+            conversation_id=conversation,
+            reason=DraftReason.REDRAFT,
+            scheduler=denv.scheduler,
+            clock=denv.env.clock,
+            debounce=denv.config.draft_debounce,
+        )
+    assert await pending_flag(denv.env, conversation) is None
+    denv.script(output(text="Synthetic re-drafted answer to both questions."))
+    assert await run_job(denv, conversation, "redraft") == "proposed_awaiting_approval"
+    redrafted = (await actions_of(denv.env, conversation))[-1]
+    assert redrafted.id != first.id
+    await approve_card(denv, account_id, redrafted)
+    calls = len(denv.fake.requests)
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+    assert await run_job(denv, conversation) == "no_flag"
+    assert len(denv.fake.requests) == calls
+    assert [row.id for row in await actions_of(denv.env, conversation)] == [first.id, redrafted.id]
+
+    await contact_says(denv, "SYNTH-THIRD-QUESTION")
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+    denv.script(output(text="Synthetic answer to the third question."))
+    assert await run_job(denv, conversation) == "proposed_awaiting_approval"
+    *_, fresh = await actions_of(denv.env, conversation)
+    assert fresh.text == "Synthetic answer to the third question."
+    assert (await actions_of(denv.env, conversation))[1].state == "approved"
+
+
+@pytest.mark.parametrize("edit_first", [False, True])
+async def test_an_approved_card_covers_its_own_burst_for_a_queued_assist_job(
+    denv: DraftEnv, *, edit_first: bool
+) -> None:
+    """H11 review: a send that already answered the newest message covers it
+    (approved/claimed/sent/uncertain, not only live cards), including after
+    Edit / Cancel edit; the queued job makes no model call and no card."""
+    from assistant.actions.lifecycle import cancel_edit, start_edit
+
+    account_id, conversation, card = await assist_card_for_first_question(denv)
+    # The deferred trigger for the burst the card already answered.
+    await set_columns(denv, conversation, pending_draft_at=denv.env.clock.now())
+    if edit_first:
+        assert card.approval_token is not None
+        async with transaction(denv.env.factory) as uow:
+            version = await start_edit(
+                uow.session,
+                account_id=account_id,
+                token=card.approval_token,
+                now=denv.env.clock.now(),
+            )
+            assert version == card.version
+            assert await cancel_edit(
+                uow.session,
+                account_id=account_id,
+                action_id=card.id,
+                expected_version=card.version,
+                now=denv.env.clock.now(),
+            )
+        assert await pending_flag(denv.env, conversation) is None  # the covered burst
+        await set_columns(denv, conversation, pending_draft_at=denv.env.clock.now())
+        [card] = await actions_of(denv.env, conversation)
+    await approve_card(denv, account_id, card)
+    calls = len(denv.fake.requests)
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+    assert await run_job(denv, conversation) == "nothing_new"
+    assert len(denv.fake.requests) == calls
+    assert [row.id for row in await actions_of(denv.env, conversation)] == [card.id]
+    assert await pending_flag(denv.env, conversation) is None
 
 
 @pytest.mark.parametrize("new_contact", [False, True])

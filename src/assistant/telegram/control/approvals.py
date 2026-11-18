@@ -1040,7 +1040,7 @@ class ApprovalCards:
                         Action.approval_token.is_(None),
                         or_(
                             Action.state != ActionState.OUTDATED.value,
-                            lifecycle.warning_card_filter(),
+                            lifecycle.warning_card_filter() & ~lifecycle.has_newer_replacement(),
                             lifecycle.legacy_warning_card_filter(),
                         ),
                     )
@@ -1601,7 +1601,6 @@ class ApprovalCards:
                 scheduler=scheduler,
                 clock=clock,
                 debounce=self._config.draft_debounce,
-                action_id=action.id,
             )
         except NotInAccountError:
             return self._settle(session, gateway, press, CALLBACK_EXPIRED_TEXT, None)
