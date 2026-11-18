@@ -32,7 +32,7 @@ from hypothesis.stateful import (
     rule,
     run_state_machine_as_test,
 )
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import AuditLogEntry
@@ -45,11 +45,13 @@ from assistant.actions.lifecycle import (
     reject,
     start_edit,
     text_hash,
+    warning_card_filter,
 )
-from assistant.actions.models import Action
+from assistant.actions.models import Action, ContextFenceRecord
 from assistant.actions.policy_loader import KEY_INGESTION_BARRIER
 from assistant.actions.proposals import ProposalRefused, propose
 from assistant.actions.states import ActionOrigin, ActionState
+from assistant.conversations.fences import ContextFence
 from assistant.conversations.models import Conversation, Message
 from assistant.db.engine import build_engine, build_session_factory
 from assistant.db.models import SystemState
@@ -225,6 +227,7 @@ class ActionMachine(RuleBasedStateMachine):
                 fields["shown_through_message_id"] = None
                 fields["origin"] = ActionOrigin.OWNER_DICTATED
                 fields["trigger_turn_id"] = await seed_turn(session, self.c.account_id)
+            refused_code: str | None = None
             try:
                 result = await propose(
                     session, request(self.c, **fields), clock=self.clock, config=CONFIG
@@ -236,6 +239,10 @@ class ActionMachine(RuleBasedStateMachine):
                 # track; the owner's own proposals are never refused here.
                 if dictated or refused.code not in {"takeover", "owner_intent_superseded"}:
                     raise
+                refused_code = refused.code
+            if refused_code is not None:
+                deserved = await self.refusal_deserved(session, refused_code, newest)
+                assert deserved, refused_code
                 return
             row = await session.get(Action, result.action_id)
             assert row is not None
@@ -246,6 +253,59 @@ class ActionMachine(RuleBasedStateMachine):
             )
             if row.approval_token:
                 self.tokens.append(row.approval_token)
+
+    async def refusal_deserved(self, session: AsyncSession, code: str, base_id: int | None) -> bool:
+        """The background refusal held in the model state, so a bug refusing
+        every Assist proposal cannot pass."""
+        record = await session.get(ContextFenceRecord, self.c.context_fence_id)
+        assert record is not None
+        [seen] = ContextFence.model_validate(record.facts).conversations
+        chat = self.c.conversation_id
+        if code == "takeover":
+            manual = (
+                await session.execute(
+                    select(func.max(Message.id), func.max(Message.sent_at)).where(
+                        Message.conversation_id == chat, Message.direction == "owner_manual"
+                    )
+                )
+            ).one()
+            base_sent = await session.scalar(select(Message.sent_at).where(Message.id == base_id))
+            return (manual[0] is not None and manual[0] > (seen.newest_owner_manual_id or 0)) or (
+                manual[1] is not None and base_sent is not None and manual[1] > base_sent
+            )
+        revision = await session.scalar(
+            select(Conversation.owner_intent_revision).where(Conversation.id == chat)
+        )
+        if revision != seen.owner_intent_revision:
+            return True
+        revised = (
+            select(AuditLogEntry.id)
+            .where(
+                AuditLogEntry.subject_type == "action",
+                AuditLogEntry.subject_id == Action.id,
+                AuditLogEntry.event == "action_revision_requested",
+            )
+            .correlate(Action)
+            .exists()
+        )
+        explicit = await session.scalar(
+            select(func.count())
+            .select_from(Action)
+            .where(
+                Action.conversation_id == chat,
+                or_(
+                    Action.origin == ActionOrigin.OWNER_DICTATED.value,
+                    Action.trigger_turn_id.is_not(None),
+                    Action.state == ActionState.REVISING.value,
+                    revised,
+                ),
+                or_(
+                    Action.state.in_(["awaiting_approval", "revising"]),
+                    warning_card_filter(),
+                ),
+            )
+        )
+        return bool(explicit)
 
     async def base_sent_at(self, session: AsyncSession, row: Action) -> datetime | None:
         if row.base_message_id is None:
