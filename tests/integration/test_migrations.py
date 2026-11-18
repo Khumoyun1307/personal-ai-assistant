@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "accounts",
     "agent_run_steps",
     "agent_runs",
+    "incident_trace_events",
     "audit_log",
     "business_connection_events",
     "business_connections",
@@ -492,7 +493,50 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0023"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0024"]
+
+
+def test_0024_incident_trace_is_bounded_coded_cascading_and_round_trips(
+    scratch_url: str,
+) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account, conversation = _phase_conversation(conn, 81024)
+        run = conn.execute(
+            "INSERT INTO app.agent_runs (account_id, run_type, model) "
+            "VALUES (%s, 'owner_request', 'synthetic') RETURNING id",
+            (account,),
+        ).fetchone()
+        assert run is not None
+        insert = (
+            "INSERT INTO app.incident_trace_events "
+            "(account_id, run_id, seq, stage, code, reason, conversation_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)"
+        )
+        conn.execute(insert, (account, run[0], 1, "recipient", "unique_strong", None, conversation))
+        conn.execute(insert, (account, run[0], 2, "outcome", "rejected", "owner_rejected", None))
+        for bad in (
+            (account, run[0], 3, "recipient", "SYNTH free text", None, None),  # not a code
+            (account, run[0], 3, "outcome", "unique_strong", None, None),  # wrong stage
+            (account, run[0], 3, "run", "failed", "SYNTH reason", None),  # not a reason
+            (account, run[0], 65, "run", "failed", None, None),  # over the bound
+        ):
+            with pytest.raises(psycopg.errors.CheckViolation):
+                conn.execute(insert, bad)
+        # A deleted reference becomes NULL; the run's deletion takes the trace.
+        conn.execute("DELETE FROM app.conversations WHERE id = %s", (conversation,))
+        assert conn.execute(
+            "SELECT conversation_id FROM app.incident_trace_events WHERE seq = 1 AND run_id = %s",
+            (run[0],),
+        ).fetchone() == (None,)
+        conn.execute("DELETE FROM app.agent_runs WHERE id = %s", (run[0],))
+        assert conn.execute(
+            "SELECT count(*) FROM app.incident_trace_events WHERE account_id = %s", (account,)
+        ).fetchone() == (0,)
+    run_alembic(scratch_url, "0023", down=True)
+    assert "incident_trace_events" not in tables_in(scratch_url, "app")
+    run_alembic(scratch_url, "head")
+    assert "incident_trace_events" in tables_in(scratch_url, "app")
 
 
 def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:

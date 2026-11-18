@@ -27,6 +27,8 @@
 #                                    app container (prints numbers/states only)
 #   deploy/server.sh p2-verify ARGS  P2 read-only views (ids/states/times only)
 #   deploy/server.sh trial-check ARGS  P2 daily send audit (ids/states/counts only)
+#   deploy/server.sh incident-report ARGS  I25 structural trace of one run/action/
+#                                    request (ids/codes/times only)
 #
 # Every compose call passes `--env-file .env`: the project directory is
 # deploy/, so the root .env would otherwise not be used for interpolation.
@@ -320,6 +322,12 @@ SQL
     # Idempotent and safe beside the running app (an edit always wins); a
     # no-op when the stored version is current. Prints counts only.
     compose run --rm --no-deps -T app python -m assistant reindex-search
+    ;;
+  incident-report)
+    require_data_volume
+    # ARCHITECTURE §17 (I25): ids, fixed codes and times only, never a content
+    # column. Arguments are argparse integers (--account-id plus one target).
+    compose run --rm --no-deps -T app python -m assistant incident-report "$@"
     ;;
   nfr04)
     require_data_volume
