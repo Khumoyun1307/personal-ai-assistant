@@ -205,8 +205,9 @@ class MonitorJobs:
     re-defers itself (its own row is `doing`, so the queueing lock is free).
     Mode, consent, budget and the monitors themselves are re-checked by the
     evaluator when it runs. No procrastinate retry: a failed batch is counted
-    on the monitor's review row (bounded attempts with backoff, then degraded,
-    I4) and this job re-defers itself at the backoff end; the flag, set while
+    on the monitor's review row (a provider outage backs off, capped, and never
+    degrades it; a content-dependent failure is narrowed to one message and then
+    recorded as a gap, I4) and this job re-defers itself at the backoff end; the flag, set while
     any monitor has unreviewed messages, lets the reconciler re-create a lost
     job.
     """
@@ -278,8 +279,13 @@ class MonitorJobs:
             now = self.clock.now()
             expired = await monitors.expire_due(uow.session, now=now)
             swept = await monitor_review.sweep(uow.session, now=now)
-        if expired or swept:
-            logger.info("monitors_expired", count=expired, review_swept=swept)
+            # Rows an outage once left degraded are read again (the chats are
+            # flagged; the reconciler queues them).
+            rearmed = await monitor_review.rearm_provider_failures(uow.session, now=now)
+        if expired or swept or rearmed:
+            logger.info(
+                "monitors_expired", count=expired, review_swept=swept, review_rearmed=rearmed
+            )
         return expired
 
 

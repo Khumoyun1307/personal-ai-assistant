@@ -1311,12 +1311,15 @@ async def progress_row(env: Env, monitor_id: int) -> ReviewProgress:
 
 
 async def review_state(env: Env, monitor_id: int) -> monitor_review.MonitorReview:
+    owner = await account_id(env)
     async with env.factory() as session:
+        row = await session.get(Automation, monitor_id)
+        assert row is not None
+        rule = monitors.parse_rule(row.spec)
+        assert rule is not None
+        view = monitors._view(row, rule)
         found = await monitor_review.states(
-            session,
-            account_id=await account_id(env),
-            monitor_ids=[monitor_id],
-            now=env.clock.now(),
+            session, account_id=owner, views=[view], now=env.clock.now()
         )
     return found[monitor_id]
 
@@ -1448,54 +1451,223 @@ async def test_a_failed_review_gives_up_no_message_and_reads_it_again(
     assert (row.status, row.attempts, row.last_error, row.retry_at) == ("current", 0, None, None)
 
 
-async def test_exhausted_attempts_leave_the_range_inspectable_and_recoverable(env: Env) -> None:
-    """Retries are bounded (3 attempts per batch, never a hot loop): the monitor
-    is degraded, its unreviewed range stays on record and in the owner's
-    monitor list, no further call is made, and an explicit retry reads the
-    original message and fires."""
-    a, watched = await one_message_watch(env)
-    newest = await message_id_of(env, 2)
+async def clear_flag(env: Env, conversation: int) -> None:
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text("UPDATE app.conversations SET pending_monitor_at = NULL WHERE id = :c"),
+            {"c": conversation},
+        )
+
+
+async def test_a_poison_message_is_given_up_as_a_gap_and_later_messages_are_reviewed(
+    env: Env,
+) -> None:
+    """A content-dependent failure (here three refusals) is not repeated for ever
+    and does not freeze the monitor: a single message that still fails is recorded
+    as a gap (behind the cursor, never as examined), and the next message is
+    reviewed and fires."""
+    a, watched = await one_message_watch(env, lifecycle="standing")
+    poison = await message_id_of(env, 2)
     fake = FakeLLM()
-    fake.parsed = [LLMError(LLMErrorKind.INVALID_OUTPUT)] * monitor_review.MAX_ATTEMPTS
+    fake.parsed = [StopReason.REFUSAL] * monitor_review.MAX_ATTEMPTS + [match_all]
     for delay in (*monitor_review.RETRY_DELAYS, None):
         outcome = await evaluator(env, fake).evaluate(a)
-        assert outcome.status is MonitorEvalStatus.FAILED
+        assert outcome.status is MonitorEvalStatus.REFUSED
         if delay is not None:
             assert outcome.retry_at == env.clock.now() + delay
             env.clock.advance(seconds=delay.total_seconds() + 1)
-    assert outcome.retry_at is None
     row = await progress_row(env, watched)
-    assert (row.status, row.attempts, row.retry_at, row.position) == ("degraded", 3, None, None)
+    assert (row.status, row.attempts, row.retry_at, row.last_error) == ("partial", 0, None, None)
+    assert (row.position or {}).get("message_id") == poison
     assert row.pending_ranges == [
-        {"first_message_id": newest, "last_message_id": newest, "reason": "invalid_output"}
+        {"first_message_id": poison, "last_message_id": poison, "reason": "invalid_output"}
     ]
-    assert await flag(env, a) is None  # no wake-ups for a monitor that is out of attempts
-    degraded = await review_state(env, watched)
-    assert (degraded.state, degraded.reasons) == ("degraded", ("invalid_output",))
-    assert [(r.status, r.error_class) for r in await evaluate_runs(env)] == [
-        ("failed", "invalid_output")
-    ] * 3
-    automation_row = await automation(env, watched)
-    assert automation_row is not None
-    assert automation_row.status == "active"  # still on, and now visibly degraded
+    assert await flag(env, a) is None  # nothing left to review: no wake-ups
+    gap = await review_state(env, watched)
+    assert (gap.state, gap.reasons) == ("gap", ("invalid_output",))
+    assert await alerts(env) == []
+    assert len(await evaluate_runs(env)) == monitor_review.MAX_ATTEMPTS
 
-    # No paid loop: nothing is called again, however often it is evaluated.
-    env.clock.advance(hours=3)
-    quiet = await evaluator(env, fake).evaluate(a)
-    assert (quiet.status, len(fake.requests)) == (MonitorEvalStatus.UP_TO_DATE, 3)
+    env.clock.advance(minutes=1)
+    await say(env, 3, "SYNTH keyingi xabar")
+    later = await evaluator(env, fake).evaluate(a)
+    assert (later.status, later.alerts) == (MonitorEvalStatus.EVALUATED, 1)
+    assert shown_new(fake.requests[-1]) == [await message_id_of(env, 3)]
+    # The gap is still on record after the successful review.
+    assert (await review_state(env, watched)).state == "gap"
 
-    # Explicit recovery: fresh attempts, the original message, one alert.
-    async with transaction(env.factory) as uow:
-        chats = await monitor_review.request_retry(
-            uow.session, account_id=await account_id(env), now=env.clock.now(), monitor_id=watched
-        )
-    assert chats == [a]
+
+async def test_a_failing_batch_is_narrowed_so_one_poison_message_cannot_hold_the_rest(
+    env: Env,
+) -> None:
+    """Three messages, the batch fails 3 times: the oldest message is tried alone
+    (3 more), is given up as a gap, and the other two are reviewed together."""
+    a, watched = await one_message_watch(env, lifecycle="standing")
+    await say(env, 3, "SYNTH ikkinchi")
+    await say(env, 4, "SYNTH uchinchi")
+    ids = [await message_id_of(env, n) for n in (2, 3, 4)]
+    fake = FakeLLM()
+    fake.parsed = [LLMError(LLMErrorKind.INVALID_OUTPUT)] * (2 * monitor_review.MAX_ATTEMPTS) + [
+        verdicts((watched, False, []))
+    ]
+    for _ in range(2 * monitor_review.MAX_ATTEMPTS):
+        assert (await evaluator(env, fake).evaluate(a)).status is MonitorEvalStatus.FAILED
+        env.clock.advance(seconds=301)
+    shown = [shown_new(request) for request in fake.requests]
+    assert shown[: monitor_review.MAX_ATTEMPTS] == [ids] * monitor_review.MAX_ATTEMPTS
+    assert shown[monitor_review.MAX_ATTEMPTS :] == [[ids[0]]] * monitor_review.MAX_ATTEMPTS
+    row = await progress_row(env, watched)
+    assert (row.position or {}).get("message_id") == ids[0]
+    assert await flag(env, a) is not None  # the other two still wait
+
+    rest = await evaluator(env, fake).evaluate(a)
+    assert rest.status is MonitorEvalStatus.EVALUATED
+    assert shown_new(fake.requests[-1]) == ids[1:]
+    assert await flag(env, a) is None
+    row = await progress_row(env, watched)
+    assert (row.position or {}).get("message_id") == ids[2]
+    assert row.pending_ranges == [
+        {"first_message_id": ids[0], "last_message_id": ids[0], "reason": "invalid_output"}
+    ]
+
+
+async def test_a_provider_outage_never_degrades_a_monitor(env: Env) -> None:
+    """An outage says nothing about the messages. The attempts back off (1, 5,
+    15 minutes, ...) however long it lasts; when the provider is back the
+    monitor reviews everything, the messages that arrived during the outage and
+    after it included, in one batch."""
+    a, watched = await one_message_watch(env, lifecycle="standing")
+    first = await message_id_of(env, 2)
+    fake = FakeLLM()
+    fake.parsed = [LLMError(LLMErrorKind.UNAVAILABLE)] * 3 + [match_all]
+    expected = [*monitor_review.TRANSIENT_DELAYS[:3]]
+    for delay in expected:
+        outcome = await evaluator(env, fake).evaluate(a)
+        assert outcome.status is MonitorEvalStatus.FAILED
+        assert outcome.retry_at == env.clock.now() + delay
+        env.clock.advance(seconds=delay.total_seconds() / 2)  # a message, mid-backoff
+        await say(env, 3 + len(fake.requests), "SYNTH outage paytida")
+        waiting = await evaluator(env, fake).evaluate(a)
+        assert waiting.status is MonitorEvalStatus.DEFERRED
+        env.clock.advance(seconds=delay.total_seconds() / 2 + 1)
+    row = await progress_row(env, watched)
+    assert (row.status, row.attempts, row.last_error) == ("pending", 3, "provider_failed")
+    assert (await review_state(env, watched)).state == "delayed"
     assert await flag(env, a) is not None
-    fake.parsed = [match_all]
+    await say(env, 20, "SYNTH outage tugagach")  # after the outage ends
+
     recovered = await evaluator(env, fake).evaluate(a)
     assert (recovered.status, recovered.alerts) == (MonitorEvalStatus.EVALUATED, 1)
-    assert shown_new(fake.requests[-1]) == [newest]
+    shown = shown_new(fake.requests[-1])
+    assert shown[0] == first
+    assert shown == sorted(shown)
+    assert len(shown) == 5
+    assert await flag(env, a) is None
     assert (await review_state(env, watched)).state == "current"
+
+
+async def test_the_hourly_job_rearms_rows_an_outage_left_degraded(env: Env) -> None:
+    """Rows an earlier build degraded on a provider failure are given fresh
+    attempts by the hourly sweep job; a content-degraded row is not touched."""
+    a, watched = await one_message_watch(env)
+    fake = FakeLLM()
+    fake.parsed = [LLMError(LLMErrorKind.UNAVAILABLE), match_all]
+    await evaluator(env, fake).evaluate(a)
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE app.review_progress SET status = 'degraded', retry_at = NULL, "
+                "attempts = 3 WHERE monitor_id = :m"
+            ),
+            {"m": watched},
+        )
+    await clear_flag(env, a)
+    assert (await review_state(env, watched)).state == "degraded"
+    async with transaction(env.factory) as uow:
+        assert await monitor_review.rearm_provider_failures(uow.session, now=env.clock.now()) == 1
+    assert await flag(env, a) is not None
+    recovered = await evaluator(env, fake).evaluate(a)
+    assert (recovered.status, recovered.alerts) == (MonitorEvalStatus.EVALUATED, 1)
+    async with transaction(env.factory) as uow:
+        assert await monitor_review.rearm_provider_failures(uow.session, now=env.clock.now()) == 0
+
+
+async def test_a_hold_does_not_overwrite_a_degraded_row(env: Env) -> None:
+    a, watched = await one_message_watch(env)
+    fake = FakeLLM()
+    fake.parsed = [LLMError(LLMErrorKind.UNAVAILABLE)]
+    await evaluator(env, fake).evaluate(a)
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE app.review_progress SET status = 'degraded', retry_at = NULL "
+                "WHERE monitor_id = :m"
+            ),
+            {"m": watched},
+        )
+    await revoke(env, "ai_managed")
+    assert (await evaluator(env, fake).evaluate(a)).status is MonitorEvalStatus.NO_CONSENT
+    row = await progress_row(env, watched)
+    assert (row.status, row.last_error) == ("degraded", "provider_failed")
+
+
+async def test_two_interleaved_runs_do_not_alert_twice_for_one_range(env: Env) -> None:
+    """A second evaluation (queued while the first was in flight) settles the
+    range first, citing a newer message. The first run's answer is for a range
+    that is already reviewed: it must not fire a second alert."""
+    a, watched = await one_message_watch(env, lifecycle="standing")
+    second = FakeLLM()
+    second.parsed = [match_all]
+
+    async def second_run_settles_first(request: LLMRequest) -> dict[str, Any]:
+        await say(env, 3, "SYNTH keyin keldi")
+        inner = await evaluator(env, second).evaluate(a)
+        assert inner.alerts == 1
+        return match_all(request)  # cites message 2, the first run's window
+
+    fake = FakeLLM()
+    fake.parsed = [second_run_settles_first]
+    outer = await evaluator(env, fake).evaluate(a)
+    assert (outer.status, outer.alerts) == (MonitorEvalStatus.EVALUATED, 0)
+    [alert] = await alerts(env)
+    assert alert.refs["message_ids"] == [await message_id_of(env, 3)]
+    assert await flag(env, a) is None
+    row = await progress_row(env, watched)
+    assert (row.position or {}).get("message_id") == await message_id_of(env, 3)
+
+
+async def test_the_review_state_is_pending_until_what_the_monitor_counts_is_reviewed(
+    env: Env,
+) -> None:
+    """`current` means nothing the monitor counts waits: a monitor with no row
+    yet, or mid-backlog, is `pending`; messages of chats it does not watch do
+    not count."""
+    a, watched = await one_message_watch(env, lifecycle="standing")
+    assert (await review_state(env, watched)).state == "pending"  # no row yet
+    await say(env, 5, "SYNTH boshqa chat", chat=OTHER_CONTACT)  # not watched
+    fake = FakeLLM()
+    fake.parsed = [verdicts((watched, False, []))]
+    await evaluator(env, fake).evaluate(a)
+    assert (await review_state(env, watched)).state == "current"
+    await say(env, 3, "SYNTH yangi")
+    assert (await review_state(env, watched)).state == "pending"  # arrived, not reviewed
+
+
+async def test_an_ignore_mode_chat_keeps_its_cursors_through_the_sweep(env: Env) -> None:
+    a, watched = await one_message_watch(env, lifecycle="standing")
+    fake = FakeLLM()
+    fake.parsed = [verdicts((watched, False, []))]
+    await evaluator(env, fake).evaluate(a)
+    before = await progress_row(env, watched)
+    await set_mode(env, a, "ignore")
+    async with transaction(env.factory) as uow:
+        assert await monitor_review.sweep(uow.session, now=env.clock.now()) == 0
+    await set_mode(env, a, "observe")
+    after = await progress_row(env, watched)
+    assert after.position == before.position
+    # Back in Observe, the reviewed message is not read (or alerted on) again.
+    assert (await evaluator(env, fake).evaluate(a)).status is MonitorEvalStatus.UP_TO_DATE
+    assert len(fake.requests) == 1
 
 
 async def test_a_message_edited_during_the_call_is_not_settled_as_current(env: Env) -> None:
@@ -1718,17 +1890,18 @@ async def test_progress_deletion_keeps_a_linked_verdict_and_clears_both_link_fie
 ) -> None:
     """C7: every deletion path of a progress row clears `review_progress_id`
     AND `review_version` on the retained verdict, atomically with the removal:
-    the hourly sweep, the managed-data deletion, a cascade (the monitor deleted)
-    and a raw delete (the database trigger)."""
-    a, watched = await one_message_watch(env)
+    a raw delete (the database trigger), a cascade (the monitor deleted), the
+    managed-data deletion and the hourly sweep (a monitor ended long ago)."""
+    a, watched = await one_message_watch(env, lifecycle="standing")
     owner = await account_id(env)
     fake = FakeLLM()
     fake.parsed = [verdicts((watched, False, []))]
     await evaluator(env, fake).evaluate(a)
     through = await message_id_of(env, 2)
+    tg_id = 2
 
-    async def verdict(monitor_id: int | None = None) -> int:
-        progress = await progress_row(env, monitor_id or watched)
+    async def verdict(monitor_id: int) -> int:
+        progress = await progress_row(env, monitor_id)
         async with env.factory() as session, session.begin():
             # One verdict per chat: replace the one a previous step left.
             await session.execute(
@@ -1768,45 +1941,53 @@ async def test_progress_deletion_keeps_a_linked_verdict_and_clears_both_link_fie
                 ).scalar_one()
             )
 
-    # 1. The sweep: the chat is set to Ignore, so no monitor reads it.
-    triage_id = await verdict()
-    assert (await linked(triage_id))[1] is not None
-    await set_mode(env, a, "ignore")
-    async with transaction(env.factory) as uow:
-        assert await monitor_review.sweep(uow.session, now=env.clock.now()) == 1
-    assert await linked(triage_id) == (True, None, None)
-    assert await progress_count() == 0
-    await set_mode(env, a, "observe")
+    async def review_one(monitor_id: int) -> None:
+        nonlocal tg_id
+        tg_id += 1
+        env.clock.advance(seconds=5)
+        await say(env, tg_id, f"SYNTH xabar {tg_id}")
+        fake.parsed = [verdicts((monitor_id, False, []))]
+        await evaluator(env, fake).evaluate(a)
 
-    # 2. A raw delete: the database trigger is the backstop.
-    fake.parsed = [verdicts((watched, False, []))]
-    await say(env, 3, "SYNTH yana")
-    await evaluator(env, fake).evaluate(a)
-    triage_id = await verdict()
+    # 1. A raw delete: the database trigger is the backstop.
+    triage_id = await verdict(watched)
+    assert (await linked(triage_id))[1] is not None
     async with env.factory() as session, session.begin():
         await session.execute(text("DELETE FROM app.review_progress"))
     assert await linked(triage_id) == (True, None, None)
 
-    # 3. The monitor is deleted (FK cascade); 4. the managed-data deletion.
-    await say(env, 4, "SYNTH uchinchi")
-    fake.parsed = [verdicts((watched, False, []))]
-    await evaluator(env, fake).evaluate(a)
-    triage_id = await verdict()
+    # 2. The monitor is deleted (FK cascade).
+    await review_one(watched)
+    triage_id = await verdict(watched)
     async with env.factory() as session, session.begin():
         await session.execute(text("DELETE FROM app.automations WHERE id = :i"), {"i": watched})
     assert await linked(triage_id) == (True, None, None)
     assert await progress_count() == 0
 
+    # 3. The managed-data deletion (which also removes the verdict).
     again = await monitor(env, "semantic", conversation_ids=[a], description="a refund")
     env.clock.advance(minutes=1)
-    await say(env, 5, "SYNTH to'rtinchi")
-    fake.parsed = [verdicts((again, False, []))]
-    await evaluator(env, fake).evaluate(a)
-    triage_id = await verdict(again)
-    assert (await linked(triage_id))[1] is not None
+    await review_one(again)
+    assert (await linked(await verdict(again)))[1] is not None
     async with transaction(env.factory) as uow:
         await deletion.delete_managed_data(uow.session, account_id=owner, clock=env.clock)
-    assert await progress_count() == 0  # (the managed deletion also removes the verdict)
+    assert await progress_count() == 0
+
+    # 4. The hourly sweep: a monitor that ended more than a year ago.
+    last = await monitor(env, "semantic", conversation_ids=[a], description="a price")
+    env.clock.advance(minutes=1)
+    await review_one(last)
+    triage_id = await verdict(last)
+    assert await stop_now(env, last) is monitors.StopResult.STOPPED
+    env.clock.advance(days=366)
+    async with transaction(env.factory) as uow:
+        assert await monitor_review.sweep(uow.session, now=env.clock.now()) >= 1
+    assert await linked(triage_id) == (True, None, None)
+    async with env.factory() as session:
+        left = await session.scalar(
+            text("SELECT count(*) FROM app.review_progress WHERE monitor_id = :m"), {"m": last}
+        )
+    assert left == 0
 
 
 async def test_the_sweep_drops_the_review_metadata_of_long_ended_monitors(env: Env) -> None:

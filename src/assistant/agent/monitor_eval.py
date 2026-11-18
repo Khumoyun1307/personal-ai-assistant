@@ -47,9 +47,12 @@ message); then each monitor's cursor moves to the newest message of the batch.
 **Failures never abandon messages.** A refusal, content filter, invalid or
 truncated output, a provider error or a stale source moves no cursor: the
 attempt is counted on the monitor's row, the next one waits for a short
-backoff, and after `MAX_ATTEMPTS` the monitor is `degraded` — its unreviewed
-range stays on record, the owner's monitor list says so, and it is read again
-only after an explicit retry (`monitor_review.request_retry`). `pending_
+backoff. A provider outage or rate limit only backs off (1, 5, 15 minutes, then
+hourly) and never degrades a monitor. A content-dependent failure (refusal,
+invalid or truncated output) is tried `MAX_ATTEMPTS` times, then the batch is
+narrowed to its oldest message alone, and a single message that still fails is
+recorded as a gap (never as examined) and the cursor passes it, so one poison
+message cannot hold the rest of the chat; the owner's monitor list says so. `pending_
 monitor_at` is only the trigger: set while any monitor has unreviewed
 messages it may be read for.
 
@@ -58,7 +61,7 @@ messages it may be read for.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
@@ -129,7 +132,11 @@ _FAILURES: dict[str, tuple[monitor_review.FailureError, monitor_review.FailureRe
     "content_filter": ("refusal", "invalid_output"),
     "invalid_output": ("invalid_output", "invalid_output"),
     "max_tokens": ("truncated", "invalid_output"),
+    # The model stopped for a reason we cannot use, as it did before: content-dependent.
+    "stop_other": ("invalid_output", "invalid_output"),
 }
+#: Everything else (`llm_unavailable`, `llm_rate_limited`, ..., an unexpected
+#: error) does not depend on the messages: it backs off and never degrades.
 _PROVIDER_FAILED: tuple[monitor_review.FailureError, monitor_review.FailureReason] = (
     "provider_failed",
     "provider_failed",
@@ -353,6 +360,8 @@ class _Pending:
     row: ReviewProgress
     after: int
     first: int
+    #: Its oldest message alone: the batch holding it kept failing (poison).
+    narrowed: bool = False
 
 
 async def _lock(
@@ -390,7 +399,7 @@ async def _pending(
             confirmed_at=view.confirmed_at,
         )
         if first is not None:
-            found.append(_Pending(view, row, after, first))
+            found.append(_Pending(view, row, after, first, monitor_review.is_narrowed(row, first)))
             continue
         lost = await monitor_review.lost_ranges(
             session,
@@ -454,10 +463,12 @@ async def plan_review(
             waits.append(verdict.retry_at)
     if not ready:
         return Plan(None, min(waits, default=None))
-    groups: dict[int, list[_Pending]] = {}
+    groups: dict[tuple[int, bool], list[_Pending]] = {}
     for item in ready:
-        groups.setdefault(item.after, []).append(item)
+        # A narrowed monitor is read alone, on its oldest message only.
+        groups.setdefault((item.after, item.narrowed), []).append(item)
     group = min(groups.values(), key=lambda g: min(i.first for i in g))
+    limit = 1 if group[0].narrowed else BURST_LIMIT
     first_id = min(i.first for i in group)
     floors = [monitor_review.counted_from(i.view.confirmed_at) for i in group]
     counted_from = min(f for f in floors if f is not None)
@@ -469,14 +480,14 @@ async def plan_review(
                 .where(Message.id >= first_id)
                 .where(Message.sent_at >= counted_from)
                 .order_by(Message.id)
-                .limit(BURST_LIMIT + 1)
+                .limit(limit + 1)
             )
         )
         .scalars()
         .all()
     )
-    truncated = len(rows_new) > BURST_LIMIT
-    new = tuple(source_message(row) for row in rows_new[:BURST_LIMIT])
+    truncated = len(rows_new) > limit
+    new = tuple(source_message(row) for row in rows_new[:limit])
     through = new[-1].message_id
     earlier_rows = (
         (
@@ -539,7 +550,7 @@ async def work_left(
 ) -> Work:
     """Settle the chat's flag: `pending_monitor_at` is set while a monitor has
     unreviewed messages it may still be read for (their receipt time), and
-    cleared otherwise. A monitor out of attempts is `degraded` on its own row,
+    cleared otherwise. A legacy `degraded` monitor waits on its own row,
     not a reason to wake the chat every minute."""
     rows = await monitor_review.ensure_rows(
         session,
@@ -940,6 +951,24 @@ class MonitorEvaluator:
                 now=now,
             )
             return _Applied(0, True, work)
+        # Only a monitor whose row is as it was planned may fire or advance: a
+        # second evaluation that settled the same range first (its job was
+        # queued while this one ran) already reviewed it; its answer stands and
+        # this one, possibly citing other messages, must not alert again.
+        rows = await monitor_review.lock_rows(
+            session,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            monitor_ids=[t.view.automation_id for t in window.targets],
+        )
+        live = {
+            t.view.automation_id
+            for t in window.targets
+            if t.view.automation_id in current
+            and (row := rows.get(t.view.automation_id)) is not None
+            and row.version == t.expected_version
+        }
+        matched = {i: ids for i, ids in matched.items() if i in live}
         alerts = 0
         if matched:
             shown = {m.message_id: m.content_hash for m in window.new}
@@ -971,7 +1000,7 @@ class MonitorEvaluator:
                     via="evaluation",
                 )
                 alerts += notification_id is not None
-        await self._advance_targets(session, account_id, conversation_id, window, current, now)
+        await self._advance_targets(session, account_id, conversation_id, window, rows, live, now)
         work = await work_left(
             session,
             account_id=account_id,
@@ -988,22 +1017,15 @@ class MonitorEvaluator:
         account_id: int,
         conversation_id: int,
         window: Window,
-        current: Mapping[int, MonitorView],
+        rows: Mapping[int, ReviewProgress],
+        live: Collection[int],
         now: datetime,
     ) -> None:
         """Certify the batch for each monitor that is still on and whose row
-        has not moved since the batch was planned."""
-        rows = await monitor_review.lock_rows(
-            session,
-            account_id=account_id,
-            conversation_id=conversation_id,
-            monitor_ids=[t.view.automation_id for t in window.targets],
-        )
+        has not moved since the batch was planned (`live`)."""
         for target in window.targets:
             row = rows.get(target.view.automation_id)
-            if row is None or row.version != target.expected_version:
-                continue
-            if target.view.automation_id not in current:
+            if row is None or target.view.automation_id not in live:
                 continue
             lost = await monitor_review.lost_ranges(
                 session,
@@ -1059,6 +1081,7 @@ class MonitorEvaluator:
                 last_message_id=window.through,
                 reason=reason,
                 last_error=last_error,
+                snapshot_revision=window.snapshot_revision,
                 now=now,
             )
 
@@ -1071,8 +1094,8 @@ class MonitorEvaluator:
         reason: monitor_review.FailureReason,
     ) -> Work | None:
         """A failed call: the attempt is counted and no message is given up
-        (R3-09). After `MAX_ATTEMPTS` the monitors are degraded, with the
-        range kept; before that the next attempt waits for a backoff."""
+        (R3-09). Provider failures only back off; content-dependent ones are
+        narrowed and, for one message, recorded as a gap (`record_failure`)."""
         account_id = prepared.account_id
         async with transaction(self._session_factory) as uow:
             session = uow.session

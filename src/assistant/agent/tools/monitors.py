@@ -14,7 +14,9 @@ S05.4 §3.2; FR-TRI-06; P2-T14).
 - **`list_monitors`** — class `read`: the owner's monitors that are on or
   paused. Contact names and the owner's stored terms and descriptions are
   wrapped untrusted (they may carry names), so the result taints the run
-  (§6 invariant 3b).
+  (§6 invariant 3b). Each semantic monitor carries `review` (I4): how far the
+  AI's checking of new messages got, as fixed enums (`current`, `pending`,
+  `delayed`, `degraded`, `gap`, `blocked`), never message text.
 - **`stop_monitor`** — class `configure`: ends a monitor (`cancelled`), once;
   a tainted run gets a confirmation card like every state change (RG-11).
 
@@ -339,7 +341,7 @@ async def list_monitors_tool(ctx: ToolContext, _args: ListMonitorsArgs) -> ToolO
         reviews = await monitor_review.states(
             session,
             account_id=ctx.account_id,
-            monitor_ids=[view.automation_id for view in views if view.semantic],
+            views=[view for view in views if view.semantic],
             now=services.clock.now(),
         )
     items = []
@@ -467,7 +469,12 @@ CREATE_MONITOR = ToolDefinition(
 
 LIST_MONITORS = ToolDefinition(
     name="list_monitors",
-    description="List the owner's monitors that are on or paused, with their ids.",
+    description=(
+        "List the owner's monitors that are on or paused, with their ids. Each "
+        "AI-checked monitor has `review`: how far the AI's checking of new "
+        "messages got (state current, pending, delayed, degraded, gap or blocked, "
+        "with fixed reasons); when it is not current, say so honestly."
+    ),
     args_model=ListMonitorsArgs,
     capability=CapabilityClass.READ,
     handler=list_monitors_tool,

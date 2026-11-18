@@ -1,7 +1,7 @@
 """J15/J16/J17: explicit alerts, backlog coverage and hostile task text."""
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from assistant.accounts.models import PendingInput
 from assistant.automation.models import Automation
@@ -199,7 +199,11 @@ async def test_j15_digest_off_held_monitor_delivers_once_after_runtime_restart(
     assert j.s.business_sends() == []
 
 
-@pytest.mark.xfail(strict=True, reason="needs I4", raises=AssertionError)
+@pytest.mark.xfail(
+    strict=True,
+    reason="needs I6: I4 drains the backlog, but the clipped long tail is chunked by I6",
+    raises=AssertionError,
+)
 @pytest.mark.parametrize("locale", LOCALES)
 async def test_j16_semantic_monitor_does_not_skip_thirty_message_limit_or_long_tail(
     background: tuple[M05Scenario, Journey], locale: Locale
@@ -228,6 +232,38 @@ async def test_j16_semantic_monitor_does_not_skip_thirty_message_limit_or_long_t
     assert tail in rendered
     assert f"{first}" in rendered
     assert f"{last}" in rendered
+    assert j.s.business_sends() == []
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+async def test_i4_owner_asking_about_a_degraded_monitor_gets_its_review_state(
+    background: tuple[M05Scenario, Journey], locale: Locale
+) -> None:
+    """A monitor whose checking is not current says so in the owner's list (the
+    model is told, as fixed enums); a healthy one is not reported as degraded."""
+    s, j = background
+    rule = await create_monitor(s, j, locale, semantic=True)
+    await j.owner(
+        "CANARY-SYNTH are my monitors working?",
+        call("list_monitors"),
+        text_response(TEXT[locale].outcome),
+    )
+    [healthy] = [o for o in j.outputs() if "monitors" in o][-1]["monitors"]
+    assert healthy["review"]["state"] in {"current", "pending"}
+    async with s.env.factory() as session, session.begin():
+        await session.execute(
+            text(
+                "INSERT INTO app.review_progress (account_id, conversation_id, reader, "
+                "monitor_id, status, attempts, last_error, pending_ranges) "
+                "VALUES (:a, :c, 'monitor', :m, 'degraded', 3, 'provider_failed', '[]'::jsonb)"
+            ),
+            {"a": s.account_id, "c": s.conversation_id, "m": rule.id},
+        )
+    await j.owner(
+        "CANARY-SYNTH and now?", call("list_monitors"), text_response(TEXT[locale].outcome)
+    )
+    [degraded] = [o for o in j.outputs() if "monitors" in o][-1]["monitors"]
+    assert degraded["review"] == {"state": "degraded", "reasons": ["provider_failed"]}
     assert j.s.business_sends() == []
 
 

@@ -430,6 +430,45 @@ async def test_list_monitors_wraps_names_and_taints_the_run(env: Env) -> None:
     del conversation
 
 
+REVIEW_STATES = {"current", "pending", "delayed", "degraded", "gap", "blocked"}
+
+
+async def test_list_monitors_reports_how_far_the_review_got(env: Env) -> None:
+    """I4: each semantic monitor carries `review` with fixed enums, so the owner
+    hears the truth about a monitor whose checking is not current."""
+    conversation, contact = await seed(env, managed=True)
+    monitor_id = await direct_monitor(env, contact, lifecycle="standing")
+    fake = FakeLLM(
+        tool_response(("c1", "list_monitors", args())),
+        text_response("Listed."),
+        tool_response(("c2", "list_monitors", args())),
+        text_response("Listed again."),
+    )
+    turn = await ask(env, "What monitors do I have?")
+    await runtime(env, fake, FakeChannel(), flags=FLAGS, registry=default_registry()).run(turn)
+    items = {i["monitor_id"]: i for i in results(fake.requests[1])[0]["monitors"]}
+    assert set(items[monitor_id]["review"]) == {"state", "reasons"}
+    assert items[monitor_id]["review"]["state"] in REVIEW_STATES
+
+    # A monitor whose attempts ran out (an old row) is reported as degraded.
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text(
+                "INSERT INTO app.review_progress (account_id, conversation_id, reader, "
+                "monitor_id, status, attempts, last_error, pending_ranges) "
+                "SELECT a.account_id, :c, 'monitor', a.id, 'degraded', 3, 'provider_failed', "
+                "'[]'::jsonb FROM app.automations a WHERE a.id = :m"
+            ),
+            {"c": conversation, "m": monitor_id},
+        )
+    turn = await ask(env, "And now?")
+    await runtime(env, fake, FakeChannel(), flags=FLAGS, registry=default_registry()).run(turn)
+    items = {i["monitor_id"]: i for i in results(fake.requests[3])[0]["monitors"]}
+    assert items[monitor_id]["review"] == {"state": "degraded", "reasons": ["provider_failed"]}
+    described = {t.name: t.description for t in default_registry().all()}
+    assert "review" in described["list_monitors"]
+
+
 async def test_stop_monitor_is_idempotent(env: Env) -> None:
     _, contact = await seed(env)
     monitor_id = await direct_monitor(env, contact)

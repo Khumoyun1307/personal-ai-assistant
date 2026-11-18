@@ -24,19 +24,31 @@ from datetime import datetime, timedelta
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import BigInteger, and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.accounts.models import Account
 from assistant.automation.models import Automation
+from assistant.automation.monitors import MonitorView
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.inbox.models import ConversationTriage, ReviewProgress
 
 READER_MONITOR = "monitor"
 SCOPE_ROLLING = "rolling"
-#: Attempts at one batch before it is left degraded (C7).
+#: Content-dependent failures (refusal, invalid or truncated output, a source
+#: that keeps changing) at one batch before it is narrowed, and then before a
+#: single message that still fails is recorded as a gap (C7: at most 3).
 MAX_ATTEMPTS = 3
-#: The wait before the next attempt, by the number of failed attempts so far.
+#: The wait before the next attempt at such a batch, by failed attempts so far.
 RETRY_DELAYS = (timedelta(seconds=60), timedelta(seconds=300))
+#: Provider outages and rate limits do not depend on the message: they never
+#: degrade a monitor, they only back off (capped), however long they last.
+TRANSIENT_DELAYS = (
+    timedelta(seconds=60),
+    timedelta(seconds=300),
+    timedelta(minutes=15),
+    timedelta(hours=1),
+)
 #: A budget hold: the monthly budget does not move within the hour.
 BUDGET_RETRY = timedelta(hours=1)
 #: Intervals kept per monitor before they collapse into one wider range.
@@ -216,6 +228,34 @@ async def ensure_rows(
     return rows
 
 
+def _unsettled(item: ReviewRange, position: int) -> bool:
+    return item.reason in FAILURE_REASONS and item.last_message_id > position
+
+
+def failure_ranges(row: ReviewProgress) -> list[ReviewRange]:
+    """The unsettled batches: failure ranges still ahead of the cursor. A range
+    of a failure reason behind the cursor is a gap (a message given up on)."""
+    position = position_of(row)
+    return [r for r in ranges_of(row) if _unsettled(r, position)]
+
+
+def gap_ranges(row: ReviewProgress) -> list[ReviewRange]:
+    """What was lost before review reached it, or given up on: never cleared."""
+    position = position_of(row)
+    return [r for r in ranges_of(row) if not _unsettled(r, position)]
+
+
+def is_narrowed(row: ReviewProgress | None, first_pending: int) -> bool:
+    """The monitor's next batch is its oldest message alone: the batch that
+    contained it kept failing for a reason that depends on content."""
+    if row is None or row.last_error == "provider_failed":
+        return False
+    return any(
+        r.first_message_id == r.last_message_id == first_pending and r.reason != "provider_failed"
+        for r in failure_ranges(row)
+    )
+
+
 # ------------------------------------------------------------------ eligibility
 @dataclass(frozen=True, slots=True)
 class Eligibility:
@@ -224,31 +264,31 @@ class Eligibility:
     ready: bool
     #: Waiting for the backoff: when the next attempt is allowed.
     retry_at: datetime | None = None
-    #: Attempts exhausted on this very batch: it waits for an explicit retry.
+    #: Legacy: attempts exhausted on this very batch; waits for a retry.
     degraded: bool = False
 
 
 def eligibility(row: ReviewProgress | None, *, first_pending: int, now: datetime) -> Eligibility:
-    """A monitor is read when it has no row yet, or its backoff has passed;
-    a batch that exhausted its attempts is not read again until an explicit
-    retry — or until its first unreviewed message is no longer the one that
-    failed (deleted, expired), which is new work."""
+    """A monitor is read when it has no row yet, or its backoff has passed.
+    A row left `degraded` (before outages stopped degrading monitors) waits for
+    a retry until its first unreviewed message is no longer the one that failed
+    (deleted, expired), which is new work."""
     if row is None:
         return Eligibility(ready=True)
     if row.retry_at is not None and row.retry_at > now:
         return Eligibility(ready=False, retry_at=row.retry_at)
     if row.status == "degraded":
-        failed = {r.first_message_id for r in ranges_of(row) if r.reason in FAILURE_REASONS}
+        failed = {r.first_message_id for r in failure_ranges(row)}
         if first_pending in failed:
             return Eligibility(ready=False, degraded=True)
     return Eligibility(ready=True)
 
 
 # ------------------------------------------------------------------ settlement
-def _status(pending: Sequence[ReviewRange], *, backlog: bool) -> str:
-    if any(r.reason in FAILURE_REASONS for r in pending):
+def _status(*, ahead: bool, gaps: bool, backlog: bool) -> str:
+    if ahead:
         return "pending"
-    if pending:
+    if gaps:
         return "partial"
     return "pending" if backlog else "current"
 
@@ -264,21 +304,27 @@ async def advance(
     now: datetime,
 ) -> None:
     """Move the cursor to `through` (the caller verified the row's version and
-    the source). Failure ranges up to `through` are settled; gaps stay."""
-    kept = [r for r in ranges_of(row) if r.reason in GAP_REASONS or r.last_message_id > through]
-    pending = merge_ranges([*kept, *lost])
+    the source). Failure ranges up to `through` are settled; gaps stay. Gaps
+    are merged among themselves only: merging one with a failure range ahead
+    of the cursor would turn unreviewed work into a gap."""
+    gaps = gap_ranges(row)
+    still_ahead = [r for r in failure_ranges(row) if r.last_message_id > through]
+    merged = merge_ranges([*gaps, *lost])
     row.position = ReviewPosition(
         message_id=through, content_revision=snapshot_revision
     ).model_dump(mode="json")
     row.source_revision = snapshot_revision
-    row.pending_ranges = [r.model_dump(mode="json") for r in pending]
+    row.pending_ranges = [r.model_dump(mode="json") for r in [*merged, *still_ahead]]
     row.attempts = 0
     row.retry_at = None
     row.last_error = None
     row.version += 1
-    row.status = _status(pending, backlog=backlog)
+    row.status = _status(ahead=bool(still_ahead), gaps=bool(merged), backlog=backlog)
     row.updated_at = now
     await session.flush()
+
+
+FailureOutcome = Literal["retry", "narrowed", "skipped"]
 
 
 async def record_failure(
@@ -289,41 +335,72 @@ async def record_failure(
     last_message_id: int,
     reason: FailureReason,
     last_error: FailureError,
+    snapshot_revision: int,
     now: datetime,
-) -> bool:
-    """One more failed attempt at the batch. No review movement. The batch is
-    kept as unreviewed work; after `MAX_ATTEMPTS` the monitor is `degraded`
-    and not read again until retried; before that the next attempt waits for a
-    short backoff (a bounded trigger, never a paid hot loop), a stale source
-    excepted (the answer is simply recomputed). `last_error` is a fixed value,
-    never provider text. Returns True when this exhausted the attempts."""
-    ranges = ranges_of(row)
-    failed_before = {r.first_message_id for r in ranges if r.reason in FAILURE_REASONS}
-    if first_message_id not in failed_before:
-        row.attempts = 0  # a different batch: its own count
+) -> FailureOutcome:
+    """One more failed attempt at the batch. No cursor moves, except for a
+    message given up on. `last_error` is a fixed value, never provider text.
+
+    - A provider failure (outage, rate limit) says nothing about the messages:
+      the batch is retried after a capped backoff (1, 5, 15 minutes, then
+      hourly) for as long as it lasts, and the monitor is never degraded.
+    - A content-dependent failure is retried `MAX_ATTEMPTS` times (a short
+      backoff; a stale source at once). Then a batch of several messages is
+      narrowed to its oldest message alone, so one poison message cannot hold
+      the rest; a single message that still fails `MAX_ATTEMPTS` times is
+      recorded as a gap (never as examined) and the cursor passes it."""
+    position = position_of(row)
+    ahead = failure_ranges(row)
+    transient = reason == "provider_failed"
+    if first_message_id not in {r.first_message_id for r in ahead} or transient != (
+        row.last_error == "provider_failed"
+    ):
+        row.attempts = 0  # a different batch or kind of failure: its own count
     row.attempts += 1
-    others = [r for r in ranges if r.reason not in FAILURE_REASONS]
-    pending = merge_ranges(
-        [
-            *others,
-            ReviewRange(
-                first_message_id=first_message_id, last_message_id=last_message_id, reason=reason
-            ),
-        ]
-    )
-    row.pending_ranges = [r.model_dump(mode="json") for r in pending]
+    behind = gap_ranges(row)
     row.last_error = last_error
-    exhausted = row.attempts >= MAX_ATTEMPTS
-    if exhausted:
-        row.status = "degraded"
-        row.retry_at = None
-    else:
-        row.status = "pending"
-        row.retry_at = None if reason == "source_changed" else now + RETRY_DELAYS[row.attempts - 1]
     row.version += 1
     row.updated_at = now
+    outcome: FailureOutcome = "retry"
+    batch = ReviewRange(
+        first_message_id=first_message_id, last_message_id=last_message_id, reason=reason
+    )
+    if transient:
+        row.status = "pending"
+        row.retry_at = now + TRANSIENT_DELAYS[min(row.attempts, len(TRANSIENT_DELAYS)) - 1]
+        pending = [*merge_ranges(behind), batch]
+    elif row.attempts < MAX_ATTEMPTS:
+        row.status = "pending"
+        row.retry_at = None if reason == "source_changed" else now + RETRY_DELAYS[row.attempts - 1]
+        pending = [*merge_ranges(behind), batch]
+    elif last_message_id > first_message_id:
+        outcome = "narrowed"
+        row.attempts = 0
+        row.status = "pending"
+        row.retry_at = now + RETRY_DELAYS[0]
+        pending = [
+            *merge_ranges(behind),
+            ReviewRange(
+                first_message_id=first_message_id, last_message_id=first_message_id, reason=reason
+            ),
+        ]
+    else:
+        outcome = "skipped"
+        gap = ReviewRange(
+            first_message_id=first_message_id, last_message_id=first_message_id, reason=reason
+        )
+        row.position = ReviewPosition(
+            message_id=max(first_message_id, position), content_revision=snapshot_revision
+        ).model_dump(mode="json")
+        row.source_revision = snapshot_revision
+        row.attempts = 0
+        row.retry_at = None
+        row.last_error = None
+        row.status = "partial"
+        pending = merge_ranges([*behind, gap])
+    row.pending_ranges = [r.model_dump(mode="json") for r in pending]
     await session.flush()
-    return exhausted
+    return outcome
 
 
 async def hold(
@@ -335,13 +412,69 @@ async def hold(
     now: datetime,
 ) -> None:
     """The review cannot run now (no consent, over budget): the unreviewed
-    messages stay unreviewed and the row says why. Not an attempt."""
+    messages stay unreviewed and the row says why. Not an attempt. A degraded
+    row keeps its status (it needs a retry, not a hold)."""
+    if row.status == "degraded":
+        return
     row.last_error = reason
     row.status = "blocked" if reason == "no_consent" else "pending"
     row.retry_at = retry_at
     row.version += 1
     row.updated_at = now
     await session.flush()
+
+
+async def _reset(
+    session: AsyncSession, *, account_id: int, now: datetime, scope: list[Any]
+) -> list[int]:
+    """Fresh attempts for the rows in `scope`, their failed ranges dropped, their
+    chats flagged. Lock order (ARCHITECTURE §9.4): the account `FOR SHARE`, the
+    chats `FOR UPDATE` in id order, then the progress rows."""
+    chats = sorted(
+        set((await session.execute(select(ReviewProgress.conversation_id).where(*scope))).scalars())
+    )
+    if not chats:
+        return []
+    await session.execute(
+        select(Account.id).where(Account.id == account_id).with_for_update(read=True)
+    )
+    await session.execute(
+        select(Conversation.id)
+        .where(Conversation.account_id == account_id)
+        .where(Conversation.id.in_(chats))
+        .order_by(Conversation.id)
+        .with_for_update()
+    )
+    rows = (
+        await session.execute(
+            select(ReviewProgress)
+            .where(*scope)
+            .order_by(ReviewProgress.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars()
+    touched: set[int] = set()
+    for row in rows.all():
+        kept = gap_ranges(row)
+        row.pending_ranges = [r.model_dump(mode="json") for r in kept]
+        row.attempts = 0
+        row.retry_at = None
+        row.last_error = None
+        row.status = "partial" if kept else "pending"
+        row.version += 1
+        row.updated_at = now
+        touched.add(row.conversation_id)
+    if touched:
+        await session.execute(
+            update(Conversation)
+            .where(Conversation.account_id == account_id)
+            .where(Conversation.id.in_(sorted(touched)))
+            .where(Conversation.pending_monitor_at.is_(None))
+            .values(pending_monitor_at=now)
+        )
+    await session.flush()
+    return sorted(touched)
 
 
 async def request_retry(
@@ -352,11 +485,11 @@ async def request_retry(
     monitor_id: int | None = None,
     conversation_id: int | None = None,
 ) -> list[int]:
-    """The explicit recovery of exhausted work: degraded (or backing-off) rows
+    """The explicit recovery of unsettled work: degraded (or backing-off) rows
     get a fresh set of attempts, their failed ranges are dropped (the next run
-    re-reads from the cursor) and their chats are flagged for evaluation.
-    Returns the chats to queue. Gaps are kept."""
-    scope = [
+    re-reads from the cursor) and their chats are flagged for evaluation (the
+    reconciler queues them). Returns the chats. Gaps are kept."""
+    scope: list[Any] = [
         ReviewProgress.account_id == account_id,
         ReviewProgress.reader == READER_MONITOR,
         ReviewProgress.status.in_(("degraded", "pending", "blocked")),
@@ -365,28 +498,33 @@ async def request_retry(
         scope.append(ReviewProgress.monitor_id == monitor_id)
     if conversation_id is not None:
         scope.append(ReviewProgress.conversation_id == conversation_id)
-    rows = (await session.execute(select(ReviewProgress).where(*scope).with_for_update())).scalars()
-    chats: set[int] = set()
-    for row in rows.all():
-        kept = [r for r in ranges_of(row) if r.reason not in FAILURE_REASONS]
-        row.pending_ranges = [r.model_dump(mode="json") for r in kept]
-        row.attempts = 0
-        row.retry_at = None
-        row.last_error = None
-        row.status = "partial" if kept else "pending"
-        row.version += 1
-        row.updated_at = now
-        chats.add(row.conversation_id)
-    if chats:
+    return await _reset(session, account_id=account_id, now=now, scope=scope)
+
+
+async def rearm_provider_failures(session: AsyncSession, *, now: datetime) -> int:
+    """Hourly: rows left `degraded` by a provider failure (before outages stopped
+    degrading monitors) are given fresh attempts: an outage says nothing about
+    their messages. Returns the number of chats re-armed."""
+    accounts = (
         await session.execute(
-            update(Conversation)
-            .where(Conversation.account_id == account_id)
-            .where(Conversation.id.in_(sorted(chats)))
-            .where(Conversation.pending_monitor_at.is_(None))
-            .values(pending_monitor_at=now)
+            select(ReviewProgress.account_id)
+            .where(ReviewProgress.reader == READER_MONITOR)
+            .where(ReviewProgress.status == "degraded")
+            .where(ReviewProgress.last_error == "provider_failed")
+            .distinct()
+            .order_by(ReviewProgress.account_id)
         )
-    await session.flush()
-    return sorted(chats)
+    ).scalars()
+    total = 0
+    for account_id in list(accounts):
+        scope: list[Any] = [
+            ReviewProgress.account_id == account_id,
+            ReviewProgress.reader == READER_MONITOR,
+            ReviewProgress.status == "degraded",
+            ReviewProgress.last_error == "provider_failed",
+        ]
+        total += len(await _reset(session, account_id=int(account_id), now=now, scope=scope))
+    return total
 
 
 # ------------------------------------------------------------------ source lookups
@@ -474,55 +612,115 @@ async def lost_ranges(
 
 
 # ------------------------------------------------------------------ owner-visible state
+ReviewState = Literal["current", "pending", "delayed", "degraded", "gap", "blocked"]
+_ORDER: tuple[ReviewState, ...] = ("current", "gap", "pending", "delayed", "blocked", "degraded")
+
+
 @dataclass(frozen=True, slots=True)
 class MonitorReview:
     """How a monitor's review stands, for the owner's monitor list: fixed words
-    and enums only. `current` — everything counted was reviewed; `delayed` — a
-    review attempt failed and will be repeated; `degraded` — the attempts ran
-    out and some messages are unreviewed until retried; `gap` — messages were
-    deleted or expired before they were reviewed; `blocked` — no AI consent."""
+    and enums only. `current` — everything the monitor counts was reviewed;
+    `pending` — messages wait their turn to be reviewed; `delayed` — a review
+    attempt failed (or waits for budget) and will be repeated; `degraded` — an
+    old attempt budget ran out and the batch waits for a retry; `gap` — some
+    messages were deleted, expired or given up on and were never reviewed;
+    `blocked` — no AI consent."""
 
-    state: Literal["current", "delayed", "degraded", "gap", "blocked"]
+    state: ReviewState
     reasons: tuple[str, ...] = ()
 
 
+async def _has_unreviewed(session: AsyncSession, *, account_id: int, view: MonitorView) -> bool:
+    """Is there a retained contact message the monitor counts, in a chat it
+    watches, past its cursor (no row yet means past nothing)?"""
+    floor = counted_from(view.confirmed_at)
+    if floor is None:
+        return False
+    cursor = func.coalesce(ReviewProgress.position["message_id"].astext.cast(BigInteger), 0)
+    query = (
+        select(Message.id)
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .join(Contact, Contact.id == Conversation.contact_id)
+        .outerjoin(
+            ReviewProgress,
+            and_(
+                ReviewProgress.account_id == account_id,
+                ReviewProgress.conversation_id == Message.conversation_id,
+                ReviewProgress.monitor_id == view.automation_id,
+                ReviewProgress.reader == READER_MONITOR,
+                ReviewProgress.scope_key == SCOPE_ROLLING,
+            ),
+        )
+        .where(Message.account_id == account_id)
+        .where(Conversation.account_id == account_id)
+        .where(Contact.account_id == account_id)
+        .where(Conversation.mode.in_(("observe", "assist")))
+        .where(Contact.is_bot.is_(False))
+        .where(Message.direction == "contact")
+        .where(Message.deleted_at.is_(None))
+        .where(Message.purged_at.is_(None))
+        .where(Message.sent_at >= floor)
+        .where((Message.text.is_not(None)) | (Message.media.is_not(None)))
+        .where(Message.id > cursor)
+        .limit(1)
+    )
+    scope = view.rule.scope
+    if not scope.all_observed:
+        query = query.where(
+            or_(
+                Conversation.id.in_(list(scope.conversation_ids)),
+                Conversation.contact_id.in_(list(scope.contact_ids)),
+            )
+        )
+    return (await session.execute(query)).first() is not None
+
+
 async def states(
-    session: AsyncSession, *, account_id: int, monitor_ids: Collection[int], now: datetime
+    session: AsyncSession, *, account_id: int, views: Sequence[MonitorView], now: datetime
 ) -> dict[int, MonitorReview]:
-    """The review state of each listed monitor, worst across its chats."""
-    if not monitor_ids:
+    """The review state of each listed semantic monitor, worst across its chats.
+    `current` only when nothing the monitor counts waits for review."""
+    if not views:
         return {}
     rows = (
         await session.execute(
             select(ReviewProgress)
             .where(ReviewProgress.account_id == account_id)
             .where(ReviewProgress.reader == READER_MONITOR)
-            .where(ReviewProgress.monitor_id.in_(sorted(monitor_ids)))
+            .where(ReviewProgress.monitor_id.in_(sorted(v.automation_id for v in views)))
         )
     ).scalars()
-    order = ("current", "gap", "delayed", "blocked", "degraded")
-    found: dict[int, MonitorReview] = {int(i): MonitorReview("current") for i in monitor_ids}
+    found: dict[int, MonitorReview] = {v.automation_id: MonitorReview("current") for v in views}
+
+    def worse(monitor_id: int, state: ReviewState, reasons: Collection[str]) -> None:
+        known = found[monitor_id]
+        if _ORDER.index(state) >= _ORDER.index(known.state):
+            found[monitor_id] = MonitorReview(state, tuple(sorted({*known.reasons, *reasons})))
+
     for row in rows.all():
         assert row.monitor_id is not None
-        reasons: set[str] = {r.reason for r in ranges_of(row)}
+        failing = {r.reason for r in failure_ranges(row)}
+        gaps = {r.reason for r in gap_ranges(row)}
+        reasons: set[str] = {*failing, *gaps}
         if row.last_error is not None and row.status != "current":
             reasons.add(row.last_error)
-        state: Literal["current", "delayed", "degraded", "gap", "blocked"]
+        state: ReviewState
         if row.status == "degraded":
             state = "degraded"
         elif row.status == "blocked":
             state = "blocked"
-        elif (row.retry_at is not None and row.retry_at > now) or reasons & FAILURE_REASONS:
+        elif (row.retry_at is not None and row.retry_at > now) or failing:
             state = "delayed"
-        elif reasons & GAP_REASONS:
+        elif gaps:
             state = "gap"
         else:
             state = "current"
-        known = found[int(row.monitor_id)]
-        if order.index(state) >= order.index(known.state):
-            found[int(row.monitor_id)] = MonitorReview(
-                state, tuple(sorted({*known.reasons, *reasons}))
-            )
+        worse(int(row.monitor_id), state, reasons)
+    for view in views:
+        if found[view.automation_id].state in ("current", "gap") and await _has_unreviewed(
+            session, account_id=account_id, view=view
+        ):
+            worse(view.automation_id, "pending", ())
     return found
 
 
@@ -566,9 +764,10 @@ async def delete_monitor_progress(
 
 async def sweep(session: AsyncSession, *, now: datetime) -> int:
     """Hourly (with the monitor expiry): the review metadata of monitors that
-    ended more than a year ago and of chats no monitor reads any more (Ignore
-    mode, bot chats) is dropped; a verdict stays, with both linkage fields
-    cleared atomically. Orphaned means out of scope, not lost coverage."""
+    ended more than a year ago and of bot chats (never read) is dropped; a
+    verdict stays, with both linkage fields cleared atomically. An Ignore-mode
+    chat keeps its cursors: switching back must not re-read (and re-alert on)
+    messages that were already reviewed."""
     cutoff = now - ENDED_RETENTION
     rows = (
         await session.execute(
@@ -581,7 +780,6 @@ async def sweep(session: AsyncSession, *, now: datetime) -> int:
                 or_(
                     (Automation.status.not_in(("active", "paused")))
                     & (func.coalesce(Automation.ended_at, Automation.updated_at) < cutoff),
-                    Conversation.mode == "ignore",
                     Contact.is_bot.is_(True),
                 )
             )
