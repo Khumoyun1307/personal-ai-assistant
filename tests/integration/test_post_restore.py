@@ -66,6 +66,46 @@ async def test_post_restore_cancels_pending_actions_and_marks_executing_uncertai
         assert notice.value["actions"][str(account_id)]["uncertain"][0]["id"] == ids["executing"]
 
 
+async def test_post_restore_retires_a_restored_outdated_warning_card(env: Env) -> None:
+    """A4: a D-S17 warning card (OUTDATED + token) must not stay approvable."""
+    from assistant.actions import lifecycle
+    from assistant.actions.models import Action
+    from tests.integration.test_action_lifecycle_bulk import seed_actions
+
+    account_id, _, ids = await seed_actions(env)
+    async with env.factory() as session, session.begin():
+        card = await session.get(Action, ids["outdated"])
+        assert card is not None
+        card.approval_token = "synthetic-restored-warning"
+        card.freshness_warning = "source_edited"
+        card.state_reason = "source_edited"
+    async with env.factory() as session:
+        card = await session.get(Action, ids["outdated"])
+        assert card is not None
+        assert lifecycle.is_warning_card(card)
+    report = await post_restore(
+        env.factory, env.clock, backup_taken_at=env.clock.now() - timedelta(hours=1)
+    )
+    await reconcile_known_test_history(env)
+    async with env.factory() as session:
+        card = await session.get(Action, ids["outdated"])
+        assert card is not None
+        assert card.approval_token is None
+        assert not lifecycle.is_warning_card(card)
+        assert card.state == "cancelled"
+        assert card.state_reason == "restored_from_backup"
+        notice = await session.get(SystemState, KEY_RESTORE_NOTICE)
+        assert notice is not None
+        cancelled = notice.value["actions"][str(account_id)]["cancelled"]
+        assert ids["outdated"] in {entry["id"] for entry in cancelled}
+    assert report.actions_cancelled == 5
+    async with env.factory() as session, session.begin():
+        result = await lifecycle.approve(
+            session, account_id=account_id, token="synthetic-restored-warning", now=env.clock.now()
+        )
+    assert result.status is lifecycle.ApproveStatus.NOT_ACTIVE
+
+
 async def test_restore_notice_lists_only_its_accounts_action_ids_and_local_times(env: Env) -> None:
     from tests.integration.test_action_lifecycle_bulk import seed_actions
 
