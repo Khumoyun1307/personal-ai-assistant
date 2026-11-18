@@ -152,6 +152,10 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("agent_run_steps", "tool_name"),
         ("agent_run_steps", "args_digest"),
         ("agent_run_steps", "status"),
+        # I25 trace: closed code lists enforced by CHECK (anything else is `other`).
+        ("incident_trace_events", "stage"),
+        ("incident_trace_events", "code"),
+        ("incident_trace_events", "reason"),
         ("tool_confirmations", "tool_call_id"),
         ("tool_confirmations", "tool_name"),
         ("tool_confirmations", "status"),

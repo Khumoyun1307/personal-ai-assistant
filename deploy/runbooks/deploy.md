@@ -394,6 +394,16 @@ Rules:
   privacy journal shipping) and free data volume disk space. When sustained
   degradation is detected across consecutive checks, the assistant alerts the
   owner's control chat.
+- **Incident trace (I25).** To explain a wrong or unexpected draft, run
+  `just prod <ip> incident-report --account-id <A> --action-id <X>` (or
+  `--run-id <R>` / `--request-id <Q>`). It prints a summary (instruction
+  source, recipient selection, dropped channels, observed action versions,
+  outcome), then the runs, the decision trace, tool step names/statuses, the
+  linked actions with their presented card versions, and the requests: ids,
+  fixed codes and times only, never a content column. Ids come from the
+  owner's report, `/status` or the audit log; never read message rows to find
+  them. Locally: `docker compose -f compose.dev.yml run --rm app uv run python
+  -m assistant incident-report …`.
 
 - **P2 verification and daily trial audit.** `just prod <ip> p2-verify release` reports the
   schema, effective flag names, model and reasoning effort for every configured

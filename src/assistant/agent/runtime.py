@@ -63,7 +63,7 @@ from assistant.actions.requests import (
     load_source,
 )
 from assistant.actions.states import LIVE_CARD, ActionOrigin, ActionState, StateReason
-from assistant.agent import owner_texts, prompt_registry
+from assistant.agent import incident_trace, owner_texts, prompt_registry
 from assistant.agent.citations import apply_citations
 from assistant.agent.context import (
     OWNER_HISTORY_TURNS,
@@ -469,6 +469,7 @@ class OwnerRequestRuntime:
             refs=state.refs,
             registered=frozenset(tool.name for tool in self._registry.all()),
         )
+        executor.trace = await incident_trace.start_trace(self._session_factory, executor.context)
         return await self._loop(state, executor, prompt.label)
 
     async def _start(
@@ -1356,6 +1357,7 @@ class OwnerRequestRuntime:
                 account_id=state.account_id,
                 chat_id=state.chat_id,
             )
+        await incident_trace.trace_finished_run(self._session_factory, state, status.value)  # I25
         logger.info(
             "agent_run_finished",
             account_id=state.account_id,
