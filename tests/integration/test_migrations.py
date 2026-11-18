@@ -39,6 +39,7 @@ EXPECTED_TABLES = {
     "foreign_connections",
     "inbound_updates",
     "llm_calls",
+    "llm_admissions",
     "memory_items",
     "pending_inputs",
     "owner_requests",
@@ -492,7 +493,7 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0023"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0024"]
 
 
 def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
@@ -514,6 +515,30 @@ def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
             is None
         )
     run_alembic(scratch_url, "head")
+
+
+def test_0024_llm_admissions_restrict_account_removal_and_round_trip(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account, _ = _phase_conversation(conn, 81024)
+        conn.execute(
+            "INSERT INTO app.llm_admissions (account_id, operation_id, attempt_id, model, "
+            "price_version, month_start, input_bound, output_bound, reserved_usd, status) "
+            "VALUES (%s, gen_random_uuid(), gen_random_uuid(), 'gpt-6-luna', 'v', now(), "
+            "1, 1, 0.000001, 'billing_uncertain')",
+            (account,),
+        )
+        with pytest.raises(psycopg.errors.RestrictViolation):
+            conn.execute("DELETE FROM app.accounts WHERE id = %s", (account,))
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "UPDATE app.llm_admissions SET status = 'free' WHERE account_id = %s", (account,)
+            )
+        conn.execute("DELETE FROM app.llm_admissions WHERE account_id = %s", (account,))
+    run_alembic(scratch_url, "0023", down=True)
+    assert "llm_admissions" not in tables_in(scratch_url, "app")
+    run_alembic(scratch_url, "head")
+    assert "llm_admissions" in tables_in(scratch_url, "app")
 
 
 def test_0023_fence_erasure_marks_the_run_and_round_trips(scratch_url: str) -> None:

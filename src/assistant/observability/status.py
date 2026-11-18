@@ -17,7 +17,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import ColumnElement, func, select, text
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts import connections
@@ -40,6 +40,7 @@ from assistant.db.models import KEY_RESTORE_PENDING, SystemState
 from assistant.inbox.notifications import NotificationCounts, notification_counts
 from assistant.inbox.processor import inbox_backlog_for
 from assistant.inbox.watchdog import poller_heartbeat_at
+from assistant.llm.admission import billing_uncertain_count, month_spend
 from assistant.observability.service_monitoring import (
     ServiceMonitoringThresholds,
     compute_service_indicators,
@@ -101,8 +102,12 @@ class InboxStatus:
 
 @dataclass(frozen=True, slots=True)
 class BudgetStatus:
+    #: Settled charges plus every held reservation this month (I16).
     month_to_date_usd: str
     monthly_limit_usd: str | None
+    #: Provider attempts whose billing is not known yet (in flight or
+    #: uncertain): their full reserve is held, never counted as zero (I16).
+    billing_uncertain_calls: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,18 +348,11 @@ async def build_status(
         poller_heartbeat_age_seconds=age,
     )
 
-    spent = (
-        await session.execute(
-            text(
-                "SELECT COALESCE(SUM(cost_estimate), 0) FROM app.llm_calls "
-                "WHERE account_id = :account_id AND created_at >= :since"
-            ),
-            {"account_id": account_id, "since": month_start(now)},
-        )
-    ).scalar_one()
+    spent = await month_spend(session, account_id=account_id, since=month_start(now))
     budget = BudgetStatus(
-        month_to_date_usd=f"{Decimal(spent):.4f}",
+        month_to_date_usd=f"{spent:.4f}",
         monthly_limit_usd=None if monthly_budget_usd is None else f"{monthly_budget_usd}",
+        billing_uncertain_calls=await billing_uncertain_count(session, account_id=account_id),
     )
 
     service_indicators = await compute_service_indicators(

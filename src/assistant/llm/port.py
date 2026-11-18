@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal, Protocol
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -101,6 +102,9 @@ class LLMRequest:
     #: A stable, content-free key that groups requests sharing a prefix.
     prompt_cache_key: str | None = None
     run_id: int | None = None
+    #: The shared operation this call belongs to (C7 `OperationBudget.operation_id`,
+    #: I15). None: the admission wrapper treats the call as its own operation.
+    operation_id: UUID | None = None
 
     def contains_managed(self) -> bool:
         return any(item.provenance is Provenance.MANAGED for item in self.items)
@@ -173,6 +177,11 @@ class LLMErrorKind(StrEnum):
 
     INVALID_OUTPUT = "invalid_output"
     """Structured output did not validate against our own model."""
+
+    NOT_ADMITTED = "not_admitted"
+    """Priced admission refused the call before anything was sent (I16):
+    `code` is the `AdmissionDenied` reason (monthly_budget, unpriced,
+    invalid_bound)."""
 
 
 class LLMError(Exception):

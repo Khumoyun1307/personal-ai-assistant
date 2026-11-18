@@ -1,8 +1,10 @@
 """Metering: every provider call becomes an `llm_calls` row (NFR-10, AGENTS §8).
 
-Done in a wrapper rather than in each caller, so a new run type cannot forget
-it. Failed calls carry no usage and are not recorded here; the adapter logs
-them content-free.
+Production wiring meters through `llm/admitted.py` (I16), which reserves
+before the call and writes the `llm_calls` row in the same transaction as the
+admission's settlement. `MeteredLLMClient` is the pre-I16 record-after-success
+wrapper, kept for tests and tools that do not need admission. Failed calls
+carry no usage and are not recorded here.
 """
 
 from __future__ import annotations
@@ -20,36 +22,25 @@ from assistant.llm.port import (
     ParsedResponse,
     Usage,
 )
+from assistant.llm.pricing import PRICES, price_for
 
-#: USD per 1M tokens (input, output). The single place prices live. Source:
-#: ARCHITECTURE §3/§7.4 ($0.10 / $0.50 for gpt-6-luna). Cached input tokens are
-#: charged at the full input price — a deliberate over-estimate until the
-#: cached-token discount is verified, so the budget errs on the safe side.
+#: USD per 1M tokens (input, output), derived from the sourced table in
+#: `llm/pricing.py` — still the single place prices live (evals read this).
 PRICES_PER_MTOK: dict[str, tuple[Decimal, Decimal]] = {
-    "gpt-6-luna": (Decimal("0.10"), Decimal("0.50")),
+    price.model: (price.input_per_mtok, price.output_per_mtok) for price in PRICES
 }
-
-_MILLION = Decimal(1_000_000)
 
 
 def estimate_cost(model: str, usage: Usage) -> Decimal | None:
     """USD estimate, or None for a model without a known price.
 
-    The API reports the resolved model, which may carry a snapshot suffix
-    (`gpt-6-luna-<date>`), so a configured name also matches as a prefix.
+    The API reports the resolved model, which may carry a dated snapshot
+    suffix (`gpt-6-luna-<date>`); `pricing.price_for` matches only that.
     """
-    prices = next(
-        (
-            price
-            for name, price in PRICES_PER_MTOK.items()
-            if model == name or model.startswith(f"{name}-")
-        ),
-        None,
-    )
-    if prices is None:
+    price = price_for(model)
+    if price is None:
         return None
-    input_price, output_price = prices
-    return (usage.input_tokens * input_price + usage.output_tokens * output_price) / _MILLION
+    return price.cost(usage.input_tokens, usage.output_tokens)
 
 
 class CallRecorder(Protocol):

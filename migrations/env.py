@@ -23,6 +23,7 @@ import assistant.automation.models
 import assistant.conversations.models
 import assistant.db.models
 import assistant.inbox.models
+import assistant.llm.models
 import assistant.memory.models
 import assistant.privacy.journal_models  # noqa: F401
 from assistant.db.base import APP_SCHEMA, JOBS_SCHEMA, Base

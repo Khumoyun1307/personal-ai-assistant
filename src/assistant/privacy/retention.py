@@ -10,6 +10,7 @@ Every data class the privacy policy names has a rule here, and the hourly
 | `control_turns.text`, `quoted_text` | 90 days (owner: 14-90) | texts cleared; the row stays |
 | `tool_confirmations.args` | until decided / 24 h | cleared (`expired` if undecided) |
 | `llm_calls`, `agent_runs` (+ steps), `audit_log` | 1 year | rows deleted (they carry no content) |
+| `llm_admissions` settled (I16) | 1 year | rows deleted; unresolved ones are kept and held |
 | `business_connection_events` | 1 year | rows deleted (ids, rights, flags only) |
 | `foreign_connections` | 30 days after last seen | rows deleted (metadata of non-owners) |
 | `messages` content | 90 days (owner: 14-90) | content cleared, `purged_at` set |
@@ -76,6 +77,7 @@ from assistant.memory.summaries import (
 )
 from assistant.observability.logging import get_logger
 from assistant.privacy import retention_policy
+from assistant.privacy.accounting import reconcile_stale_admissions, sweep_admissions
 from assistant.privacy.owner_requests import (
     purge_request_sources,
     sweep_requests,
@@ -126,6 +128,10 @@ class SweepReport:
     digests: int = 0
     notifications: int = 0
     owner_requests: int = 0
+    #: Settled priced admissions deleted after the accounting year (I16).
+    llm_admissions: int = 0
+    #: Stale admissions reconciled (released or marked billing_uncertain; not deletions).
+    admissions_reconciled: int = 0
 
     @property
     def total(self) -> int:
@@ -154,6 +160,7 @@ class SweepReport:
             + self.digests
             + self.notifications
             + self.owner_requests
+            + self.llm_admissions
         )
 
 
@@ -303,6 +310,8 @@ async def sweep_all(
     confirmations = await sweep_tool_confirmations(session_factory, clock)
     accounting_cutoff = now - ACCOUNTING_RETENTION
     async with transaction(session_factory) as uow:
+        reconciled = await reconcile_stale_admissions(uow.session, now=now)
+        admissions = await sweep_admissions(uow.session, cutoff=accounting_cutoff)
         # `llm_calls` and `agent_runs` belong to the agent layer, which a domain
         # package may not import (import-linter); they are named by table here
         # so the retention policy stays in one place.
@@ -377,6 +386,8 @@ async def sweep_all(
         action_texts=action_texts,
         triage_verdicts=triage_verdicts,
         owner_requests=requests,
+        llm_admissions=admissions,
+        admissions_reconciled=reconciled.released + reconciled.uncertain,
         **p2_rows,
     )
 
