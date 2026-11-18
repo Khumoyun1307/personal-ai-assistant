@@ -73,8 +73,10 @@ class TriageJob:
             await triage_trigger.defer_triage(self.scheduler, conversation_id, at=later)
             return None
         outcome = await self.triager.triage(conversation_id)
-        if outcome.status is TriageStatus.TRIAGED:
-            # More arrived while the model ran: the store moved the flag to it.
+        if outcome.status in (TriageStatus.TRIAGED, TriageStatus.UP_TO_DATE):
+            # More is waiting: messages that arrived while the model ran, or a
+            # backlog beyond one bounded batch (C7: repeated runs drain it, each
+            # reading the oldest unreviewed). The store moved the flag to it.
             async with transaction(self.session_factory) as uow:
                 pending = await uow.session.scalar(
                     select(Conversation.pending_triage_at)

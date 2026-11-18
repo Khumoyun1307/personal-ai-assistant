@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "accounts",
     "agent_run_steps",
     "agent_runs",
+    "incident_trace_events",
     "audit_log",
     "business_connection_events",
     "business_connections",
@@ -493,7 +494,104 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0024"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0028"]
+
+
+def test_0027_incident_trace_is_bounded_coded_cascading_and_round_trips(
+    scratch_url: str,
+) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account, conversation = _phase_conversation(conn, 81028)
+        run = conn.execute(
+            "INSERT INTO app.agent_runs (account_id, run_type, model) "
+            "VALUES (%s, 'owner_request', 'synthetic') RETURNING id",
+            (account,),
+        ).fetchone()
+        assert run is not None
+        insert = (
+            "INSERT INTO app.incident_trace_events "
+            "(account_id, run_id, seq, stage, code, reason, conversation_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)"
+        )
+        conn.execute(insert, (account, run[0], 1, "recipient", "unique_strong", None, conversation))
+        conn.execute(insert, (account, run[0], 2, "outcome", "rejected", "owner_rejected", None))
+        for bad in (
+            (account, run[0], 3, "recipient", "SYNTH free text", None, None),  # not a code
+            (account, run[0], 3, "outcome", "unique_strong", None, None),  # wrong stage
+            (account, run[0], 3, "run", "failed", "SYNTH reason", None),  # not a reason
+            (account, run[0], 65, "run", "failed", None, None),  # over the bound
+        ):
+            with pytest.raises(psycopg.errors.CheckViolation):
+                conn.execute(insert, bad)
+        # A deleted reference becomes NULL; the run's deletion takes the trace.
+        conn.execute("DELETE FROM app.conversations WHERE id = %s", (conversation,))
+        assert conn.execute(
+            "SELECT conversation_id FROM app.incident_trace_events WHERE seq = 1 AND run_id = %s",
+            (run[0],),
+        ).fetchone() == (None,)
+        partial = dict(
+            conn.execute(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'app' "
+                "AND tablename = 'incident_trace_events'"
+            ).fetchall()
+        )
+        for column in ("turn_id", "request_id", "child_run_id", "action_id", "conversation_id"):
+            assert f"WHERE ({column} IS NOT NULL)" in partial[f"ix_incident_trace_events_{column}"]
+        conn.execute("DELETE FROM app.agent_runs WHERE id = %s", (run[0],))
+        assert conn.execute(
+            "SELECT count(*) FROM app.incident_trace_events WHERE account_id = %s", (account,)
+        ).fetchone() == (0,)
+    run_alembic(scratch_url, "0026", down=True)
+    assert "incident_trace_events" not in tables_in(scratch_url, "app")
+    run_alembic(scratch_url, "head")
+    assert "incident_trace_events" in tables_in(scratch_url, "app")
+
+
+def _account_triggers(url: str) -> set[str]:
+    with psycopg.connect(libpq(url), autocommit=True) as conn:
+        rows = conn.execute(
+            "SELECT tgname FROM pg_trigger "
+            "WHERE tgrelid = 'app.accounts'::regclass AND NOT tgisinternal"
+        ).fetchall()
+    return {row[0] for row in rows}
+
+
+def test_0025_account_requests_first_round_trip(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    assert "unlink_account_owner_requests" in _account_triggers(scratch_url)
+    run_alembic(scratch_url, "0024", down=True)
+    assert "unlink_account_owner_requests" not in _account_triggers(scratch_url)
+    assert "privacy_account_delete" in _account_triggers(scratch_url)
+    run_alembic(scratch_url, "head")
+    assert "unlink_account_owner_requests" in _account_triggers(scratch_url)
+
+
+def test_0024_owner_intent_round_trip(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema = 'app' AND table_name = 'owner_requests' "
+            "AND column_name = 'intent_revision'"
+        ).fetchone() == ("bigint", "YES")
+        assert conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema = 'app' AND table_name = 'owner_requests' "
+            "AND column_name = 'manual_watermark'"
+        ).fetchone() == ("bigint", "YES")
+        constraints = conn.execute(
+            "SELECT conname FROM pg_constraint WHERE conrelid = 'app.owner_requests'::regclass"
+        ).fetchall()
+        assert {"ck_owner_requests_intent_revision", "ck_owner_requests_manual_watermark"} <= {
+            row[0] for row in constraints
+        }
+    run_alembic(scratch_url, "0023", down=True)
+    assert "intent_revision" not in _columns(scratch_url, "owner_requests")
+    assert "manual_watermark" not in _columns(scratch_url, "owner_requests")
+    run_alembic(scratch_url, "head")
+    assert "intent_revision" in _columns(scratch_url, "owner_requests")
+    assert "manual_watermark" in _columns(scratch_url, "owner_requests")
 
 
 def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
@@ -517,10 +615,10 @@ def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
     run_alembic(scratch_url, "head")
 
 
-def test_0024_llm_admissions_restrict_account_removal_and_round_trip(scratch_url: str) -> None:
+def test_0028_llm_admissions_restrict_account_removal_and_round_trip(scratch_url: str) -> None:
     run_alembic(scratch_url, "head")
     with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
-        account, _ = _phase_conversation(conn, 81024)
+        account, _ = _phase_conversation(conn, 81128)
         conn.execute(
             "INSERT INTO app.llm_admissions (account_id, operation_id, attempt_id, model, "
             "price_version, month_start, input_bound, output_bound, reserved_usd, status) "
@@ -535,10 +633,59 @@ def test_0024_llm_admissions_restrict_account_removal_and_round_trip(scratch_url
                 "UPDATE app.llm_admissions SET status = 'free' WHERE account_id = %s", (account,)
             )
         conn.execute("DELETE FROM app.llm_admissions WHERE account_id = %s", (account,))
-    run_alembic(scratch_url, "0023", down=True)
+    run_alembic(scratch_url, "0027", down=True)
     assert "llm_admissions" not in tables_in(scratch_url, "app")
     run_alembic(scratch_url, "head")
     assert "llm_admissions" in tables_in(scratch_url, "app")
+
+
+def test_0026_review_progress_round_trips_and_clears_both_verdict_links(
+    scratch_url: str,
+) -> None:
+    run_alembic(scratch_url, "head")
+    assert "review_progress" in tables_in(scratch_url, "app")
+    assert {"review_progress_id", "review_version"} <= _columns(scratch_url, "conversation_triage")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account, conversation = _phase_conversation(conn, 81026)
+        progress = conn.execute(
+            "INSERT INTO app.review_progress (account_id, conversation_id, reader) "
+            "VALUES (%s, %s, 'triage') RETURNING id, scope_key, version, status, pending_ranges",
+            (account, conversation),
+        ).fetchone()
+        assert progress is not None
+        assert progress[1:] == ("rolling", 1, "pending", [])
+        # One row per reader and scope, even with a NULL monitor id.
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(
+                "INSERT INTO app.review_progress (account_id, conversation_id, reader) "
+                "VALUES (%s, %s, 'triage')",
+                (account, conversation),
+            )
+        conn.execute(
+            "INSERT INTO app.conversation_triage (account_id, conversation_id, "
+            "covers_through_message_id, needs_reply, contains_question, requests_decision, "
+            "urgency, escalation_category, prompt_version, model, review_progress_id, "
+            "review_version) VALUES (%s, %s, 5, false, false, false, 'low', 'none', 'v', 'm', "
+            "%s, 1)",
+            (account, conversation, progress[0]),
+        )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "UPDATE app.conversation_triage SET review_version = NULL WHERE account_id = %s",
+                (account,),
+            )
+        conn.execute("DELETE FROM app.review_progress WHERE account_id = %s", (account,))
+        assert conn.execute(
+            "SELECT review_progress_id, review_version FROM app.conversation_triage "
+            "WHERE account_id = %s",
+            (account,),
+        ).fetchone() == (None, None)
+    run_alembic(scratch_url, "0025", down=True)
+    assert "review_progress" not in tables_in(scratch_url, "app")
+    assert "review_progress_id" not in _columns(scratch_url, "conversation_triage")
+    assert "context_fences" in tables_in(scratch_url, "app")
+    run_alembic(scratch_url, "head")
+    assert "review_progress" in tables_in(scratch_url, "app")
 
 
 def test_0023_fence_erasure_marks_the_run_and_round_trips(scratch_url: str) -> None:

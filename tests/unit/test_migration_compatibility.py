@@ -69,9 +69,36 @@ def test_fence_erasure_trigger_requires_matching_executable() -> None:
 
 def test_priced_admission_table_is_an_expansion() -> None:
     graph = load_graph(ROOT / "migrations/versions")
+    assert graph["0028"].parents == ("0027",)
+    assert graph["0028"].compatibility == "expand"
+    assert classify(graph, "0027", "0028") == "expand"
+
+
+def test_incident_trace_table_is_additive() -> None:
+    graph = load_graph(ROOT / "migrations/versions")
+    assert graph["0027"].parents == ("0026",)
+    assert graph["0027"].compatibility == "expand"
+    assert classify(graph, "0026", "0027") == "expand"
+
+
+def test_owner_intent_token_is_an_additive_migration() -> None:
+    graph = load_graph(ROOT / "migrations/versions")
     assert graph["0024"].parents == ("0023",)
     assert graph["0024"].compatibility == "expand"
-    assert classify(graph, "0023", "0024") == "expand"
+
+
+def test_account_request_cleanup_trigger_is_additive() -> None:
+    graph = load_graph(ROOT / "migrations/versions")
+    assert graph["0025"].parents == ("0024",)
+    assert graph["0025"].compatibility == "expand"
+    assert classify(graph, "0023", "0025") == "expand"
+
+
+def test_review_progress_migration_is_additive_after_account_request_cleanup() -> None:
+    graph = load_graph(ROOT / "migrations/versions")
+    assert graph["0026"].parents == ("0025",)
+    assert graph["0026"].compatibility == "expand"
+    assert classify(graph, "0025", "0026") == "expand"
 
 
 def test_legacy_registry_classifies_immutable_migration(tmp_path: Path) -> None:

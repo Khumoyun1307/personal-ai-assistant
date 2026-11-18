@@ -35,7 +35,6 @@ from enum import StrEnum
 from typing import Protocol
 
 import pydantic
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import Account
@@ -57,13 +56,17 @@ from assistant.agent.triage_schemas import (
     TriageResultV2,
     sanitize_triage,
 )
+from assistant.conversations.fences import observe_conversations
 from assistant.core.clock import Clock
 from assistant.core.model_routes import processor_for_model
 from assistant.db.uow import transaction
 from assistant.inbox import tasks
+from assistant.inbox.review_progress import FailureOutcome
 from assistant.inbox.triage_store import (
+    BURST_LIMIT,
     ApplyResult,
     TaskCandidate,
+    TriageSource,
     TriageState,
     TriageVerdict,
     burst_source,
@@ -77,8 +80,9 @@ logger = get_logger(__name__)
 RUN_TYPE = "triage"
 RESOLUTION_EVIDENCE_FLAG = "triage.resolution_evidence"
 
-#: Errors a retry would only repeat at a cost: after enough of them in a row,
-#: that chat's triage pauses for a while (the summaries' rule, M03 D65).
+#: Errors a retry would only repeat at a cost. They count against the batch and
+#: escalate (halve, isolate, skip, degrade; C7); every other failure is
+#: transient (outage, rate limit) and only delays the retry by minutes.
 _REPEATING_ERRORS = frozenset(
     {"refusal", "content_filter", "invalid_output", "max_tokens", "stop_other"}
 )
@@ -94,8 +98,12 @@ class TriageConfig:
     max_output_tokens_ceiling: int = 3000
     call_timeout_seconds: float = 60.0
     monthly_budget_usd: Decimal | None = None
-    failure_backoff_runs: int = 3
+    #: Degraded reviews (a context that fails even one message at a time) pause
+    #: this long; the failure-run count is the review's `MAX_ATTEMPTS` (C7).
     failure_backoff_window: timedelta = timedelta(hours=24)
+    #: A transient provider error (outage, rate limit) retries after this, and
+    #: never degrades the chat.
+    transient_retry: timedelta = timedelta(minutes=5)
     resolution_evidence: bool = False
 
 
@@ -149,10 +157,32 @@ class TriageStore(Protocol):
         *,
         account_id: int,
         conversation_id: int,
-        through: int | None,
-    ) -> None:
-        """Nothing to triage up to message `through`: clear the chat's triage
-        flag unless a message arrived after it (then the flag moves to it)."""
+        source: TriageSource,
+        covers_through: int | None,
+        now: datetime,
+    ) -> ApplyResult:
+        """Nothing a verdict could say in this burst: after the same source
+        re-check as a stored verdict, move the review cursor over it and clear
+        the chat's triage flag unless a message arrived after it (then the flag
+        moves to it). Discarded (nothing moved) when the source changed."""
+        ...
+
+    async def fail(
+        self,
+        session: AsyncSession,
+        *,
+        account_id: int,
+        conversation_id: int,
+        source: TriageSource,
+        error_class: str,
+        repeating: bool,
+        calls: int,
+        retry_after: timedelta,
+        transient_retry: timedelta,
+        now: datetime,
+    ) -> FailureOutcome | None:
+        """A run at this burst failed: transient errors only delay the retry;
+        repeating ones count against the batch and escalate (C7)."""
         ...
 
 
@@ -339,60 +369,85 @@ class Triager:
                 return TriageOutcome(TriageStatus.NO_CONSENT, account_id)
             if await self._over_budget(session, account_id):
                 return TriageOutcome(TriageStatus.OVER_BUDGET, account_id)
-            if await self._backed_off(session, account_id, conversation_id):
-                return TriageOutcome(TriageStatus.BACKED_OFF, account_id)
             account = await session.get(Account, account_id)
             state = await self._store.state(
                 session, account_id=account_id, conversation_id=conversation_id
             )
             if account is None or state is None:
                 return TriageOutcome(TriageStatus.NOT_FOUND, account_id)
-            source = await burst_source(
-                session,
-                account_id,
-                conversation_id,
-                covers_through=state.covers_through_message_id,
+            if state.retry_at is not None and state.retry_at > self._clock.now():
+                # A transient error's short retry, or a degraded review's pause:
+                # no new attempt (and no paid call) before the bounded time.
+                return TriageOutcome(TriageStatus.BACKED_OFF, account_id)
+            # The snapshot revision is observed under the SHARE locks that
+            # serialize this read with ingestion, edits and retention (C6).
+            (observed,) = await observe_conversations(
+                session, account_id=account_id, conversation_ids=[conversation_id]
+            )
+            source = replace(
+                await burst_source(
+                    session,
+                    account_id,
+                    conversation_id,
+                    covers_through=state.covers_through_message_id,
+                    limit=state.batch_limit or BURST_LIMIT,
+                ),
+                snapshot_revision=observed.content_revision,
+                progress_version=state.progress_version,
             )
             sides = {_side(m.direction) for m in source.burst}
             owner_answered = "owner" in sides and bool(state.open_tasks)
-            if source.through is None or not ("contact" in sides or owner_answered):
-                # Nothing a verdict could say: no new message; or only the
-                # owner wrote and no open task could be answered; or only an
-                # automatic away/greeting message, which answers nothing.
-                # "As of" what was read: a message committed after the read
-                # keeps the flag (Viro on #79).
-                read_through = source.through or state.covers_through_message_id
-                await self._store.settle(
-                    session,
+            idle = source.through is None or not ("contact" in sides or owner_answered)
+            if not idle:
+                previous = await summaries.rolling_summary(session, account_id, conversation_id)
+                overview = None if previous is None else previous.summary.get("overview")
+                context = build_triage(
+                    prompt=prompt,
+                    account=account,
+                    contact_name=await summaries.contact_display_name(
+                        session, account_id, conversation_id
+                    ),
+                    contact_priority=state.contact_priority,
+                    notes=await items.contact_facing(
+                        session, account_id, conversation_id, include_owner_preferences=True
+                    ),
+                    summary_overview=overview if isinstance(overview, str) else None,
+                    open_tasks=state.open_tasks,
+                    earlier=source.earlier,
+                    burst=source.burst,
+                    remaining=source.remaining,
+                    now=self._clock.now(),
+                )
+                timezone = account.timezone
+                trigger = f"triage:conv:{conversation_id}:through:{source.through}"
+                run_id = await self._start_run(session, account_id, trigger, prompt.label)
+        if idle:
+            # Nothing a verdict could say: no new message; or only the owner
+            # wrote and no task could be answered; or only an automatic
+            # away/greeting message. The cursor still moves over what was
+            # read, after a fresh re-check in its own short transaction;
+            # "as of" what was read, so a message committed after the read
+            # keeps the flag (Viro on #79).
+            async with transaction(self._session_factory) as uow:
+                settled = await self._store.settle(
+                    uow.session,
                     account_id=account_id,
                     conversation_id=conversation_id,
-                    through=read_through,
+                    source=source,
+                    covers_through=state.covers_through_message_id,
+                    now=self._clock.now(),
                 )
-                return TriageOutcome(TriageStatus.UP_TO_DATE, account_id)
-            previous = await summaries.rolling_summary(session, account_id, conversation_id)
-            overview = None if previous is None else previous.summary.get("overview")
-            context = build_triage(
-                prompt=prompt,
-                account=account,
-                contact_name=await summaries.contact_display_name(
-                    session, account_id, conversation_id
-                ),
-                contact_priority=state.contact_priority,
-                notes=await items.contact_facing(
-                    session, account_id, conversation_id, include_owner_preferences=True
-                ),
-                summary_overview=overview if isinstance(overview, str) else None,
-                open_tasks=state.open_tasks,
-                earlier=source.earlier,
-                burst=source.burst,
-                omitted=source.omitted,
-                now=self._clock.now(),
-            )
-            timezone = account.timezone
-            trigger = f"triage:conv:{conversation_id}:through:{source.through}"
-            run_id = await self._start_run(session, account_id, trigger, prompt.label)
+            if settled.discarded:
+                return TriageOutcome(
+                    TriageStatus.DISCARDED,
+                    account_id,
+                    through=source.through,
+                    discard_reason=settled,
+                )
+            return TriageOutcome(TriageStatus.UP_TO_DATE, account_id, through=source.through)
         prepared = _Prepared(account_id, run_id, context)
         through = source.through
+        assert through is not None
 
         try:
             output, calls = await self._call(prepared, prompt)
@@ -425,12 +480,18 @@ class Triager:
                 resolved_task_ids=checked.resolved_task_ids,
                 resolutions=checked.resolutions,
                 require_resolution_evidence=config.resolution_evidence,
+                snapshot_revision=source.snapshot_revision,
+                read_after=source.read_after,
+                progress_version=source.progress_version,
+                remaining=source.remaining > 0,
             )
             async with transaction(self._session_factory) as uow:
                 result = await self._store.apply(uow.session, verdict, now=self._clock.now())
                 await self._close_run(uow.session, prepared, *_run_close(result))
         except _CallFailedError as failure:
             await self._finish_run(prepared, failure.run_status, failure.error_class)
+            if failure.status in (TriageStatus.REFUSED, TriageStatus.FAILED):
+                await self._record_failure(account_id, conversation_id, source, failure)
             return TriageOutcome(failure.status, account_id, calls=failure.calls, through=through)
         except BaseException as error:
             await self._fail_run(prepared, error)
@@ -440,6 +501,7 @@ class Triager:
             conversation_id=conversation_id,
             run_id=run_id,
             messages=len(source.burst),
+            remaining=source.remaining,
             commitments_kept=counts.commitments_kept,
             commitments_unshown=counts.commitments_unshown,
             commitments_misattributed=counts.commitments_misattributed,
@@ -521,6 +583,42 @@ class Triager:
             case _:
                 raise failed(TriageStatus.FAILED, "failed", "stop_other")
 
+    async def _record_failure(
+        self,
+        account_id: int,
+        conversation_id: int,
+        source: TriageSource,
+        failure: _CallFailedError,
+    ) -> None:
+        """Count the failed attempt at this burst (C7): bounded, no cursor
+        movement. Best effort: the run row is already closed."""
+        try:
+            async with transaction(self._session_factory) as uow:
+                outcome = await self._store.fail(
+                    uow.session,
+                    account_id=account_id,
+                    conversation_id=conversation_id,
+                    source=source,
+                    error_class=failure.error_class,
+                    repeating=failure.error_class in _REPEATING_ERRORS,
+                    calls=failure.calls,
+                    retry_after=self._config.failure_backoff_window,
+                    transient_retry=self._config.transient_retry,
+                    now=self._clock.now(),
+                )
+            logger.info(
+                "triage_failure_recorded",
+                conversation_id=conversation_id,
+                error_class=failure.error_class,
+                outcome=None if outcome is None else outcome.value,
+            )
+        except Exception as error:
+            logger.error(
+                "triage_failure_record_failed",
+                conversation_id=conversation_id,
+                exc_type=type(error).__name__,
+            )
+
     # ------------------------------------------------------------ checks
     async def _managed_ok(self, session: AsyncSession, account_id: int) -> bool:
         """`ai_control` and `ai_managed` both active and both naming the
@@ -542,27 +640,6 @@ class Triager:
             month_start(self._clock.now())
         )
         return spent >= limit
-
-    async def _backed_off(
-        self, session: AsyncSession, account_id: int, conversation_id: int
-    ) -> bool:
-        """The last `failure_backoff_runs` triage runs of this chat within the
-        window all failed in a way a retry would repeat."""
-        config = self._config
-        rows = (
-            await session.execute(
-                select(AgentRun.error_class)
-                .where(AgentRun.account_id == account_id)
-                .where(AgentRun.run_type == RUN_TYPE)
-                .where(AgentRun.trigger_ref.like(f"triage:conv:{conversation_id}:%"))
-                .where(AgentRun.started_at >= self._clock.now() - config.failure_backoff_window)
-                .order_by(AgentRun.started_at.desc(), AgentRun.id.desc())
-                .limit(config.failure_backoff_runs)
-            )
-        ).all()
-        if len(rows) < config.failure_backoff_runs:
-            return False
-        return all(error in _REPEATING_ERRORS for (error,) in rows)
 
     # ------------------------------------------------------------ run rows
     async def _start_run(

@@ -2,7 +2,8 @@
 
 Commands: `healthcheck`, `migrate`, `inbox requeue|status`, `run` (the
 long-running process, S01.5), `post-restore` (after a backup restore, S02.5),
-`reindex-search` (after a search-normalizer change, S03.1) and `service-status` (I26).
+`reindex-search` (after a search-normalizer change, S03.1), `service-status` (I26) and
+`incident-report` (I25).
 """
 
 from __future__ import annotations
@@ -65,6 +66,16 @@ def _build_parser() -> argparse.ArgumentParser:
     from assistant.llm.admission_cli import add_parser as add_admissions_parser
 
     add_admissions_parser(sub)
+
+    incident = sub.add_parser(
+        "incident-report",
+        help="content-free structural trace of one run, action or request (I25, §17)",
+    )
+    incident.add_argument("--account-id", type=int, required=True)
+    target = incident.add_mutually_exclusive_group(required=True)
+    target.add_argument("--run-id", type=int, default=None)
+    target.add_argument("--action-id", type=int, default=None)
+    target.add_argument("--request-id", type=int, default=None)
     return parser
 
 
@@ -438,6 +449,44 @@ def admissions_command(args: argparse.Namespace) -> int:
     return asyncio.run(run_it())
 
 
+def incident_report_command(args: argparse.Namespace) -> int:
+    """Print the I25 incident report: ids, enums and times only (ARCHITECTURE §17)."""
+    from assistant.config import Settings
+    from assistant.db.engine import build_engine, build_session_factory
+    from assistant.observability.incident_report import (
+        build_incident_report,
+        format_incident_report,
+    )
+
+    try:
+        settings = Settings()  # type: ignore[call-arg]
+    except ValidationError as error:
+        print("Configuration invalid:", file=sys.stderr)
+        for item in error.errors(include_input=False, include_url=False):
+            location = ".".join(str(part) for part in item["loc"]) or "<settings>"
+            print(f"  {location.upper()}: {item['msg']}", file=sys.stderr)
+        return EXIT_FAILED
+
+    async def run_it() -> int:
+        engine = build_engine(settings.database_url.get_secret_value())
+        factory = build_session_factory(engine)
+        try:
+            async with factory() as session:
+                report = await build_incident_report(
+                    session,
+                    account_id=args.account_id,
+                    run_id=args.run_id,
+                    action_id=args.action_id,
+                    request_id=args.request_id,
+                )
+            print(format_incident_report(report))
+            return EXIT_OK
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(run_it())
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "healthcheck":
@@ -456,6 +505,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return service_status()
     if args.command == "admissions":
         return admissions_command(args)
+    if args.command == "incident-report":
+        return incident_report_command(args)
     print(
         f"'{args.command}' is not implemented yet; see docs/IMPLEMENTATION_PLAN.md",
         file=sys.stderr,

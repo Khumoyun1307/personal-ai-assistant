@@ -146,10 +146,21 @@ def no_takeover_since(ctx: PolicyContext) -> CheckResult:
     # Owner-requested actions use the original request time (D-S10/C6).
     # Creation time is only the legacy fallback; revision proof is independent.
     freshness = ctx.freshness
-    reference = freshness.base_message_sent_at or ctx.action.requested_at or ctx.action.created_at
+    reference = (
+        freshness.request_reference_at
+        or freshness.base_message_sent_at
+        or ctx.action.requested_at
+        or ctx.action.created_at
+    )
     newest = freshness.newest_owner_manual_sent_at
+    manual_arrived = (
+        freshness.captured_owner_manual_id is not None
+        and freshness.newest_owner_manual_id is not None
+        and freshness.newest_owner_manual_id > freshness.captured_owner_manual_id
+    )
     return _check(
-        "no_takeover_since", _first((newest is not None and newest > reference, "takeover"))
+        "no_takeover_since",
+        _first((manual_arrived or (newest is not None and newest > reference), "takeover")),
     )
 
 

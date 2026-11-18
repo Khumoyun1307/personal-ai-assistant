@@ -270,8 +270,10 @@ async def _timezone(session: AsyncSession, account_id: int) -> str:
 
 
 async def _lock(session: AsyncSession, account_id: int, conversation_id: int) -> bool:
-    """§9.4 order, as the card's own presses take it: the account, then the
-    conversation, both `FOR SHARE`."""
+    """§9.4: account SHARE, then conversation UPDATE before requests/actions.
+
+    A revision changes owner intent; never upgrade a shared conversation lock.
+    """
     account = await session.scalar(
         select(Account.id).where(Account.id == account_id).with_for_update(read=True)
     )
@@ -280,7 +282,7 @@ async def _lock(session: AsyncSession, account_id: int, conversation_id: int) ->
     locked = await session.scalar(
         select(Conversation.id)
         .where(Conversation.id == conversation_id, Conversation.account_id == account_id)
-        .with_for_update(read=True)
+        .with_for_update()
     )
     return locked is not None
 

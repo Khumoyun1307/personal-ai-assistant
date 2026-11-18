@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
@@ -58,6 +59,9 @@ from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
 from assistant.llm.port import Provenance, ToolCall, ToolResultItem
 from assistant.observability.logging import get_logger
+
+if TYPE_CHECKING:
+    from assistant.agent.incident_trace import IncidentTrace
 
 logger = get_logger(__name__)
 
@@ -134,6 +138,8 @@ class ToolExecutor:
     action_ids: set[int] = field(default_factory=set)
     artifact_reads: dict[int, int] = field(default_factory=dict)
     no_action_results: list[tuple[str, str | None]] = field(default_factory=list)
+    #: I25 structural incident trace, installed by the runtime (`start_trace`).
+    trace: IncidentTrace | None = None
     _done: dict[str, ToolResultItem] = field(default_factory=dict)
     _done_digests: dict[str, str] = field(default_factory=dict)
 
@@ -193,6 +199,9 @@ class ToolExecutor:
         known = call.name in self.offered or call.name in self.registered
         tool = call.name if known else UNKNOWN_TOOL
         await self.record_step(tool, digest, outcome.status, latency_ms)
+        if self.trace is not None:
+            # Before the taint update below: the trace sees whether this result tainted the run.
+            await self.trace.tool(self.context, tool, outcome)
         if outcome.status != "ok":
             self._log(tool, outcome)
         self.refs = self.refs | outcome.refs

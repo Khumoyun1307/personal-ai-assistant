@@ -124,7 +124,7 @@ def build_triage(
     open_tasks: Sequence[TaskView],
     earlier: Sequence[SourceMessage],
     burst: Sequence[SourceMessage],
-    omitted: int,
+    remaining: int,
     now: datetime,
 ) -> TriageContext:
     """The context of one `triage` run about ONE conversation. `notes` are
@@ -177,8 +177,11 @@ def build_triage(
         lines += [message_line(m, zone) for m in earlier]
         items.append(TextItem("user", "\n".join(lines), Provenance.MANAGED))
     header = "New messages to triage:"
-    if omitted:
-        header += f" ({omitted} older new messages are not shown; only the newest are.)"
+    if remaining:
+        header += (
+            f" ({remaining} newer messages are not shown; they are triaged in a later run,"
+            " so do not conclude anything about them.)"
+        )
     lines = [header, *(message_line(m, zone) for m in burst)]
     items.append(TextItem("user", "\n".join(lines), Provenance.MANAGED))
     items.append(

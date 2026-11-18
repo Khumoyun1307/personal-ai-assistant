@@ -68,6 +68,7 @@ from assistant.inbox.models import (
     NotificationSource,
     Task,
 )
+from assistant.inbox.review_progress import sweep_orphans as sweep_review_orphans
 from assistant.memory.items import sweep_forgotten
 from assistant.memory.summaries import (
     covered_through,
@@ -306,6 +307,7 @@ async def sweep_all(
         async with transaction(session_factory) as uow:
             requests += await sweep_requests(uow.session, account_id=account_id, now=now)
             await sweep_fences(uow.session, account_id=account_id, now=now)
+            await sweep_review_orphans(uow.session, account_id=account_id)
     turns = await sweep_control_turns(session_factory, clock)
     confirmations = await sweep_tool_confirmations(session_factory, clock)
     accounting_cutoff = now - ACCOUNTING_RETENTION

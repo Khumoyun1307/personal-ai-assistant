@@ -86,9 +86,17 @@ async def test_j08_j09_source_changes_during_main_model_composition(
     assert row.freshness_warning is not None
     assert row.approval_token is not None
     await j.check(CountCheck(artifact="business_attempts", count=0))
+    if event == "manual":
+        assert row.freshness_warning == "takeover"
+        await j.bind_card("k")
+        await j.tap("k", row.version, "approve")
+        await run_queued(j.s, "actions.execute")
+        await j.tap("k", row.version, "approve")
+        await run_queued(j.s, "actions.execute")
+        assert (await j.action("k")).state == "succeeded"
+        await j.check(CountCheck(artifact="business_attempts", count=1))
 
 
-@pytest.mark.xfail(strict=True, reason="needs H11", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("reject_owner_card", [False, True])
 async def test_j10_late_assist_cannot_replace_or_revive_owner_intent(

@@ -11,6 +11,7 @@ transaction fails fast and closed instead of waiting forever.
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
 import sqlalchemy.exc
@@ -156,6 +157,43 @@ async def test_triage_parse_calls_are_admitted_and_settled(tenv: Env) -> None:  
     [row] = await admissions(tenv.factory)
     [run] = await runs(tenv.factory)
     assert (row.status, row.run_id) == ("completed", run.id)
+
+
+class RepeatingStore(RecordingStore):
+    """Records whether a failure counts as a repeating content error (I2)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.repeating: list[bool] = []
+
+    async def fail(self, session: AsyncSession, **kwargs: Any) -> None:
+        self.repeating.append(kwargs["repeating"])
+        await super().fail(session, **kwargs)
+
+
+async def test_triage_admission_denial_is_transient_not_a_repeating_error(
+    tenv: Env,  # noqa: F811
+) -> None:
+    """A denied admission sent nothing and cost nothing: I2's 5-minute
+    transient retry applies, never the repeating-content degradation."""
+    a, _ = await seed(tenv)
+    fake = FakeLLM()
+    store = RepeatingStore()
+    triager = Triager(
+        session_factory=tenv.factory,
+        llm=admitted_chain(tenv.factory, tenv.clock, fake),
+        clock=tenv.clock,
+        config=TriageConfig(model="gpt-6-astra"),  # no recorded price
+        store=store,
+    )
+
+    outcome = await triager.triage(a)
+
+    assert outcome.status is not TriageStatus.TRIAGED
+    assert fake.requests == []
+    assert store.failures == ["llm_not_admitted"]
+    assert store.repeating == [False]
+    assert await admissions(tenv.factory) == []
 
 
 async def test_a_caller_holding_the_account_lock_fails_fast_and_closed(

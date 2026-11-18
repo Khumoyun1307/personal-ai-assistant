@@ -1,7 +1,7 @@
 """Priced call admission: one structural row per provider attempt (I16, C7).
 
-Revision ID: 0024
-Revises: 0023
+Revision ID: 0028
+Revises: 0027
 Create Date: 2026-11-17
 """
 
@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0024"
-down_revision = "0023"
+revision = "0028"
+down_revision = "0027"
 branch_labels = None
 depends_on = None
 
