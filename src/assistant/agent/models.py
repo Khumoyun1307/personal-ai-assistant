@@ -276,6 +276,7 @@ TRACE_REASONS = (
     "length_not_met",
     "operation_mismatch",
     "recipient_mismatch",
+    "request_mismatch",
     "source_unavailable",
     "target_mismatch",
     "content",

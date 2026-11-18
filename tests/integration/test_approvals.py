@@ -44,6 +44,7 @@ from assistant.telegram.control.approvals import (
     ANSWER_REDRAFTING,
     ANSWER_SENDING,
     DRAFT_EDIT,
+    REDRAFT_UNRECOVERABLE_TEXT,
     RETIRED_CARD_TEXT,
     ApprovalCards,
 )
@@ -1592,3 +1593,33 @@ async def test_pf02_answering_excerpts_need_a_base_message(s: Scenario) -> None:
     assert dictated_view.excerpts == ()
     assert "Answering (their words)" in approvals.render_card(answering_view).text
     assert "Answering" not in approvals.render_card(dictated_view).text
+
+
+@pytest.mark.parametrize("origin", ["owner_dictated", "agent_proposal"])
+async def test_h8_owner_model_redraft_never_falls_back_to_a_writer_for_owner_cards(
+    migrated_url: str, origin: str
+) -> None:
+    """H8-2/H8-7 with `tool.propose_owner_message`: an owner card resumes its
+    request in the main model; a pre-C1 owner card has no task to resume and
+    says so. Proactive Assist cards keep the isolated `replies.draft` writer."""
+    async with m04_environment(migrated_url, flags=FLAGS | {"tool.propose_owner_message"}) as on:
+        row = await on.seed(origin=origin)
+        await deliver(on.env, business_message(message_id=102, date=on.date + 1))
+        outdated = await on.action(row.id)
+        assert outdated.state == "outdated"
+        sends = len(on.env.sender.delivered_control_sends)
+        await press(on, button_token(on, outdated, "rd"), "rd")
+        owner_jobs = await jobs(on, "agent.owner_request")
+        writer_jobs = await jobs(on, "replies.draft")
+        delivered = [item["text"] for item in on.env.sender.delivered_control_sends[sends:]]
+        if origin == "owner_dictated":
+            assert owner_jobs == []
+            assert writer_jobs == []
+            assert answers(on)[-1] == CALLBACK_EXPIRED_TEXT
+            assert delivered.count(REDRAFT_UNRECOVERABLE_TEXT) == 1
+        else:
+            assert owner_jobs == []
+            [job] = writer_jobs
+            assert job["args"] == {"conversation_id": on.conversation_id, "reason": "redraft"}
+            assert answers(on)[-1] == ANSWER_REDRAFTING
+            assert REDRAFT_UNRECOVERABLE_TEXT not in delivered

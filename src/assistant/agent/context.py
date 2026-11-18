@@ -254,6 +254,7 @@ def build_owner_request(
     preferences: Sequence[EffectivePreference] = (),
     preference_capture_enabled: bool = False,
     preference_reply_source: ValidatedSource | None = None,
+    redraft_of: tuple[int, int] | None = None,
 ) -> OwnerRequestContext:
     # The tag spelled out with its script, as the summarize context does: a
     # bare `uz-Latn` lost to the script of the chats (S03.6; S03.7 fix round).
@@ -324,6 +325,8 @@ def build_owner_request(
                 Provenance.OWNER_CONTROL,
             )
         )
+    if redraft_of is not None and managed_allowed:
+        items.append(TextItem("user", render_redraft(*redraft_of), Provenance.OWNER_CONTROL))
     if receipts is not None and managed_allowed:
         items.append(TextItem("user", render_receipts(receipts), Provenance.OWNER_CONTROL))
     elif live_cards is not None and managed_allowed:
@@ -427,6 +430,27 @@ def render_continuation(continuation: OwnerContinuation, *, managed_allowed: boo
         )
     return "Owner request continuation (application data; no execution authority):\n" + json.dumps(
         facts, sort_keys=True
+    )
+
+
+def render_redraft(action_id: int, version: int) -> str:
+    """H8: the owner tapped Re-draft on this card version (structural facts).
+
+    The selected request above carries the original task; the current turn
+    is that task's latest owner turn, not a new instruction.
+    """
+    return "Owner Re-draft (application data; no execution authority):\n" + json.dumps(
+        {
+            "operation": "redraft",
+            "action_id": action_id,
+            "action_version": version,
+            "task": (
+                "Write a fresh complete version of the selected request's message and stage "
+                "it as a new proposal for that request. Keep its recipient, standalone or "
+                "reply target, owner instructions and constraints; never change the topic."
+            ),
+        },
+        sort_keys=True,
     )
 
 

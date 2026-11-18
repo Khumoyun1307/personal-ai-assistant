@@ -295,6 +295,7 @@ def _wire_m04(
         sending_enabled="actions.send" in settings.feature_flags,
         process_run_id=process_run_id,
         assist_draft_trigger=assist_trigger(settings.feature_flags),
+        owner_model_redraft="tool.propose_owner_message" in settings.feature_flags,
         draft_route_model=settings.model_routes.model_for("draft_reply"),
     )
     wiring.routes = replace(

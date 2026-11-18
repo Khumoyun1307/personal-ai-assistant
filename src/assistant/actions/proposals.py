@@ -124,6 +124,15 @@ class ProposalRequest:
     owner_request_id: int | None = None
     expected_request_version: int | None = None
     explicit_owner_work: bool = False
+    #: H8: the owner's Re-draft replaces exactly this (action id, version) of
+    #: the same request; it is superseded, never reused as the turn's card.
+    replaces: tuple[int, int] | None = None
+
+
+#: Cards an owner Re-draft may replace (the card press accepts the same).
+_REPLACEABLE = frozenset(
+    {state.value for state in LIVE_CARD} | {ActionState.OUTDATED.value, ActionState.EXPIRED.value}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +209,22 @@ async def propose(
             and owned_request.version != request.expected_request_version
         ):
             raise ProposalRefused("request_changed")
+    if request.replaces is not None:
+        # Under the conversation lock: an approval or revision that won the
+        # race keeps its card; this Re-draft then stages nothing.
+        replaced = await session.scalar(
+            select(Action.id).where(
+                Action.account_id == request.account_id,
+                Action.conversation_id == request.conversation_id,
+                Action.id == request.replaces[0],
+                Action.version == request.replaces[1],
+                Action.owner_request_id == request.owner_request_id,
+                Action.state.in_(_REPLACEABLE),
+                Action.state_reason.is_distinct_from(StateReason.SUPERSEDED.value),
+            )
+        )
+        if replaced is None:
+            raise ProposalRefused("replaced_changed")
     if request.base_message_id is not None:
         base = await session.scalar(
             select(Message).where(
@@ -465,14 +490,15 @@ async def _live_for_turn(session: AsyncSession, request: ProposalRequest) -> Act
     """The live card an earlier run of the same owner turn created, if any."""
     if request.trigger_turn_id is None:
         return None
-    return await session.scalar(
-        select(Action).where(
-            Action.account_id == request.account_id,
-            Action.conversation_id == request.conversation_id,
-            Action.trigger_turn_id == request.trigger_turn_id,
-            or_(Action.state.in_([state.value for state in LIVE_CARD]), warning_card_filter()),
-        )
+    statement = select(Action).where(
+        Action.account_id == request.account_id,
+        Action.conversation_id == request.conversation_id,
+        Action.trigger_turn_id == request.trigger_turn_id,
+        or_(Action.state.in_([state.value for state in LIVE_CARD]), warning_card_filter()),
     )
+    if request.replaces is not None:
+        statement = statement.where(Action.id != request.replaces[0])
+    return await session.scalar(statement)
 
 
 async def _newest_contact_id(session: AsyncSession, request: ProposalRequest) -> int | None:

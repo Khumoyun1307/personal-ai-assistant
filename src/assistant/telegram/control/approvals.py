@@ -55,8 +55,9 @@ from assistant.accounts.models import Account, AuditLogEntry, ControlTurn, Pendi
 from assistant.actions import lifecycle
 from assistant.actions.authorship import VersionAuthorship, current_authorship, is_ai_generated
 from assistant.actions.config import ActionsConfig
-from assistant.actions.drafts import request_draft
+from assistant.actions.drafts import redraft_queueing_lock, request_draft
 from assistant.actions.models import Action
+from assistant.actions.request_models import OwnerRequest
 from assistant.actions.states import (
     LIVE_CARD,
     STATE_LABELS,
@@ -81,15 +82,18 @@ from assistant.agent.drafting import (
     owner_draft_flags,
 )
 from assistant.conversations.fences import check_fence, lock_fence_conversations
+from assistant.conversations.intent import advance_intent
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.delivery import MAX_TEXT_LENGTH, ErrorClass, SendResult
 from assistant.core.errors import NotInAccountError
 from assistant.core.jobs import (
     EXECUTE_TASK,
+    OWNER_REQUEST_TASK,
     REVISE_TASK,
     DraftReason,
     JobScheduler,
+    owner_control_lock,
     revise_queueing_lock,
 )
 from assistant.core.reply_window import SAFETY_MARGIN, closes_at, is_open
@@ -160,6 +164,32 @@ ANSWER_EDIT = "Send the new text, or tell me what to change."
 ANSWER_REJECTED = "Rejected."
 ANSWER_EDIT_CANCELLED = "Edit cancelled."
 ANSWER_REDRAFTING = "Drafting a new version…"
+#: H8-7: an owner-requested card from before durable requests has no task to
+#: resume; never fall back to a generic writer that would invent one.
+REDRAFT_UNRECOVERABLE_TEXT = (
+    "I can't re-draft this card: its original request is no longer on record. "
+    "Please send new instructions."
+)
+_WARNED_ORIGINAL_KEPT = (
+    " The original draft is still available: Approve anyway, Re-draft or Discard."
+)
+#: H8-5: why an owner Re-draft (main model) produced no new card. Each code
+#: is reported once, before any model call; model-time outcomes are the run's
+#: own reply. The current card is restored either way.
+_OWNER_REDRAFT_OUTCOMES = {
+    "no_consent": "AI permission is unavailable.",
+    "budget_exceeded": "This month's AI budget is used up.",
+    "request_unavailable": (
+        "Its original request has ended or expired. Please send new instructions."
+    ),
+    "source_unavailable": "An instruction or message it depends on is no longer available.",
+    "target_unavailable": (
+        "The message it answers is no longer available, so I did not answer a different one."
+    ),
+    "recipient_unavailable": "The chat it was for is not available for drafts.",
+    "stale": "The card changed after your tap; it shows its current version.",
+    "already_replaced": "A newer draft already replaced this card; use that one.",
+}
 
 REVISING_TEXT = "Revising…"
 EDIT_CLOSED_TEXT = "That draft is no longer being edited, so your message was not used."
@@ -492,6 +522,7 @@ def card_keyboard(view: ApprovalCardView) -> InlineKeyboardMarkup | None:
     rows: list[list[InlineKeyboardButton]] = []
     if (
         state in _REDRAFTABLE
+        and view.reason is not StateReason.SUPERSEDED
         and view.origin is not ActionOrigin.DELEGATION_AUTO
         and is_ai_generated(view.authorship, version=view.version)
         and view.card_token is not None
@@ -727,7 +758,8 @@ def _compose(
     if (explanation := _explanation(view)) is not None:
         parts.append(f"<i>{explanation}</i>")
     if view.redraft_requested:
-        parts.append("Re-draft requested — a new card will follow.")
+        # H8-5: never promise a new card; the outcome is reported either way.
+        parts.append("Re-draft requested — I will report the outcome here.")
     if copy_note is not None:
         parts.append(copy_note)
     return "\n".join(parts)
@@ -887,6 +919,8 @@ def _needs_card_token(view: ApprovalCardView) -> bool:
         or view.state is ActionState.REVISING
         or (
             view.state in _REDRAFTABLE
+            # A replaced card offers no Re-draft: a newer card answers its task.
+            and view.reason is not StateReason.SUPERSEDED
             and view.origin is not ActionOrigin.DELEGATION_AUTO
             and is_ai_generated(view.authorship, version=view.version)
         )
@@ -991,22 +1025,22 @@ class ApprovalCards:
     ) -> None:
         async def restore(_: async_sessionmaker[AsyncSession]) -> None:
             view = await self._prepare(action_id)
-            if view is None or not _warned(view):
+            # The legacy writer restores warned cards only; an owner Re-draft
+            # (H8) reports every no-card outcome once, warned or not.
+            if view is None or (not _warned(view) and reason not in _OWNER_REDRAFT_OUTCOMES):
                 return
             await self.sync(action_id)
             explanation = {
                 "window_closed": "The reply window is closed.",
-                "no_consent": "AI permission is unavailable.",
                 "not_needed": "The draft writer returned no replacement.",
                 "no_reply_needed": "The draft writer returned no replacement.",
                 "not_draftable": "The draft writer could not use the available messages.",
+                **_OWNER_REDRAFT_OUTCOMES,
             }.get(reason, "The draft writer did not finish a replacement.")
-            await self.notify(
-                view.account_id,
-                "I could not create a replacement draft. "
-                + explanation
-                + " The original draft is still available: Approve anyway, Re-draft or Discard.",
-            )
+            text = "I could not create a replacement draft. " + explanation
+            if _warned(view):
+                text += _WARNED_ORIGINAL_KEPT
+            await self.notify(view.account_id, text)
 
         after_commit(session, restore)
 
@@ -1411,6 +1445,8 @@ class ApprovalCards:
                     Action.version,
                     Action.origin,
                     Action.authorship,
+                    Action.owner_request_id,
+                    Action.trigger_turn_id,
                 ).where(Action.id == card.ref_id, Action.account_id == account.id)
             )
         ).one_or_none()
@@ -1590,8 +1626,16 @@ class ApprovalCards:
             return self._settle(session, gateway, press, CALLBACK_EXPIRED_TEXT, action.id)
         if scheduler is None:
             raise RuntimeError("a job scheduler is required to re-draft")
+        owner_requested = (
+            action.trigger_turn_id is not None or action.origin == ActionOrigin.OWNER_DICTATED.value
+        )
+        if self._config.owner_model_redraft and (
+            action.owner_request_id is not None or owner_requested
+        ):
+            return await self._owner_redraft(session, gateway, scheduler, account, press, action)
         try:
-            # No flag: deferred in this transaction, in a SAVEPOINT, so a
+            # Proactive Assist cards (and every card with the flag off) keep
+            # the isolated writer. Deferred in this transaction, in a SAVEPOINT, so a
             # second tap while one is queued cannot abort the press (R17).
             await request_draft(
                 session,
@@ -1604,6 +1648,103 @@ class ApprovalCards:
             )
         except NotInAccountError:
             return self._settle(session, gateway, press, CALLBACK_EXPIRED_TEXT, None)
+        return self._settle(
+            session,
+            gateway,
+            press,
+            ANSWER_REDRAFTING,
+            action.id,
+            note="redraft_requested",
+            handled=True,
+            redraft_requested=True,
+        )
+
+    async def _owner_redraft(
+        self,
+        session: AsyncSession,
+        gateway: OutboundGateway,
+        scheduler: JobScheduler,
+        account: Account,
+        press: CardPress,
+        action: Any,
+    ) -> HandlerResult:
+        """H8: resume the card's own request in the main owner model.
+
+        The job carries ids and the reason enum only; the runtime reloads the
+        operation, sources, recipient, target and constraints when it runs.
+        Deferred in this transaction, in a SAVEPOINT: a second tap while one is
+        queued (`redraft:{conversation}`) undoes only the savepoint (R17).
+        """
+        if action.owner_request_id is None:
+            # A pre-C1 owner card: no recoverable task, so no generic writer.
+            if account.control_chat_id is not None:
+                target = ControlChat(account_id=account.id, chat_id=account.control_chat_id)
+                self._tell(
+                    session,
+                    gateway,
+                    target,
+                    REDRAFT_UNRECOVERABLE_TEXT,
+                    None,
+                    note="redraft_unrecoverable",
+                )
+            return self._settle(
+                session, gateway, press, CALLBACK_EXPIRED_TEXT, action.id, note="unrecoverable"
+            )
+        savepoint = await session.begin_nested()
+        try:
+            # Each tap is its own attempt: its content-free audit row id keys
+            # the run, so a retried job keeps the key and a new tap gets one.
+            tap = AuditLogEntry(
+                account_id=account.id,
+                at=self._clock.now(),
+                actor="owner",
+                event="owner_redraft_requested",
+                subject_type="action",
+                subject_id=action.id,
+                details={"version": action.version},
+            )
+            session.add(tap)
+            await session.flush()
+            connection = await session.connection()
+            raw = await connection.get_raw_connection()
+            job_id = await scheduler.defer(
+                OWNER_REQUEST_TASK,
+                args={
+                    "action_id": action.id,
+                    "request_id": action.owner_request_id,
+                    "expected_version": action.version,
+                    "reason": DraftReason.REDRAFT.value,
+                    "tap_id": tap.id,
+                },
+                lock=owner_control_lock(account.id),
+                # Separate from the Assist writer's `redraft:{conv}`, so a
+                # queued Assist re-draft can never swallow the owner's tap.
+                queueing_lock=f"owner-{redraft_queueing_lock(action.conversation_id)}",
+                connection=raw.driver_connection,
+            )
+        except BaseException:
+            await savepoint.rollback()
+            raise
+        if job_id is None:
+            await savepoint.rollback()
+        else:
+            await savepoint.commit()
+            # H11: the owner's tap wins before the slow worker starts, as the
+            # writer Re-draft does: it consumes the pending burst (a late Assist
+            # draft loses) and records this intent on the request, so its own
+            # replacement is not warned as overtaken. A duplicate tap does not.
+            # The conversation is already locked FOR UPDATE by the press.
+            intent = await advance_intent(
+                session, account_id=account.id, conversation_id=action.conversation_id
+            )
+            await session.execute(
+                update(OwnerRequest)
+                .where(
+                    OwnerRequest.account_id == account.id,
+                    OwnerRequest.id == action.owner_request_id,
+                )
+                .values(intent_revision=intent)
+            )
         return self._settle(
             session,
             gateway,

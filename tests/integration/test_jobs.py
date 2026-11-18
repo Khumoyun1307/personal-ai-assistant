@@ -22,7 +22,7 @@ import contextlib
 import dataclasses
 import itertools
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -559,3 +559,39 @@ async def test_handler_groups_left_out_register_no_tasks(env: Env) -> None:
     assert "actions.execute" not in env.app.tasks
     assert "inbox.triage" not in env.app.tasks
     assert "automation.fire" not in env.app.tasks
+
+
+@dataclass
+class RecordingRedraftRuntime(RecordingRuntime):
+    redrafts: list[tuple[int, int, int, int | None]] = field(default_factory=list)
+
+    async def redraft(
+        self,
+        *,
+        action_id: int,
+        request_id: int,
+        expected_version: int,
+        tap_id: int | None = None,
+    ) -> RunOutcome:
+        self.redrafts.append((action_id, request_id, expected_version, tap_id))
+        return RunOutcome(RunStatus.SKIPPED, note="recorded")
+
+
+async def test_h8_owner_request_job_dispatches_a_redraft_by_ids_and_reason_only(
+    env: Env,
+) -> None:
+    ids = {"action_id": 11, "request_id": 22, "expected_version": 3}
+    # A runtime without the Re-draft entry, or a reason other than `redraft`,
+    # runs nothing (fail closed); an owner turn still runs by turn id.
+    assert (await env.handlers.owner_request(**ids, reason="redraft")).note == "bad_arguments"
+    redraft = RecordingRedraftRuntime()
+    handlers = replace(env.handlers, owner_runtime=redraft)
+    wrong = await handlers.owner_request(**ids, reason="assist_ingestion")
+    assert wrong.note == "bad_arguments"
+    assert (await handlers.owner_request(**ids, reason="redraft", tap_id=5)).note == "recorded"
+    assert redraft.redrafts == [(11, 22, 3, 5)]
+    gate = asyncio.Event()
+    gate.set()
+    redraft.gate = gate
+    assert (await handlers.owner_request(7)).status is RunStatus.SUCCEEDED
+    assert [turn for turn, _, _ in redraft.intervals] == [7]

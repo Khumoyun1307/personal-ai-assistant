@@ -15,3 +15,7 @@ class ActionsConfig:
     process_run_id: str
     assist_draft_trigger: Literal["off", "ingestion", "triage"]
     draft_route_model: str
+    #: H8: an owner card's Re-draft resumes its request through the main
+    #: `owner_request` model (flag `tool.propose_owner_message`); off keeps
+    #: the legacy writer path unchanged.
+    owner_model_redraft: bool = False
