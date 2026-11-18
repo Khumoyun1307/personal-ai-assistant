@@ -456,6 +456,25 @@ source. A ready revision may use literal change sources under C1; rewriting
 does not impose a separate composition brief. All retained sources, targets
 and settlement fences still require validation.
 
+**H8 Re-draft (2026-11-17, behind `tool.propose_owner_message`).** An owner
+card's Re-draft tap queues `agent.owner_request(action_id, request_id,
+expected_version, reason="redraft")` — ids and the reason enum, never text.
+`OwnerRequestRuntime.redraft` reloads the card's own C1 request and, before any
+model call and without a model run, reports once (card restored) when the
+request ended, the card version changed, the recipient chat is unavailable, the
+reply target is missing/deleted/purged, a source fails validation, consent is
+off or the budget is spent. Otherwise one CAS moves the request to `ready` and
+the main owner model runs with the request's latest owner turn as the current
+turn, its validated sources/continuation, receipts and a structural "Owner
+Re-draft" fact. `propose_owner_message` may then replace exactly that card
+version (`ToolContext.redraft_of`; `ProposalRequest.replaces`, re-checked under
+the conversation lock); the new card supersedes it under the same request, so
+standalone stays standalone and an explicit older target stays chosen. The run
+key `redraft:{action}:{version}` answers each tap once. Proactive Assist cards
+keep the isolated `replies.draft` writer; owner cards without a request report
+that the task is unrecoverable. The card **Edit instruction** path still uses
+the `actions.revise` writer (open H8 item).
+
 There is one agent identity (same principles, memory, policy), invoked in **run types** that differ in trigger, context, tools, and output contract. Crucially, the **trust level of the trigger determines the capabilities** of the run (ADR-08):
 
 | Run type | Trigger | Trust | Context | Tools | Output |
@@ -1317,6 +1336,19 @@ are in-flight for two minutes, then uncertain. Old-version/state evidence and an
 invalidated `card_state` do not prove current controls were shown. Explicit
 recovery remains I27's responsibility and must not replay business effects.
 
+**H8 card Re-draft (2026-11-17).** With `tool.propose_owner_message`, the `rd`
+press on an owner card (trigger turn, owner origin or linked request) defers the
+owner Re-draft job described in §7.1 instead of `replies.draft`; a double tap
+hits the `redraft:{conv}` queueing lock and rolls back only its savepoint. An
+owner card without `owner_request_id` gets "can't re-draft … send new
+instructions" and no job. The card shows "Re-draft requested" until the run
+ends; the run then syncs it (restored choices, or superseded by the new card).
+Pre-model no-card outcomes use `redraft_failed_after_commit` with fixed owner
+reasons and notify once for warned and unwarned cards; legacy writer reasons
+still notify only warned cards. A closed estimated window does not pre-veto the
+owner-requested replacement (P2-O20); Telegram's refusal at send stays a
+definite not-sent.
+
 **H4 / D-S17 (owner, 2026-11-10).** Main-model rewrites and literal edits use
 `start_revision` → `apply_new_version` in one transaction, preserving target and
 expiry, rotating the token and clearing the old approval hash. Failed/cancelled
@@ -1725,7 +1757,7 @@ Job payloads carry **ids only**; handlers reload state and re-check conditions (
 
 | Task | Lock / queueing lock | Purpose |
 |---|---|---|
-| `agent.owner_request(turn_id)` | lock `acct:{id}:control` | Run the owner agent loop; reply in control chat |
+| `agent.owner_request(turn_id)` / `agent.owner_request(action_id, request_id, expected_version, reason)` | lock `acct:{id}:control`; a Re-draft adds qlock `redraft:{conv}` (deferred in the press's transaction, in a SAVEPOINT) | Run the owner agent loop; reply in control chat. The second form is an H8 Re-draft (`reason="redraft"`, flag `tool.propose_owner_message`) resuming the card's own request |
 | `agent.apply_confirmation(confirmation_id, turn_cutoff)` | lock `acct:{id}:control` (set at defer; never scheduled); queue `llm` | Run a held tool call the owner confirmed, once (S03.1, §7.1). `turn_cutoff` is the newest control turn at the Confirm tap (an id): a confirmed deletion clears the owner's own turns only up to it (M03 D94); absent from a job the reconciler re-created |
 | `privacy.delete_data(account_id, scope, subject_id, card_id, turn_cutoff)` | lock `acct:{id}:control` (set at defer in the press's transaction; never scheduled); queue `llm`; a failure is never retried; a run cut off by a worker shutdown is requeued at once with its lock (at most 3 times, `RequeueOnShutdown`) | An owner's button deletion (S03.5, M03 D83; scopes conversation, contact, everything, managed): runs after any owner run or applied confirmation queued before it, so what that run writes is deleted too; once per card (the deletion's audit row, or the `data_deletion_failed` row, is the key, checked under the account lock); then the counts-only receipt. On any error the owner is told what happened and the job ends `failed` (D87, D90) |
 | `inbox.triage(conversation_id)` | qlock `triage:{conv}`; **no `lock`**; `schedule_in` debounce (default 20 s); trailing debounce: if `last_contact_msg_at` is newer than (scheduled time − debounce), the handler re-defers itself and exits | Triage burst; create tasks/notifications; trigger draft/delegation evaluation. **As built (S05.1, `jobs/tasks_inbox.py::TriageJob`; registered with the listener and reconciler only while flag `triage.run` is on):** queue `llm`, deferred with `schedule_at` and the `triage:{conv}` queueing lock only (`TRIAGE_DEBOUNCE_SECONDS`, default 20). Trailing debounce on arrival time: while the newest contact message arrived less than one debounce ago, the job re-defers itself to that message + debounce and exits (its own row is `doing`, so the queueing lock is free); otherwise one `Triager` run (consent, mode and budget re-checked there; §7.1), then, if the effects left the flag set because more arrived during the call, one re-defer; budget alerts (`check_budget_thresholds`) after a run that made a call. **No procrastinate retry:** a failed or discarded run leaves the flag set and the reconciler re-creates the job. Reconciler (`jobs/reconcile_inbox.py::triage_reconciler`, inside `system.reconcile_pending`): Observe/Assist chats that are not bot chats, with `pending_triage_at` older than 30 s, an active `ai_managed` and no `todo`/`doing` `inbox.triage` job get one, due now |

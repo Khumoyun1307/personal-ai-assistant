@@ -52,8 +52,17 @@ from assistant.actions.activity import (
     live_cards,
     refresh_receipts,
 )
-from assistant.actions.request_models import OwnerRequest
-from assistant.actions.requests import OwnerContinuation
+from assistant.actions.models import Action
+from assistant.actions.request_models import TERMINAL_REQUEST_STATES, OwnerRequest
+from assistant.actions.requests import (
+    OwnerContinuation,
+    SetState,
+    SourceUnavailable,
+    load_request,
+    load_source,
+    update_request,
+)
+from assistant.actions.states import LIVE_CARD, ActionOrigin, ActionState
 from assistant.agent import owner_texts, prompt_registry
 from assistant.agent.citations import apply_citations
 from assistant.agent.context import (
@@ -67,7 +76,11 @@ from assistant.agent.context import (
 )
 from assistant.agent.locales import SupportedLocale, supported_locale
 from assistant.agent.models import AgentRun
-from assistant.agent.owner_requests import prepare_owner_request, refresh_owner_request
+from assistant.agent.owner_requests import (
+    prepare_owner_request,
+    refresh_owner_request,
+    selected_request,
+)
 from assistant.agent.persistence import (
     AgentRunRepository,
     ControlTurnRepository,
@@ -91,6 +104,7 @@ from assistant.agent.tools.registry import (
     ToolRegistry,
     ToolServices,
 )
+from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.control_texts import text as operational_text
 from assistant.core.model_routes import processor_for_model
@@ -244,6 +258,27 @@ class _RunState:
     receipt_correction: bool = False
     final_receipts: dict[int, ActionReceipt] | None = None
     no_action_results: list[tuple[str, str | None]] = field(default_factory=list)
+    #: H8: this run re-drafts that card version for its own request.
+    redraft: _Redraft | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Redraft:
+    """An owner's Re-draft tap (H8): ids from the job, never text."""
+
+    action_id: int
+    request_id: int
+    expected_version: int
+
+    @property
+    def trigger_ref(self) -> str:
+        return f"redraft:{self.action_id}:{self.expected_version}"
+
+
+#: Card states an owner Re-draft may replace (the press accepts the same).
+_REDRAFT_STATES = frozenset(
+    {state.value for state in LIVE_CARD} | {ActionState.OUTDATED.value, ActionState.EXPIRED.value}
+)
 
 
 def _managed_refs(parts: tuple[ContextPart, ...]) -> ToolRefs:
@@ -326,8 +361,27 @@ class OwnerRequestRuntime:
         self._owner_fence = owner_fence
 
     async def run(self, turn_id: int) -> RunOutcome:
+        return await self._run(turn_id, None)
+
+    async def redraft(
+        self, *, action_id: int, request_id: int, expected_version: int
+    ) -> RunOutcome:
+        """H8: an owner's Re-draft tap resumes that card's own request.
+
+        The job carries ids only. The request's operation, owner sources,
+        recipient, target and constraints are reloaded here and re-validated
+        before any model call; the main owner model then writes a fresh
+        version through the same proposal tools as the original task.
+        """
+        if PROPOSE_OWNER_MESSAGE_FLAG not in self._config.enabled_flags:
+            # Never deferred with the flag off; a stale job does nothing.
+            logger.warning("owner_redraft_not_enabled", action_id=action_id)
+            return RunOutcome(RunStatus.SKIPPED, note="redraft_not_enabled")
+        return await self._run(None, _Redraft(action_id, request_id, expected_version))
+
+    async def _run(self, turn_id: int | None, redraft: _Redraft | None) -> RunOutcome:
         prompt = prompt_registry.active(RUN_TYPE, enabled_flags=self._config.enabled_flags)
-        started = await self._start(turn_id, prompt)
+        started = await self._start(turn_id, prompt, redraft)
         if isinstance(started, RunOutcome):
             return started
         if started.turn_deleted:
@@ -366,11 +420,14 @@ class OwnerRequestRuntime:
                 account_id=state.account_id,
                 run_id=state.run_id,
                 run_type=RUN_TYPE,
-                turn_id=turn_id,
+                turn_id=state.turn_id,
                 owner_turn=started.owner_turn,
                 continuation=state.continuation,
                 tainted=state.tainted,
                 managed_ok=started.managed_consent,
+                redraft_of=(
+                    None if redraft is None else (redraft.action_id, redraft.expected_version)
+                ),
                 services=ToolServices(
                     session_factory=self._session_factory,
                     clock=self._clock,
@@ -395,12 +452,44 @@ class OwnerRequestRuntime:
         )
         return await self._loop(state, executor, prompt.label)
 
-    async def _start(self, turn_id: int, prompt: prompt_registry.Prompt) -> _Started | RunOutcome:
+    async def _start(
+        self,
+        turn_id: int | None,
+        prompt: prompt_registry.Prompt,
+        redraft: _Redraft | None = None,
+    ) -> _Started | RunOutcome:
         """Load the turn, check consent and budget, create the run row. One transaction."""
         async with transaction(self._session_factory) as uow:
             session = uow.session
-            account_id = await account_of_turn(session, turn_id)
-            if account_id is None:
+            account_id: int | None = None
+            if redraft is None:
+                assert turn_id is not None
+                account_id = await account_of_turn(session, turn_id)
+                trigger_ref = f"turn:{turn_id}"
+            else:
+                # The request's latest owner turn carries the original task;
+                # its sources outside recent history are reloaded below.
+                located = (
+                    await session.execute(
+                        select(Action.account_id, OwnerRequest.last_turn_id)
+                        .outerjoin(
+                            OwnerRequest,
+                            (OwnerRequest.account_id == Action.account_id)
+                            & (OwnerRequest.id == redraft.request_id),
+                        )
+                        .where(Action.id == redraft.action_id)
+                    )
+                ).one_or_none()
+                if located is None:
+                    # The card itself is gone: there is nothing to restore.
+                    return RunOutcome(RunStatus.SKIPPED, note="redraft_not_found")
+                if located.last_turn_id is None:
+                    return await self._redraft_failed(
+                        session, located.account_id, redraft, prompt, "request_unavailable"
+                    )
+                account_id, turn_id = located.account_id, located.last_turn_id
+                trigger_ref = redraft.trigger_ref
+            if account_id is None or turn_id is None:
                 return RunOutcome(RunStatus.SKIPPED, note="turn_not_found")
             turn = await ControlTurnRepository(session, account_id).get(turn_id)
             account = await session.get(Account, account_id)
@@ -412,14 +501,21 @@ class OwnerRequestRuntime:
 
             # A job can run twice (stalled-worker recovery, reconciler). A turn
             # that already got an answer must not get a second one; a run cut
-            # off mid-way (no answer recorded) is marked and done again.
-            previous = await AgentRunRepository(session, account_id).for_trigger(f"turn:{turn_id}")
+            # off mid-way (no answer recorded) is marked and done again. A
+            # Re-draft's key is its card version, so the tap is answered once.
+            previous = await AgentRunRepository(session, account_id).for_trigger(trigger_ref)
             if any(run.status != "running" for run in previous):
                 return RunOutcome(RunStatus.SKIPPED, note="already_answered", account_id=account_id)
             for interrupted in previous:
                 interrupted.status = RunStatus.FAILED.value
                 interrupted.error_class = "interrupted"
                 interrupted.finished_at = self._clock.now()
+            redraft_continuation: OwnerContinuation | None = None
+            if redraft is not None:
+                checked = await self._check_redraft(session, account_id, redraft, turn, prompt)
+                if isinstance(checked, RunOutcome):
+                    return checked
+                redraft_continuation = checked
             if turn.text is None and turn.quoted_text is None:
                 # On record before the notice goes out (a run that called no
                 # model): a re-run of this job finds it and stays silent, as
@@ -454,7 +550,7 @@ class OwnerRequestRuntime:
             run = AgentRunRepository(session, account_id).add(
                 AgentRun(
                     run_type=RUN_TYPE,
-                    trigger_ref=f"turn:{turn_id}",
+                    trigger_ref=trigger_ref,
                     model=self._config.model,
                     effort=self._config.effort,
                     prompt_version=prompt.label,
@@ -466,18 +562,21 @@ class OwnerRequestRuntime:
             history = await ControlTurnRepository(session, account_id).recent_before(
                 turn_id, limit=OWNER_HISTORY_TURNS, include_managed=managed_ok
             )
-            load_continuation = (
-                prepare_owner_request
-                if PROPOSE_OWNER_MESSAGE_FLAG in self._config.enabled_flags
-                else load_owner_continuation
-            )
-            continuation = await load_continuation(
-                session,
-                account_id=account_id,
-                turn=turn,
-                now=self._clock.now(),
-                managed_allowed=managed_ok,
-            )
+            if redraft_continuation is not None:
+                continuation = redraft_continuation
+            else:
+                load_continuation = (
+                    prepare_owner_request
+                    if PROPOSE_OWNER_MESSAGE_FLAG in self._config.enabled_flags
+                    else load_owner_continuation
+                )
+                continuation = await load_continuation(
+                    session,
+                    account_id=account_id,
+                    turn=turn,
+                    now=self._clock.now(),
+                    managed_allowed=managed_ok,
+                )
             preference_capture_enabled = "tool.remember_owner_sources" in self._config.enabled_flags
             receipt_page: ReceiptPage | None = None
             referenced_actions: set[int] = set()
@@ -507,6 +606,9 @@ class OwnerRequestRuntime:
                 if continuation.selection.action_id is not None:
                     referenced_actions.add(continuation.selection.action_id)
                     current_actions.add(continuation.selection.action_id)
+                if redraft is not None:
+                    referenced_actions.add(redraft.action_id)
+                    current_actions.add(redraft.action_id)
                 if continuation.request is not None:
                     request_ids.add(continuation.request.request_id)
                     current_requests.add(continuation.request.request_id)
@@ -576,6 +678,9 @@ class OwnerRequestRuntime:
                     await live_cards(session, account_id=account_id) if managed_ok else None
                 ),
                 receipts=receipt_page,
+                redraft_of=(
+                    None if redraft is None else (redraft.action_id, redraft.expected_version)
+                ),
             )
             # Tainted from the start when the context already carries
             # third-party text or managed content (§7.1, M03 D45).
@@ -594,7 +699,8 @@ class OwnerRequestRuntime:
                 # refs lets a chat purge redact that reply too (§10.4). H2's
                 # structural request/card linkage survives independently.
                 refs=_managed_refs(context.parts) | ToolRefs.from_json(turn.refs),
-                received_at=turn.created_at,
+                # A Re-draft answers a tap, not this turn's arrival.
+                received_at=turn.created_at if redraft is None else None,
                 locale=supported_locale(account.locale_pref),
                 timezone=account.timezone,
                 may_ask_managed=not managed_state.granted,
@@ -603,6 +709,7 @@ class OwnerRequestRuntime:
                 receipts=(
                     {} if receipt_page is None else {r.action_id: r for r in receipt_page.receipts}
                 ),
+                redraft=redraft,
             )
             return _Started(
                 account_id,
@@ -624,6 +731,184 @@ class OwnerRequestRuntime:
                     owner_text_verified=bool(turn.owner_text_verified),
                 ),
             )
+
+    async def _check_redraft(
+        self,
+        session: AsyncSession,
+        account_id: int,
+        redraft: _Redraft,
+        turn: ControlTurn,
+        prompt: prompt_registry.Prompt,
+    ) -> OwnerContinuation | RunOutcome:
+        """Re-validate the tapped card's own task before any model call (H8).
+
+        Nothing is inferred from the newest chat messages: the recipient,
+        standalone/reply mode, explicit target and owner sources all come
+        from the persisted request. Each no-card outcome is reported once.
+        """
+        now = self._clock.now()
+        action = await session.scalar(
+            select(Action).where(Action.account_id == account_id, Action.id == redraft.action_id)
+        )
+        request = await session.scalar(
+            select(OwnerRequest).where(
+                OwnerRequest.account_id == account_id, OwnerRequest.id == redraft.request_id
+            )
+        )
+        assert action is not None  # located in this transaction
+        if request is None or action.owner_request_id != request.id:
+            return await self._redraft_failed(
+                session, account_id, redraft, prompt, "request_unavailable"
+            )
+        if request.action_id is not None and request.action_id != action.id:
+            # A later artifact already answers this request (a retried job
+            # after its proposal committed, or newer owner work): no duplicate.
+            return await self._redraft_failed(
+                session, account_id, redraft, prompt, "already_staged", notify=False
+            )
+        if (
+            action.version != redraft.expected_version
+            or action.state not in _REDRAFT_STATES
+            or action.origin == ActionOrigin.DELEGATION_AUTO.value
+        ):
+            return await self._redraft_failed(session, account_id, redraft, prompt, "stale")
+        if request.state in TERMINAL_REQUEST_STATES:
+            return await self._redraft_failed(
+                session, account_id, redraft, prompt, "request_unavailable"
+            )
+        if turn.text is None and turn.quoted_text is None:
+            return await self._redraft_failed(
+                session, account_id, redraft, prompt, "source_unavailable"
+            )
+        recipient = await session.scalar(
+            select(Conversation.id)
+            .join(Contact, Contact.id == Conversation.contact_id)
+            .where(
+                Conversation.account_id == account_id,
+                Contact.account_id == account_id,
+                Conversation.id == request.conversation_id,
+                Contact.id == request.contact_id,
+                Contact.is_bot.is_(False),
+            )
+        )
+        if recipient is None or recipient != action.conversation_id:
+            return await self._redraft_failed(
+                session, account_id, redraft, prompt, "recipient_unavailable"
+            )
+        # A reply keeps its chosen message, even outside the newest window.
+        # A missing, deleted or purged target is reported; never replaced.
+        target = request.target_message_id
+        if action.base_message_id is not None and target not in (None, action.base_message_id):
+            return await self._redraft_failed(
+                session, account_id, redraft, prompt, "target_unavailable"
+            )
+        target = target if target is not None else action.base_message_id
+        if request.operation == "reply" or target is not None:
+            retained = (
+                None
+                if target is None
+                else await session.scalar(
+                    select(Message.id).where(
+                        Message.account_id == account_id,
+                        Message.conversation_id == recipient,
+                        Message.id == target,
+                        Message.direction == "contact",
+                        Message.text.is_not(None),
+                        Message.deleted_at.is_(None),
+                        Message.purged_at.is_(None),
+                    )
+                )
+            )
+            if retained is None:
+                return await self._redraft_failed(
+                    session, account_id, redraft, prompt, "target_unavailable"
+                )
+        view = await load_request(session, account_id=account_id, request_id=request.id)
+        assert view is not None
+        for source in view.sources:
+            loaded = await load_source(session, account_id=account_id, source=source)
+            if isinstance(loaded, SourceUnavailable):
+                return await self._redraft_failed(
+                    session, account_id, redraft, prompt, "source_unavailable"
+                )
+        control = await active_consent(session, account_id, kind=CONSENT_AI_CONTROL)
+        managed = await active_consent(session, account_id, kind=CONSENT_AI_MANAGED)
+        if (
+            not control.granted
+            or not managed.granted
+            or processor_for_model(self._config.model) not in managed.processors
+        ):
+            return await self._redraft_failed(session, account_id, redraft, prompt, "no_consent")
+        if await self._over_budget(session, account_id):
+            return await self._redraft_failed(
+                session, account_id, redraft, prompt, "budget_exceeded"
+            )
+        if view.state != "ready":
+            # One new bounded attempt for the same request (C1 CAS); the
+            # request keeps its sources, recipient, target and constraints.
+            result = await update_request(
+                session,
+                account_id=account_id,
+                request_id=view.request_id,
+                expected_version=view.version,
+                update=SetState(state="ready", reason=None),
+                now=now,
+            )
+            if result.status != "applied":
+                return await self._redraft_failed(
+                    session, account_id, redraft, prompt, "request_unavailable"
+                )
+            view = result.view
+        continuation = await load_owner_continuation(
+            session,
+            account_id=account_id,
+            turn=turn,
+            now=now,
+            managed_allowed=True,
+            selection=selected_request(view),
+        )
+        if continuation.selection.status != "selected" or continuation.request is None:
+            return await self._redraft_failed(
+                session, account_id, redraft, prompt, "request_unavailable"
+            )
+        return continuation
+
+    async def _redraft_failed(
+        self,
+        session: AsyncSession,
+        account_id: int,
+        redraft: _Redraft,
+        prompt: prompt_registry.Prompt,
+        code: str,
+        *,
+        notify: bool = True,
+    ) -> RunOutcome:
+        """Record the outcome under the tap's key, then restore and tell once."""
+        repository = AgentRunRepository(session, account_id)
+        answered = [
+            run
+            for run in await repository.for_trigger(redraft.trigger_ref)
+            if run.status != "running" and run.error_class != "interrupted"
+        ]
+        if answered:
+            return RunOutcome(RunStatus.SKIPPED, note="already_answered", account_id=account_id)
+        repository.add(
+            AgentRun(
+                run_type=RUN_TYPE,
+                trigger_ref=redraft.trigger_ref,
+                model=self._config.model,
+                effort=self._config.effort,
+                prompt_version=prompt.label,
+                status=RunStatus.FAILED.value,
+                started_at=self._clock.now(),
+                finished_at=self._clock.now(),
+                error_class=f"redraft_{code}",
+            )
+        )
+        if notify and self._approval_cards is not None:
+            self._approval_cards.redraft_failed_after_commit(session, redraft.action_id, code)
+        logger.info("owner_redraft_not_run", account_id=account_id, code=code)
+        return RunOutcome(RunStatus.SKIPPED, note=code, account_id=account_id)
 
     async def _loop(
         self, state: _RunState, executor: ToolExecutor, prompt_label: str
@@ -888,6 +1173,7 @@ class OwnerRequestRuntime:
         error_class: str | None = None,
     ) -> RunOutcome:
         """Reply to the owner, then close the run and record the assistant turn."""
+        failure = text if status is not RunStatus.SUCCEEDED else None
         if PROPOSE_OWNER_MESSAGE_FLAG in self._config.enabled_flags:
             scope = _scope(state)
             page = await self._observe_receipts(state)
@@ -926,6 +1212,10 @@ class OwnerRequestRuntime:
                     text += "\n" + operational_text("receipt_unread", state.locale)
                 if any(not r.text_available for r in in_scope):
                     text = owner_texts.DRAFT_TEXT_UNAVAILABLE[state.locale] + "\n" + text
+                if state.redraft is not None and failure is not None:
+                    # H8-5: a failed Re-draft says why no new card came,
+                    # beside the receipt of the card that is still current.
+                    text = failure + "\n" + text
             if state.no_action_results:
                 questions = [
                     no_action_text(result, reason, state.locale)
@@ -953,6 +1243,10 @@ class OwnerRequestRuntime:
                 run.iterations = state.iterations
                 run.finished_at = self._clock.now()
                 run.error_class = error_class or (None if delivery.ok else "reply_not_delivered")
+            if state.redraft is not None and self._approval_cards is not None:
+                # The tapped card showed "drafting": show its current state
+                # again (restored choices, or superseded by the replacement).
+                self._approval_cards.sync_after_commit(uow.session, state.redraft.action_id)
             # Link the delivered answer to this turn's durable request,
             # without storing a model summary or adding delivery state.
             request_ids = list(

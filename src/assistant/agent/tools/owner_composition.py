@@ -372,17 +372,22 @@ async def propose_owner_message_tool(
             )
             if target is None:
                 return source_failure("not_available", "not_found", request)
+        replaces: tuple[int, int] | None = None
         if request.action_id is not None:
             if existing is None:
                 return source_failure("not_available", "artifact_unavailable", request)
-            return await _receipt(
-                session,
-                ctx,
-                request,
-                existing,
-                "proposal_conflict",
-                reason="existing_draft_conflict",
-            )
+            if ctx.redraft_of != (existing.id, existing.version):
+                return await _receipt(
+                    session,
+                    ctx,
+                    request,
+                    existing,
+                    "proposal_conflict",
+                    reason="existing_draft_conflict",
+                )
+            # H8: the owner's Re-draft tap asked to replace exactly this
+            # card version; the new card supersedes it under the same request.
+            replaces = ctx.redraft_of
         if request.version != args.request_version:
             return source_failure("stale", "request_changed", request)
         if (
@@ -416,6 +421,7 @@ async def propose_owner_message_tool(
                     requested_at=request.requested_at,
                     owner_request_id=request.id,
                     expected_request_version=args.request_version,
+                    replaces=replaces,
                     draft_flags={
                         "mode": args.mode,
                         "target": "answered" if args.answered_message_id is not None else "none",

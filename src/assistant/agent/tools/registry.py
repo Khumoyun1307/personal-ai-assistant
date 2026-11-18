@@ -227,6 +227,9 @@ class ToolContext:
     #: The owner's confirmation tap time, retained before the apply claim
     #: updates the confirmation row's decision timestamp (C8).
     confirmed_at: datetime | None = None
+    #: H8: the run re-drafts this (action id, version) for its own request,
+    #: after the owner's Re-draft tap. Only that card may be replaced.
+    redraft_of: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)

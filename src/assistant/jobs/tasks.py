@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from procrastinate import App, BaseRetryStrategy, RetryDecision, RetryStrategy
 from procrastinate.exceptions import UniqueViolation
@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.agent.budget import check_budget_thresholds
 from assistant.agent.confirmations import ApplyOutcome
-from assistant.agent.runtime import RunOutcome
+from assistant.agent.runtime import RunOutcome, RunStatus
 from assistant.agent.summarize import RefreshOutcome
 from assistant.core.clock import Clock
 from assistant.core.jobs import (
@@ -50,6 +50,7 @@ from assistant.core.jobs import (
     DELETE_DATA_TASK,
     OWNER_REQUEST_TASK,
     REFRESH_SUMMARY_TASK,
+    DraftReason,
     JobScheduler,
     owner_control_lock,
 )
@@ -130,6 +131,15 @@ class OwnerRuntime(Protocol):
     async def run(self, turn_id: int) -> RunOutcome: ...
 
 
+@runtime_checkable
+class OwnerRedraftRuntime(Protocol):
+    """H8: an owner's Re-draft tap resumes its persisted request (ids only)."""
+
+    async def redraft(
+        self, *, action_id: int, request_id: int, expected_version: int
+    ) -> RunOutcome: ...
+
+
 class Applier(Protocol):
     async def apply(self, confirmation_id: int, turn_cutoff: int | None = None) -> ApplyOutcome: ...
 
@@ -200,8 +210,32 @@ class JobHandlers:
     ) -> ApplyOutcome:
         return await self.confirmation_applier.apply(confirmation_id, turn_cutoff)
 
-    async def owner_request(self, turn_id: int) -> RunOutcome:
-        outcome = await self.owner_runtime.run(turn_id)
+    async def owner_request(
+        self,
+        turn_id: int | None = None,
+        *,
+        action_id: int | None = None,
+        request_id: int | None = None,
+        expected_version: int | None = None,
+        reason: str | None = None,
+    ) -> RunOutcome:
+        if turn_id is not None and action_id is None and request_id is None:
+            outcome = await self.owner_runtime.run(turn_id)
+        elif (
+            turn_id is None
+            and action_id is not None
+            and request_id is not None
+            and expected_version is not None
+            and reason == DraftReason.REDRAFT.value
+            and isinstance(self.owner_runtime, OwnerRedraftRuntime)
+        ):
+            # H8: ids and enums only; the runtime reloads the original task.
+            outcome = await self.owner_runtime.redraft(
+                action_id=action_id, request_id=request_id, expected_version=expected_version
+            )
+        else:
+            logger.warning("owner_request_bad_arguments", action_id=action_id)
+            return RunOutcome(RunStatus.SKIPPED, note="bad_arguments")
         if outcome.run_id is not None and outcome.account_id is not None:
             await check_budget_thresholds(
                 self.session_factory,
@@ -422,8 +456,22 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
     register_automation_tasks(app, handlers.automation)
 
     @app.task(name=OWNER_REQUEST_TASK, queue=QUEUE_LLM, retry=OWNER_REQUEST_RETRY)
-    async def owner_request(turn_id: int) -> None:
-        await handlers.owner_request(turn_id)
+    async def owner_request(
+        turn_id: int | None = None,
+        action_id: int | None = None,
+        request_id: int | None = None,
+        expected_version: int | None = None,
+        reason: str | None = None,
+    ) -> None:
+        # An owner turn (`turn_id`), or an H8 Re-draft: action/request ids,
+        # the card's version and the `redraft` reason enum, never text.
+        await handlers.owner_request(
+            turn_id,
+            action_id=action_id,
+            request_id=request_id,
+            expected_version=expected_version,
+            reason=reason,
+        )
 
     @app.task(name=APPLY_CONFIRMATION_TASK, queue=QUEUE_LLM, retry=OWNER_REQUEST_RETRY)
     async def apply_confirmation(confirmation_id: int, turn_cutoff: int | None = None) -> None:

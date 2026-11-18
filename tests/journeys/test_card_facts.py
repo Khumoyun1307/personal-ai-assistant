@@ -6,11 +6,12 @@ import pytest
 from sqlalchemy import select
 
 from assistant.db.uow import transaction
-from assistant.llm.port import LLMRequest
+from assistant.llm.port import LLMRequest, TextItem
 from tests.fakes.llm import text_response
 from tests.journeys.grading import assert_equal
 from tests.journeys.harness import JOURNEY_FLAGS, Journey, call
 from tests.journeys.locales import OUTDATED, OWNER_LABEL, SENT, TEXT, UNAVAILABLE, UNCERTAIN
+from tests.journeys.matrix import owner_input
 from tests.journeys.models import (
     LOCALES,
     Contact,
@@ -237,7 +238,6 @@ async def test_j22_final_answer_refreshes_after_artifact_read(
     await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
-@pytest.mark.xfail(strict=True, reason="needs H8", raises=AssertionError)
 @pytest.mark.parametrize("locale", LOCALES)
 async def test_j21_redraft_retains_standalone_request_after_restart(
     journey: Journey, locale: Locale
@@ -245,20 +245,43 @@ async def test_j21_redraft_retains_standalone_request_after_restart(
     j = journey
     t = TEXT[locale]
     await j.language(locale)
-    await j.owner(t.brief, j.read(), j.generated_proposal(t.generated), text_response(t.generated))
+    # The baseline brief has no recipient, so it opens no C1 request; J04's
+    # explicit standalone command does (H8 consumes requests, never infers one).
+    brief = owner_input("J04", locale)[0]
+    await j.owner(brief, j.read(), j.generated_proposal(t.generated), text_response(t.generated))
     row = await j.bind_card("k")
     request = await j.request()
     await j.event(Contact(alias="new", text="CANARY-SYNTH newer question."))
-    assert (await j.action("k")).state == "outdated"
+    # D-S17 rotates the warned card's token; the tap uses the controls shown.
+    warned = await j.bind_card("k")
+    assert warned.id == row.id
+    assert warned.state == "outdated"
     await j.event(Restart())
+    before = len(j.s.fake.requests)
     j.s.fake.queue(j.read(), j.generated_proposal(t.revised), text_response(t.revised))
-    await j.tap("k", row.version, "redraft")
-    await run_queued(j.s, "agent.owner_request")
-    assert (await j.request()).request_id == request.request_id
+    await j.tap("k", warned.version, "redraft")
+    assert_equal(await run_queued(j.s, "agent.owner_request"), 1, field="redraft jobs run")
+    reloaded = await j.request()
+    assert reloaded.request_id == request.request_id
+    assert reloaded.operation == request.operation
+    assert reloaded.sources == request.sources
+    assert reloaded.target_message_id is None
+    # The main owner model saw the original task again, not the newer message.
+    redraft_items = [
+        item.text for item in j.s.fake.requests[before].items if isinstance(item, TextItem)
+    ]
+    assert any(brief in text for text in redraft_items)
+    assert any("Owner Re-draft" in text for text in redraft_items)
     current = await j.bind_card("k")
+    assert current.id != row.id
+    assert current.owner_request_id == request.request_id
     assert current.base_message_id is None
     assert current.text == t.revised
+    old = await j.s.action(row.id)
+    assert old.state == "outdated"
+    assert old.approval_token is None
     await j.check(CountCheck(artifact="nested_writers", count=0))
+    await j.check(CountCheck(artifact="business_attempts", count=0))
 
 
 @pytest.mark.xfail(strict=True, reason="needs I27", raises=AssertionError)
