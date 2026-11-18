@@ -172,6 +172,20 @@ async def purge_request_sources(
             .execution_options(populate_existing=True)
         )
     )
+    legacy_selections = delete(AuditLogEntry).where(
+        AuditLogEntry.account_id == account_id,
+        AuditLogEntry.event.in_(["owner_intent_selected", "owner_intent_bound"]),
+    )
+    if not everything:
+        legacy_selections = legacy_selections.where(
+            or_(
+                (AuditLogEntry.subject_type == "control_turn")
+                & AuditLogEntry.subject_id.in_([*turn_ids, *(row.trigger_turn_id for row in rows)]),
+                AuditLogEntry.details["turn_id"].as_integer().in_(turn_ids),
+                AuditLogEntry.details["conversation_id"].as_integer().in_(conversation_ids),
+            )
+        )
+    await session.execute(legacy_selections)
     # Presentation history contains no prose, but scoped erasure must also
     # remove its control-message associations, including pre-C1 cards.
     action_scope = select(Action.id).where(Action.account_id == account_id)
@@ -253,6 +267,8 @@ async def purge_request_sources(
         )
         row.question_input_id = None
         row.resolution_candidates = None
+        row.intent_revision = None
+        row.manual_watermark = None
         row.action_id = None
         row.action_version = None
         row.target_message_id = None

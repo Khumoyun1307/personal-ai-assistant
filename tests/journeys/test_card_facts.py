@@ -27,6 +27,41 @@ pytestmark = [pytest.mark.integration, pytest.mark.journey]
 
 
 @pytest.mark.parametrize("locale", LOCALES)
+async def test_j11_new_explicit_task_reports_which_old_card_it_superseded(
+    journey: Journey, locale: Locale
+) -> None:
+    from assistant.actions.activity import refresh_receipts
+
+    j = journey
+    await j.language(locale)
+    original = await j.dictate(TEXT[locale].generated, alias="original")
+    replacement = await j.dictate(TEXT[locale].revised, alias="replacement")
+    async with j.s.env.factory() as session:
+        page = await refresh_receipts(
+            session,
+            account_id=j.s.account_id,
+            action_ids=(original.id, replacement.id),
+            now=j.s.env.clock.now(),
+        )
+    old, current = page.receipts
+    assert old.state == "outdated"
+    assert old.replaced_by_action_id == replacement.id
+    assert old.can_approve_anyway is False
+    assert current.state == "awaiting_approval"
+    await j.owner(
+        TEXT[locale].outcome,
+        call("get_draft", action_id=original.id, conversation_id=None),
+        text_response(OUTDATED[locale]),
+    )
+    assert j.outputs()[-1]["action_id"] == original.id
+    assert j.outputs()[-1]["state"] == "outdated"
+    assert TEXT[locale].generated in j.outputs()[-1]["text"]
+    await j.tap("original", original.version, "approve")
+    assert (await j.action("replacement")).state == "awaiting_approval"
+    await j.check(CountCheck(artifact="business_attempts", count=0))
+
+
+@pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("transition", ["reject", "approve", "outdate"])
 async def test_q2_q3_j11_terminal_facts_do_not_depend_on_live_card(
     journey: Journey, locale: Locale, transition: str
