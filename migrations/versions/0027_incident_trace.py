@@ -11,16 +11,16 @@ The code lists are a frozen copy of `assistant.agent.models` at this revision.
 constraints of the migrated database, so a later code change needs a new
 revision rather than an edit here.
 
-Revision ID: 0024
-Revises: 0023
+Revision ID: 0027
+Revises: 0026
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "0024"
-down_revision = "0023"
+revision = "0027"
+down_revision = "0026"
 branch_labels = None
 depends_on = None
 
@@ -164,6 +164,7 @@ REASONS = (
     "chat_changed",
     "provider_refused",
     "revision_not_applied",
+    "owner_intent_superseded",
     "stale",
     "managed_access_off",
     "superseded",

@@ -296,6 +296,7 @@ TRACE_REASONS = (
     "chat_changed",
     "provider_refused",
     "revision_not_applied",
+    "owner_intent_superseded",
     # C1 continuation codes.
     "stale",
     "managed_access_off",

@@ -523,6 +523,27 @@ async def test_reject_is_terminal(env: Env) -> None:
     assert not any(source is ActionState.REJECTED for source, _ in TRANSITIONS)
 
 
+async def test_reject_retry_does_not_advance_owner_intent_twice(env: Env) -> None:
+    chat, _, token = await card(env)
+
+    async def intent() -> int:
+        async with env.factory() as session:
+            row = await session.get(Conversation, chat.conversation_id)
+            assert row is not None
+            return row.owner_intent_revision
+
+    before = await intent()
+    async with env.factory() as session, session.begin():
+        assert await reject(session, account_id=chat.account_id, token=token, now=env.clock.now())
+    assert await intent() == before + 1
+    async with env.factory() as session, session.begin():
+        retried = await reject(
+            session, account_id=chat.account_id, token=token, now=env.clock.now()
+        )
+        assert retried is False
+    assert await intent() == before + 1
+
+
 async def test_expire_due_distinguishes_window_close_from_max_age_and_skips_executing(
     env: Env,
 ) -> None:

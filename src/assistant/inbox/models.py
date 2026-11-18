@@ -150,6 +150,11 @@ class ConversationTriage(Base):
             name="escalation_category",
         ),
         CheckConstraint("script IN ('latin','cyrillic','mixed','other')", name="script"),
+        # Both or neither (C7): a trigger on `review_progress` clears the pair
+        # atomically, since ON DELETE SET NULL alone would clear only the id.
+        CheckConstraint(
+            "(review_progress_id IS NULL) = (review_version IS NULL)", name="review_link"
+        ),
     )
     id: Mapped[IdPk] = mapped_column(Identity(always=True))
     account_id: Mapped[int] = mapped_column(
@@ -158,6 +163,12 @@ class ConversationTriage(Base):
     conversation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("app.conversations.id", ondelete="CASCADE"), nullable=False
     )
+    #: Coverage this verdict was settled against (structural, C7); NULL for
+    #: legacy verdicts and after the progress row is removed: unproven coverage.
+    review_progress_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("app.review_progress.id", ondelete="SET NULL"), nullable=True
+    )
+    review_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     covers_through_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     needs_reply: Mapped[bool] = mapped_column(nullable=False)
     contains_question: Mapped[bool] = mapped_column(nullable=False)
@@ -173,6 +184,81 @@ class ConversationTriage(Base):
     run_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("app.agent_runs.id", ondelete="SET NULL"), nullable=True
     )
+    created_at: Mapped[CreatedAt]
+    updated_at: Mapped[CreatedAt]
+
+
+class ReviewProgress(Base):
+    """Where one reader's contiguous review of a conversation stands (C7, I2).
+
+    Structural only: ids, counters, fixed enums. `position` names the newest
+    message the reader has completely examined (whole-message readers; a partial
+    message position belongs to I6), never a sampled newest ID past retained
+    messages it has not read. `version` is the settlement compare-and-swap.
+    """
+
+    __tablename__ = "review_progress"
+    __table_args__ = (
+        Index("ix_review_progress_account_id", "account_id"),
+        Index(
+            "uq_review_progress_scope",
+            "account_id",
+            "conversation_id",
+            "reader",
+            "monitor_id",
+            "scope_key",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+        ),
+        CheckConstraint("reader IN ('summary', 'triage', 'monitor')", name="reader"),
+        CheckConstraint("(reader = 'monitor') = (monitor_id IS NOT NULL)", name="monitor_id"),
+        CheckConstraint(
+            "status IN ('pending', 'current', 'partial', 'degraded', 'blocked')", name="status"
+        ),
+        CheckConstraint("version >= 1", name="version"),
+        CheckConstraint("attempts >= 0", name="attempts"),
+        CheckConstraint("skip_streak >= 0", name="skip_streak"),
+        CheckConstraint("batch_limit IS NULL OR batch_limit > 0", name="batch_limit"),
+        CheckConstraint("source_revision >= 0", name="source_revision"),
+        CheckConstraint(
+            "last_error IS NULL OR last_error IN ('backlog', 'partial_text', 'source_changed', "
+            "'deleted', 'retention', 'provider_failed', 'invalid_output', 'budget', "
+            "'no_consent', 'refusal', 'truncated')",
+            name="last_error",
+        ),
+    )
+    id: Mapped[IdPk] = mapped_column(Identity(always=True))
+    account_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app.accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    conversation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app.conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    reader: Mapped[str] = mapped_column(Text, nullable=False)
+    monitor_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("app.automations.id", ondelete="CASCADE"), nullable=True
+    )
+    scope_key: Mapped[str] = mapped_column(Text, nullable=False, server_default="rolling")
+    requested_range: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    position: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    source_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    pending_ranges: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    #: Identity of the batch `attempts` counts (message ids only): a different
+    #: batch starts again from zero attempts.
+    failed_first_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    failed_last_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: Shrunk batch size after repeated failures (NULL = the reader's default);
+    #: grows back as batches succeed.
+    batch_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Single messages skipped in a row as unexaminable; capped, then degraded.
+    skip_streak: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    retry_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[CreatedAt]
     updated_at: Mapped[CreatedAt]
 

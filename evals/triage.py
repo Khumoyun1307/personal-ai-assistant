@@ -705,8 +705,8 @@ class TriageTarget:
             summary_overview=None,
             open_tasks=tasks,
             earlier=history,
-            burst=new[-BURST_LIMIT:],
-            omitted=max(0, len(new) - BURST_LIMIT),
+            burst=new[:BURST_LIMIT],
+            remaining=max(0, len(new) - BURST_LIMIT),
             now=burst.now,
         )
         return (

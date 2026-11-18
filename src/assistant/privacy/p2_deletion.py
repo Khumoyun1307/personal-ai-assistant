@@ -15,6 +15,7 @@ from assistant.actions.states import PENDING, StateReason
 from assistant.automation.models import Automation
 from assistant.conversations.models import Conversation
 from assistant.inbox.models import ConversationTriage, Notification, Task
+from assistant.inbox.review_progress import delete_progress
 from assistant.privacy.owner_requests import purge_request_sources
 
 
@@ -90,6 +91,9 @@ async def purge_p2(
     if scope == "managed":
         task_filter &= Task.created_by == "agent"
     tasks = len((await session.execute(delete(Task).where(task_filter).returning(Task.id))).all())
+    # Cursor metadata names deleted messages: removed first, clearing the
+    # verdict's paired linkage fields atomically (C7), then the verdicts.
+    await delete_progress(session, account_id=account_id, conversation_ids=conversation_ids)
     await session.execute(delete(ConversationTriage).where(triage_filter))
     notification_filter = Notification.account_id == account_id
     automation_filter = Automation.account_id == account_id

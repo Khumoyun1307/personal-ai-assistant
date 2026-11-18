@@ -493,10 +493,10 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0024"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0027"]
 
 
-def test_0024_incident_trace_is_bounded_coded_cascading_and_round_trips(
+def test_0027_incident_trace_is_bounded_coded_cascading_and_round_trips(
     scratch_url: str,
 ) -> None:
     run_alembic(scratch_url, "head")
@@ -541,10 +541,56 @@ def test_0024_incident_trace_is_bounded_coded_cascading_and_round_trips(
         assert conn.execute(
             "SELECT count(*) FROM app.incident_trace_events WHERE account_id = %s", (account,)
         ).fetchone() == (0,)
-    run_alembic(scratch_url, "0023", down=True)
+    run_alembic(scratch_url, "0026", down=True)
     assert "incident_trace_events" not in tables_in(scratch_url, "app")
     run_alembic(scratch_url, "head")
     assert "incident_trace_events" in tables_in(scratch_url, "app")
+
+
+def _account_triggers(url: str) -> set[str]:
+    with psycopg.connect(libpq(url), autocommit=True) as conn:
+        rows = conn.execute(
+            "SELECT tgname FROM pg_trigger "
+            "WHERE tgrelid = 'app.accounts'::regclass AND NOT tgisinternal"
+        ).fetchall()
+    return {row[0] for row in rows}
+
+
+def test_0025_account_requests_first_round_trip(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    assert "unlink_account_owner_requests" in _account_triggers(scratch_url)
+    run_alembic(scratch_url, "0024", down=True)
+    assert "unlink_account_owner_requests" not in _account_triggers(scratch_url)
+    assert "privacy_account_delete" in _account_triggers(scratch_url)
+    run_alembic(scratch_url, "head")
+    assert "unlink_account_owner_requests" in _account_triggers(scratch_url)
+
+
+def test_0024_owner_intent_round_trip(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema = 'app' AND table_name = 'owner_requests' "
+            "AND column_name = 'intent_revision'"
+        ).fetchone() == ("bigint", "YES")
+        assert conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema = 'app' AND table_name = 'owner_requests' "
+            "AND column_name = 'manual_watermark'"
+        ).fetchone() == ("bigint", "YES")
+        constraints = conn.execute(
+            "SELECT conname FROM pg_constraint WHERE conrelid = 'app.owner_requests'::regclass"
+        ).fetchall()
+        assert {"ck_owner_requests_intent_revision", "ck_owner_requests_manual_watermark"} <= {
+            row[0] for row in constraints
+        }
+    run_alembic(scratch_url, "0023", down=True)
+    assert "intent_revision" not in _columns(scratch_url, "owner_requests")
+    assert "manual_watermark" not in _columns(scratch_url, "owner_requests")
+    run_alembic(scratch_url, "head")
+    assert "intent_revision" in _columns(scratch_url, "owner_requests")
+    assert "manual_watermark" in _columns(scratch_url, "owner_requests")
 
 
 def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
@@ -566,6 +612,55 @@ def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
             is None
         )
     run_alembic(scratch_url, "head")
+
+
+def test_0026_review_progress_round_trips_and_clears_both_verdict_links(
+    scratch_url: str,
+) -> None:
+    run_alembic(scratch_url, "head")
+    assert "review_progress" in tables_in(scratch_url, "app")
+    assert {"review_progress_id", "review_version"} <= _columns(scratch_url, "conversation_triage")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account, conversation = _phase_conversation(conn, 81026)
+        progress = conn.execute(
+            "INSERT INTO app.review_progress (account_id, conversation_id, reader) "
+            "VALUES (%s, %s, 'triage') RETURNING id, scope_key, version, status, pending_ranges",
+            (account, conversation),
+        ).fetchone()
+        assert progress is not None
+        assert progress[1:] == ("rolling", 1, "pending", [])
+        # One row per reader and scope, even with a NULL monitor id.
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(
+                "INSERT INTO app.review_progress (account_id, conversation_id, reader) "
+                "VALUES (%s, %s, 'triage')",
+                (account, conversation),
+            )
+        conn.execute(
+            "INSERT INTO app.conversation_triage (account_id, conversation_id, "
+            "covers_through_message_id, needs_reply, contains_question, requests_decision, "
+            "urgency, escalation_category, prompt_version, model, review_progress_id, "
+            "review_version) VALUES (%s, %s, 5, false, false, false, 'low', 'none', 'v', 'm', "
+            "%s, 1)",
+            (account, conversation, progress[0]),
+        )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "UPDATE app.conversation_triage SET review_version = NULL WHERE account_id = %s",
+                (account,),
+            )
+        conn.execute("DELETE FROM app.review_progress WHERE account_id = %s", (account,))
+        assert conn.execute(
+            "SELECT review_progress_id, review_version FROM app.conversation_triage "
+            "WHERE account_id = %s",
+            (account,),
+        ).fetchone() == (None, None)
+    run_alembic(scratch_url, "0025", down=True)
+    assert "review_progress" not in tables_in(scratch_url, "app")
+    assert "review_progress_id" not in _columns(scratch_url, "conversation_triage")
+    assert "context_fences" in tables_in(scratch_url, "app")
+    run_alembic(scratch_url, "head")
+    assert "review_progress" in tables_in(scratch_url, "app")
 
 
 def test_0023_fence_erasure_marks_the_run_and_round_trips(scratch_url: str) -> None:

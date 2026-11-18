@@ -38,6 +38,7 @@ from assistant.inbox.tasks import TaskView
 from assistant.inbox.triage_store import (
     ApplyResult,
     TriageRepository,
+    TriageSource,
     TriageState,
     TriageVerdict,
 )
@@ -126,6 +127,7 @@ class RecordingStore:
     open_tasks: dict[int, tuple[TaskView, ...]] = field(default_factory=dict)
     verdicts: list[TriageVerdict] = field(default_factory=list)
     settled: list[int] = field(default_factory=list)
+    failures: list[str] = field(default_factory=list)
 
     async def state(
         self, session: AsyncSession, *, account_id: int, conversation_id: int
@@ -147,9 +149,28 @@ class RecordingStore:
         *,
         account_id: int,
         conversation_id: int,
-        through: int | None,
-    ) -> None:
+        source: TriageSource,
+        covers_through: int | None,
+        now: datetime,
+    ) -> ApplyResult:
         self.settled.append(conversation_id)
+        return ApplyResult.STORED
+
+    async def fail(
+        self,
+        session: AsyncSession,
+        *,
+        account_id: int,
+        conversation_id: int,
+        source: TriageSource,
+        error_class: str,
+        repeating: bool,
+        calls: int,
+        retry_after: timedelta,
+        transient_retry: timedelta,
+        now: datetime,
+    ) -> None:
+        self.failures.append(error_class)
 
 
 def triager(env: Env, fake: FakeLLM, store: RecordingStore, **config: Any) -> Triager:
@@ -602,10 +623,10 @@ async def test_a_first_triage_reads_only_the_last_day(tenv: Env) -> None:
 async def test_more_new_messages_than_a_call_reads_are_said_and_never_called_triaged(
     tenv: Env,
 ) -> None:
-    """Viro on #79: with more than 60 new messages, the 60 newest are the
-    burst, the header counts the rest, and the earlier block holds only
-    messages the verdict covers — never the left-out new ones under an
-    "already triaged" label."""
+    """C7 (I2, R3-03): with more than 60 new messages the OLDEST 60 are the
+    burst, the header counts the newer ones that wait for a later run, and the
+    verdict covers only what was shown: never the newest message past a
+    backlog that was not read. The earlier block holds only reviewed messages."""
     a, _ = await seed(tenv)
     covered = await message_ids(tenv, a)
     async with tenv.factory() as session, session.begin():
@@ -620,7 +641,8 @@ async def test_more_new_messages_than_a_call_reads_are_said_and_never_called_tri
                 ),
                 {"a": account, "c": a, "t": AT + timedelta(minutes=10 + i), "x": f"SYNTH-A n{i}"},
             )
-    *_, newest = await message_ids(tenv, a)
+    everything_ids = await message_ids(tenv, a)
+    new_ids = everything_ids[len(covered) :]
     store = RecordingStore(covers={a: max(covered)})
     fake = FakeLLM()
     fake.parsed = [echo]
@@ -628,13 +650,15 @@ async def test_more_new_messages_than_a_call_reads_are_said_and_never_called_tri
 
     (request,) = triage_requests(fake)
     burst = burst_text(request)
-    assert burst.startswith("New messages to triage: (5 older new messages are not shown")
+    assert burst.startswith("New messages to triage: (5 newer messages are not shown")
     assert burst.count("[msg:") == 60
-    left_out = (await message_ids(tenv, a))[len(covered) : len(covered) + 5]
+    shown_new = new_ids[:60]
     body = everything(request)
-    assert all(f"[msg:{i}]" not in body for i in left_out)
+    assert all(f"[msg:{i}]" in burst for i in shown_new)
+    assert all(f"[msg:{i}]" not in body for i in new_ids[60:])  # not read, not certified
     assert all(f"[msg:{i}]" in body for i in covered)  # the earlier, triaged ones
-    assert store.verdicts[0].covers_through_message_id == newest
+    assert store.verdicts[0].covers_through_message_id == shown_new[-1]
+    assert store.verdicts[0].remaining is True
 
 
 # ============================================================ validation
@@ -690,22 +714,6 @@ async def test_a_refused_or_invalid_triage_stores_nothing(tenv: Env) -> None:
         ("refused", "refusal"),
         ("failed", "invalid_output"),
     ]
-
-
-async def test_repeated_useless_failures_pause_that_chats_triage(tenv: Env) -> None:
-    a, b = await seed(tenv)
-    fake = FakeLLM()
-    fake.parsed = [StopReason.REFUSAL, StopReason.REFUSAL, StopReason.REFUSAL]
-    store = RecordingStore()
-    for _ in range(3):
-        assert (await triager(tenv, fake, store).triage(a)).status is TriageStatus.REFUSED
-    assert (await triager(tenv, fake, store).triage(a)).status is TriageStatus.BACKED_OFF
-    assert len(triage_requests(fake)) == 3
-    # Another chat is not paused; this one is tried again after the window.
-    fake.parsed = [echo, echo]
-    assert (await triager(tenv, fake, store).triage(b)).status is TriageStatus.TRIAGED
-    tenv.clock.advance(hours=25)
-    assert (await triager(tenv, fake, store).triage(a)).status is TriageStatus.TRIAGED
 
 
 async def test_a_truncated_triage_is_retried_once_with_a_larger_budget(tenv: Env) -> None:

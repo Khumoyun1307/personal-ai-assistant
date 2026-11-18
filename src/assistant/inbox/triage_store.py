@@ -2,14 +2,15 @@
 (ARCHITECTURE §6.5 steps 4-5, §10.3; S05.1, P2-T12).
 
 Domain code only — the model call is `agent/triage.py`. A triage run reads
-ONE conversation (§6 invariant 4): the **burst** — that conversation's
-retained messages newer than its current verdict's
-`covers_through_message_id` (the newest `BURST_LIMIT`; the context says when
-older ones were left out) — and up to `EARLIER_LIMIT` messages before it as
-context. A chat without a verdict yet has no "already triaged" line: its
-burst is the messages of the `FIRST_BURST_WINDOW` before its newest message,
-so switching triage on never turns a chat's whole history into new alerts
-and tasks.
+ONE conversation (§6 invariant 4): the **burst** — the OLDEST `BURST_LIMIT`
+retained messages after the review cursor (C7, I2; the context says how many
+newer ones wait for a later run) — and up to `EARLIER_LIMIT` messages before it
+as context. The cursor (`review_progress`, falling back to a legacy verdict's
+`covers_through_message_id`) only ever moves over messages a run examined, so
+repeated bounded runs drain a backlog without skipping any retained message.
+A chat without a cursor yet has no "already triaged" line: its burst starts at
+the messages of the `FIRST_BURST_WINDOW` before its newest message, so switching
+triage on never turns a chat's whole history into new alerts and tasks.
 
 Deleted and expired messages are never read: the filter is the summaries'
 (`memory/summaries.py`), the one definition of what an AI run may read.
@@ -21,7 +22,7 @@ from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import ColumnElement, func, not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,19 +32,18 @@ from assistant.accounts.service import CONSENT_AI_MANAGED, active_consent
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.jobs import JobScheduler
-from assistant.inbox import tasks
-from assistant.inbox.models import ConversationTriage
+from assistant.inbox import review_progress, tasks
+from assistant.inbox.models import ConversationTriage, ReviewProgress
 from assistant.inbox.notification_types import NotificationKind, NotificationRefs, Priority
 from assistant.inbox.notifications import enqueue
 from assistant.inbox.tasks import ResolutionEvidence, TaskView
 from assistant.inbox.triage_trigger import TRIGGER_DIRECTIONS
 from assistant.memory import summaries
-from assistant.memory.summaries import SourceMessage, StoreResult
-from assistant.memory.summaries import _changed_source as changed_source
+from assistant.memory.summaries import SourceMessage
 from assistant.memory.summaries import _retained as retained
 from assistant.memory.summaries import _source as source_message
 
-#: New messages one triage call reads (the newest, if more arrived).
+#: New messages one triage call reads (the oldest unreviewed, if more arrived).
 BURST_LIMIT = 60
 #: Earlier messages shown before the burst, for context.
 EARLIER_LIMIT = 20
@@ -57,13 +57,30 @@ class TriageSource:
 
     earlier: tuple[SourceMessage, ...]
     burst: tuple[SourceMessage, ...]
-    #: Burst messages left out because more than `BURST_LIMIT` arrived.
-    omitted: int = 0
+    #: Retained messages after the burst, left for later runs because more than
+    #: `BURST_LIMIT` were unreviewed. Never certified by this run.
+    remaining: int = 0
+    #: The cursor the burst starts after; None before the first review.
+    after: int | None = None
+    #: `conversations.content_revision` read in the same locked snapshot (C6).
+    snapshot_revision: int = 0
+    #: The progress row's `version` at the read; None when it did not exist.
+    progress_version: int | None = None
 
     @property
     def through(self) -> int | None:
-        """The newest message shown: what a stored verdict covers."""
+        """The newest message shown: the cursor and a stored verdict move here,
+        and only here. The burst is contiguous from the cursor, so nothing
+        retained lies between."""
         return self.burst[-1].message_id if self.burst else None
+
+    @property
+    def read_after(self) -> int | None:
+        """Where the contiguity claim starts: the cursor, or just before the
+        first message of a first review's window."""
+        if self.after is not None:
+            return self.after
+        return self.burst[0].message_id - 1 if self.burst else None
 
     def hashes(self) -> dict[int, str | None]:
         """Every shown message's content hash, for the store re-check."""
@@ -78,9 +95,17 @@ class TriageState:
     """What triage knows of a conversation before a run: how far its verdict
     covers, the contact's priority (FR-TRI-04) and its open agent tasks."""
 
+    #: The review cursor: progress position, else a legacy verdict's coverage.
     covers_through_message_id: int | None
     contact_priority: str
     open_tasks: tuple[TaskView, ...] = ()
+    #: `review_progress.version`; None until a review has been settled or failed.
+    progress_version: int | None = None
+    #: No new attempt before this time: a short transient-failure retry, or the
+    #: 24 h pause of a degraded review.
+    retry_at: datetime | None = None
+    #: Shrunk batch size after repeated failures; None = `BURST_LIMIT`.
+    batch_limit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +148,12 @@ class TriageVerdict:
     resolved_task_ids: tuple[int, ...]
     resolutions: tuple[ResolutionEvidence, ...] = ()
     require_resolution_evidence: bool = False
+    #: Review snapshot (C6/C7): the revision, cursor and progress version the
+    #: burst was read at, and whether retained messages remain beyond it.
+    snapshot_revision: int = 0
+    read_after: int | None = None
+    progress_version: int | None = None
+    remaining: bool = False
 
 
 class ApplyResult(StrEnum):
@@ -153,13 +184,17 @@ async def burst_source(
     conversation_id: int,
     *,
     covers_through: int | None,
+    limit: int = BURST_LIMIT,
 ) -> TriageSource:
     """The burst after `covers_through` and the messages before it (§3.2).
     Account-scoped; one conversation; retained messages only.
 
-    "Earlier" messages are never new ones: when more than `BURST_LIMIT`
-    arrived, the left-out new messages are counted in `omitted`, not shown
-    as context (they were never triaged)."""
+    The burst is the OLDEST `limit` (default `BURST_LIMIT`; smaller after a batch
+    kept failing, C7) unreviewed messages in ingestion
+    order, so the cursor can move to its last message without passing a
+    retained message nobody read (C7): when more are waiting, `remaining` counts
+    them and later runs drain them. "Earlier" messages are context that was
+    already reviewed (at or before the cursor), never new ones."""
     is_new: ColumnElement[bool]
     if covers_through is not None:
         is_new = Message.id > covers_through
@@ -174,21 +209,16 @@ async def burst_source(
         is_new = Message.sent_at >= newest - FIRST_BURST_WINDOW
     newer = select(Message).where(*retained(account_id, conversation_id)).where(is_new)
     rows = list(
-        (await session.execute(newer.order_by(Message.id.desc()).limit(BURST_LIMIT + 1)))
-        .scalars()
-        .all()
+        (await session.execute(newer.order_by(Message.id.asc()).limit(limit))).scalars().all()
     )
     if not rows:
-        return TriageSource(earlier=(), burst=())
-    omitted = 0
-    if len(rows) > BURST_LIMIT:
-        rows = rows[:BURST_LIMIT]
-        omitted = (
-            await session.execute(
-                select(func.count()).select_from(newer.where(Message.id < rows[-1].id).subquery())
-            )
-        ).scalar_one()
-    burst = tuple(source_message(row) for row in reversed(rows))
+        return TriageSource(earlier=(), burst=(), after=covers_through)
+    remaining = (
+        await session.execute(
+            select(func.count()).select_from(newer.where(Message.id > rows[-1].id).subquery())
+        )
+    ).scalar_one()
+    burst = tuple(source_message(row) for row in rows)
     before = await session.execute(
         select(Message)
         .where(*retained(account_id, conversation_id))
@@ -198,7 +228,9 @@ async def burst_source(
         .limit(EARLIER_LIMIT)
     )
     earlier = tuple(source_message(row) for row in reversed(before.scalars().all()))
-    return TriageSource(earlier=earlier, burst=burst, omitted=int(omitted))
+    return TriageSource(
+        earlier=earlier, burst=burst, remaining=int(remaining), after=covers_through
+    )
 
 
 # ------------------------------------------------------------------ the verdict
@@ -310,15 +342,34 @@ class TriageRepository:
         ).first()
         if row is None:
             return None
-        covers = await session.scalar(
+        verdict_covers = await session.scalar(
             select(ConversationTriage.covers_through_message_id)
             .where(ConversationTriage.account_id == account_id)
             .where(ConversationTriage.conversation_id == conversation_id)
         )
+        progress = await review_progress.get(
+            session, account_id=account_id, conversation_id=conversation_id
+        )
+        position = review_progress.position_of(progress)
+        # The cursor is the furthest of the progress position and a legacy
+        # verdict's coverage: after a rollback to an older executable the
+        # verdict can be ahead of the position, and reading from behind it
+        # would pay for a model call that can only lose the race.
+        covers = max(
+            (c for c in (verdict_covers, None if position is None else position.message_id) if c),
+            default=None,
+        )
         open_tasks = await tasks.open_for_conversation(
             session, account_id=account_id, conversation_id=conversation_id
         )
-        return TriageState(covers, str(row[0]), tuple(open_tasks))
+        return TriageState(
+            covers,
+            str(row[0]),
+            tuple(open_tasks),
+            progress_version=None if progress is None else progress.version,
+            retry_at=None if progress is None else progress.retry_at,
+            batch_limit=None if progress is None else progress.batch_limit,
+        )
 
     async def settle(
         self,
@@ -326,11 +377,117 @@ class TriageRepository:
         *,
         account_id: int,
         conversation_id: int,
-        through: int | None,
-    ) -> None:
+        source: TriageSource,
+        covers_through: int | None,
+        now: datetime,
+    ) -> ApplyResult:
+        """No verdict to store: the burst held nothing a verdict could say. The
+        cursor still moves over it (so a backlog of such messages drains instead
+        of being re-read forever), but only after the same source check as a
+        stored verdict, and the flag follows the §3.8 rule."""
+        locked = await session.scalar(
+            select(Account.id).where(Account.id == account_id).with_for_update(read=True)
+        )
         conversation = await summaries.lock_conversation(session, account_id, conversation_id)
-        if conversation is not None:
+        if locked is None or conversation is None:
+            return ApplyResult.CHANGED
+        through = source.through
+        if through is None:  # nothing new: the flag follows what was read
+            await _settle_flag(session, conversation, covers_through)
+            return ApplyResult.STORED
+        is_bot = await session.scalar(
+            select(Contact.is_bot).where(Contact.id == conversation.contact_id)
+        )
+        if is_bot or conversation.mode == "ignore":
             await _settle_flag(session, conversation, through)
+            return ApplyResult.BOT_CHAT if is_bot else ApplyResult.IGNORED
+        assert source.read_after is not None
+        stale = await _stale(
+            session,
+            conversation,
+            shown=source.hashes(),
+            burst_ids=tuple(m.message_id for m in source.burst),
+            after=source.read_after,
+            through=through,
+            snapshot_revision=source.snapshot_revision,
+        )
+        if stale is not None:
+            return stale
+        refused, _ = await _advance(
+            session,
+            conversation,
+            after=source.read_after,
+            through=through,
+            expected_version=source.progress_version,
+            snapshot_revision=source.snapshot_revision,
+            backlog=source.remaining > 0,
+            now=now,
+        )
+        if refused is not None:
+            return refused
+        await _settle_flag(session, conversation, through)
+        return ApplyResult.STORED
+
+    async def fail(
+        self,
+        session: AsyncSession,
+        *,
+        account_id: int,
+        conversation_id: int,
+        source: TriageSource,
+        error_class: str,
+        repeating: bool,
+        calls: int,
+        retry_after: timedelta,
+        transient_retry: timedelta,
+        now: datetime,
+    ) -> review_progress.FailureOutcome | None:
+        """A run on this burst failed. Transient errors (outage, rate limit) only
+        set a short retry time. Repeating errors count against this batch and
+        escalate (halve, then isolate and skip a single message as a recorded
+        `unexaminable` gap, then degrade); see `review_progress.record_failure`.
+        The source must be unchanged: an edited or deleted message is a new
+        situation, not a failure to count."""
+        if source.through is None or source.read_after is None:
+            return None
+        locked = await session.scalar(
+            select(Account.id).where(Account.id == account_id).with_for_update(read=True)
+        )
+        conversation = await summaries.lock_conversation(session, account_id, conversation_id)
+        if locked is None or conversation is None:
+            return None
+        if repeating and await _stale(
+            session,
+            conversation,
+            shown=source.hashes(),
+            burst_ids=tuple(m.message_id for m in source.burst),
+            after=source.read_after,
+            through=source.through,
+            snapshot_revision=source.snapshot_revision,
+        ):
+            return review_progress.FailureOutcome.STALE
+        reason, last_error = _FAILURES.get(error_class, ("provider_failed", "provider_failed"))
+        outcome, _ = await review_progress.record_failure(
+            session,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            expected_version=source.progress_version,
+            after=source.read_after,
+            first_message_id=source.burst[0].message_id,
+            last_message_id=source.through,
+            size=len(source.burst),
+            calls=calls,
+            repeating=repeating,
+            reason=reason,
+            last_error=last_error,
+            retry_after=retry_after,
+            transient_retry=transient_retry,
+            snapshot_revision=source.snapshot_revision,
+            now=now,
+        )
+        if outcome is review_progress.FailureOutcome.SKIPPED:
+            await _settle_flag(session, conversation, source.through)
+        return outcome
 
     async def apply(
         self, session: AsyncSession, verdict: TriageVerdict, *, now: datetime
@@ -354,9 +511,19 @@ class TriageRepository:
             return ApplyResult.IGNORED
         if not (await active_consent(session, account_id, kind=CONSENT_AI_MANAGED)).granted:
             return ApplyResult.NO_CONSENT
-        changed = await changed_source(session, account_id, conversation_id, verdict.source)
-        if changed is not None:
-            return ApplyResult.EXPIRED if changed is StoreResult.EXPIRED else ApplyResult.CHANGED
+        first_shown = min(verdict.burst_message_ids, default=verdict.covers_through_message_id)
+        after = verdict.read_after if verdict.read_after is not None else first_shown - 1
+        stale = await _stale(
+            session,
+            conversation,
+            shown=verdict.source,
+            burst_ids=verdict.burst_message_ids,
+            after=after,
+            through=verdict.covers_through_message_id,
+            snapshot_revision=verdict.snapshot_revision,
+        )
+        if stale is not None:
+            return stale
         current = (
             await session.execute(
                 select(ConversationTriage)
@@ -378,7 +545,22 @@ class TriageRepository:
         )
         if {task.task_id: task.revision for task in open_tasks} != verdict.task_revisions:
             return ApplyResult.CHANGED
-        self._store_verdict(session, current, verdict, now)
+        # Every check passed: only now does the cursor move (CAS on the version
+        # the burst was read at), so a refused verdict never advances coverage.
+        refused, progress = await _advance(
+            session,
+            conversation,
+            after=after,
+            through=verdict.covers_through_message_id,
+            expected_version=verdict.progress_version,
+            snapshot_revision=verdict.snapshot_revision,
+            backlog=verdict.remaining,
+            now=now,
+        )
+        if refused is not None:
+            return refused
+        assert progress is not None
+        self._store_verdict(session, current, verdict, now, progress)
 
         created: list[int] = []
         for candidate in verdict.tasks:
@@ -494,6 +676,7 @@ class TriageRepository:
         current: ConversationTriage | None,
         verdict: TriageVerdict,
         now: datetime,
+        progress: ReviewProgress,
     ) -> None:
         values: dict[str, Any] = {
             "covers_through_message_id": verdict.covers_through_message_id,
@@ -509,6 +692,8 @@ class TriageRepository:
             "prompt_version": verdict.prompt_version,
             "model": verdict.model,
             "run_id": verdict.run_id,
+            "review_progress_id": progress.id,
+            "review_version": progress.version,
             "updated_at": now,
         }
         if current is None:
@@ -526,6 +711,87 @@ class TriageRepository:
 
 
 EVENT_TRIAGE_COMPLETED = "triage_completed"
+
+
+_FAILURES: dict[str, tuple[Literal["provider_failed", "invalid_output"], str]] = {
+    "invalid_output": ("invalid_output", "invalid_output"),
+    "refusal": ("provider_failed", "refusal"),
+    "content_filter": ("provider_failed", "refusal"),
+    "max_tokens": ("provider_failed", "truncated"),
+    "stop_other": ("provider_failed", "provider_failed"),
+}
+
+
+async def _stale(
+    session: AsyncSession,
+    conversation: Conversation,
+    *,
+    shown: Mapping[int, str | None],
+    burst_ids: Collection[int],
+    after: int,
+    through: int,
+    snapshot_revision: int,
+) -> ApplyResult | None:
+    """None when what the call read is still what is there (under the
+    conversation lock); otherwise why not. C7: a changed source is discarded,
+    never settled as current."""
+    state = await review_progress.source_state(
+        session,
+        account_id=conversation.account_id,
+        conversation_id=conversation.id,
+        shown=dict(shown),
+        contiguous_ids=burst_ids,
+        after=after,
+        through=through,
+        snapshot_revision=snapshot_revision,
+        current_revision=conversation.content_revision,
+    )
+    if state is review_progress.SourceState.EXPIRED:
+        return ApplyResult.EXPIRED
+    if state is review_progress.SourceState.CHANGED:
+        return ApplyResult.CHANGED
+    return None
+
+
+async def _advance(
+    session: AsyncSession,
+    conversation: Conversation,
+    *,
+    after: int,
+    through: int,
+    expected_version: int | None,
+    snapshot_revision: int,
+    backlog: bool,
+    now: datetime,
+) -> tuple[ApplyResult | None, ReviewProgress | None]:
+    """Move the cursor to `through` (compare-and-swap on the version the burst
+    was read at); a result when it did not move, nothing written then."""
+    lost = await review_progress.lost_ranges(
+        session,
+        account_id=conversation.account_id,
+        conversation_id=conversation.id,
+        after=after,
+        through=through,
+    )
+    settlement, row = await review_progress.advance(
+        session,
+        account_id=conversation.account_id,
+        conversation_id=conversation.id,
+        expected_version=expected_version,
+        after=after,
+        through=through,
+        snapshot_revision=snapshot_revision,
+        current_revision=conversation.content_revision,
+        lost=lost,
+        backlog=backlog,
+        batch_cap=BURST_LIMIT,
+        now=now,
+    )
+    if settlement is review_progress.Settlement.APPLIED:
+        return None, row
+    if settlement is review_progress.Settlement.RACED:
+        return ApplyResult.RACED, None
+    return ApplyResult.CHANGED, None
 
 
 async def _contact_wrote(

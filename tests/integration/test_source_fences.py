@@ -70,6 +70,9 @@ async def test_changed_sources_during_generation_warn_without_holding_locks(
     change: str,
 ) -> None:
     account_id, conversation_id = await seed_chat(denv, mode="observe")
+    turn_id = None
+    if change == "manual":
+        _, turn_id = await run_and_turn(denv, account_id)
     base = await contact_says(denv, "SYNTH-BASE")
 
     async def during_call(_: LLMRequest) -> dict[str, Any]:
@@ -124,7 +127,7 @@ async def test_changed_sources_during_generation_warn_without_holding_locks(
             origin=ActionOrigin.AGENT_PROPOSAL,
             run_id=None,
             tool_call_id=None,
-            trigger_turn_id=None,
+            trigger_turn_id=turn_id,
             clock=denv.env.clock,
             config=denv.config,
             presenter=None,
@@ -135,6 +138,7 @@ async def test_changed_sources_during_generation_warn_without_holding_locks(
         assert action.state == "awaiting_approval"
         assert action.approval_token is not None
         assert action.freshness_warning is not None
+        assert action.trigger_turn_id == turn_id
         if change == "manual":
             assert action.freshness_warning == "takeover"
 

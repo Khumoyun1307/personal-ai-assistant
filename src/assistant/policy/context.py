@@ -55,6 +55,9 @@ class Freshness:
     base_message_present: bool
     target_is_assistant_sent: bool | None
     source_fence_reason: str | None = None
+    request_reference_at: datetime | None = None
+    newest_owner_manual_id: int | None = None
+    captured_owner_manual_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

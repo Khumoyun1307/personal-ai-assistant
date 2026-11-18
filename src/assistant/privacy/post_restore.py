@@ -27,12 +27,12 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts import service
 from assistant.accounts.models import Account, AuditLogEntry, PendingInput
-from assistant.actions.lifecycle import cancel_pending
+from assistant.actions.lifecycle import cancel_pending, warning_card_filter
 from assistant.actions.models import Action
 from assistant.actions.states import PENDING, StateReason
 from assistant.automation import schedules
@@ -150,7 +150,9 @@ async def post_restore(
                 await session.execute(
                     select(Action.id, Action.state, Action.created_at)
                     .where(Action.account_id == account_id)
-                    .where(Action.state.in_(PENDING | {"executing"}))
+                    # cancel_pending also retires D-S17 warning cards (OUTDATED
+                    # with an approval path); the notice must list them too.
+                    .where(or_(Action.state.in_(PENDING | {"executing"}), warning_card_filter()))
                     .order_by(Action.id)
                 )
             ).all()
