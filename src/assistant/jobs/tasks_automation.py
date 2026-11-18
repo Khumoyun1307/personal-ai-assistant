@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.agent.budget import check_budget_thresholds
 from assistant.agent.monitor_eval import MonitorEvalOutcome, MonitorEvalStatus, MonitorEvaluator
-from assistant.automation import monitor_trigger, monitors, schedules
+from assistant.automation import monitor_review, monitor_trigger, monitors, schedules
 from assistant.automation.schedules import FireAction, FirePlan, Recovery
 from assistant.conversations.models import Conversation
 from assistant.core.clock import Clock
@@ -186,6 +186,11 @@ class ScheduleJobs:
 
 
 EXPIRE_MONITORS = "system.expire_monitors"
+#: Outcomes that leave nothing for a follow-up evaluation: the chat is not
+#: evaluated at all (the reconciler re-creates the job once consent returns).
+_NO_FOLLOW_UP = frozenset(
+    {MonitorEvalStatus.NO_CONSENT, MonitorEvalStatus.NOT_FOUND, MonitorEvalStatus.SKIPPED}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,8 +204,11 @@ class MonitorJobs:
     a `lock` (AGENTS §13). While contact messages keep arriving, the job
     re-defers itself (its own row is `doing`, so the queueing lock is free).
     Mode, consent, budget and the monitors themselves are re-checked by the
-    evaluator when it runs. No procrastinate retry: a failed run leaves the
-    flag set and the reconciler re-creates the job.
+    evaluator when it runs. No procrastinate retry: a failed batch is counted
+    on the monitor's review row (bounded attempts with backoff, then degraded,
+    I4) and this job re-defers itself at the backoff end; the flag, set while
+    any monitor has unreviewed messages, lets the reconciler re-create a lost
+    job.
     """
 
     session_factory: async_sessionmaker[AsyncSession]
@@ -230,8 +238,10 @@ class MonitorJobs:
             await monitor_trigger.defer_evaluation(self.scheduler, conversation_id, at=later)
             return None
         outcome = await self.evaluator.evaluate(conversation_id)
-        if outcome.status is MonitorEvalStatus.EVALUATED:
-            # More arrived while the model ran: the run moved the flag to it.
+        if outcome.status not in _NO_FOLLOW_UP:
+            # Work still waits (the evaluator settled the flag): the backlog is
+            # drained at once, a failed batch comes back after its backoff, and
+            # messages that arrived while the model ran wait for the debounce.
             async with transaction(self.session_factory) as uow:
                 pending = await uow.session.scalar(
                     select(Conversation.pending_monitor_at).where(
@@ -239,9 +249,10 @@ class MonitorJobs:
                     )
                 )
             if pending is not None:
-                await monitor_trigger.defer_evaluation(
-                    self.scheduler, conversation_id, at=max(now, pending) + self.debounce
+                at = outcome.retry_at or (
+                    now if outcome.backlog else max(now, pending) + self.debounce
                 )
+                await monitor_trigger.defer_evaluation(self.scheduler, conversation_id, at=at)
         logger.info(
             "monitor_job_finished",
             conversation_id=conversation_id,
@@ -261,11 +272,14 @@ class MonitorJobs:
 
     async def expire(self) -> int:
         """`system.expire_monitors` (hourly): monitors past their expiry end.
-        Matching already ignores them, so an hour's delay never fires one."""
+        Matching already ignores them, so an hour's delay never fires one. Also
+        sweeps review metadata past its retention (C7)."""
         async with transaction(self.session_factory) as uow:
-            expired = await monitors.expire_due(uow.session, now=self.clock.now())
-        if expired:
-            logger.info("monitors_expired", count=expired)
+            now = self.clock.now()
+            expired = await monitors.expire_due(uow.session, now=now)
+            swept = await monitor_review.sweep(uow.session, now=now)
+        if expired or swept:
+            logger.info("monitors_expired", count=expired, review_swept=swept)
         return expired
 
 

@@ -57,7 +57,7 @@ from assistant.agent.tools.registry import (
     ToolRefs,
 )
 from assistant.agent.untrusted import Source, wrap
-from assistant.automation import monitors, repository
+from assistant.automation import monitor_review, monitors, repository
 from assistant.automation.monitors import MonitorView, StopResult
 from assistant.automation.rules import MonitorCondition, MonitorRule, MonitorScope
 from assistant.conversations.models import Contact, Conversation
@@ -336,6 +336,12 @@ async def list_monitors_tool(ctx: ToolContext, _args: ListMonitorsArgs) -> ToolO
         account = await _account(session, ctx.account_id)
         views = await monitors.listed(session, account_id=ctx.account_id, now=services.clock.now())
         names, chats = await _names(session, ctx.account_id, views)
+        reviews = await monitor_review.states(
+            session,
+            account_id=ctx.account_id,
+            monitor_ids=[view.automation_id for view in views if view.semantic],
+            now=services.clock.now(),
+        )
     items = []
     contact_refs: set[int] = set()
     chat_refs: set[int] = set()
@@ -363,6 +369,11 @@ async def list_monitors_tool(ctx: ToolContext, _args: ListMonitorsArgs) -> ToolO
                 ],
             },
         }
+        review = reviews.get(view.automation_id)
+        if review is not None:
+            # How far the AI's checking of new messages got (R3-09): fixed words
+            # only. "degraded" means some messages were never successfully checked.
+            item["review"] = {"state": review.state, "reasons": list(review.reasons)}
         if condition.contact_id is not None:
             item["contact"] = _contact(condition.contact_id, names)
             contact_refs.add(condition.contact_id)

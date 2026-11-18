@@ -492,7 +492,20 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0023"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0024"]
+
+
+def test_0024_review_progress_round_trips(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    assert "review_progress" in tables_in(scratch_url, "app")
+    assert {"review_progress_id", "review_version"} <= _columns(scratch_url, "conversation_triage")
+    run_alembic(scratch_url, "0023", down=True)
+    assert "review_progress" not in tables_in(scratch_url, "app")
+    assert {"review_progress_id", "review_version"}.isdisjoint(
+        _columns(scratch_url, "conversation_triage")
+    )
+    run_alembic(scratch_url, "head")
+    assert "review_progress" in tables_in(scratch_url, "app")
 
 
 def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
