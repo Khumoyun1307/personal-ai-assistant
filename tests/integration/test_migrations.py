@@ -494,7 +494,7 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0028"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0029"]
 
 
 def test_0027_incident_trace_is_bounded_coded_cascading_and_round_trips(
@@ -612,6 +612,42 @@ def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
             ).fetchone()
             is None
         )
+    run_alembic(scratch_url, "head")
+
+
+def test_0029_trace_reason_request_mismatch_widens_the_check_and_round_trips(
+    scratch_url: str,
+) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account, _ = _phase_conversation(conn, 81129)
+        run = conn.execute(
+            "INSERT INTO app.agent_runs (account_id, run_type, model) "
+            "VALUES (%s, 'owner_request', 'synthetic') RETURNING id",
+            (account,),
+        ).fetchone()
+        assert run is not None
+        conn.execute(
+            "INSERT INTO app.incident_trace_events (account_id, run_id, seq, stage, code, reason) "
+            "VALUES (%s, %s, 1, 'proposal', 'invalid_arguments', 'request_mismatch')",
+            (account, run[0]),
+        )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "UPDATE app.incident_trace_events SET reason = 'not_a_reason' WHERE run_id = %s",
+                (run[0],),
+            )
+    run_alembic(scratch_url, "0028", down=True)
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT reason FROM app.incident_trace_events WHERE seq = 1 AND stage = 'proposal'"
+        ).fetchone()
+        assert row == ("other",)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "UPDATE app.incident_trace_events SET reason = 'request_mismatch' "
+                "WHERE seq = 1 AND stage = 'proposal'"
+            )
     run_alembic(scratch_url, "head")
 
 
