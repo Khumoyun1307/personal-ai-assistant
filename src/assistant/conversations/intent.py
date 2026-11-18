@@ -2,21 +2,57 @@
 
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.accounts.models import AuditLogEntry, ControlTurn
-from assistant.conversations.models import Conversation
+from assistant.actions.models import Action
+from assistant.conversations.models import Conversation, Message
 from assistant.core.errors import NotInAccountError
 
 
-async def advance_intent(session: AsyncSession, *, account_id: int, conversation_id: int) -> int:
+async def advance_intent(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    conversation_id: int,
+    action_id: int | None = None,
+) -> int:
+    """Consume the covered burst, preserving arrivals beyond an affected card.
+
+    A new selection without a card consumes the current burst. Card changes
+    use its immutable message watermark, including when ingestion and the
+    owner's operation have the same clock time. Caller holds UPDATE on the
+    conversation before touching requests/actions.
+    """
+    pending = None
+    if action_id is not None:
+        covered = (
+            select(Action.shown_through_message_id)
+            .where(
+                Action.account_id == account_id,
+                Action.conversation_id == conversation_id,
+                Action.id == action_id,
+            )
+            .scalar_subquery()
+        )
+        newer = (
+            select(Message.id)
+            .where(
+                Message.account_id == account_id,
+                Message.conversation_id == conversation_id,
+                Message.direction == "contact",
+                Message.id > func.coalesce(covered, 0),
+            )
+            .exists()
+        )
+        pending = case((newer, Conversation.pending_draft_at), else_=None)
     revision = await session.scalar(
         update(Conversation)
         .where(Conversation.account_id == account_id, Conversation.id == conversation_id)
         .values(
             owner_intent_revision=Conversation.owner_intent_revision + 1,
-            pending_draft_at=None,
+            pending_draft_at=pending,
         )
         .returning(Conversation.owner_intent_revision)
     )

@@ -586,6 +586,11 @@ def _event(
 async def _lock_intent_conversation(
     session: AsyncSession, *, account_id: int, action_id: int
 ) -> int | None:
+    """Account SHARE, conversation UPDATE, linked requests, then action.
+
+    Callers taking conversation locks must acquire UPDATE from the outset;
+    concurrent SHARE-to-UPDATE upgrades can deadlock.
+    """
     await session.execute(
         select(Account.id).where(Account.id == account_id).with_for_update(read=True)
     )
@@ -605,7 +610,7 @@ async def _lock_intent_conversation(
         .order_by(OwnerRequest.id)
         .with_for_update()
     )
-    return conversation_id
+    return None if conversation_id is None else int(conversation_id)
 
 
 async def transition(
@@ -679,7 +684,10 @@ async def transition(
         return False
     if intent_conversation is not None:
         intent_revision = await advance_intent(
-            session, account_id=account_id, conversation_id=intent_conversation
+            session,
+            account_id=account_id,
+            conversation_id=intent_conversation,
+            action_id=action_id,
         )
         await session.execute(
             update(OwnerRequest)
@@ -1048,7 +1056,7 @@ async def cancel_edit(
     )
     if token is not None and conversation_id is not None:
         revision = await advance_intent(
-            session, account_id=account_id, conversation_id=conversation_id
+            session, account_id=account_id, conversation_id=conversation_id, action_id=action_id
         )
         await session.execute(
             update(OwnerRequest)

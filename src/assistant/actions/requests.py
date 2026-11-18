@@ -808,7 +808,10 @@ async def update_request(
         row.conversation_id = update.conversation_id
         if row.intent_revision is None:
             row.intent_revision = await advance_intent(
-                session, account_id=account_id, conversation_id=conversation.id
+                session,
+                account_id=account_id,
+                conversation_id=conversation.id,
+                action_id=row.action_id,
             )
         if row.manual_watermark is None:
             row.manual_watermark = await session.scalar(
@@ -921,7 +924,10 @@ async def update_request(
     # precedence. UI recovery, action linkage and exact selection retries do not.
     if row.conversation_id is not None and changes_intent:
         row.intent_revision = await advance_intent(
-            session, account_id=account_id, conversation_id=row.conversation_id
+            session,
+            account_id=account_id,
+            conversation_id=row.conversation_id,
+            action_id=row.action_id,
         )
     row.version += 1
     if row.resolution_candidates is not None:

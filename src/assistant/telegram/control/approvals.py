@@ -803,8 +803,18 @@ def render_not_shown(view: ApprovalCardView) -> str:
 
 
 # ------------------------------------------------------------ helpers
-async def _lock(session: AsyncSession, account_id: int, conversation_id: int) -> bool:
-    """§9.4 order: the account, then the conversation, both `FOR SHARE`."""
+async def _lock(
+    session: AsyncSession,
+    account_id: int,
+    conversation_id: int,
+    *,
+    owner_intent: bool = False,
+) -> bool:
+    """§9.4: account SHARE, then conversation, before requests/actions.
+
+    Intent-changing presses take conversation UPDATE immediately; other
+    operations take SHARE. Never upgrade SHARE to UPDATE for owner intent.
+    """
     found = await session.scalar(
         select(Account.id).where(Account.id == account_id).with_for_update(read=True)
     )
@@ -813,7 +823,7 @@ async def _lock(session: AsyncSession, account_id: int, conversation_id: int) ->
     locked = await session.scalar(
         select(Conversation.id)
         .where(Conversation.id == conversation_id, Conversation.account_id == account_id)
-        .with_for_update(read=True)
+        .with_for_update(read=not owner_intent)
     )
     return locked is not None
 
@@ -1365,7 +1375,12 @@ class ApprovalCards:
         if live is not None:
             if press.op not in _TOKEN_OPS:
                 return self._settle(session, gateway, press, CALLBACK_EXPIRED_TEXT, live.id)
-            if not await _lock(session, account.id, live.conversation_id):
+            if not await _lock(
+                session,
+                account.id,
+                live.conversation_id,
+                owner_intent=press.op in {OP_REJECT, OP_EDIT, OP_REDRAFT},
+            ):
                 return self._settle(session, gateway, press, CALLBACK_EXPIRED_TEXT, None)
             if press.op == OP_APPROVE:
                 return await self._approve(
@@ -1399,7 +1414,9 @@ class ApprovalCards:
                 ).where(Action.id == card.ref_id, Action.account_id == account.id)
             )
         ).one_or_none()
-        if action is None or not await _lock(session, account.id, action.conversation_id):
+        if action is None or not await _lock(
+            session, account.id, action.conversation_id, owner_intent=True
+        ):
             return self._settle(session, gateway, press, CALLBACK_EXPIRED_TEXT, None)
         if press.op == OP_CANCEL_EDIT:
             return await self._cancel_edit(session, gateway, clock, account, press, action)
@@ -1584,6 +1601,7 @@ class ApprovalCards:
                 scheduler=scheduler,
                 clock=clock,
                 debounce=self._config.draft_debounce,
+                action_id=action.id,
             )
         except NotInAccountError:
             return self._settle(session, gateway, press, CALLBACK_EXPIRED_TEXT, None)

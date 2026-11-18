@@ -69,6 +69,7 @@ async def request_draft(
     scheduler: JobScheduler,
     clock: Clock,
     debounce: timedelta,
+    action_id: int | None = None,
 ) -> None:
     """Ask for one draft of the account's conversation (see the module doc).
 
@@ -134,4 +135,6 @@ async def request_draft(
         await savepoint.commit()
         # The owner's explicit re-draft wins before the slow worker starts.
         # A duplicate queued tap is a no-op and must not advance the token.
-        await advance_intent(session, account_id=account_id, conversation_id=conversation_id)
+        await advance_intent(
+            session, account_id=account_id, conversation_id=conversation_id, action_id=action_id
+        )
