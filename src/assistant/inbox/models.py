@@ -217,6 +217,8 @@ class ReviewProgress(Base):
         ),
         CheckConstraint("version >= 1", name="version"),
         CheckConstraint("attempts >= 0", name="attempts"),
+        CheckConstraint("skip_streak >= 0", name="skip_streak"),
+        CheckConstraint("batch_limit IS NULL OR batch_limit > 0", name="batch_limit"),
         CheckConstraint("source_revision >= 0", name="source_revision"),
         CheckConstraint(
             "last_error IS NULL OR last_error IN ('backlog', 'partial_text', 'source_changed', "
@@ -246,6 +248,15 @@ class ReviewProgress(Base):
     )
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    #: Identity of the batch `attempts` counts (message ids only): a different
+    #: batch starts again from zero attempts.
+    failed_first_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    failed_last_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: Shrunk batch size after repeated failures (NULL = the reader's default);
+    #: grows back as batches succeed.
+    batch_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Single messages skipped in a row as unexaminable; capped, then degraded.
+    skip_streak: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     retry_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[CreatedAt]

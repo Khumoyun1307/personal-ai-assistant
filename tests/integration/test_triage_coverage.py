@@ -24,7 +24,7 @@ from assistant.agent.triage import TriageStatus
 from assistant.inbox import review_progress
 from assistant.inbox.models import ConversationTriage, ReviewProgress
 from assistant.inbox.triage_store import BURST_LIMIT, ApplyResult
-from assistant.llm.port import LLMError, LLMErrorKind, LLMRequest
+from assistant.llm.port import LLMRequest
 from tests.fakes.llm import FakeLLM
 from tests.integration.business_env import (
     CONTACT,
@@ -366,39 +366,6 @@ async def test_a_message_gone_before_review_is_recorded_as_a_gap_not_as_examined
     assert progress.pending_ranges == [
         {"first_message_id": second, "last_message_id": second, "reason": "deleted"}
     ]
-
-
-async def test_repeated_failures_degrade_the_review_without_moving_the_cursor(
-    tenv: Env,
-) -> None:
-    a, _ = await seed(tenv)
-    first, second = await message_ids(tenv, a)
-    fake = FakeLLM()
-    fake.parsed = [LLMError(LLMErrorKind.UNAVAILABLE)] * 3
-    for _ in range(3):
-        assert (await stored_triager(tenv, fake).triage(a)).status is TriageStatus.FAILED
-    progress = await progress_of(tenv, a)
-    assert progress is not None
-    assert (progress.attempts, progress.status, progress.last_error) == (
-        3,
-        "degraded",
-        "provider_failed",
-    )
-    assert progress.position is None
-    assert progress.pending_ranges == [
-        {"first_message_id": first, "last_message_id": second, "reason": "provider_failed"}
-    ]
-    # No paid hot loop: nothing is attempted before the bounded retry time.
-    assert (await stored_triager(tenv, fake).triage(a)).status is TriageStatus.BACKED_OFF
-    assert len(triage_requests(fake)) == 3
-
-    tenv.clock.advance(hours=25)
-    fake.parsed = [quiet]
-    assert (await stored_triager(tenv, fake).triage(a)).status is TriageStatus.TRIAGED
-    progress = await progress_of(tenv, a)
-    assert progress is not None
-    assert (progress.attempts, progress.status, progress.pending_ranges) == (0, "current", [])
-    assert await cursor(tenv, a) == second
 
 
 # ============================================================ progress deletion

@@ -164,7 +164,10 @@ class RecordingStore:
         conversation_id: int,
         source: TriageSource,
         error_class: str,
+        repeating: bool,
+        calls: int,
         retry_after: timedelta,
+        transient_retry: timedelta,
         now: datetime,
     ) -> None:
         self.failures.append(error_class)
@@ -711,22 +714,6 @@ async def test_a_refused_or_invalid_triage_stores_nothing(tenv: Env) -> None:
         ("refused", "refusal"),
         ("failed", "invalid_output"),
     ]
-
-
-async def test_repeated_useless_failures_pause_that_chats_triage(tenv: Env) -> None:
-    a, b = await seed(tenv)
-    fake = FakeLLM()
-    fake.parsed = [StopReason.REFUSAL, StopReason.REFUSAL, StopReason.REFUSAL]
-    store = RecordingStore()
-    for _ in range(3):
-        assert (await triager(tenv, fake, store).triage(a)).status is TriageStatus.REFUSED
-    assert (await triager(tenv, fake, store).triage(a)).status is TriageStatus.BACKED_OFF
-    assert len(triage_requests(fake)) == 3
-    # Another chat is not paused; this one is tried again after the window.
-    fake.parsed = [echo, echo]
-    assert (await triager(tenv, fake, store).triage(b)).status is TriageStatus.TRIAGED
-    tenv.clock.advance(hours=25)
-    assert (await triager(tenv, fake, store).triage(a)).status is TriageStatus.TRIAGED
 
 
 async def test_a_truncated_triage_is_retried_once_with_a_larger_budget(tenv: Env) -> None:

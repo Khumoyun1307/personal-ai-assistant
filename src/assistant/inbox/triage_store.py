@@ -101,8 +101,11 @@ class TriageState:
     open_tasks: tuple[TaskView, ...] = ()
     #: `review_progress.version`; None until a review has been settled or failed.
     progress_version: int | None = None
-    #: Set while the reader is degraded: no new attempt before this time.
+    #: No new attempt before this time: a short transient-failure retry, or the
+    #: 24 h pause of a degraded review.
     retry_at: datetime | None = None
+    #: Shrunk batch size after repeated failures; None = `BURST_LIMIT`.
+    batch_limit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,11 +184,13 @@ async def burst_source(
     conversation_id: int,
     *,
     covers_through: int | None,
+    limit: int = BURST_LIMIT,
 ) -> TriageSource:
     """The burst after `covers_through` and the messages before it (§3.2).
     Account-scoped; one conversation; retained messages only.
 
-    The burst is the OLDEST `BURST_LIMIT` unreviewed messages in ingestion
+    The burst is the OLDEST `limit` (default `BURST_LIMIT`; smaller after a batch
+    kept failing, C7) unreviewed messages in ingestion
     order, so the cursor can move to its last message without passing a
     retained message nobody read (C7): when more are waiting, `remaining` counts
     them and later runs drain them. "Earlier" messages are context that was
@@ -204,7 +209,7 @@ async def burst_source(
         is_new = Message.sent_at >= newest - FIRST_BURST_WINDOW
     newer = select(Message).where(*retained(account_id, conversation_id)).where(is_new)
     rows = list(
-        (await session.execute(newer.order_by(Message.id.asc()).limit(BURST_LIMIT))).scalars().all()
+        (await session.execute(newer.order_by(Message.id.asc()).limit(limit))).scalars().all()
     )
     if not rows:
         return TriageSource(earlier=(), burst=(), after=covers_through)
@@ -346,9 +351,14 @@ class TriageRepository:
             session, account_id=account_id, conversation_id=conversation_id
         )
         position = review_progress.position_of(progress)
-        # The cursor is the progress position; a legacy verdict without one
-        # keeps its own coverage until the next settlement creates the row.
-        covers = verdict_covers if position is None else position.message_id
+        # The cursor is the furthest of the progress position and a legacy
+        # verdict's coverage: after a rollback to an older executable the
+        # verdict can be ahead of the position, and reading from behind it
+        # would pay for a model call that can only lose the race.
+        covers = max(
+            (c for c in (verdict_covers, None if position is None else position.message_id) if c),
+            default=None,
+        )
         open_tasks = await tasks.open_for_conversation(
             session, account_id=account_id, conversation_id=conversation_id
         )
@@ -357,11 +367,8 @@ class TriageRepository:
             str(row[0]),
             tuple(open_tasks),
             progress_version=None if progress is None else progress.version,
-            retry_at=(
-                progress.retry_at
-                if progress is not None and progress.status == "degraded"
-                else None
-            ),
+            retry_at=None if progress is None else progress.retry_at,
+            batch_limit=None if progress is None else progress.batch_limit,
         )
 
     async def settle(
@@ -429,32 +436,58 @@ class TriageRepository:
         conversation_id: int,
         source: TriageSource,
         error_class: str,
+        repeating: bool,
+        calls: int,
         retry_after: timedelta,
+        transient_retry: timedelta,
         now: datetime,
-    ) -> None:
-        """A run on this burst failed (refusal, invalid output, provider error):
-        count the attempt. The cursor does not move; after `MAX_ATTEMPTS` the
-        review is degraded and the batch stays recoverable pending work."""
-        if source.through is None:
-            return
+    ) -> review_progress.FailureOutcome | None:
+        """A run on this burst failed. Transient errors (outage, rate limit) only
+        set a short retry time. Repeating errors count against this batch and
+        escalate (halve, then isolate and skip a single message as a recorded
+        `unexaminable` gap, then degrade); see `review_progress.record_failure`.
+        The source must be unchanged: an edited or deleted message is a new
+        situation, not a failure to count."""
+        if source.through is None or source.read_after is None:
+            return None
         locked = await session.scalar(
             select(Account.id).where(Account.id == account_id).with_for_update(read=True)
         )
         conversation = await summaries.lock_conversation(session, account_id, conversation_id)
         if locked is None or conversation is None:
-            return
+            return None
+        if repeating and await _stale(
+            session,
+            conversation,
+            shown=source.hashes(),
+            burst_ids=tuple(m.message_id for m in source.burst),
+            after=source.read_after,
+            through=source.through,
+            snapshot_revision=source.snapshot_revision,
+        ):
+            return review_progress.FailureOutcome.STALE
         reason, last_error = _FAILURES.get(error_class, ("provider_failed", "provider_failed"))
-        await review_progress.record_failure(
+        outcome, _ = await review_progress.record_failure(
             session,
             account_id=account_id,
             conversation_id=conversation_id,
+            expected_version=source.progress_version,
+            after=source.read_after,
             first_message_id=source.burst[0].message_id,
             last_message_id=source.through,
+            size=len(source.burst),
+            calls=calls,
+            repeating=repeating,
             reason=reason,
             last_error=last_error,
             retry_after=retry_after,
+            transient_retry=transient_retry,
+            snapshot_revision=source.snapshot_revision,
             now=now,
         )
+        if outcome is review_progress.FailureOutcome.SKIPPED:
+            await _settle_flag(session, conversation, source.through)
+        return outcome
 
     async def apply(
         self, session: AsyncSession, verdict: TriageVerdict, *, now: datetime
@@ -685,6 +718,7 @@ _FAILURES: dict[str, tuple[Literal["provider_failed", "invalid_output"], str]] =
     "refusal": ("provider_failed", "refusal"),
     "content_filter": ("provider_failed", "refusal"),
     "max_tokens": ("provider_failed", "truncated"),
+    "stop_other": ("provider_failed", "provider_failed"),
 }
 
 
@@ -744,11 +778,13 @@ async def _advance(
         account_id=conversation.account_id,
         conversation_id=conversation.id,
         expected_version=expected_version,
+        after=after,
         through=through,
         snapshot_revision=snapshot_revision,
         current_revision=conversation.content_revision,
         lost=lost,
         backlog=backlog,
+        batch_cap=BURST_LIMIT,
         now=now,
     )
     if settlement is review_progress.Settlement.APPLIED:

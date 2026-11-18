@@ -35,7 +35,6 @@ from enum import StrEnum
 from typing import Protocol
 
 import pydantic
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.accounts.models import Account
@@ -62,7 +61,9 @@ from assistant.core.clock import Clock
 from assistant.core.model_routes import processor_for_model
 from assistant.db.uow import transaction
 from assistant.inbox import tasks
+from assistant.inbox.review_progress import FailureOutcome
 from assistant.inbox.triage_store import (
+    BURST_LIMIT,
     ApplyResult,
     TaskCandidate,
     TriageSource,
@@ -79,8 +80,9 @@ logger = get_logger(__name__)
 RUN_TYPE = "triage"
 RESOLUTION_EVIDENCE_FLAG = "triage.resolution_evidence"
 
-#: Errors a retry would only repeat at a cost: after enough of them in a row,
-#: that chat's triage pauses for a while (the summaries' rule, M03 D65).
+#: Errors a retry would only repeat at a cost. They count against the batch and
+#: escalate (halve, isolate, skip, degrade; C7); every other failure is
+#: transient (outage, rate limit) and only delays the retry by minutes.
 _REPEATING_ERRORS = frozenset(
     {"refusal", "content_filter", "invalid_output", "max_tokens", "stop_other"}
 )
@@ -96,8 +98,12 @@ class TriageConfig:
     max_output_tokens_ceiling: int = 3000
     call_timeout_seconds: float = 60.0
     monthly_budget_usd: Decimal | None = None
-    failure_backoff_runs: int = 3
+    #: Degraded reviews (a context that fails even one message at a time) pause
+    #: this long; the failure-run count is the review's `MAX_ATTEMPTS` (C7).
     failure_backoff_window: timedelta = timedelta(hours=24)
+    #: A transient provider error (outage, rate limit) retries after this, and
+    #: never degrades the chat.
+    transient_retry: timedelta = timedelta(minutes=5)
     resolution_evidence: bool = False
 
 
@@ -169,10 +175,14 @@ class TriageStore(Protocol):
         conversation_id: int,
         source: TriageSource,
         error_class: str,
+        repeating: bool,
+        calls: int,
         retry_after: timedelta,
+        transient_retry: timedelta,
         now: datetime,
-    ) -> None:
-        """One more failed attempt at this burst; the cursor never moves."""
+    ) -> FailureOutcome | None:
+        """A run at this burst failed: transient errors only delay the retry;
+        repeating ones count against the batch and escalate (C7)."""
         ...
 
 
@@ -359,8 +369,6 @@ class Triager:
                 return TriageOutcome(TriageStatus.NO_CONSENT, account_id)
             if await self._over_budget(session, account_id):
                 return TriageOutcome(TriageStatus.OVER_BUDGET, account_id)
-            if await self._backed_off(session, account_id, conversation_id):
-                return TriageOutcome(TriageStatus.BACKED_OFF, account_id)
             account = await session.get(Account, account_id)
             state = await self._store.state(
                 session, account_id=account_id, conversation_id=conversation_id
@@ -368,8 +376,8 @@ class Triager:
             if account is None or state is None:
                 return TriageOutcome(TriageStatus.NOT_FOUND, account_id)
             if state.retry_at is not None and state.retry_at > self._clock.now():
-                # Degraded after repeated failures at this batch: no new
-                # attempt (and no paid call) before the bounded retry time.
+                # A transient error's short retry, or a degraded review's pause:
+                # no new attempt (and no paid call) before the bounded time.
                 return TriageOutcome(TriageStatus.BACKED_OFF, account_id)
             # The snapshot revision is observed under the SHARE locks that
             # serialize this read with ingestion, edits and retention (C6).
@@ -382,6 +390,7 @@ class Triager:
                     account_id,
                     conversation_id,
                     covers_through=state.covers_through_message_id,
+                    limit=state.batch_limit or BURST_LIMIT,
                 ),
                 snapshot_revision=observed.content_revision,
                 progress_version=state.progress_version,
@@ -585,15 +594,24 @@ class Triager:
         movement. Best effort: the run row is already closed."""
         try:
             async with transaction(self._session_factory) as uow:
-                await self._store.fail(
+                outcome = await self._store.fail(
                     uow.session,
                     account_id=account_id,
                     conversation_id=conversation_id,
                     source=source,
                     error_class=failure.error_class,
+                    repeating=failure.error_class in _REPEATING_ERRORS,
+                    calls=failure.calls,
                     retry_after=self._config.failure_backoff_window,
+                    transient_retry=self._config.transient_retry,
                     now=self._clock.now(),
                 )
+            logger.info(
+                "triage_failure_recorded",
+                conversation_id=conversation_id,
+                error_class=failure.error_class,
+                outcome=None if outcome is None else outcome.value,
+            )
         except Exception as error:
             logger.error(
                 "triage_failure_record_failed",
@@ -622,27 +640,6 @@ class Triager:
             month_start(self._clock.now())
         )
         return spent >= limit
-
-    async def _backed_off(
-        self, session: AsyncSession, account_id: int, conversation_id: int
-    ) -> bool:
-        """The last `failure_backoff_runs` triage runs of this chat within the
-        window all failed in a way a retry would repeat."""
-        config = self._config
-        rows = (
-            await session.execute(
-                select(AgentRun.error_class)
-                .where(AgentRun.account_id == account_id)
-                .where(AgentRun.run_type == RUN_TYPE)
-                .where(AgentRun.trigger_ref.like(f"triage:conv:{conversation_id}:%"))
-                .where(AgentRun.started_at >= self._clock.now() - config.failure_backoff_window)
-                .order_by(AgentRun.started_at.desc(), AgentRun.id.desc())
-                .limit(config.failure_backoff_runs)
-            )
-        ).all()
-        if len(rows) < config.failure_backoff_runs:
-            return False
-        return all(error in _REPEATING_ERRORS for (error,) in rows)
 
     # ------------------------------------------------------------ run rows
     async def _start_run(

@@ -44,6 +44,10 @@ def upgrade() -> None:
         ),
         sa.Column("status", sa.Text(), server_default="pending", nullable=False),
         sa.Column("attempts", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("failed_first_message_id", sa.BigInteger(), nullable=True),
+        sa.Column("failed_last_message_id", sa.BigInteger(), nullable=True),
+        sa.Column("batch_limit", sa.Integer(), nullable=True),
+        sa.Column("skip_streak", sa.Integer(), server_default="0", nullable=False),
         sa.Column("retry_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_error", sa.Text(), nullable=True),
         sa.Column(
@@ -82,6 +86,10 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint("version >= 1", name="ck_review_progress_version"),
         sa.CheckConstraint("attempts >= 0", name="ck_review_progress_attempts"),
+        sa.CheckConstraint("skip_streak >= 0", name="ck_review_progress_skip_streak"),
+        sa.CheckConstraint(
+            "batch_limit IS NULL OR batch_limit > 0", name="ck_review_progress_batch_limit"
+        ),
         sa.CheckConstraint("source_revision >= 0", name="ck_review_progress_source_revision"),
         sa.CheckConstraint(
             "last_error IS NULL OR last_error IN ('backlog', 'partial_text', 'source_changed', "
