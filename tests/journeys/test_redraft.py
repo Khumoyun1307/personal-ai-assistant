@@ -14,6 +14,9 @@ from sqlalchemy import select, text, update
 from assistant.accounts.models import Consent
 from assistant.actions.request_models import OwnerRequest
 from assistant.agent.runtime import TEXT_PROVIDER_DOWN, RunStatus
+from assistant.conversations.intent import advance_intent
+from assistant.conversations.models import Conversation
+from assistant.conversations.modes import set_mode
 from assistant.core.jobs import OWNER_REQUEST_TASK
 from assistant.db.uow import transaction
 from assistant.llm.port import LLMRequest
@@ -32,7 +35,7 @@ from tests.journeys.models import (
     Restart,
     Revoke,
 )
-from tests.scenarios.p2_drive import run_queued
+from tests.scenarios.p2_drive import draft_result, run_queued
 
 pytestmark = [pytest.mark.integration, pytest.mark.journey]
 
@@ -414,3 +417,82 @@ async def test_h8_approval_racing_the_redraft_keeps_the_approved_card(
     assert sent.id == row.id
     assert sent.text == t.generated
     await j.check(CountCheck(artifact="business_attempts", count=1))
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+async def test_h8_h11_earlier_intent_change_does_not_warn_the_owner_redraft(
+    journey: Journey, locale: Locale
+) -> None:
+    """The owner's own tap records the chat's current intent on its request."""
+    j = journey
+    t = TEXT[locale]
+    await j.language(locale)
+    brief = owner_input("J04", locale)[0]
+    await j.owner(brief, j.read(), j.generated_proposal(t.generated), text_response(t.generated))
+    row = await j.bind_card("k")
+    await j.event(Contact(alias="new", text="CANARY-SYNTH newer question."))
+    warned = await j.bind_card("k")
+    # Another explicit owner operation in this chat advanced its intent since
+    # the request was selected (for example, rejecting an Assist card).
+    async with transaction(j.s.env.factory) as uow:
+        await uow.session.execute(
+            select(Conversation.id).where(Conversation.id == j.chats["k"]).with_for_update()
+        )
+        await advance_intent(uow.session, account_id=j.s.account_id, conversation_id=j.chats["k"])
+    j.s.fake.queue(j.read(), j.generated_proposal(t.revised), text_response(t.revised))
+    await j.tap("k", warned.version, "redraft")
+    assert_equal(await run_queued(j.s, "agent.owner_request"), 1, field="redraft jobs run")
+    current = await j.bind_card("k")
+    assert current.id != row.id
+    assert current.state == "awaiting_approval"
+    assert current.freshness_warning is None
+    await j.check(CountCheck(artifact="business_attempts", count=0))
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+async def test_h8_h11_assist_draft_in_flight_loses_to_the_owner_redraft(
+    journey: Journey, locale: Locale
+) -> None:
+    j = journey
+    t = TEXT[locale]
+    await j.language(locale)
+    async with transaction(j.s.env.factory) as uow:
+        await set_mode(
+            uow.session,
+            account_id=j.s.account_id,
+            conversation_id=j.chats["k"],
+            mode="assist",
+            actor="owner",
+            clock=j.s.env.clock,
+        )
+    brief = owner_input("J04", locale)[0]
+    await j.owner(brief, j.read(), j.generated_proposal(t.generated), text_response(t.generated))
+    row = await j.bind_card("k")
+    await j.event(Contact(alias="burst", text="CANARY-SYNTH Assist question?"))
+    warned = await j.bind_card("k")
+    j.s.env.clock.advance(seconds=30)
+    barrier = ModelBarrier()
+
+    async def held(_request: LLMRequest) -> dict[str, Any]:
+        barrier.entered.set()
+        await barrier.release.wait()
+        return draft_result(text="CANARY-SYNTH obsolete Assist reply.")
+
+    j.s.fake.parsed.append(held)
+    task = asyncio.create_task(run_queued(j.s, "replies.draft"))
+    try:
+        await j.hold(task, barrier)
+        j.s.fake.queue(j.read(), j.generated_proposal(t.revised), text_response(t.revised))
+        await j.tap("k", warned.version, "redraft")
+        assert_equal(await run_queued(j.s, "agent.owner_request"), 1, field="redraft jobs run")
+    finally:
+        barrier.release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    await task
+    rows = await j.rows()
+    assert len(rows) == 2, [(r.id, r.state, r.text) for r in rows]
+    assert rows[0].id == row.id
+    assert rows[1].text == t.revised
+    assert rows[1].state == "awaiting_approval"
+    assert rows[1].freshness_warning is None
+    await j.check(CountCheck(artifact="business_attempts", count=0))

@@ -342,6 +342,23 @@ def test_no_takeover_since_uses_created_at_for_owner_requested_actions() -> None
             assert outcome(rules.no_takeover_since(later)) == (False, "takeover")
 
 
+@pytest.mark.parametrize("sent_offset", [0, -60])
+def test_manual_watermark_detects_ties_but_warned_owner_approval_still_wins(
+    sent_offset: int,
+) -> None:
+    context = ctx(
+        freshness={
+            "request_reference_at": CREATED_AT,
+            "newest_owner_manual_sent_at": CREATED_AT + timedelta(seconds=sent_offset),
+            "captured_owner_manual_id": 100,
+            "newest_owner_manual_id": 101,
+        },
+    )
+    assert outcome(rules.no_takeover_since(context)) == (False, "takeover")
+    approved_anyway = replace(context, action=replace(context.action, freshness_override=True))
+    assert outcome(rules.no_takeover_since(approved_anyway)) == OK
+
+
 @pytest.mark.parametrize(
     ("newest_contact", "shown_through", "expected"),
     [

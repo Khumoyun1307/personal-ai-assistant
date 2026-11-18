@@ -57,6 +57,7 @@ from assistant.actions.authorship import VersionAuthorship, current_authorship, 
 from assistant.actions.config import ActionsConfig
 from assistant.actions.drafts import redraft_queueing_lock, request_draft
 from assistant.actions.models import Action
+from assistant.actions.request_models import OwnerRequest
 from assistant.actions.states import (
     LIVE_CARD,
     STATE_LABELS,
@@ -81,6 +82,7 @@ from assistant.agent.drafting import (
     owner_draft_flags,
 )
 from assistant.conversations.fences import check_fence, lock_fence_conversations
+from assistant.conversations.intent import advance_intent
 from assistant.conversations.models import Contact, Conversation, Message
 from assistant.core.clock import Clock
 from assistant.core.delivery import MAX_TEXT_LENGTH, ErrorClass, SendResult
@@ -833,8 +835,18 @@ def render_not_shown(view: ApprovalCardView) -> str:
 
 
 # ------------------------------------------------------------ helpers
-async def _lock(session: AsyncSession, account_id: int, conversation_id: int) -> bool:
-    """§9.4 order: the account, then the conversation, both `FOR SHARE`."""
+async def _lock(
+    session: AsyncSession,
+    account_id: int,
+    conversation_id: int,
+    *,
+    owner_intent: bool = False,
+) -> bool:
+    """§9.4: account SHARE, then conversation, before requests/actions.
+
+    Intent-changing presses take conversation UPDATE immediately; other
+    operations take SHARE. Never upgrade SHARE to UPDATE for owner intent.
+    """
     found = await session.scalar(
         select(Account.id).where(Account.id == account_id).with_for_update(read=True)
     )
@@ -843,7 +855,7 @@ async def _lock(session: AsyncSession, account_id: int, conversation_id: int) ->
     locked = await session.scalar(
         select(Conversation.id)
         .where(Conversation.id == conversation_id, Conversation.account_id == account_id)
-        .with_for_update(read=True)
+        .with_for_update(read=not owner_intent)
     )
     return locked is not None
 
@@ -1062,7 +1074,7 @@ class ApprovalCards:
                         Action.approval_token.is_(None),
                         or_(
                             Action.state != ActionState.OUTDATED.value,
-                            lifecycle.warning_card_filter(),
+                            lifecycle.warning_card_filter() & ~lifecycle.has_newer_replacement(),
                             lifecycle.legacy_warning_card_filter(),
                         ),
                     )
@@ -1397,7 +1409,12 @@ class ApprovalCards:
         if live is not None:
             if press.op not in _TOKEN_OPS:
                 return self._settle(session, gateway, press, CALLBACK_EXPIRED_TEXT, live.id)
-            if not await _lock(session, account.id, live.conversation_id):
+            if not await _lock(
+                session,
+                account.id,
+                live.conversation_id,
+                owner_intent=press.op in {OP_REJECT, OP_EDIT, OP_REDRAFT},
+            ):
                 return self._settle(session, gateway, press, CALLBACK_EXPIRED_TEXT, None)
             if press.op == OP_APPROVE:
                 return await self._approve(
@@ -1433,7 +1450,9 @@ class ApprovalCards:
                 ).where(Action.id == card.ref_id, Action.account_id == account.id)
             )
         ).one_or_none()
-        if action is None or not await _lock(session, account.id, action.conversation_id):
+        if action is None or not await _lock(
+            session, account.id, action.conversation_id, owner_intent=True
+        ):
             return self._settle(session, gateway, press, CALLBACK_EXPIRED_TEXT, None)
         if press.op == OP_CANCEL_EDIT:
             return await self._cancel_edit(session, gateway, clock, account, press, action)
@@ -1710,6 +1729,22 @@ class ApprovalCards:
             await savepoint.rollback()
         else:
             await savepoint.commit()
+            # H11: the owner's tap wins before the slow worker starts, as the
+            # writer Re-draft does: it consumes the pending burst (a late Assist
+            # draft loses) and records this intent on the request, so its own
+            # replacement is not warned as overtaken. A duplicate tap does not.
+            # The conversation is already locked FOR UPDATE by the press.
+            intent = await advance_intent(
+                session, account_id=account.id, conversation_id=action.conversation_id
+            )
+            await session.execute(
+                update(OwnerRequest)
+                .where(
+                    OwnerRequest.account_id == account.id,
+                    OwnerRequest.id == action.owner_request_id,
+                )
+                .values(intent_revision=intent)
+            )
         return self._settle(
             session,
             gateway,

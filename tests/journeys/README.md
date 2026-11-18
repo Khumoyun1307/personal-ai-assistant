@@ -1,5 +1,12 @@
 # Synthetic conversation journeys
 
+H11 (2026-11-12; unrun): J10 now asserts late Assist yields to the explicit
+card even after rejection; its H11 expected-failure marker is removed for the
+lead/CI gate. J09 retains D-S17's takeover warning with owner approval choices.
+J11 additionally checks a new explicit task's supersession linkage and stale
+button rejection. No H8/I13 markers are changed. Model-visible flag-off schemas,
+prompts and loaded context stay unchanged; precedence applies in the application.
+
 These are normal pytest tests, included in the default suite and CI file shards.
 They reuse `tests/scenarios/p2_drive.py` / `m05_drive.py`: real PostgreSQL,
 durable inbox, owner runtime, registered tools, consent/metering, request service,

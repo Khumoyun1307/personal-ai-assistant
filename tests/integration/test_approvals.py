@@ -28,6 +28,7 @@ from assistant.actions import lifecycle
 from assistant.actions.authorship import generated_authorship
 from assistant.actions.executor import ActionExecutor
 from assistant.actions.models import Action, ContextFenceRecord
+from assistant.agent.tools import drafts as draft_tools
 from assistant.conversations.models import Conversation
 from assistant.core.delivery import ErrorClass
 from assistant.db.uow import transaction
@@ -60,6 +61,7 @@ from tests.integration.business_env import (
     deliver,
     private_message,
 )
+from tests.integration.test_action_execution_races import Race
 from tests.scenarios.p2_drive import (
     DRAFT,
     FLAGS,
@@ -204,6 +206,123 @@ async def test_a_stale_token_answers_no_longer_active(s: Scenario) -> None:
     await press(s, row.approval_token or "", "cx")  # an approval token is not a card token
     assert answers(s) == [CALLBACK_EXPIRED_TEXT] * 6
     assert (await s.action(row.id)).state == "awaiting_approval"
+
+
+@pytest.mark.parametrize("op", ["rj", "ed"])
+@pytest.mark.parametrize("revision_first", [False, True])
+async def test_card_intent_and_chat_revision_serialize_without_lock_upgrades(
+    s: Scenario, monkeypatch: pytest.MonkeyPatch, op: str, *, revision_first: bool
+) -> None:
+    row = await s.seed()
+    async with transaction(s.env.factory) as uow:
+        turn = ControlTurn(
+            account_id=s.account_id,
+            role="owner",
+            text="Synthetic revision instruction",
+            created_at=s.env.clock.now(),
+        )
+        uow.session.add(turn)
+        await uow.session.flush()
+        turn_id = turn.id
+
+    race = Race()
+    card_started = race.event()
+    card_locked = race.event()
+    revision_started = race.event()
+    revision_locked = race.event()
+    release = race.event()
+    pids: dict[str, int] = {}
+    original_lock = approvals._lock
+
+    async def hold_card_lock(
+        session: AsyncSession, account_id: int, conversation_id: int, **kwargs: Any
+    ) -> bool:
+        pids["card"] = int(await session.scalar(text("SELECT pg_backend_pid()")))
+        card_started.set()
+        locked = await original_lock(session, account_id, conversation_id, **kwargs)
+        card_locked.set()
+        await release.wait()
+        return locked
+
+    monkeypatch.setattr(approvals, "_lock", hold_card_lock)
+
+    async def card_press() -> bool:
+        async with transaction(s.env.factory) as uow:
+            assert s.env.dispatcher is not None
+            result = await s.env.dispatcher.dispatch_callback(
+                uow.session,
+                callback_id="synthetic-intent-race",
+                from_id=OWNER,
+                data=f"act:{row.approval_token}:{op}",
+                chat_id=OWNER,
+                message_id=1,
+            )
+            return result.handled
+
+    async def chat_revision() -> lifecycle.RevisionStart:
+        async with transaction(s.env.factory) as uow:
+            session = uow.session
+            pids["revision"] = int(await session.scalar(text("SELECT pg_backend_pid()")))
+            revision_started.set()
+            assert await draft_tools._lock(session, s.account_id, s.conversation_id)
+            revision_locked.set()
+            await release.wait()
+            return await lifecycle.start_revision(
+                session,
+                account_id=s.account_id,
+                action_id=row.id,
+                expected_version=row.version,
+                turn_id=turn_id,
+                now=s.env.clock.now(),
+            )
+
+    try:
+        async with asyncio.timeout(20):
+            second_task: asyncio.Task[Any]
+            if revision_first:
+                revision_task = race.spawn(chat_revision())
+                await race.reached(revision_locked, revision_task)
+                card_task = race.spawn(card_press())
+                await race.reached(card_started, card_task)
+                second_locked, second_task = card_locked, card_task
+                blocker, waiter = pids["revision"], pids["card"]
+            else:
+                card_task = race.spawn(card_press())
+                await race.reached(card_locked, card_task)
+                revision_task = race.spawn(chat_revision())
+                await race.reached(revision_started, revision_task)
+                second_locked, second_task = revision_locked, revision_task
+                blocker, waiter = pids["card"], pids["revision"]
+            # With SHARE both callers reach the upgrade; with UPDATE the
+            # second caller waits. Observe PostgreSQL, never sleep for timing.
+            async with s.env.factory() as session:
+                while not second_locked.is_set():
+                    if await session.scalar(
+                        text("SELECT :blocker = ANY(pg_blocking_pids(:waiter))"),
+                        {"blocker": blocker, "waiter": waiter},
+                    ):
+                        break
+                    if second_task.done():
+                        second_task.result()
+                        raise AssertionError("second operation ended before taking its lock")
+            release.set()
+            card_won, revision = await asyncio.gather(card_task, revision_task)
+        assert card_won is not revision_first
+        expected_revision = (
+            lifecycle.RevisionStart.STARTED
+            if revision_first
+            else lifecycle.RevisionStart.NOT_ACTIVE
+        )
+        assert revision is expected_revision
+        current = await s.action(row.id)
+        assert current.version == row.version
+        rejected = op == "rj" and not revision_first
+        assert current.state == ("rejected" if rejected else "revising")
+        events = await s.events(row.id)
+        assert events.count("action_rejected") == int(rejected)
+        assert events.count("action_revision_requested") == int(not rejected)
+    finally:
+        await race.close()
 
 
 # ------------------------------------------------------------ approve
@@ -593,6 +712,38 @@ def fresh_cards(s: Scenario) -> ApprovalCards:
         clock=s.env.clock,
         config=config,
     )
+
+
+@pytest.mark.parametrize("newer_card", [False, True])
+async def test_an_approval_denied_at_execution_gets_no_token_beside_a_newer_card(
+    s: Scenario, *, newer_card: bool
+) -> None:
+    """D-S17 / H11 review: an approved card that fails its execution check
+    becomes a warning card; it offers Approve anyway only while no newer
+    card for the chat exists, so two cards are never approvable at once."""
+    from assistant.actions.states import ActionState, StateReason
+
+    approved = await s.seed(state="approved")
+    newer = await s.seed() if newer_card else None
+    async with transaction(s.env.factory) as uow:
+        assert await lifecycle.transition(
+            uow.session,
+            account_id=s.account_id,
+            action_id=approved.id,
+            from_state=ActionState.APPROVED,
+            to_state=ActionState.OUTDATED,
+            reason=StateReason.NEW_CONTACT_MESSAGE,
+            now=s.env.clock.now(),
+            expected_version=approved.version,
+            values={"freshness_warning": "new_contact_message"},
+        )
+    view = await fresh_cards(s)._prepare(approved.id)
+    assert view is not None
+    warned = await s.action(approved.id)
+    assert warned.freshness_warning == "new_contact_message"
+    assert (warned.approval_token is None) is newer_card
+    if newer is not None:
+        assert (await s.action(newer.id)).approval_token == newer.approval_token
 
 
 async def test_warned_card_with_definite_presentation_failure_is_recovered_with_approval(

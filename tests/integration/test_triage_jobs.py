@@ -175,6 +175,33 @@ async def test_a_burst_is_debounced_into_one_triage_run(env: Env) -> None:
     assert await flag(env, conversation) is None
 
 
+async def test_a_backlog_beyond_one_batch_keeps_the_flag_until_the_job_has_drained_it(
+    env: Env,
+) -> None:
+    """C7 (I2): 71 unreviewed messages need two bounded runs. After the first the
+    flag still stands (the oldest 60 were read, newer ones wait) so the job
+    re-defers and the reconciler can recover it; the second clears it."""
+    conversation = await chat(env)
+    for offset in range(70):
+        await deliver(
+            env,
+            business_message(message_id=12 + offset, message_text="SYNTH n", date=ts(1 + offset)),
+        )
+    env.clock.advance(seconds=25)
+    fake = FakeLLM()
+    fake.parsed = [quiet_verdict, quiet_verdict]
+    first = await job(env, fake).triage(conversation)
+    assert first is not None
+    assert first.status is TriageStatus.TRIAGED
+    assert await flag(env, conversation) is not None  # a backlog remains
+    env.clock.advance(seconds=25)
+    second = await job(env, fake).triage(conversation)
+    assert second is not None
+    assert second.status is TriageStatus.TRIAGED
+    assert await flag(env, conversation) is None
+    assert len(fake.requests) == 2
+
+
 async def test_owner_messages_flag_only_a_chat_with_an_open_task(env: Env) -> None:
     conversation = await chat(env)
     async with env.factory() as session, session.begin():
