@@ -492,7 +492,53 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0024"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0026"]
+
+
+def _account_triggers(url: str) -> set[str]:
+    with psycopg.connect(libpq(url), autocommit=True) as conn:
+        rows = conn.execute(
+            "SELECT tgname FROM pg_trigger "
+            "WHERE tgrelid = 'app.accounts'::regclass AND NOT tgisinternal"
+        ).fetchall()
+    return {row[0] for row in rows}
+
+
+def test_0025_account_requests_first_round_trip(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    assert "unlink_account_owner_requests" in _account_triggers(scratch_url)
+    run_alembic(scratch_url, "0024", down=True)
+    assert "unlink_account_owner_requests" not in _account_triggers(scratch_url)
+    assert "privacy_account_delete" in _account_triggers(scratch_url)
+    run_alembic(scratch_url, "head")
+    assert "unlink_account_owner_requests" in _account_triggers(scratch_url)
+
+
+def test_0024_owner_intent_round_trip(scratch_url: str) -> None:
+    run_alembic(scratch_url, "head")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema = 'app' AND table_name = 'owner_requests' "
+            "AND column_name = 'intent_revision'"
+        ).fetchone() == ("bigint", "YES")
+        assert conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema = 'app' AND table_name = 'owner_requests' "
+            "AND column_name = 'manual_watermark'"
+        ).fetchone() == ("bigint", "YES")
+        constraints = conn.execute(
+            "SELECT conname FROM pg_constraint WHERE conrelid = 'app.owner_requests'::regclass"
+        ).fetchall()
+        assert {"ck_owner_requests_intent_revision", "ck_owner_requests_manual_watermark"} <= {
+            row[0] for row in constraints
+        }
+    run_alembic(scratch_url, "0023", down=True)
+    assert "intent_revision" not in _columns(scratch_url, "owner_requests")
+    assert "manual_watermark" not in _columns(scratch_url, "owner_requests")
+    run_alembic(scratch_url, "head")
+    assert "intent_revision" in _columns(scratch_url, "owner_requests")
+    assert "manual_watermark" in _columns(scratch_url, "owner_requests")
 
 
 def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
@@ -516,14 +562,14 @@ def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
     run_alembic(scratch_url, "head")
 
 
-def test_0024_review_progress_round_trips_and_clears_both_verdict_links(
+def test_0026_review_progress_round_trips_and_clears_both_verdict_links(
     scratch_url: str,
 ) -> None:
     run_alembic(scratch_url, "head")
     assert "review_progress" in tables_in(scratch_url, "app")
     assert {"review_progress_id", "review_version"} <= _columns(scratch_url, "conversation_triage")
     with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
-        account, conversation = _phase_conversation(conn, 81024)
+        account, conversation = _phase_conversation(conn, 81026)
         progress = conn.execute(
             "INSERT INTO app.review_progress (account_id, conversation_id, reader) "
             "VALUES (%s, %s, 'triage') RETURNING id, scope_key, version, status, pending_ranges",
@@ -557,7 +603,7 @@ def test_0024_review_progress_round_trips_and_clears_both_verdict_links(
             "WHERE account_id = %s",
             (account,),
         ).fetchone() == (None, None)
-    run_alembic(scratch_url, "0023", down=True)
+    run_alembic(scratch_url, "0025", down=True)
     assert "review_progress" not in tables_in(scratch_url, "app")
     assert "review_progress_id" not in _columns(scratch_url, "conversation_triage")
     assert "context_fences" in tables_in(scratch_url, "app")
