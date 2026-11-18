@@ -9,13 +9,15 @@ codes only (`agent.models.TRACE_CODES`): a value outside a closed list is
 stored as `other`, an id that is not this account's is stored as NULL, so no
 message text, name, token or model output can reach the trace.
 
-The trace is bounded (`MAX_TRACE_EVENTS_PER_RUN` rows per run, ending with
-one `trace/truncated` row) and best effort: a database error is logged by
-type and never changes the run's behaviour.
+Bounded: `MAX_TRACE_EVENTS_PER_RUN` rows per run. Start and tool events use
+at most `REGULAR_SLOTS`; overflow ends them with one `trace/truncated` row.
+The remaining `FINISH_RESERVE` slots are kept for the finish batch (final
+action states, late child runs, run status), so the outcome is always
+recorded and the run status is always the last row.
 
-Hooks: `start_trace` (runtime, after the executor is built; installs the
-recorder on the executor), `IncidentTrace.tool` (executor, after a step is
-recorded), `finish_trace` (runtime `_finish`).
+Best effort: the three hook entry points (`start_trace`, `IncidentTrace.tool`,
+`trace_finished_run`) contain every `Exception`, log its type only and never
+change the run (a staged action, a delivered reply). Cancellation propagates.
 """
 
 from __future__ import annotations
@@ -54,8 +56,14 @@ TRACED_TOOLS = frozenset(
 )
 #: Request sources traced per run start; the rest are counted by the request.
 MAX_SOURCES_TRACED = 8
-#: Actions traced as outcomes when the runtime supplies no receipts.
+#: Actions traced as outcomes at finish.
 MAX_OUTCOMES_TRACED = 16
+#: Child runs read per hook call.
+MAX_CHILD_RUNS_PER_READ = 4
+#: Slots kept for the finish batch: outcomes, late child runs, run status.
+FINISH_RESERVE = MAX_OUTCOMES_TRACED + MAX_CHILD_RUNS_PER_READ + 1
+#: Slots for start and tool events; one more is kept for `trace/truncated`.
+REGULAR_SLOTS = MAX_TRACE_EVENTS_PER_RUN - FINISH_RESERVE - 1
 #: Legacy writer instruction sources that mean "the owner's wishes were dropped".
 _DROPPED_SOURCES = frozenset({"dropped_quoted", "dropped_tainted"})
 _REASONS = frozenset(TRACE_REASONS)
@@ -75,6 +83,17 @@ def _reason(value: object) -> str | None:
     if value is None:
         return None
     return value if isinstance(value, str) and value in _REASONS else "other"
+
+
+def _contained(where: str, account_id: object, run_id: object, error: Exception) -> None:
+    """One content-free line for a contained trace failure: the type only."""
+    logger.warning(
+        "incident_trace_failed",
+        where=where,
+        account_id=_id(account_id),
+        run_id=_id(run_id),
+        error_type=type(error).__name__,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,27 +155,52 @@ async def _scoped(
     return set(rows)
 
 
+def _bounded(batch: list[TraceEvent], used: int, *, final: bool) -> list[TraceEvent]:
+    """Fit a batch into the run's slots (see the module docstring)."""
+    if final:
+        capacity = MAX_TRACE_EVENTS_PER_RUN - used
+        if capacity <= 0:
+            return []
+        if len(batch) > capacity:
+            # The run status (last) always survives.
+            return [*batch[: capacity - 1], batch[-1]]
+        return batch
+    regular = max(REGULAR_SLOTS - used, 0)
+    if len(batch) <= regular:
+        return batch
+    if used > REGULAR_SLOTS:  # the truncation marker is already there
+        return []
+    return [*batch[:regular], event("trace", "truncated")]
+
+
 async def _store(
-    session: AsyncSession, *, account_id: int, run_id: int, events: Sequence[TraceEvent]
+    session: AsyncSession,
+    *,
+    account_id: int,
+    run_id: int,
+    events: Sequence[TraceEvent],
+    final: bool,
 ) -> int:
+    # FOR NO KEY UPDATE: serializes trace writers per run without blocking FK
+    # inserts that reference the run (their KEY SHARE locks do not conflict).
     run = await session.scalar(
         select(AgentRun.id)
         .where(AgentRun.account_id == account_id, AgentRun.id == run_id)
-        .with_for_update()
+        .with_for_update(key_share=True)
     )
     if run is None:
         return 0
-    used = await session.scalar(
-        select(func.coalesce(func.max(IncidentTraceEvent.seq), 0)).where(
-            IncidentTraceEvent.run_id == run_id
+    used = int(
+        await session.scalar(
+            select(func.coalesce(func.max(IncidentTraceEvent.seq), 0)).where(
+                IncidentTraceEvent.run_id == run_id
+            )
         )
+        or 0
     )
-    capacity = MAX_TRACE_EVENTS_PER_RUN - int(used or 0)
-    if capacity <= 0:
+    batch = _bounded(list(events), used, final=final)
+    if not batch:
         return 0
-    batch = list(events)
-    if len(batch) > capacity:
-        batch = [*batch[: capacity - 1], event("trace", "truncated")]
     # Tenant scoping of every reference: another account's id is never stored.
     turns = await _scoped(session, ControlTurn, account_id, (e.turn_id for e in batch))
     requests = await _scoped(session, OwnerRequest, account_id, (e.request_id for e in batch))
@@ -170,7 +214,7 @@ async def _store(
             IncidentTraceEvent(
                 account_id=account_id,
                 run_id=run_id,
-                seq=int(used or 0) + offset,
+                seq=used + offset,
                 stage=item.stage,
                 code=item.code,
                 reason=item.reason,
@@ -192,40 +236,45 @@ async def write_events(
     account_id: int,
     run_id: int,
     events: Sequence[TraceEvent],
+    final: bool = False,
 ) -> int:
-    """Append events to a run's trace in one transaction; never raises on DB errors."""
+    """Append events to a run's trace in one transaction; DB errors are logged."""
     if not events:
         return 0
     try:
         async with transaction(session_factory) as uow:
-            return await _store(uow.session, account_id=account_id, run_id=run_id, events=events)
+            return await _store(
+                uow.session, account_id=account_id, run_id=run_id, events=events, final=final
+            )
     except SQLAlchemyError as error:
-        logger.warning(
-            "incident_trace_write_failed",
-            account_id=account_id,
-            run_id=run_id,
-            error_type=type(error).__name__,
-        )
+        _contained("write", account_id, run_id, error)
         return 0
 
 
 async def _child_runs(
     session: AsyncSession, *, account_id: int, run_id: int, known: set[int]
 ) -> list[TraceEvent]:
-    """Draft runs this owner run started (`draft:run:<id>:...`) not yet traced."""
-    rows = await session.execute(
-        select(AgentRun.id, AgentRun.status)
-        .where(
-            AgentRun.account_id == account_id,
-            AgentRun.trigger_ref.like(f"draft:run:{int(run_id)}:%"),
-        )
-        .order_by(AgentRun.id)
+    """Draft runs this owner run started (`draft:run:<id>:...`) not yet traced.
+
+    Bounded: a range on (account_id, started_at) from the parent's start, at
+    most `MAX_CHILD_RUNS_PER_READ` rows."""
+    parent_start = (
+        select(AgentRun.started_at)
+        .where(AgentRun.account_id == account_id, AgentRun.id == run_id)
+        .scalar_subquery()
     )
+    query = select(AgentRun.id, AgentRun.status).where(
+        AgentRun.account_id == account_id,
+        AgentRun.started_at >= parent_start,
+        AgentRun.trigger_ref.like(f"draft:run:{int(run_id)}:%"),
+    )
+    if known:
+        query = query.where(AgentRun.id.not_in(known))
+    rows = await session.execute(query.order_by(AgentRun.id).limit(MAX_CHILD_RUNS_PER_READ))
     found: list[TraceEvent] = []
     for child_id, status in rows:
-        if child_id not in known:
-            known.add(child_id)
-            found.append(event("child_run", status, child_run_id=child_id))
+        known.add(child_id)
+        found.append(event("child_run", status, child_run_id=child_id))
     return found
 
 
@@ -240,8 +289,14 @@ class IncidentTrace:
     children: set[int] = field(default_factory=set)
 
     async def tool(self, ctx: ToolContext, tool: str, outcome: ToolOutcome) -> None:
-        if tool not in TRACED_TOOLS:
-            return
+        """Executor hook. Never raises (except cancellation)."""
+        try:
+            if tool in TRACED_TOOLS:
+                await self._record(ctx, outcome)
+        except Exception as error:
+            _contained("tool", self.account_id, self.run_id, error)
+
+    async def _record(self, ctx: ToolContext, outcome: ToolOutcome) -> None:
         events = tool_events(ctx, outcome)
         try:
             async with self.session_factory() as session:
@@ -267,12 +322,7 @@ class IncidentTrace:
                     )
                 )
         except SQLAlchemyError as error:
-            logger.warning(
-                "incident_trace_read_failed",
-                account_id=self.account_id,
-                run_id=self.run_id,
-                error_type=type(error).__name__,
-            )
+            _contained("tool_read", self.account_id, self.run_id, error)
         await write_events(
             self.session_factory, account_id=self.account_id, run_id=self.run_id, events=events
         )
@@ -286,7 +336,7 @@ def tool_events(ctx: ToolContext, outcome: ToolOutcome) -> list[TraceEvent]:
     if outcome.taints and not ctx.tainted:
         events.append(event("taint", "tainted_by_tool"))
     source = detail.get("instruction_source")
-    if source in _DROPPED_SOURCES:
+    if isinstance(source, str) and source in _DROPPED_SOURCES:
         events.append(event("dropped", source, turn_id=ctx.turn_id))
     elif isinstance(source, str):
         events.append(event("instruction", source, turn_id=ctx.turn_id))
@@ -390,13 +440,13 @@ def start_events(ctx: ToolContext, *, opened_by_turn: bool) -> list[TraceEvent]:
 async def start_trace(
     session_factory: async_sessionmaker[AsyncSession], ctx: ToolContext
 ) -> IncidentTrace:
-    """Record the run's starting decisions; return the executor's recorder."""
+    """Runtime hook: record the starting decisions; always return the recorder."""
     trace = IncidentTrace(session_factory, ctx.account_id, ctx.run_id)
-    opened = False
-    continuation = ctx.continuation
-    request_id = continuation.selection.request_id if continuation is not None else None
-    if request_id is not None and ctx.turn_id is not None:
-        try:
+    try:
+        opened = False
+        continuation = ctx.continuation
+        request_id = continuation.selection.request_id if continuation is not None else None
+        if request_id is not None and ctx.turn_id is not None:
             async with session_factory() as session:
                 trigger = await session.scalar(
                     select(OwnerRequest.trigger_turn_id).where(
@@ -405,20 +455,30 @@ async def start_trace(
                     )
                 )
             opened = trigger == ctx.turn_id
-        except SQLAlchemyError as error:
-            logger.warning(
-                "incident_trace_read_failed",
-                account_id=ctx.account_id,
-                run_id=ctx.run_id,
-                error_type=type(error).__name__,
-            )
-    await write_events(
-        session_factory,
-        account_id=ctx.account_id,
-        run_id=ctx.run_id,
-        events=start_events(ctx, opened_by_turn=opened),
-    )
+        await write_events(
+            session_factory,
+            account_id=ctx.account_id,
+            run_id=ctx.run_id,
+            events=start_events(ctx, opened_by_turn=opened),
+        )
+    except Exception as error:
+        _contained("start", ctx.account_id, ctx.run_id, error)
     return trace
+
+
+def _outcome_events(receipts: Mapping[int, ActionReceipt]) -> list[TraceEvent]:
+    return [
+        event(
+            "outcome",
+            receipt.state,
+            reason=receipt.state_reason,
+            action_id=receipt.action_id,
+            action_version=receipt.version,
+            conversation_id=receipt.conversation_id,
+            request_id=receipt.request_id,
+        )
+        for receipt in (receipts[key] for key in sorted(receipts)[:MAX_OUTCOMES_TRACED])
+    ]
 
 
 async def finish_trace(
@@ -434,19 +494,7 @@ async def finish_trace(
     try:
         async with session_factory() as session:
             if receipts:
-                for action_id in sorted(receipts)[:MAX_OUTCOMES_TRACED]:
-                    receipt = receipts[action_id]
-                    events.append(
-                        event(
-                            "outcome",
-                            receipt.state,
-                            reason=receipt.state_reason,
-                            action_id=receipt.action_id,
-                            action_version=receipt.version,
-                            conversation_id=receipt.conversation_id,
-                            request_id=receipt.request_id,
-                        )
-                    )
+                events.extend(_outcome_events(receipts))
             else:
                 rows = await session.execute(
                     select(
@@ -491,14 +539,11 @@ async def finish_trace(
                 )
             )
     except SQLAlchemyError as error:
-        logger.warning(
-            "incident_trace_read_failed",
-            account_id=account_id,
-            run_id=run_id,
-            error_type=type(error).__name__,
-        )
+        _contained("finish_read", account_id, run_id, error)
     events.append(event("run", status))
-    await write_events(session_factory, account_id=account_id, run_id=run_id, events=events)
+    await write_events(
+        session_factory, account_id=account_id, run_id=run_id, events=events, final=True
+    )
 
 
 class FinishedRun(Protocol):
@@ -515,11 +560,15 @@ class FinishedRun(Protocol):
 async def trace_finished_run(
     session_factory: async_sessionmaker[AsyncSession], run: FinishedRun, status: str
 ) -> None:
-    """The runtime's one-line `_finish` hook."""
-    await finish_trace(
-        session_factory,
-        account_id=run.account_id,
-        run_id=run.run_id,
-        status=status,
-        receipts=run.final_receipts,
-    )
+    """Runtime `_finish` hook. Never raises (except cancellation): the reply is
+    already delivered and the run row committed."""
+    try:
+        await finish_trace(
+            session_factory,
+            account_id=run.account_id,
+            run_id=run.run_id,
+            status=status,
+            receipts=run.final_receipts,
+        )
+    except Exception as error:
+        _contained("finish", getattr(run, "account_id", None), getattr(run, "run_id", None), error)

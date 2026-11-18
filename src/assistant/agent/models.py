@@ -149,8 +149,9 @@ class ToolConfirmation(Base):
 
 #: I25 structural incident trace (ARCHITECTURE §17, finding R4-10). Every
 #: stage has a closed code list; anything outside it is stored as `other`,
-#: so no free text can ever reach a row. Revision 0024 freezes a copy of
-#: these lists; `tests/unit/test_incident_trace.py` keeps them equal.
+#: so no free text can ever reach a row. A migration freezes a copy of these
+#: lists; `tests/integration/test_incident_trace.py` compares them with the
+#: CHECK constraints of the migrated database (a new code needs a new migration).
 TRACE_STAGES = (
     "request",
     "instruction",
@@ -231,6 +232,7 @@ TRACE_CODES: dict[str, tuple[str, ...]] = {
         "revised",
         "stale",
         "idempotency_conflict",
+        "proposal_conflict",
         "invalid_arguments",
         "needs_input",
         "not_available",
@@ -293,6 +295,7 @@ TRACE_REASONS = (
     "no_longer_pending",
     "chat_changed",
     "provider_refused",
+    "revision_not_applied",
     # C1 continuation codes.
     "stale",
     "managed_access_off",
@@ -328,6 +331,8 @@ TRACE_REASONS = (
 #: Rows per run, enforced by CHECK; the writer ends a full trace with one
 #: `trace/truncated` row (I25: bounded in count).
 MAX_TRACE_EVENTS_PER_RUN = 64
+#: Nullable references (ON DELETE SET NULL), each with a partial index.
+TRACE_REFERENCE_COLUMNS = ("turn_id", "request_id", "child_run_id", "action_id", "conversation_id")
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:
@@ -358,6 +363,15 @@ class IncidentTraceEvent(Base):
         CheckConstraint(trace_code_check(), name="ck_incident_trace_events_code"),
         CheckConstraint(_in("reason", TRACE_REASONS), name="ck_incident_trace_events_reason"),
         Index("ix_incident_trace_events_account_id_run_id", "account_id", "run_id"),
+        # SET NULL references: hard deletes and report lookups use these.
+        *(
+            Index(
+                f"ix_incident_trace_events_{column}",
+                column,
+                postgresql_where=text(f"{column} IS NOT NULL"),
+            )
+            for column in TRACE_REFERENCE_COLUMNS
+        ),
     )
 
     id: Mapped[IdPk]

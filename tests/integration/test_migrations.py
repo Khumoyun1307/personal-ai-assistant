@@ -529,6 +529,14 @@ def test_0024_incident_trace_is_bounded_coded_cascading_and_round_trips(
             "SELECT conversation_id FROM app.incident_trace_events WHERE seq = 1 AND run_id = %s",
             (run[0],),
         ).fetchone() == (None,)
+        partial = dict(
+            conn.execute(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'app' "
+                "AND tablename = 'incident_trace_events'"
+            ).fetchall()
+        )
+        for column in ("turn_id", "request_id", "child_run_id", "action_id", "conversation_id"):
+            assert f"WHERE ({column} IS NOT NULL)" in partial[f"ix_incident_trace_events_{column}"]
         conn.execute("DELETE FROM app.agent_runs WHERE id = %s", (run[0],))
         assert conn.execute(
             "SELECT count(*) FROM app.incident_trace_events WHERE account_id = %s", (account,)

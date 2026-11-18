@@ -6,11 +6,10 @@ Pure tests of what the trace writer would store. The integration suite
 
 from __future__ import annotations
 
-import importlib.util
+import ast
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
@@ -23,14 +22,22 @@ from assistant.actions.requests import (
     SourceSpan,
 )
 from assistant.actions.states import ActionState, StateReason
-from assistant.agent.incident_trace import event, start_events, tool_events
+from assistant.agent.incident_trace import (
+    FINISH_RESERVE,
+    MAX_CHILD_RUNS_PER_READ,
+    MAX_OUTCOMES_TRACED,
+    REGULAR_SLOTS,
+    _bounded,
+    event,
+    start_events,
+    tool_events,
+)
 from assistant.agent.models import (
     MAX_TRACE_EVENTS_PER_RUN,
     RUN_STATUSES,
     TRACE_CODES,
     TRACE_REASONS,
     TRACE_STAGES,
-    trace_code_check,
 )
 from assistant.agent.tools.registry import OwnerTurn, ToolContext, ToolOutcome, ToolServices
 from tests.fakes.clock import FakeClock
@@ -39,24 +46,51 @@ ROOT = Path(__file__).resolve().parents[2]
 CANARY = "SYNTH-I25-CANARY Kamola sk-proj-I25Secret"
 
 
-def migration() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "i25_migration", ROOT / "migrations/versions/0024_incident_trace.py"
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _strings(node: ast.AST | None) -> set[str]:
+    """String constants a status/reason expression can evaluate to."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return {node.value}
+    if isinstance(node, ast.IfExp):
+        return _strings(node.body) | _strings(node.orelse)
+    return set()
 
 
-def test_migration_freezes_exactly_the_model_code_lists() -> None:
-    frozen = migration()
-    assert frozen.STAGES == TRACE_STAGES
-    assert frozen.CODES == TRACE_CODES
-    assert frozen.REASONS == TRACE_REASONS
-    assert frozen.MAX_EVENTS == MAX_TRACE_EVENTS_PER_RUN
-    assert frozen._code_check() == trace_code_check()
+def emitted_by_tools() -> tuple[set[str], set[str]]:
+    """Every literal proposal status and reason the agent tools can emit:
+    `source_failure(status, reason)`, `_receipt(..., status, reason=...)`,
+    `"proposal_status": ...` / `"reason": ...` dict entries and
+    `proposal_status = ...` assignments (constants and conditional branches)."""
+    statuses: set[str] = set()
+    reasons: set[str] = set()
+    for path in sorted((ROOT / "src/assistant/agent/tools").glob("*.py")):
+        tree = ast.parse(path.read_text("utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id == "source_failure":
+                    statuses |= _strings(node.args[0] if node.args else None)
+                    reasons |= _strings(node.args[1] if len(node.args) > 1 else None)
+                if node.func.id in {"_receipt", "_literal_receipt"} and len(node.args) > 4:
+                    statuses |= _strings(node.args[4])
+                if node.func.id in {"_receipt", "_literal_receipt", "source_failure"}:
+                    for keyword in node.keywords:
+                        if keyword.arg == "reason":
+                            reasons |= _strings(keyword.value)
+            if isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values, strict=True):
+                    if isinstance(key, ast.Constant) and key.value == "proposal_status":
+                        statuses |= _strings(value)
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "proposal_status":
+                        statuses |= _strings(node.value)
+    return statuses, reasons
+
+
+def test_every_proposal_status_and_reason_the_tools_emit_has_a_code() -> None:
+    statuses, reasons = emitted_by_tools()
+    assert {"staged", "proposal_conflict", "idempotency_conflict"} <= statuses  # scan works
+    assert statuses - set(TRACE_CODES["proposal"]) == set()
+    assert reasons - set(TRACE_REASONS) == set()
 
 
 def test_code_lists_cover_every_state_reason_and_status() -> None:
@@ -216,3 +250,57 @@ def test_a_run_without_a_request_says_so() -> None:
     assert [(e.stage, e.code) for e in start_events(context(), opened_by_turn=False)] == [
         ("request", "none")
     ]
+
+
+# ------------------------------------------------------------ S2: bounds keep the outcome
+def _many(count: int, stage: str = "proposal", code: str = "staged") -> list[Any]:
+    return [event(stage, code)] * count
+
+
+def test_finish_reserve_holds_the_largest_finish_batch() -> None:
+    assert FINISH_RESERVE >= MAX_OUTCOMES_TRACED + MAX_CHILD_RUNS_PER_READ + 1
+    assert REGULAR_SLOTS + 1 + FINISH_RESERVE == MAX_TRACE_EVENTS_PER_RUN
+
+
+def test_regular_overflow_ends_with_one_truncation_marker() -> None:
+    batch = _bounded(_many(REGULAR_SLOTS + 5), 0, final=False)
+    assert len(batch) == REGULAR_SLOTS + 1
+    assert (batch[-1].stage, batch[-1].code) == ("trace", "truncated")
+    # Later regular events are dropped; the marker is not repeated.
+    assert _bounded(_many(2), REGULAR_SLOTS + 1, final=False) == []
+
+
+def test_a_batch_that_exactly_reaches_the_regular_limit_is_kept_whole() -> None:
+    """The reviewer's edge: a full regular area never eats the finish slots."""
+    batch = _bounded(_many(2), REGULAR_SLOTS - 2, final=False)
+    assert [item.stage for item in batch] == ["proposal", "proposal"]
+    after = _bounded(_many(1), REGULAR_SLOTS, final=False)
+    assert [(item.stage, item.code) for item in after] == [("trace", "truncated")]
+
+
+@pytest.mark.parametrize("used", [0, REGULAR_SLOTS, REGULAR_SLOTS + 1])
+def test_the_largest_finish_batch_always_fits_after_regular_events(used: int) -> None:
+    finish = [
+        *_many(MAX_OUTCOMES_TRACED, "outcome", "awaiting_approval"),
+        *_many(MAX_CHILD_RUNS_PER_READ, "child_run", "succeeded"),
+        event("run", "succeeded"),
+    ]
+    assert _bounded(finish, used, final=True) == finish
+
+
+def test_an_oversized_final_batch_keeps_the_run_status_last() -> None:
+    finish = [*_many(10, "outcome", "awaiting_approval"), event("run", "failed")]
+    kept = _bounded(finish, MAX_TRACE_EVENTS_PER_RUN - 3, final=True)
+    assert len(kept) == 3
+    assert (kept[-1].stage, kept[-1].code) == ("run", "failed")
+    assert _bounded(finish, MAX_TRACE_EVENTS_PER_RUN, final=True) == []
+
+
+def test_unhashable_or_odd_values_are_normalized_not_raised() -> None:
+    outcome = ToolOutcome(
+        "awaiting_approval",
+        {"proposal_status": ["staged"], "reason": {"x": CANARY}, "action": [1]},
+        log_detail={"instruction_source": ["dropped_quoted"]},
+    )
+    events = tool_events(context(), outcome)
+    assert [(e.stage, e.code, e.reason) for e in events] == [("proposal", "other", "other")]

@@ -6,8 +6,10 @@ no change to existing tables. Rows go with their run (ON DELETE CASCADE from
 their account; references to deleted requests, actions, turns, conversations
 or child runs become NULL. Downgrade drops the trace only.
 
-The code lists are a frozen copy of `assistant.agent.models` at this revision;
-`tests/unit/test_incident_trace.py` keeps the two equal.
+The code lists are a frozen copy of `assistant.agent.models` at this revision.
+`tests/integration/test_incident_trace.py` compares the model with the CHECK
+constraints of the migrated database, so a later code change needs a new
+revision rather than an edit here.
 
 Revision ID: 0024
 Revises: 0023
@@ -101,6 +103,7 @@ CODES: dict[str, tuple[str, ...]] = {
         "revised",
         "stale",
         "idempotency_conflict",
+        "proposal_conflict",
         "invalid_arguments",
         "needs_input",
         "not_available",
@@ -160,6 +163,7 @@ REASONS = (
     "no_longer_pending",
     "chat_changed",
     "provider_refused",
+    "revision_not_applied",
     "stale",
     "managed_access_off",
     "superseded",
@@ -244,6 +248,12 @@ def upgrade() -> None:
         "CREATE INDEX ix_incident_trace_events_account_id_run_id "
         "ON app.incident_trace_events (account_id, run_id)"
     )
+    # SET NULL references: hard deletes and report lookups must not scan.
+    for column in ("turn_id", "request_id", "child_run_id", "action_id", "conversation_id"):
+        op.execute(
+            f"CREATE INDEX ix_incident_trace_events_{column} "
+            f"ON app.incident_trace_events ({column}) WHERE {column} IS NOT NULL"
+        )
 
 
 def downgrade() -> None:
