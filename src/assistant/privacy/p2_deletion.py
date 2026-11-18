@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.actions.lifecycle import cancel_pending, clear_texts
 from assistant.actions.models import Action
 from assistant.actions.states import PENDING, StateReason
+from assistant.automation import monitor_review
 from assistant.automation.models import Automation
 from assistant.conversations.models import Conversation
 from assistant.inbox.models import ConversationTriage, Notification, Task
@@ -141,6 +142,11 @@ async def purge_p2(
             pending_triage_at=None,
             pending_monitor_at=None,
         )
+    )
+    # A monitor's cursor names messages that are gone: it starts afresh on what
+    # arrives (C7: deletion removes the affected progress).
+    await monitor_review.delete_monitor_progress(
+        session, account_id=account_id, conversation_ids=conversation_ids
     )
     return {
         "actions": actions,

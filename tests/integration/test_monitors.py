@@ -34,6 +34,7 @@ import asyncio
 import re
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -43,19 +44,20 @@ from assistant.accounts.models import Account, AuditLogEntry, PendingInput
 from assistant.agent import prompt_registry
 from assistant.agent.models import AgentRun
 from assistant.agent.monitor_eval import (
+    BURST_LIMIT,
     MonitorEvalConfig,
     MonitorEvalStatus,
     MonitorEvaluator,
 )
 from assistant.agent.tools.registry import CapabilityTier, default_registry
-from assistant.automation import monitors
+from assistant.automation import monitor_review, monitors
 from assistant.automation.models import Automation
 from assistant.automation.monitor_trigger import MonitorIngestionListener
 from assistant.automation.rules import MonitorCondition, MonitorRule, MonitorScope
 from assistant.core.jobs import MONITOR_TASK
 from assistant.db.uow import transaction
 from assistant.inbox.alert_texts import RenderedAlert
-from assistant.inbox.models import ConversationTriage, Notification
+from assistant.inbox.models import ConversationTriage, Notification, ReviewProgress
 from assistant.inbox.notification_types import (
     AlertClass,
     NotificationKind,
@@ -65,7 +67,7 @@ from assistant.inbox.notification_types import (
 from assistant.inbox.notifications import NotificationDelivery, enqueue
 from assistant.jobs.reconcile_monitors import monitor_reconciler
 from assistant.jobs.tasks_automation import MonitorJobs
-from assistant.llm.port import LLMRequest, TextItem
+from assistant.llm.port import LLMError, LLMErrorKind, LLMRequest, StopReason, TextItem
 from assistant.memory.search import normalize
 from assistant.privacy import deletion
 from tests.fakes.channel import FakeChannel
@@ -78,6 +80,7 @@ from tests.integration.business_env import (
     Env,
     business_message,
     connect,
+    deleted_messages,
     deliver,
     environment,
     grant_managed,
@@ -860,12 +863,10 @@ async def test_a_verdict_citing_no_contact_message_does_not_fire(env: Env) -> No
     owners = await message_id_of(env, 3)
     fake = FakeLLM()
     fake.parsed = [verdicts((watched, True, [])), verdicts((watched, True, [owners, first, 10**9]))]
-    for _ in range(2):
-        async with env.factory() as session, session.begin():
-            await session.execute(
-                text("UPDATE app.conversations SET pending_monitor_at = :t WHERE id = :c"),
-                {"t": env.clock.now() - timedelta(minutes=1), "c": a},
-            )
+    for number in (2, 4):
+        if number == 4:  # the first answer reviewed message 2: a new message is next
+            env.clock.advance(seconds=5)
+            await say(env, 4, "SYNTH to'lov yana")
         outcome = await evaluator(env, fake).evaluate(a)
         assert outcome.status is MonitorEvalStatus.EVALUATED
         assert outcome.alerts == 0
@@ -1290,3 +1291,534 @@ async def test_a_deleted_chat_removes_its_monitors_and_suppresses_pending_alerts
     result = await delivery(env, channel).deliver(alert.id)
     assert (result.status, result.reason) == ("suppressed", "source_deleted")
     assert channel.sends == []
+
+
+# ============================================================ I4: reliable review
+# A monitor's review (C7) has its own cursor: oldest unreviewed messages first,
+# failures counted on its row (bounded, then degraded and recoverable), a source
+# changed during the call never settled as current.
+
+
+async def progress_row(env: Env, monitor_id: int) -> ReviewProgress:
+    async with env.factory() as session:
+        return (
+            await session.execute(
+                select(ReviewProgress).where(
+                    ReviewProgress.monitor_id == monitor_id, ReviewProgress.reader == "monitor"
+                )
+            )
+        ).scalar_one()
+
+
+async def review_state(env: Env, monitor_id: int) -> monitor_review.MonitorReview:
+    async with env.factory() as session:
+        found = await monitor_review.states(
+            session,
+            account_id=await account_id(env),
+            monitor_ids=[monitor_id],
+            now=env.clock.now(),
+        )
+    return found[monitor_id]
+
+
+async def revision(env: Env, conversation: int) -> int:
+    async with env.factory() as session:
+        return int(
+            (
+                await session.execute(
+                    text("SELECT content_revision FROM app.conversations WHERE id = :c"),
+                    {"c": conversation},
+                )
+            ).scalar_one()
+        )
+
+
+async def edit(env: Env, telegram_id: int, body: str) -> None:
+    await deliver(
+        env,
+        business_message(
+            message_id=telegram_id,
+            message_text=body,
+            date=ts(env.clock.now()),
+            first_name="Kamola",
+            edit=True,
+        ),
+    )
+
+
+async def job_times(env: Env) -> list[tuple[str, datetime]]:
+    async with env.factory() as session:
+        rows = await session.execute(
+            text(
+                "SELECT status::text, scheduled_at FROM procrastinate.procrastinate_jobs "
+                "WHERE task_name = :t ORDER BY id"
+            ),
+            {"t": MONITOR_TASK},
+        )
+        return [(str(r[0]), r[1]) for r in rows.all()]
+
+
+async def one_message_watch(env: Env, *, lifecycle: str = "one_shot") -> tuple[int, int]:
+    """A chat, a semantic monitor confirmed now and one message after it."""
+    a, _ = await setup(env)
+    watched = await monitor(
+        env, "semantic", conversation_ids=[a], description="a refund", lifecycle=lifecycle
+    )
+    env.clock.advance(minutes=1)
+    await say(env, 2, "SYNTH qaytarish kerak")
+    return a, watched
+
+
+async def test_a_backlog_is_drained_oldest_first_and_no_message_is_skipped(env: Env) -> None:
+    """R3-09: more messages than one call reads. The oldest `BURST_LIMIT` are
+    read first, the cursor stops at the last one read (never at the newest
+    message of the chat), and the next call reads the rest, a match in the
+    last one included."""
+    a, _ = await setup(env)
+    watched = await monitor(env, "semantic", conversation_ids=[a], description="a refund")
+    env.clock.advance(minutes=1)
+    total = BURST_LIMIT + 5
+    for number in range(2, 2 + total):
+        await say(env, number, f"SYNTH xabar {number}")
+    ids = [await message_id_of(env, number) for number in range(2, 2 + total)]
+
+    fake = FakeLLM()
+    fake.parsed = [verdicts((watched, False, [])), match_all]
+    first = await evaluator(env, fake).evaluate(a)
+    assert (first.status, first.backlog) == (MonitorEvalStatus.EVALUATED, True)
+    assert shown_new(fake.requests[0]) == ids[:BURST_LIMIT]
+    row = await progress_row(env, watched)
+    assert (row.position or {}).get("message_id") == ids[BURST_LIMIT - 1]
+    assert (row.status, row.attempts) == ("pending", 0)
+    assert await flag(env, a) is not None  # work is still waiting
+
+    second = await evaluator(env, fake).evaluate(a)
+    assert (second.status, second.alerts) == (MonitorEvalStatus.EVALUATED, 1)
+    assert shown_new(fake.requests[1]) == ids[BURST_LIMIT:]
+    [alert] = await alerts(env)
+    assert alert.refs["message_ids"] == [ids[-1]]
+    assert await flag(env, a) is None
+    assert (await progress_row(env, watched)).status == "current"
+
+
+FAILURES: list[tuple[str, Any, str]] = [
+    ("refusal", StopReason.REFUSAL, "refusal"),
+    ("content_filter", StopReason.CONTENT_FILTER, "refusal"),
+    ("invalid_output", LLMError(LLMErrorKind.INVALID_OUTPUT), "invalid_output"),
+    ("provider_outage", LLMError(LLMErrorKind.UNAVAILABLE), "provider_failed"),
+]
+
+
+@pytest.mark.parametrize(("label", "failure", "last_error"), FAILURES, ids=[f[0] for f in FAILURES])
+async def test_a_failed_review_gives_up_no_message_and_reads_it_again(
+    env: Env, label: str, failure: Any, last_error: str
+) -> None:
+    """R3-09: a refusal, a filtered or invalid answer or an outage no longer
+    settles the flag. The attempt is counted on the monitor's row, the
+    cursor stays, the flag stays, and after the backoff the same message is
+    read again and fires."""
+    a, watched = await one_message_watch(env)
+    newest = await message_id_of(env, 2)
+    fake = FakeLLM()
+    fake.parsed = [failure, match_all]
+    failed = await evaluator(env, fake).evaluate(a)
+    assert failed.status in (MonitorEvalStatus.FAILED, MonitorEvalStatus.REFUSED)
+    assert failed.retry_at == env.clock.now() + monitor_review.RETRY_DELAYS[0]
+    row = await progress_row(env, watched)
+    assert (row.position, row.attempts, row.last_error, row.status) == (
+        None,
+        1,
+        last_error,
+        "pending",
+    )
+    assert await flag(env, a) is not None
+    assert (await review_state(env, watched)).state == "delayed"
+    assert await alerts(env) == []
+
+    # Within the backoff nothing is called; after it the message is read again.
+    waiting = await evaluator(env, fake).evaluate(a)
+    assert (waiting.status, waiting.retry_at) == (MonitorEvalStatus.DEFERRED, failed.retry_at)
+    assert len(fake.requests) == 1
+    env.clock.advance(seconds=61)
+    again = await evaluator(env, fake).evaluate(a)
+    assert (again.status, again.alerts) == (MonitorEvalStatus.EVALUATED, 1)
+    assert shown_new(fake.requests[1]) == [newest]
+    assert await flag(env, a) is None
+    row = await progress_row(env, watched)
+    assert (row.status, row.attempts, row.last_error, row.retry_at) == ("current", 0, None, None)
+
+
+async def test_exhausted_attempts_leave_the_range_inspectable_and_recoverable(env: Env) -> None:
+    """Retries are bounded (3 attempts per batch, never a hot loop): the monitor
+    is degraded, its unreviewed range stays on record and in the owner's
+    monitor list, no further call is made, and an explicit retry reads the
+    original message and fires."""
+    a, watched = await one_message_watch(env)
+    newest = await message_id_of(env, 2)
+    fake = FakeLLM()
+    fake.parsed = [LLMError(LLMErrorKind.INVALID_OUTPUT)] * monitor_review.MAX_ATTEMPTS
+    for delay in (*monitor_review.RETRY_DELAYS, None):
+        outcome = await evaluator(env, fake).evaluate(a)
+        assert outcome.status is MonitorEvalStatus.FAILED
+        if delay is not None:
+            assert outcome.retry_at == env.clock.now() + delay
+            env.clock.advance(seconds=delay.total_seconds() + 1)
+    assert outcome.retry_at is None
+    row = await progress_row(env, watched)
+    assert (row.status, row.attempts, row.retry_at, row.position) == ("degraded", 3, None, None)
+    assert row.pending_ranges == [
+        {"first_message_id": newest, "last_message_id": newest, "reason": "invalid_output"}
+    ]
+    assert await flag(env, a) is None  # no wake-ups for a monitor that is out of attempts
+    degraded = await review_state(env, watched)
+    assert (degraded.state, degraded.reasons) == ("degraded", ("invalid_output",))
+    assert [(r.status, r.error_class) for r in await evaluate_runs(env)] == [
+        ("failed", "invalid_output")
+    ] * 3
+    automation_row = await automation(env, watched)
+    assert automation_row is not None
+    assert automation_row.status == "active"  # still on, and now visibly degraded
+
+    # No paid loop: nothing is called again, however often it is evaluated.
+    env.clock.advance(hours=3)
+    quiet = await evaluator(env, fake).evaluate(a)
+    assert (quiet.status, len(fake.requests)) == (MonitorEvalStatus.UP_TO_DATE, 3)
+
+    # Explicit recovery: fresh attempts, the original message, one alert.
+    async with transaction(env.factory) as uow:
+        chats = await monitor_review.request_retry(
+            uow.session, account_id=await account_id(env), now=env.clock.now(), monitor_id=watched
+        )
+    assert chats == [a]
+    assert await flag(env, a) is not None
+    fake.parsed = [match_all]
+    recovered = await evaluator(env, fake).evaluate(a)
+    assert (recovered.status, recovered.alerts) == (MonitorEvalStatus.EVALUATED, 1)
+    assert shown_new(fake.requests[-1]) == [newest]
+    assert (await review_state(env, watched)).state == "current"
+
+
+async def test_a_message_edited_during_the_call_is_not_settled_as_current(env: Env) -> None:
+    """C6/C7: the contact edits the message while the model reads it. The
+    answer (a match for the old text) applies nothing and certifies nothing;
+    the message is read again, in its edited form."""
+    a, watched = await one_message_watch(env)
+    first_revision = await revision(env, a)
+
+    async def edit_then_match(request: LLMRequest) -> dict[str, Any]:
+        await edit(env, 2, "SYNTH tahrirlangan matn")
+        return match_all(request)
+
+    fake = FakeLLM()
+    fake.parsed = [edit_then_match]
+    stale = await evaluator(env, fake).evaluate(a)
+    assert (stale.status, stale.calls, stale.alerts) == (MonitorEvalStatus.STALE, 1, 0)
+    assert await revision(env, a) > first_revision
+    assert await alerts(env) == []
+    row = await progress_row(env, watched)
+    assert (row.position, row.attempts, row.last_error) == (None, 1, "source_changed")
+    assert await flag(env, a) is not None
+    [run] = await evaluate_runs(env)
+    assert (run.status, run.error_class) == ("failed", "discarded:source_changed")
+
+    fake.parsed = [match_all]
+    fresh = await evaluator(env, fake).evaluate(a)
+    assert (fresh.status, fresh.alerts) == (MonitorEvalStatus.EVALUATED, 1)
+    assert "SYNTH tahrirlangan matn" in everything(fake.requests[-1])
+    assert (await progress_row(env, watched)).status == "current"
+
+
+async def test_a_message_deleted_during_the_call_is_not_settled_and_leaves_a_gap(
+    env: Env,
+) -> None:
+    """The deletion makes the answer stale: no alert, no cursor movement. The
+    message is gone, so nothing is read again, but the loss stays on record
+    instead of reading as reviewed."""
+    a, watched = await one_message_watch(env)
+
+    async def delete_then_match(request: LLMRequest) -> dict[str, Any]:
+        await deliver(env, deleted_messages(message_ids=[2]))
+        return match_all(request)
+
+    fake = FakeLLM()
+    fake.parsed = [delete_then_match]
+    stale = await evaluator(env, fake).evaluate(a)
+    assert (stale.status, stale.alerts) == (MonitorEvalStatus.STALE, 0)
+    again = await evaluator(env, fake).evaluate(a)
+    assert (again.status, len(fake.requests)) == (MonitorEvalStatus.UP_TO_DATE, 1)
+    assert await alerts(env) == []
+    assert await flag(env, a) is None
+    row = await progress_row(env, watched)
+    gone = await message_id_of(env, 2)
+    assert row.status == "partial"
+    assert row.pending_ranges == [
+        {"first_message_id": gone, "last_message_id": gone, "reason": "deleted"}
+    ]
+    assert (await review_state(env, watched)).state == "gap"
+
+
+async def test_a_message_that_arrives_during_the_call_does_not_stale_the_batch(env: Env) -> None:
+    """New arrivals change the chat's revision but only add messages beyond the
+    batch: the answer applies, and the newcomer is the next batch."""
+    a, watched = await one_message_watch(env, lifecycle="standing")
+    first = await message_id_of(env, 2)
+
+    async def another_arrives(request: LLMRequest) -> dict[str, Any]:
+        await say(env, 3, "SYNTH yana bir xabar")
+        return match_all(request)
+
+    fake = FakeLLM()
+    fake.parsed = [another_arrives, verdicts((watched, False, []))]
+    outcome = await evaluator(env, fake).evaluate(a)
+    assert (outcome.status, outcome.alerts) == (MonitorEvalStatus.EVALUATED, 1)
+    row = await progress_row(env, watched)
+    assert (row.position or {}).get("message_id") == first
+    assert await flag(env, a) is not None
+    second = await evaluator(env, fake).evaluate(a)
+    assert second.status is MonitorEvalStatus.EVALUATED
+    assert shown_new(fake.requests[1]) == [await message_id_of(env, 3)]
+    assert await flag(env, a) is None
+
+
+async def test_monitors_with_different_cursors_are_read_separately_and_fail_separately(
+    env: Env,
+) -> None:
+    """C7: a faster monitor's cursor never clears another's failed range. B is
+    created after A has reviewed message 2: both still owe message 3, but from
+    different cursors, so they are read in separate calls; A's failure leaves
+    B free to be read at once, and A is read again after its backoff."""
+    a, _ = await setup(env)
+    first = await monitor(
+        env, "semantic", conversation_ids=[a], description="a refund", lifecycle="standing"
+    )
+    env.clock.advance(minutes=1)
+    await say(env, 2, "SYNTH birinchi")
+    fake = FakeLLM()
+    fake.parsed = [verdicts((first, False, []))]
+    assert (await evaluator(env, fake).evaluate(a)).status is MonitorEvalStatus.EVALUATED
+
+    env.clock.advance(minutes=1)
+    second = await monitor(
+        env, "semantic", conversation_ids=[a], description="a price", lifecycle="standing"
+    )
+    env.clock.advance(minutes=1)
+    await say(env, 3, "SYNTH ikkinchi")
+    third = await message_id_of(env, 3)
+
+    fake.parsed = [LLMError(LLMErrorKind.UNAVAILABLE), match_all, match_all]
+    failed = await evaluator(env, fake).evaluate(a)  # the oldest cursor goes first
+    assert failed.status is MonitorEvalStatus.FAILED
+    assert listed_monitors(fake.requests[-1]) == [first]
+    other = await evaluator(env, fake).evaluate(a)
+    assert (other.status, other.alerts) == (MonitorEvalStatus.EVALUATED, 1)
+    assert listed_monitors(fake.requests[-1]) == [second]
+    assert (await progress_row(env, second)).status == "current"
+    assert (await progress_row(env, first)).attempts == 1
+    assert await flag(env, a) is not None
+
+    env.clock.advance(seconds=61)
+    last = await evaluator(env, fake).evaluate(a)
+    assert (last.status, last.alerts) == (MonitorEvalStatus.EVALUATED, 1)
+    assert listed_monitors(fake.requests[-1]) == [first]
+    assert shown_new(fake.requests[-1]) == [third]
+    assert await flag(env, a) is None
+    assert sorted(n.refs["automation_ids"][0] for n in await alerts(env)) == sorted([first, second])
+
+
+async def test_a_message_deleted_before_any_review_is_recorded_as_a_gap(env: Env) -> None:
+    """No call is made for a message that is already gone, and the cursor
+    passing over it records the loss."""
+    a, watched = await one_message_watch(env)
+    await deliver(env, deleted_messages(message_ids=[2]))
+    fake = FakeLLM()
+    outcome = await evaluator(env, fake).evaluate(a)
+    assert (outcome.status, fake.requests) == (MonitorEvalStatus.UP_TO_DATE, [])
+    gone = await message_id_of(env, 2)
+    row = await progress_row(env, watched)
+    assert row.pending_ranges == [
+        {"first_message_id": gone, "last_message_id": gone, "reason": "deleted"}
+    ]
+    assert await flag(env, a) is None
+
+
+async def test_consent_and_budget_holds_are_visible_and_not_attempts(env: Env) -> None:
+    a, watched = await one_message_watch(env)
+    await revoke(env, "ai_managed")
+    fake = FakeLLM()
+    assert (await evaluator(env, fake).evaluate(a)).status is MonitorEvalStatus.NO_CONSENT
+    row = await progress_row(env, watched)
+    assert (row.status, row.last_error, row.attempts) == ("blocked", "no_consent", 0)
+    assert (await review_state(env, watched)).state == "blocked"
+
+    await grant_managed(env)
+    over = await evaluator(env, fake, monthly_budget_usd=Decimal(0)).evaluate(a)
+    assert over.status is MonitorEvalStatus.OVER_BUDGET
+    assert over.retry_at == env.clock.now() + monitor_review.BUDGET_RETRY
+    assert fake.requests == []
+    row = await progress_row(env, watched)
+    assert (row.status, row.last_error, row.attempts) == ("pending", "budget", 0)
+    state = await review_state(env, watched)
+    assert (state.state, state.reasons) == ("delayed", ("budget",))
+
+    env.clock.advance(hours=1, seconds=1)
+    fake.parsed = [match_all]
+    assert (await evaluator(env, fake).evaluate(a)).alerts == 1
+    assert (await review_state(env, watched)).state == "current"
+
+
+def monitor_job(env: Env, fake: FakeLLM) -> MonitorJobs:
+    assert env.scheduler is not None
+    return MonitorJobs(
+        session_factory=env.factory,
+        clock=env.clock,
+        scheduler=env.scheduler,
+        debounce=DEBOUNCE,
+        evaluator=evaluator(env, fake),
+    )
+
+
+async def clear_jobs(env: Env) -> None:
+    async with env.factory() as session, session.begin():
+        await session.execute(
+            text("DELETE FROM procrastinate.procrastinate_jobs WHERE task_name = :t"),
+            {"t": MONITOR_TASK},
+        )
+
+
+async def test_the_job_follows_a_backlog_at_once_and_a_failure_after_its_backoff(
+    env: Env,
+) -> None:
+    a, _ = await setup(env)
+    watched = await monitor(env, "semantic", conversation_ids=[a], description="a refund")
+    env.clock.advance(minutes=1)
+    for number in range(2, 2 + BURST_LIMIT + 1):
+        await say(env, number, f"SYNTH xabar {number}")
+    env.clock.advance(seconds=DEBOUNCE.total_seconds())
+    await clear_jobs(env)  # the ingestion job: this test is the worker
+    fake = FakeLLM()
+    fake.parsed = [verdicts((watched, False, [])), LLMError(LLMErrorKind.UNAVAILABLE)]
+    job = monitor_job(env, fake)
+
+    outcome = await job.evaluate(a)
+    assert outcome is not None
+    assert outcome.backlog
+    [(_, at)] = await job_times(env)
+    assert at <= env.clock.now()  # the rest of the backlog follows at once
+
+    await clear_jobs(env)
+    failed = await job.evaluate(a)
+    assert failed is not None
+    assert failed.status is MonitorEvalStatus.FAILED
+    [(status, at)] = await job_times(env)
+    assert (status, at) == ("todo", env.clock.now() + monitor_review.RETRY_DELAYS[0])
+
+
+async def test_progress_deletion_keeps_a_linked_verdict_and_clears_both_link_fields(
+    env: Env,
+) -> None:
+    """C7: every deletion path of a progress row clears `review_progress_id`
+    AND `review_version` on the retained verdict, atomically with the removal:
+    the hourly sweep, the managed-data deletion, a cascade (the monitor deleted)
+    and a raw delete (the database trigger)."""
+    a, watched = await one_message_watch(env)
+    owner = await account_id(env)
+    fake = FakeLLM()
+    fake.parsed = [verdicts((watched, False, []))]
+    await evaluator(env, fake).evaluate(a)
+    through = await message_id_of(env, 2)
+
+    async def verdict(monitor_id: int | None = None) -> int:
+        progress = await progress_row(env, monitor_id or watched)
+        async with env.factory() as session, session.begin():
+            # One verdict per chat: replace the one a previous step left.
+            await session.execute(
+                text("DELETE FROM app.conversation_triage WHERE conversation_id = :c"), {"c": a}
+            )
+            triage = ConversationTriage(
+                account_id=owner,
+                conversation_id=a,
+                covers_through_message_id=through,
+                needs_reply=False,
+                contains_question=False,
+                requests_decision=False,
+                urgency="low",
+                escalation_category="none",
+                reasons=[],
+                prompt_version="triage.v1",
+                model="gpt-6-luna",
+                review_progress_id=progress.id,
+                review_version=progress.version,
+            )
+            session.add(triage)
+            await session.flush()
+            return int(triage.id)
+
+    async def linked(triage_id: int) -> tuple[bool, Any, Any]:
+        async with env.factory() as session:
+            row = await session.get(ConversationTriage, triage_id)
+        return row is not None, *(
+            (row.review_progress_id, row.review_version) if row else (None, None)
+        )
+
+    async def progress_count() -> int:
+        async with env.factory() as session:
+            return int(
+                (
+                    await session.execute(text("SELECT count(*) FROM app.review_progress"))
+                ).scalar_one()
+            )
+
+    # 1. The sweep: the chat is set to Ignore, so no monitor reads it.
+    triage_id = await verdict()
+    assert (await linked(triage_id))[1] is not None
+    await set_mode(env, a, "ignore")
+    async with transaction(env.factory) as uow:
+        assert await monitor_review.sweep(uow.session, now=env.clock.now()) == 1
+    assert await linked(triage_id) == (True, None, None)
+    assert await progress_count() == 0
+    await set_mode(env, a, "observe")
+
+    # 2. A raw delete: the database trigger is the backstop.
+    fake.parsed = [verdicts((watched, False, []))]
+    await say(env, 3, "SYNTH yana")
+    await evaluator(env, fake).evaluate(a)
+    triage_id = await verdict()
+    async with env.factory() as session, session.begin():
+        await session.execute(text("DELETE FROM app.review_progress"))
+    assert await linked(triage_id) == (True, None, None)
+
+    # 3. The monitor is deleted (FK cascade); 4. the managed-data deletion.
+    await say(env, 4, "SYNTH uchinchi")
+    fake.parsed = [verdicts((watched, False, []))]
+    await evaluator(env, fake).evaluate(a)
+    triage_id = await verdict()
+    async with env.factory() as session, session.begin():
+        await session.execute(text("DELETE FROM app.automations WHERE id = :i"), {"i": watched})
+    assert await linked(triage_id) == (True, None, None)
+    assert await progress_count() == 0
+
+    again = await monitor(env, "semantic", conversation_ids=[a], description="a refund")
+    env.clock.advance(minutes=1)
+    await say(env, 5, "SYNTH to'rtinchi")
+    fake.parsed = [verdicts((again, False, []))]
+    await evaluator(env, fake).evaluate(a)
+    triage_id = await verdict(again)
+    assert (await linked(triage_id))[1] is not None
+    async with transaction(env.factory) as uow:
+        await deletion.delete_managed_data(uow.session, account_id=owner, clock=env.clock)
+    assert await progress_count() == 0  # (the managed deletion also removes the verdict)
+
+
+async def test_the_sweep_drops_the_review_metadata_of_long_ended_monitors(env: Env) -> None:
+    a, watched = await one_message_watch(env)
+    fake = FakeLLM()
+    fake.parsed = [verdicts((watched, False, []))]
+    await evaluator(env, fake).evaluate(a)
+    async with transaction(env.factory) as uow:
+        assert await monitor_review.sweep(uow.session, now=env.clock.now()) == 0
+    assert await stop_now(env, watched) is monitors.StopResult.STOPPED
+    async with transaction(env.factory) as uow:  # ended recently: kept
+        assert await monitor_review.sweep(uow.session, now=env.clock.now()) == 0
+    env.clock.advance(days=366)
+    async with transaction(env.factory) as uow:
+        assert await monitor_review.sweep(uow.session, now=env.clock.now()) == 1
