@@ -305,7 +305,6 @@ async def propose(
                     Action.trigger_turn_id.is_not(None),
                     Action.owner_request_id.is_not(None),
                     Action.state == ActionState.REVISING.value,
-                    Action.state.in_([ActionState.APPROVED.value, ActionState.EXECUTING.value]),
                     select(AuditLogEntry.id)
                     .where(
                         AuditLogEntry.account_id == request.account_id,
@@ -320,10 +319,12 @@ async def propose(
                     .correlate(Action)
                     .exists(),
                 ),
+                # Only a live explicit card is replaceable, so only it blocks.
+                # Approved/executing sends stay under the claim protocol (H11-6)
+                # and coexist with a card for a newer burst (H11-4).
                 or_(
                     Action.state.in_([state.value for state in LIVE_CARD]),
                     warning_card_filter(),
-                    Action.state.in_([ActionState.APPROVED.value, ActionState.EXECUTING.value]),
                 ),
             )
         )

@@ -398,6 +398,142 @@ async def test_live_owner_work_on_an_assist_card_beats_a_later_background_attemp
     assert retained.approval_token is not None
 
 
+async def test_rejecting_an_old_card_keeps_a_new_arrival_for_assist(denv: DraftEnv) -> None:
+    account_id, conversation = await seed_chat(denv)
+    await contact_says(denv, "SYNTH-FIRST-QUESTION")
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+    denv.script(output(text="Synthetic answer to the first question."))
+    assert await run_job(denv, conversation) == "proposed_awaiting_approval"
+    await finish_draft_jobs(denv.env, conversation)
+    await contact_says(denv, "SYNTH-SECOND-QUESTION")
+    [warned] = await actions_of(denv.env, conversation)
+    assert warned.approval_token is not None
+    async with transaction(denv.env.factory) as uow:
+        assert await reject(
+            uow.session,
+            account_id=account_id,
+            token=warned.approval_token,
+            now=denv.env.clock.now(),
+        )
+    assert await pending_flag(denv.env, conversation) is not None
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+    denv.script(output(text="Synthetic answer to the second question."))
+    assert await run_job(denv, conversation) == "proposed_awaiting_approval"
+    rejected, fresh = await actions_of(denv.env, conversation)
+    assert rejected.state == "rejected"
+    assert fresh.text == "Synthetic answer to the second question."
+    assert fresh.shown_through_message_id != rejected.shown_through_message_id
+    assert await pending_flag(denv.env, conversation) is None
+
+
+async def test_an_approved_card_does_not_block_assist_for_a_newer_burst(denv: DraftEnv) -> None:
+    """H11-4/H11-6: approval hands the old card to the claim protocol; it is
+    not a live explicit card, so a genuinely new burst still gets a card."""
+    from assistant.actions.lifecycle import approve
+
+    account_id, conversation = await seed_chat(denv)
+    await contact_says(denv, "SYNTH-FIRST-QUESTION")
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+    denv.script(output(text="Synthetic answer to the first question."))
+    assert await run_job(denv, conversation) == "proposed_awaiting_approval"
+    await finish_draft_jobs(denv.env, conversation)
+    [first] = await actions_of(denv.env, conversation)
+    assert first.approval_token is not None
+    async with transaction(denv.env.factory) as uow:
+        approved = await approve(
+            uow.session,
+            account_id=account_id,
+            token=first.approval_token,
+            now=denv.env.clock.now(),
+        )
+        assert approved.status.value == "approved"
+    await contact_says(denv, "SYNTH-SECOND-QUESTION")
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+    denv.script(output(text="Synthetic answer to the second question."))
+    assert await run_job(denv, conversation) == "proposed_awaiting_approval"
+    sending, fresh = await actions_of(denv.env, conversation)
+    assert (sending.id, sending.state, sending.version) == (first.id, "approved", first.version)
+    assert fresh.state == "awaiting_approval"
+    assert fresh.text == "Synthetic answer to the second question."
+
+
+@pytest.mark.parametrize("new_contact", [False, True])
+async def test_cancel_edit_preserves_only_a_newer_contact_burst(
+    denv: DraftEnv, *, new_contact: bool
+) -> None:
+    from assistant.actions.lifecycle import cancel_edit, start_edit
+
+    account_id, conversation = await seed_chat(denv)
+    await contact_says(denv, "SYNTH-FIRST-QUESTION")
+    denv.env.clock.advance(seconds=DEBOUNCE.total_seconds())
+    denv.script(output(text="Synthetic answer to the first question."))
+    assert await run_job(denv, conversation) == "proposed_awaiting_approval"
+    [original] = await actions_of(denv.env, conversation)
+    assert original.approval_token is not None
+    async with transaction(denv.env.factory) as uow:
+        version = await start_edit(
+            uow.session,
+            account_id=account_id,
+            token=original.approval_token,
+            now=denv.env.clock.now(),
+        )
+        assert version == original.version
+    if new_contact:
+        # Isolate the persisted arrival/flag from ingestion's separate
+        # warning-card transition, which can close the Edit state itself.
+        # Keep the same receipt time: only the message watermark is reliable.
+        async with transaction(denv.env.factory) as uow:
+            uow.session.add(
+                Message(
+                    account_id=account_id,
+                    conversation_id=conversation,
+                    direction="contact",
+                    content_type="text",
+                    text="SYNTH-SECOND-QUESTION",
+                    sent_at=denv.env.clock.now(),
+                    created_at=denv.env.clock.now(),
+                )
+            )
+            await uow.session.execute(
+                update(Conversation)
+                .where(Conversation.account_id == account_id, Conversation.id == conversation)
+                .values(pending_draft_at=denv.env.clock.now())
+            )
+        await finish_draft_jobs(denv.env, conversation)
+    else:
+        # An already in-flight burst must remain consumed by owner intent.
+        await set_columns(denv, conversation, pending_draft_at=denv.env.clock.now())
+    async with transaction(denv.env.factory) as uow:
+        token = await cancel_edit(
+            uow.session,
+            account_id=account_id,
+            action_id=original.id,
+            expected_version=original.version,
+            now=denv.env.clock.now(),
+        )
+        assert token is not None
+    if new_contact:
+        pending = await pending_flag(denv.env, conversation)
+        assert pending is not None
+        denv.env.clock.advance(seconds=31)
+        async with transaction(denv.env.factory) as uow:
+            recovered = await UnqueuedDrafts(denv.config, denv.config.draft_route_model)(
+                uow.session, denv.env.clock.now()
+            )
+        assert any(item.args["conversation_id"] == conversation for item in recovered)
+        denv.script(output(text="Synthetic answer to the second question."))
+        # Current owner work still wins, but the new burst reaches policy;
+        # cancellation must not silently discard its recoverable trigger.
+        assert await run_job(denv, conversation) == "proposal_owner_intent_superseded"
+    else:
+        assert await pending_flag(denv.env, conversation) is None
+        assert await run_job(denv, conversation) == "no_flag"
+    [retained] = await actions_of(denv.env, conversation)
+    assert retained.id == original.id
+    assert retained.text == original.text
+    assert retained.version == original.version
+
+
 async def test_another_accounts_owner_intent_does_not_overtake_assist(denv: DraftEnv) -> None:
     from assistant.actions.proposals import propose
     from tests.integration.actions_env import request, seed_turn

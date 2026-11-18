@@ -48,7 +48,7 @@ from assistant.actions.lifecycle import (
 )
 from assistant.actions.models import Action
 from assistant.actions.policy_loader import KEY_INGESTION_BARRIER
-from assistant.actions.proposals import propose
+from assistant.actions.proposals import ProposalRefused, propose
 from assistant.actions.states import ActionOrigin, ActionState
 from assistant.conversations.models import Conversation, Message
 from assistant.db.engine import build_engine, build_session_factory
@@ -225,9 +225,18 @@ class ActionMachine(RuleBasedStateMachine):
                 fields["shown_through_message_id"] = None
                 fields["origin"] = ActionOrigin.OWNER_DICTATED
                 fields["trigger_turn_id"] = await seed_turn(session, self.c.account_id)
-            result = await propose(
-                session, request(self.c, **fields), clock=self.clock, config=CONFIG
-            )
+            try:
+                result = await propose(
+                    session, request(self.c, **fields), clock=self.clock, config=CONFIG
+                )
+            except ProposalRefused as refused:
+                # H11 (D-S10): background work whose fence a takeover or an
+                # owner-intent change overtook, or that would replace a live
+                # explicit card, yields before creating anything. Nothing to
+                # track; the owner's own proposals are never refused here.
+                if dictated or refused.code not in {"takeover", "owner_intent_superseded"}:
+                    raise
+                return
             row = await session.get(Action, result.action_id)
             assert row is not None
             base_sent = await self.base_sent_at(session, row)
