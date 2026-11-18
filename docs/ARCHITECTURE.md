@@ -457,23 +457,31 @@ does not impose a separate composition brief. All retained sources, targets
 and settlement fences still require validation.
 
 **H8 Re-draft (2026-11-17, behind `tool.propose_owner_message`).** An owner
-card's Re-draft tap queues `agent.owner_request(action_id, request_id,
-expected_version, reason="redraft")` — ids and the reason enum, never text.
+card's Re-draft tap records a content-free `owner_redraft_requested` audit row
+and queues `agent.owner_request(action_id, request_id, expected_version,
+reason="redraft", tap_id)` — ids and the reason enum, never text — under the
+owner control lock and its own `owner-redraft:{conv}` queueing lock.
 `OwnerRequestRuntime.redraft` reloads the card's own C1 request and, before any
-model call and without a model run, reports once (card restored) when the
-request ended, the card version changed, the recipient chat is unavailable, the
-reply target is missing/deleted/purged, a source fails validation, consent is
-off or the budget is spent. Otherwise one CAS moves the request to `ready` and
-the main owner model runs with the request's latest owner turn as the current
-turn, its validated sources/continuation, receipts and a structural "Owner
-Re-draft" fact. `propose_owner_message` may then replace exactly that card
-version (`ToolContext.redraft_of`; `ProposalRequest.replaces`, re-checked under
-the conversation lock); the new card supersedes it under the same request, so
-standalone stays standalone and an explicit older target stays chosen. The run
-key `redraft:{action}:{version}` answers each tap once. Proactive Assist cards
-keep the isolated `replies.draft` writer; owner cards without a request report
-that the task is unrecoverable. The card **Edit instruction** path still uses
-the `actions.revise` writer (open H8 item).
+model call, reports once (card restored) when the request ended or expired, the
+card version changed, the card was superseded or newer owner work holds the
+chat, the recipient chat is unavailable/bot/Ignore, the reply target is
+missing/deleted/purged, a source fails validation, consent is off or the budget
+is spent. It does not change the request: the main owner model runs with the
+request's latest owner turn as context, its validated sources/continuation,
+receipts and a structural "Owner Re-draft" fact, offered only read tools and
+`propose_owner_message`. That tool may replace exactly the tapped card version
+of the selected request (`ToolContext.redraft_of`; `ProposalRequest.replaces`,
+re-checked under the conversation lock); only that link moves the request (so a
+no-card outcome leaves its state, focus and other requests' questions alone).
+The new card supersedes the old one, so standalone stays standalone and an
+explicit older target stays chosen. Runs are keyed per tap
+(`redraft:{action}:{version}:{tap}`): a retried job is a no-op, a new tap is a
+new attempt, and every exit re-syncs the card, which never promises a new card.
+A context whose original turn was forwarded/quoted starts tainted, as the
+original run did. Proactive Assist cards keep the isolated `replies.draft`
+writer; owner cards without a request report that the task is unrecoverable.
+Open: the card **Edit instruction** still uses the `actions.revise` writer
+(H8-2), and advancing owner intent on a Re-draft is left to the H11 rebase.
 
 There is one agent identity (same principles, memory, policy), invoked in **run types** that differ in trigger, context, tools, and output contract. Crucially, the **trust level of the trigger determines the capabilities** of the run (ADR-08):
 
@@ -964,7 +972,7 @@ Confirmation alone cannot promote contact/quoted/forwarded/assistant prose.
 
 | Tool | Capability / runs / tier | Release flag | Handler / schema |
 |---|---|---|---|
-| `propose_owner_message` | PROPOSE / owner_request only / CONTROL_ONLY | `tool.propose_owner_message`, default off | `agent/tools/owner_composition.py`, strict C2 `ProposeOwnerMessageArgs`; exact generated body, application-set authorship, no nested writer |
+| `propose_owner_message` | PROPOSE / owner_request only / CONTROL_ONLY | `tool.propose_owner_message`, default off | `agent/tools/owner_composition.py`, strict C2 `ProposeOwnerMessageArgs`; exact generated body, application-set authorship, no nested writer. H8: an existing linked card is a `proposal_conflict` unless the run is an owner Re-draft of exactly that (action, version) (`ToolContext.redraft_of`) for the run's selected request (`request_mismatch` otherwise); the replacement accepts the request's awaiting/suspended state, is re-checked under the conversation lock (`replaced_changed` if an approval/revision won, never for superseded cards) and supersedes it. A Re-draft run is offered only read tools and this tool |
 | `revise_draft` at H4 cutover | PROPOSE / owner_request only / CONTROL_ONLY | existing `tool.revise_draft`, plus H4 cutover flag | flat C2 `ReviseOwnerDraftArgs`; complete rewrite or validated literal source copy, lifecycle CAS |
 
 The H4 flag retires `propose_reply` from offered tools and its handler refuses
@@ -1339,10 +1347,12 @@ recovery remains I27's responsibility and must not replay business effects.
 **H8 card Re-draft (2026-11-17).** With `tool.propose_owner_message`, the `rd`
 press on an owner card (trigger turn, owner origin or linked request) defers the
 owner Re-draft job described in §7.1 instead of `replies.draft`; a double tap
-hits the `redraft:{conv}` queueing lock and rolls back only its savepoint. An
-owner card without `owner_request_id` gets "can't re-draft … send new
-instructions" and no job. The card shows "Re-draft requested" until the run
-ends; the run then syncs it (restored choices, or superseded by the new card).
+while one is queued hits the `owner-redraft:{conv}` queueing lock and rolls back
+only its savepoint. An owner card without `owner_request_id` gets "can't
+re-draft … send new instructions" and no job. The card shows "Re-draft requested
+— I will report the outcome here" (never a promised card) until the run ends;
+every exit syncs it (restored choices, or superseded by the new card). Superseded
+cards no longer offer Re-draft.
 Pre-model no-card outcomes use `redraft_failed_after_commit` with fixed owner
 reasons and notify once for warned and unwarned cards; legacy writer reasons
 still notify only warned cards. A closed estimated window does not pre-veto the
@@ -1757,7 +1767,7 @@ Job payloads carry **ids only**; handlers reload state and re-check conditions (
 
 | Task | Lock / queueing lock | Purpose |
 |---|---|---|
-| `agent.owner_request(turn_id)` / `agent.owner_request(action_id, request_id, expected_version, reason)` | lock `acct:{id}:control`; a Re-draft adds qlock `redraft:{conv}` (deferred in the press's transaction, in a SAVEPOINT) | Run the owner agent loop; reply in control chat. The second form is an H8 Re-draft (`reason="redraft"`, flag `tool.propose_owner_message`) resuming the card's own request |
+| `agent.owner_request(turn_id)` / `agent.owner_request(action_id, request_id, expected_version, reason, tap_id)` | lock `acct:{id}:control`; a Re-draft adds qlock `owner-redraft:{conv}` (deferred in the press's transaction, in a SAVEPOINT) | Run the owner agent loop; reply in control chat. The second form is an H8 Re-draft (`reason="redraft"`, flag `tool.propose_owner_message`) resuming the card's own request |
 | `agent.apply_confirmation(confirmation_id, turn_cutoff)` | lock `acct:{id}:control` (set at defer; never scheduled); queue `llm` | Run a held tool call the owner confirmed, once (S03.1, §7.1). `turn_cutoff` is the newest control turn at the Confirm tap (an id): a confirmed deletion clears the owner's own turns only up to it (M03 D94); absent from a job the reconciler re-created |
 | `privacy.delete_data(account_id, scope, subject_id, card_id, turn_cutoff)` | lock `acct:{id}:control` (set at defer in the press's transaction; never scheduled); queue `llm`; a failure is never retried; a run cut off by a worker shutdown is requeued at once with its lock (at most 3 times, `RequeueOnShutdown`) | An owner's button deletion (S03.5, M03 D83; scopes conversation, contact, everything, managed): runs after any owner run or applied confirmation queued before it, so what that run writes is deleted too; once per card (the deletion's audit row, or the `data_deletion_failed` row, is the key, checked under the account lock); then the counts-only receipt. On any error the owner is told what happened and the job ends `failed` (D87, D90) |
 | `inbox.triage(conversation_id)` | qlock `triage:{conv}`; **no `lock`**; `schedule_in` debounce (default 20 s); trailing debounce: if `last_contact_msg_at` is newer than (scheduled time − debounce), the handler re-defers itself and exits | Triage burst; create tasks/notifications; trigger draft/delegation evaluation. **As built (S05.1, `jobs/tasks_inbox.py::TriageJob`; registered with the listener and reconciler only while flag `triage.run` is on):** queue `llm`, deferred with `schedule_at` and the `triage:{conv}` queueing lock only (`TRIAGE_DEBOUNCE_SECONDS`, default 20). Trailing debounce on arrival time: while the newest contact message arrived less than one debounce ago, the job re-defers itself to that message + debounce and exits (its own row is `doing`, so the queueing lock is free); otherwise one `Triager` run (consent, mode and budget re-checked there; §7.1), then, if the effects left the flag set because more arrived during the call, one re-defer; budget alerts (`check_budget_thresholds`) after a run that made a call. **No procrastinate retry:** a failed or discarded run leaves the flag set and the reconciler re-creates the job. Reconciler (`jobs/reconcile_inbox.py::triage_reconciler`, inside `system.reconcile_pending`): Observe/Assist chats that are not bot chats, with `pending_triage_at` older than 30 s, an active `ai_managed` and no `todo`/`doing` `inbox.triage` job get one, due now |

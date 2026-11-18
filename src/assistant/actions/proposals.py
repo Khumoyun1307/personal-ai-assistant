@@ -211,6 +211,7 @@ async def propose(
                 Action.version == request.replaces[1],
                 Action.owner_request_id == request.owner_request_id,
                 Action.state.in_(_REPLACEABLE),
+                Action.state_reason.is_distinct_from(StateReason.SUPERSEDED.value),
             )
         )
         if replaced is None:

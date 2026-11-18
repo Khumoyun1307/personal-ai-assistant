@@ -186,6 +186,7 @@ _OWNER_REDRAFT_OUTCOMES = {
     ),
     "recipient_unavailable": "The chat it was for is not available for drafts.",
     "stale": "The card changed after your tap; it shows its current version.",
+    "already_replaced": "A newer draft already replaced this card; use that one.",
 }
 
 REVISING_TEXT = "Revising…"
@@ -519,6 +520,7 @@ def card_keyboard(view: ApprovalCardView) -> InlineKeyboardMarkup | None:
     rows: list[list[InlineKeyboardButton]] = []
     if (
         state in _REDRAFTABLE
+        and view.reason is not StateReason.SUPERSEDED
         and view.origin is not ActionOrigin.DELEGATION_AUTO
         and is_ai_generated(view.authorship, version=view.version)
         and view.card_token is not None
@@ -754,7 +756,8 @@ def _compose(
     if (explanation := _explanation(view)) is not None:
         parts.append(f"<i>{explanation}</i>")
     if view.redraft_requested:
-        parts.append("Re-draft requested — a new card will follow.")
+        # H8-5: never promise a new card; the outcome is reported either way.
+        parts.append("Re-draft requested — I will report the outcome here.")
     if copy_note is not None:
         parts.append(copy_note)
     return "\n".join(parts)
@@ -904,6 +907,8 @@ def _needs_card_token(view: ApprovalCardView) -> bool:
         or view.state is ActionState.REVISING
         or (
             view.state in _REDRAFTABLE
+            # A replaced card offers no Re-draft: a newer card answers its task.
+            and view.reason is not StateReason.SUPERSEDED
             and view.origin is not ActionOrigin.DELEGATION_AUTO
             and is_ai_generated(view.authorship, version=view.version)
         )
@@ -1668,6 +1673,19 @@ class ApprovalCards:
             )
         savepoint = await session.begin_nested()
         try:
+            # Each tap is its own attempt: its content-free audit row id keys
+            # the run, so a retried job keeps the key and a new tap gets one.
+            tap = AuditLogEntry(
+                account_id=account.id,
+                at=self._clock.now(),
+                actor="owner",
+                event="owner_redraft_requested",
+                subject_type="action",
+                subject_id=action.id,
+                details={"version": action.version},
+            )
+            session.add(tap)
+            await session.flush()
             connection = await session.connection()
             raw = await connection.get_raw_connection()
             job_id = await scheduler.defer(
@@ -1677,9 +1695,12 @@ class ApprovalCards:
                     "request_id": action.owner_request_id,
                     "expected_version": action.version,
                     "reason": DraftReason.REDRAFT.value,
+                    "tap_id": tap.id,
                 },
                 lock=owner_control_lock(account.id),
-                queueing_lock=redraft_queueing_lock(action.conversation_id),
+                # Separate from the Assist writer's `redraft:{conv}`, so a
+                # queued Assist re-draft can never swallow the owner's tap.
+                queueing_lock=f"owner-{redraft_queueing_lock(action.conversation_id)}",
                 connection=raw.driver_connection,
             )
         except BaseException:

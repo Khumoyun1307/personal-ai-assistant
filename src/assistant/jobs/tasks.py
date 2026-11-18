@@ -136,7 +136,12 @@ class OwnerRedraftRuntime(Protocol):
     """H8: an owner's Re-draft tap resumes its persisted request (ids only)."""
 
     async def redraft(
-        self, *, action_id: int, request_id: int, expected_version: int
+        self,
+        *,
+        action_id: int,
+        request_id: int,
+        expected_version: int,
+        tap_id: int | None = None,
     ) -> RunOutcome: ...
 
 
@@ -218,6 +223,7 @@ class JobHandlers:
         request_id: int | None = None,
         expected_version: int | None = None,
         reason: str | None = None,
+        tap_id: int | None = None,
     ) -> RunOutcome:
         if turn_id is not None and action_id is None and request_id is None:
             outcome = await self.owner_runtime.run(turn_id)
@@ -231,7 +237,10 @@ class JobHandlers:
         ):
             # H8: ids and enums only; the runtime reloads the original task.
             outcome = await self.owner_runtime.redraft(
-                action_id=action_id, request_id=request_id, expected_version=expected_version
+                action_id=action_id,
+                request_id=request_id,
+                expected_version=expected_version,
+                tap_id=tap_id,
             )
         else:
             logger.warning("owner_request_bad_arguments", action_id=action_id)
@@ -462,15 +471,18 @@ def register_tasks(app: App, handlers: JobHandlers) -> None:
         request_id: int | None = None,
         expected_version: int | None = None,
         reason: str | None = None,
+        tap_id: int | None = None,
     ) -> None:
         # An owner turn (`turn_id`), or an H8 Re-draft: action/request ids,
-        # the card's version and the `redraft` reason enum, never text.
+        # the card's version, the `redraft` reason enum and the tap's audit
+        # id (one attempt per tap), never text.
         await handlers.owner_request(
             turn_id,
             action_id=action_id,
             request_id=request_id,
             expected_version=expected_version,
             reason=reason,
+            tap_id=tap_id,
         )
 
     @app.task(name=APPLY_CONFIRMATION_TASK, queue=QUEUE_LLM, retry=OWNER_REQUEST_RETRY)

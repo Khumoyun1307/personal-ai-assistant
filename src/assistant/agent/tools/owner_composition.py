@@ -372,6 +372,10 @@ async def propose_owner_message_tool(
             )
             if target is None:
                 return source_failure("not_available", "not_found", request)
+        selected = ctx.continuation.request if ctx.continuation is not None else None
+        if ctx.redraft_of is not None and (selected is None or selected.request_id != request.id):
+            # A Re-draft run writes only the tapped card's own request.
+            return source_failure("invalid_arguments", "request_mismatch", request)
         replaces: tuple[int, int] | None = None
         if request.action_id is not None:
             if existing is None:
@@ -390,10 +394,12 @@ async def propose_owner_message_tool(
             replaces = ctx.redraft_of
         if request.version != args.request_version:
             return source_failure("stale", "request_changed", request)
-        if (
-            request.state not in {"ready", "preparing"}
-            or request.expires_at <= ctx.services.clock.now()
-        ):
+        # A Re-draft resumes its own awaiting/suspended request directly: the
+        # request changes only when this replacement links to it.
+        resumable = {"ready", "preparing"} | (
+            {"awaiting_approval", "suspended"} if replaces is not None else set()
+        )
+        if request.state not in resumable or request.expires_at <= ctx.services.clock.now():
             return source_failure("not_available", "request_unavailable", request)
         fence = await _fence(session, ctx, request, args.context_fence_id, args.request_version)
         if isinstance(fence, ToolOutcome):

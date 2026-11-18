@@ -52,17 +52,17 @@ from assistant.actions.activity import (
     live_cards,
     refresh_receipts,
 )
+from assistant.actions.lifecycle import warning_card_filter
 from assistant.actions.models import Action
 from assistant.actions.request_models import TERMINAL_REQUEST_STATES, OwnerRequest
 from assistant.actions.requests import (
+    REQUEST_TTL,
     OwnerContinuation,
-    SetState,
     SourceUnavailable,
     load_request,
     load_source,
-    update_request,
 )
-from assistant.actions.states import LIVE_CARD, ActionOrigin, ActionState
+from assistant.actions.states import LIVE_CARD, ActionOrigin, ActionState, StateReason
 from assistant.agent import owner_texts, prompt_registry
 from assistant.agent.citations import apply_citations
 from assistant.agent.context import (
@@ -269,12 +269,17 @@ class _Redraft:
     action_id: int
     request_id: int
     expected_version: int
+    #: The tap's audit row: each tap is one attempt; a retried job keeps it.
+    tap_id: int | None = None
 
     @property
     def trigger_ref(self) -> str:
-        return f"redraft:{self.action_id}:{self.expected_version}"
+        tap = "" if self.tap_id is None else f":{self.tap_id}"
+        return f"redraft:{self.action_id}:{self.expected_version}{tap}"
 
 
+#: The only state-changing tool a Re-draft run may call.
+REDRAFT_PROPOSAL_TOOL = "propose_owner_message"
 #: Card states an owner Re-draft may replace (the press accepts the same).
 _REDRAFT_STATES = frozenset(
     {state.value for state in LIVE_CARD} | {ActionState.OUTDATED.value, ActionState.EXPIRED.value}
@@ -364,7 +369,12 @@ class OwnerRequestRuntime:
         return await self._run(turn_id, None)
 
     async def redraft(
-        self, *, action_id: int, request_id: int, expected_version: int
+        self,
+        *,
+        action_id: int,
+        request_id: int,
+        expected_version: int,
+        tap_id: int | None = None,
     ) -> RunOutcome:
         """H8: an owner's Re-draft tap resumes that card's own request.
 
@@ -377,7 +387,7 @@ class OwnerRequestRuntime:
             # Never deferred with the flag off; a stale job does nothing.
             logger.warning("owner_redraft_not_enabled", action_id=action_id)
             return RunOutcome(RunStatus.SKIPPED, note="redraft_not_enabled")
-        return await self._run(None, _Redraft(action_id, request_id, expected_version))
+        return await self._run(None, _Redraft(action_id, request_id, expected_version, tap_id))
 
     async def _run(self, turn_id: int | None, redraft: _Redraft | None) -> RunOutcome:
         prompt = prompt_registry.active(RUN_TYPE, enabled_flags=self._config.enabled_flags)
@@ -415,6 +425,15 @@ class OwnerRequestRuntime:
             # chat question is answered "access is off", not blind (B5).
             stub_managed_tools=True,
         )
+        if redraft is not None:
+            # A Re-draft only rewrites the tapped card: the original turn is
+            # replayed as context, never re-run as configure/control/memory
+            # instructions. Reads and the generated proposal remain.
+            offered = {
+                name: tool
+                for name, tool in offered.items()
+                if tool.capability is CapabilityClass.READ or name == REDRAFT_PROPOSAL_TOOL
+            }
         executor = ToolExecutor(
             context=ToolContext(
                 account_id=state.account_id,
@@ -494,17 +513,20 @@ class OwnerRequestRuntime:
             turn = await ControlTurnRepository(session, account_id).get(turn_id)
             account = await session.get(Account, account_id)
             if turn is None or account is None or turn.role != "owner":
+                self._restore_card(session, redraft)
                 return RunOutcome(RunStatus.SKIPPED, note="not_an_owner_turn")
             if account.control_chat_id is None:
+                self._restore_card(session, redraft)
                 return RunOutcome(RunStatus.SKIPPED, note="no_control_chat")
             chat_id = account.control_chat_id
 
             # A job can run twice (stalled-worker recovery, reconciler). A turn
             # that already got an answer must not get a second one; a run cut
             # off mid-way (no answer recorded) is marked and done again. A
-            # Re-draft's key is its card version, so the tap is answered once.
+            # Re-draft's key is its tap, so each tap is answered once.
             previous = await AgentRunRepository(session, account_id).for_trigger(trigger_ref)
             if any(run.status != "running" for run in previous):
+                self._restore_card(session, redraft)
                 return RunOutcome(RunStatus.SKIPPED, note="already_answered", account_id=account_id)
             for interrupted in previous:
                 interrupted.status = RunStatus.FAILED.value
@@ -764,7 +786,7 @@ class OwnerRequestRuntime:
             # A later artifact already answers this request (a retried job
             # after its proposal committed, or newer owner work): no duplicate.
             return await self._redraft_failed(
-                session, account_id, redraft, prompt, "already_staged", notify=False
+                session, account_id, redraft, prompt, "already_replaced"
             )
         if (
             action.version != redraft.expected_version
@@ -772,7 +794,40 @@ class OwnerRequestRuntime:
             or action.origin == ActionOrigin.DELEGATION_AUTO.value
         ):
             return await self._redraft_failed(session, account_id, redraft, prompt, "stale")
-        if request.state in TERMINAL_REQUEST_STATES:
+        if action.state_reason == StateReason.SUPERSEDED.value:
+            # A newer card already replaced this one; never revive its task.
+            return await self._redraft_failed(
+                session, account_id, redraft, prompt, "already_replaced"
+            )
+        newer = await session.scalar(
+            select(Action.id)
+            .where(
+                Action.account_id == account_id,
+                Action.conversation_id == action.conversation_id,
+                Action.id > action.id,
+                Action.owner_request_id.is_distinct_from(request.id),
+                or_(
+                    Action.owner_request_id.is_not(None),
+                    Action.trigger_turn_id.is_not(None),
+                    Action.origin == ActionOrigin.OWNER_DICTATED.value,
+                ),
+                or_(Action.state.in_([s.value for s in LIVE_CARD]), warning_card_filter()),
+            )
+            .limit(1)
+        )
+        if newer is not None:
+            # Newer owner work in this chat wins; this tap must not retire it.
+            return await self._redraft_failed(
+                session, account_id, redraft, prompt, "already_replaced"
+            )
+        # C1 expiry: an awaiting request follows its card's age; unfinished
+        # ones end 24 h after the original request. A tap never extends it.
+        expired = (
+            request.expires_at <= now
+            if request.state == "awaiting_approval"
+            else request.requested_at + REQUEST_TTL <= now
+        )
+        if request.state in TERMINAL_REQUEST_STATES or expired:
             return await self._redraft_failed(
                 session, account_id, redraft, prompt, "request_unavailable"
             )
@@ -789,6 +844,7 @@ class OwnerRequestRuntime:
                 Conversation.id == request.conversation_id,
                 Contact.id == request.contact_id,
                 Contact.is_bot.is_(False),
+                Conversation.mode != "ignore",
             )
         )
         if recipient is None or recipient != action.conversation_id:
@@ -796,13 +852,13 @@ class OwnerRequestRuntime:
                 session, account_id, redraft, prompt, "recipient_unavailable"
             )
         # A reply keeps its chosen message, even outside the newest window.
-        # A missing, deleted or purged target is reported; never replaced.
+        # A missing, deleted or purged target is reported; never replaced. A
+        # standalone request stays standalone whatever its old card answered.
         target = request.target_message_id
-        if action.base_message_id is not None and target not in (None, action.base_message_id):
+        if target is not None and action.base_message_id not in (None, target):
             return await self._redraft_failed(
                 session, account_id, redraft, prompt, "target_unavailable"
             )
-        target = target if target is not None else action.base_message_id
         if request.operation == "reply" or target is not None:
             retained = (
                 None
@@ -843,22 +899,9 @@ class OwnerRequestRuntime:
             return await self._redraft_failed(
                 session, account_id, redraft, prompt, "budget_exceeded"
             )
-        if view.state != "ready":
-            # One new bounded attempt for the same request (C1 CAS); the
-            # request keeps its sources, recipient, target and constraints.
-            result = await update_request(
-                session,
-                account_id=account_id,
-                request_id=view.request_id,
-                expected_version=view.version,
-                update=SetState(state="ready", reason=None),
-                now=now,
-            )
-            if result.status != "applied":
-                return await self._redraft_failed(
-                    session, account_id, redraft, prompt, "request_unavailable"
-                )
-            view = result.view
+        # The request's state, version, focus and other requests' questions
+        # are untouched here: only a staged replacement links the request
+        # (`propose_owner_message`), so a no-card outcome changes nothing.
         continuation = await load_owner_continuation(
             session,
             account_id=account_id,
@@ -880,8 +923,6 @@ class OwnerRequestRuntime:
         redraft: _Redraft,
         prompt: prompt_registry.Prompt,
         code: str,
-        *,
-        notify: bool = True,
     ) -> RunOutcome:
         """Record the outcome under the tap's key, then restore and tell once."""
         repository = AgentRunRepository(session, account_id)
@@ -891,6 +932,7 @@ class OwnerRequestRuntime:
             if run.status != "running" and run.error_class != "interrupted"
         ]
         if answered:
+            self._restore_card(session, redraft)
             return RunOutcome(RunStatus.SKIPPED, note="already_answered", account_id=account_id)
         repository.add(
             AgentRun(
@@ -905,10 +947,15 @@ class OwnerRequestRuntime:
                 error_class=f"redraft_{code}",
             )
         )
-        if notify and self._approval_cards is not None:
+        if self._approval_cards is not None:
             self._approval_cards.redraft_failed_after_commit(session, redraft.action_id, code)
         logger.info("owner_redraft_not_run", account_id=account_id, code=code)
         return RunOutcome(RunStatus.SKIPPED, note=code, account_id=account_id)
+
+    def _restore_card(self, session: AsyncSession, redraft: _Redraft | None) -> None:
+        """A Re-draft exit without a new attempt shows the card's current state."""
+        if redraft is not None and self._approval_cards is not None:
+            self._approval_cards.sync_after_commit(session, redraft.action_id)
 
     async def _loop(
         self, state: _RunState, executor: ToolExecutor, prompt_label: str

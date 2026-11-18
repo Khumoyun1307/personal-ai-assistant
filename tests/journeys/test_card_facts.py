@@ -247,7 +247,9 @@ async def test_j21_redraft_retains_standalone_request_after_restart(
     await j.language(locale)
     # The baseline brief has no recipient, so it opens no C1 request; J04's
     # explicit standalone command does (H8 consumes requests, never infers one).
-    brief = owner_input("J04", locale)[0]
+    # The baseline's word bound travels with it, as an exact owner source.
+    bound = t.brief.split(". ", 1)[1]
+    brief = f"{owner_input('J04', locale)[0]} {bound}"
     await j.owner(brief, j.read(), j.generated_proposal(t.generated), text_response(t.generated))
     row = await j.bind_card("k")
     request = await j.request()
@@ -272,6 +274,17 @@ async def test_j21_redraft_retains_standalone_request_after_restart(
     ]
     assert any(brief in text for text in redraft_items)
     assert any("Owner Re-draft" in text for text in redraft_items)
+    # The replayed turn is context, not instructions: reads and the one
+    # generated proposal only, no configure/control/memory/revision tools.
+    offered = {tool.name for tool in j.s.fake.requests[before].tools}
+    assert "propose_owner_message" in offered
+    assert not offered & {
+        "propose_message",
+        "revise_draft",
+        "set_conversation_mode",
+        "remember",
+        "pause_autonomy",
+    }
     current = await j.bind_card("k")
     assert current.id != row.id
     assert current.owner_request_id == request.request_id

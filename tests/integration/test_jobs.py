@@ -563,12 +563,17 @@ async def test_handler_groups_left_out_register_no_tasks(env: Env) -> None:
 
 @dataclass
 class RecordingRedraftRuntime(RecordingRuntime):
-    redrafts: list[tuple[int, int, int]] = field(default_factory=list)
+    redrafts: list[tuple[int, int, int, int | None]] = field(default_factory=list)
 
     async def redraft(
-        self, *, action_id: int, request_id: int, expected_version: int
+        self,
+        *,
+        action_id: int,
+        request_id: int,
+        expected_version: int,
+        tap_id: int | None = None,
     ) -> RunOutcome:
-        self.redrafts.append((action_id, request_id, expected_version))
+        self.redrafts.append((action_id, request_id, expected_version, tap_id))
         return RunOutcome(RunStatus.SKIPPED, note="recorded")
 
 
@@ -583,8 +588,8 @@ async def test_h8_owner_request_job_dispatches_a_redraft_by_ids_and_reason_only(
     handlers = replace(env.handlers, owner_runtime=redraft)
     wrong = await handlers.owner_request(**ids, reason="assist_ingestion")
     assert wrong.note == "bad_arguments"
-    assert (await handlers.owner_request(**ids, reason="redraft")).note == "recorded"
-    assert redraft.redrafts == [(11, 22, 3)]
+    assert (await handlers.owner_request(**ids, reason="redraft", tap_id=5)).note == "recorded"
+    assert redraft.redrafts == [(11, 22, 3, 5)]
     gate = asyncio.Event()
     gate.set()
     redraft.gate = gate
