@@ -776,6 +776,42 @@ async def test_physical_action_deletion_clears_both_link_columns(
             assert row.action_version is None
 
 
+async def test_account_deletion_cascades_mutually_linked_request_and_action(env: Env) -> None:
+    """Migration 0025: an action naming its request (H11 receipts) and the
+    request linking back must not abort the physical account cascade."""
+    account, conversation, _, request_id = await seed_request(env)
+    other, _, _, other_request = await seed_request(env)
+    async with env.factory() as session, session.begin():
+        action = Action(
+            account_id=account,
+            conversation_id=conversation,
+            kind="send_message",
+            origin="owner_dictated",
+            state="awaiting_approval",
+            text="Synthetic body",
+            owner_request_id=request_id,
+        )
+        session.add(action)
+        await session.flush()
+        result = await update_request(
+            session,
+            account_id=account,
+            request_id=request_id,
+            expected_version=1,
+            update=LinkAction(action_id=action.id, version=1),
+            now=env.clock.now(),
+        )
+        assert result.status == "applied"
+        action_id = action.id
+    async with env.factory() as session, session.begin():
+        await session.execute(delete(Account).where(Account.id == account))
+    async with env.factory() as session:
+        assert await session.get(Action, action_id) is None
+        assert await session.get(OwnerRequest, request_id) is None
+        assert await session.get(OwnerRequest, other_request) is not None
+        assert await session.get(Account, other) is not None
+
+
 async def test_every_recipient_target_and_action_edge_is_account_local(env: Env) -> None:
     account, _, _, request_id = await seed_request(env)
     foreign, foreign_conversation, _, _ = await seed_request(env)
