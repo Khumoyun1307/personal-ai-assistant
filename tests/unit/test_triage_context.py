@@ -1,6 +1,6 @@
 """`build_triage` (S05.1 §3.2): the order of its blocks (the caching rule:
 stable first, the current time last), what an empty block says, and how
-omitted burst messages are reported. Synthetic text only."""
+newer, not-yet-reviewed messages are reported. Synthetic text only."""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ def build(**overrides: object) -> list[str]:
         "open_tasks": [task()],
         "earlier": [message(1), message(2, "owner_manual", minutes=1)],
         "burst": [message(3, minutes=2), message(4, minutes=3)],
-        "omitted": 0,
+        "remaining": 0,
         "now": NOW,
     }
     values.update(overrides)
@@ -126,10 +126,11 @@ def test_evidence_context_exposes_sources_only_for_v2() -> None:
     assert "source message ids:" not in legacy
 
 
-def test_omitted_new_messages_are_counted_in_the_burst_header() -> None:
-    (burst,) = [t for t in build(omitted=7) if t.startswith("New messages to triage:")]
+def test_waiting_new_messages_are_counted_in_the_burst_header() -> None:
+    (burst,) = [t for t in build(remaining=7) if t.startswith("New messages to triage:")]
     assert burst.splitlines()[0] == (
-        "New messages to triage: (7 older new messages are not shown; only the newest are.)"
+        "New messages to triage: (7 newer messages are not shown; they are triaged in a later "
+        "run, so do not conclude anything about them.)"
     )
     (plain,) = [t for t in build() if t.startswith("New messages to triage:")]
     assert plain.splitlines()[0] == "New messages to triage:"
@@ -162,7 +163,7 @@ def test_only_shown_messages_are_citable_and_provenance_is_marked() -> None:
         open_tasks=[],
         earlier=[message(1)],
         burst=[message(3)],
-        omitted=2,
+        remaining=2,
         now=NOW,
     )
     assert context.shown_ids == frozenset({1, 3})

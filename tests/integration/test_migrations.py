@@ -492,7 +492,7 @@ def test_there_is_exactly_one_alembic_head() -> None:
 
     from tests.integration.conftest import alembic_config
 
-    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0023"]
+    assert ScriptDirectory.from_config(alembic_config()).get_heads() == ["0024"]
 
 
 def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
@@ -514,6 +514,55 @@ def test_0021_resolution_candidates_round_trip(scratch_url: str) -> None:
             is None
         )
     run_alembic(scratch_url, "head")
+
+
+def test_0024_review_progress_round_trips_and_clears_both_verdict_links(
+    scratch_url: str,
+) -> None:
+    run_alembic(scratch_url, "head")
+    assert "review_progress" in tables_in(scratch_url, "app")
+    assert {"review_progress_id", "review_version"} <= _columns(scratch_url, "conversation_triage")
+    with psycopg.connect(libpq(scratch_url), autocommit=True) as conn:
+        account, conversation = _phase_conversation(conn, 81024)
+        progress = conn.execute(
+            "INSERT INTO app.review_progress (account_id, conversation_id, reader) "
+            "VALUES (%s, %s, 'triage') RETURNING id, scope_key, version, status, pending_ranges",
+            (account, conversation),
+        ).fetchone()
+        assert progress is not None
+        assert progress[1:] == ("rolling", 1, "pending", [])
+        # One row per reader and scope, even with a NULL monitor id.
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(
+                "INSERT INTO app.review_progress (account_id, conversation_id, reader) "
+                "VALUES (%s, %s, 'triage')",
+                (account, conversation),
+            )
+        conn.execute(
+            "INSERT INTO app.conversation_triage (account_id, conversation_id, "
+            "covers_through_message_id, needs_reply, contains_question, requests_decision, "
+            "urgency, escalation_category, prompt_version, model, review_progress_id, "
+            "review_version) VALUES (%s, %s, 5, false, false, false, 'low', 'none', 'v', 'm', "
+            "%s, 1)",
+            (account, conversation, progress[0]),
+        )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "UPDATE app.conversation_triage SET review_version = NULL WHERE account_id = %s",
+                (account,),
+            )
+        conn.execute("DELETE FROM app.review_progress WHERE account_id = %s", (account,))
+        assert conn.execute(
+            "SELECT review_progress_id, review_version FROM app.conversation_triage "
+            "WHERE account_id = %s",
+            (account,),
+        ).fetchone() == (None, None)
+    run_alembic(scratch_url, "0023", down=True)
+    assert "review_progress" not in tables_in(scratch_url, "app")
+    assert "review_progress_id" not in _columns(scratch_url, "conversation_triage")
+    assert "context_fences" in tables_in(scratch_url, "app")
+    run_alembic(scratch_url, "head")
+    assert "review_progress" in tables_in(scratch_url, "app")
 
 
 def test_0023_fence_erasure_marks_the_run_and_round_trips(scratch_url: str) -> None:
