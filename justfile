@@ -164,11 +164,11 @@ smoke-recovery:
 # A4 local operational rehearsal: backup/upload failure, failed release, restore with journal replay and purge fallback; timed, placeholder secrets, isolated projects. Optional results.tsv path.
 [unix]
 rehearse-a4 *results:
-    bash deploy/smoke/a4-rehearsal.sh {{ results }}
+    bash deploy/smoke/a4-rehearsal.sh {{ quote(results) }}
 
 [windows]
 rehearse-a4 *results:
-    & "$env:ProgramFiles\Git\bin\bash.exe" deploy/smoke/a4-rehearsal.sh {{ results }}
+    & "$env:ProgramFiles\Git\bin\bash.exe" deploy/smoke/a4-rehearsal.sh {{ quote(results) }}
 
 # Restore and privacy-reconciliation part of rehearse-a4 alone.
 [unix]

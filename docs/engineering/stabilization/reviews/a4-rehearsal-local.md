@@ -3,7 +3,17 @@
 Date: 2026-11-17. Branch `stabilize/a4-rehearsal` from `main` f83c0fa. Prepared by an engineer agent for the lead.
 **Status: local rehearsal prepared and run. A4 is not done.** The production part below still needs the owner's authorization and a planned window.
 
-Nothing here touched production, the production or dev bot, a real LLM key, the B2 bucket, `.env`, `var/`, backups or content-bearing rows. Every stack ran under its own Compose project (`st-a4-smoke`, `st-a4-smoke-guard`, `st-a4-recovery`, `st-a4-restore`) with generated placeholder passwords, a throwaway age key and a local rclone remote standing in for B2. Each was removed with `down -v` (containers, volumes and the generated image tags). The app process (poller, workers, system tasks) never started, so no Telegram or provider call was possible.
+Nothing here touched production, the production or dev bot, a real LLM key, the B2 bucket, `.env`, `var/`, backups or content-bearing rows. Every stack ran under its own Compose project (`st-a4-smoke`, `st-a4-smoke-guard`, `st-a4-recovery`, `st-a4-restore`) with generated placeholder passwords, a throwaway age key and a local rclone remote standing in for B2. Each was removed with `down -v` (containers and volumes). Only `restore-rehearsal.sh` also removes its generated image tags; the other two leave their shared tags (defect 3). The app process (poller, workers, system tasks) never started, so no Telegram or provider call was possible.
+
+**Fix round, 2026-11-18 (review of PR #284).** Changes:
+- A restored D-S17 warning card (OUTDATED with an approval token) was cancelled and its token cleared, but it was left out of the restore notice. `post_restore.py` now includes it in the notice; a regression test was added.
+- The rehearsal seeds that warning card and checks every seeded card by id.
+- Recovery commands run as `assistant_app`.
+- The gate check is stricter.
+- Account 1 gets fresh cards before the second dump.
+- Project-name and results-path guards were added.
+
+The restore-rehearsal numbers in section 2 come from a re-run after these fixes (2026-11-18). The backup-smoke and recovery-smoke numbers are from 2026-11-17; those suites were not changed in this round.
 
 ## How to run it
 
@@ -16,7 +26,7 @@ just rehearse-restore            # restore + privacy reconciliation part only
 |---|---|
 | `deploy/smoke/a4-rehearsal.sh` | Runs `backup-smoke.sh`, `recovery-smoke.sh` and `restore-rehearsal.sh`, each in its own Compose project. Writes one content-free TSV row per step or check (`suite  check  PASS/FAIL  ms`). |
 | `deploy/smoke/restore-rehearsal.sh` | New. Runs the production stack with synthetic owner state. It backs up and ships the journal, then makes owner decisions and completes a send *after* the dump. It then replaces the database using `deploy/server.sh restore`'s commands in the same order (barrier + full-precision cutoff, final journal upload, drop/create, `restore.sh` with the cutoff, `db-roles setup`), followed by `post-restore`. Scenario 1 uses journal replay; scenario 2 uses a stale tail with the complete-purge fallback. |
-| `deploy/smoke/rehearsal_state.py` | New. Seeds synthetic state, applies the post-backup decisions and checks the restored-state invariants. Runs in a one-off container of the production app image. Prints fixed check names and ids only. |
+| `deploy/smoke/rehearsal_state.py` | New. Seeds synthetic state: per account, plus one card set per round, with one card per state and a D-S17 warning card. It applies the post-backup decisions and checks the restored-state invariants for each seeded card id. Runs in a one-off container of the production app image. Seeding uses the database owner; checks run as `assistant_app`. Prints fixed check names and ids only. |
 | `deploy/smoke/recovery-smoke.sh` | Three changes. The project name can be overridden (`RECOVERY_PROJECT`). The readiness timeout can be overridden (`RECOVERY_HEALTH_TIMEOUT_SECONDS`, default 5). The backup Dockerfile path now goes through `host_path` (Windows fix, defect 1). |
 | `deploy/smoke/backup-smoke.sh` | Unchanged; reused through its existing `SMOKE_PROJECT` override. |
 
@@ -27,7 +37,7 @@ The host was running seven or eight other engineers' stacks during the run. Dura
 | Scenario | Already proven by automated tests / smoke | Only a rehearsal can show |
 |---|---|---|
 | Backup / upload failure | `backup-smoke.sh` (CI): failing dump records nothing; upload failure exits 3 and writes no marker; delete guard; catch-up of a missed schedule across restarts; hourly upload retry across restarts; journal head failure is not acknowledged and the retry is throttled across restarts. `tests/unit/test_backup_script.py`. I26 `test_service_monitoring*` (missing/stale backup markers make the service degraded). | Real B2 credentials and network failure modes. Whether the owner actually receives the `backup_upload_stale` / degraded alert on a real host. Real dump size and duration. |
-| Safe restore | `test_post_restore.py`, `scenarios/test_m04_restore.py` (a restored approved action sends nothing), `test_restore_verify.py`, the restore step of `backup-smoke.sh`. | The whole server sequence on the real images and roles, against a real dump, with real wall-clock RTO. **New local rehearsal: scenarios 1 and 2.** |
+| Safe restore | `test_post_restore.py` (including the new `test_post_restore_retires_a_restored_outdated_warning_card`), `scenarios/test_m04_restore.py` (a restored approved action sends nothing), `test_restore_verify.py`, the restore step of `backup-smoke.sh`. | The restore sequence on the real images, with recovery commands as `assistant_app` and the restore itself as `assistant_migrate`, against a real dump, with wall-clock RTO. It reproduces `server.sh`'s commands; drift is listed under Limitations. **New local rehearsal: scenarios 1 and 2.** |
 | Privacy reconciliation | `test_privacy_journal.py` (replay is idempotent, invalid journal keeps quarantine, purge-sweep failure and retry, manual reconciliation scoped to restore/account), `test_restore_consent.py`, journal parts of `backup-smoke.sh`. | Replay through the real encrypted fetch pipe (`privacy-journal.sh fetch` into `recovery_cli replay`) against a dump's anchors and an independent cutoff. Fallback timing. **New local rehearsal: scenarios 1 and 2.** Production: the real B2 journal and the offline key. |
 | Failed release | `recovery-smoke.sh` (CI when deploy/migrations/db change): expand-compatible failure recovers the previous image; breaking failure stops the services and keeps the marker and the forward-fix text. `tests/unit/test_migration_compatibility.py`, `test_release_deploy.py`, `test_server_sh.py`, `release-smoke.ps1`. | Real Alembic DDL, procrastinate drain and the app healthcheck on the arm64 host. The SSH/CI-gate path. Owner-visible downtime. |
 | Provider outage | `test_agent_runtime.py::test_a_provider_outage_is_reported_and_nothing_crashes`, `::test_a_reached_monthly_budget_means_no_model_call`, `test_assist_drafting.py::test_refused_or_failed_drafts_clear_the_flag_and_are_audited`, `test_service_monitoring.py` (failed LLM jobs inside the window, queued-job age, alert once then recover). | A real OpenAI outage or 5xx/timeout shape, and whether the owner sees an honest degraded reply and the I26 alert. **Not reproducible locally without a provider key; tests only.** |
@@ -39,6 +49,8 @@ The host was running seven or eight other engineers' stacks during the run. Dura
 ### Relevant automated tests
 
 `verify.sh a4-rehearsal` covered the test files and node ids listed in the inventory, plus `test_migrations.py`. Results: ruff clean, mypy clean (248 files), import contracts 5 kept / 0 broken, **pytest exit 0**. About 450 tests ran; the `x` results are the A1 journey cases strictly marked as pending contracts. The release unit tests (`test_migration_compatibility.py`, `test_release_deploy.py`, `test_server_sh.py`) and `release-smoke.ps1` were not re-run locally; there is no `pwsh` on this host. CI runs them.
+
+Fix round (2026-11-18): `verify.sh` on `test_post_restore.py` (including the new warning-card test, which failed on its notice assertion before the `post_restore.py` change), `scenarios/test_m04_restore.py`, `test_restore_verify.py`, `test_post_restore_imports.py`, `test_action_lifecycle_bulk.py` and `test_restore_consent.py`: pytest exit 0, 42 passed. mypy clean, import contracts 5 kept. `ruff check .` and `ruff format --check .` clean after one PT018 fix in the new test. Scripts are shellcheck clean.
 
 ### Backup / upload failure — `backup-smoke.sh` (project `st-a4-smoke`): **PASS**, 27.0 min in total
 
@@ -76,56 +88,80 @@ Earlier attempts:
 
 Limitations (unchanged from runbooks/deploy.md): the app, migrations and worker heartbeats are synthetic, and source selection and build are stubbed. It does not prove real Alembic DDL compatibility or the real app healthcheck.
 
-### Safe restore + privacy reconciliation — `restore-rehearsal.sh` (project `st-a4-restore`): **PASS**, 24/24 checks
+### Safe restore + privacy reconciliation — `restore-rehearsal.sh` (project `st-a4-restore`): **PASS**, 24/24 timed checks, 42/42 invariant checks (re-run 2026-11-18 after the fix round)
 
-Synthetic state per account:
-- AI control and managed consents granted.
-- Two chats with one message each.
-- One card in each action state (13).
-- One queued procrastinate job.
+The host was less loaded than on 2026-11-17: setup took 4.4 min, against 14.1 min on 2026-11-17. On the earlier run, under heavy load, scenario 1 RTO was 17.4 min and scenario 2 RTO was 16.9 min, also all passing (that run predates the fix round).
 
-After the dump: managed consent is revoked, one chat is deleted through `delete_conversation_data`, and the `awaiting_approval` card is approved and completed (`succeeded`).
+Synthetic state:
+- Per account: AI control and managed consents granted, two chats with one message each, and one queued procrastinate job.
+- Per card round, on its own chat: one card in each action state (13) plus a D-S17 warning card (OUTDATED, approval token, freshness warning).
+
+Seeding uses the database owner. Every recovery command and check runs as `assistant_app`. After the dump: managed consent is revoked, one chat is deleted through `delete_conversation_data`, and the seeded `awaiting_approval` card is approved and completed (`succeeded`).
+
+Each invariant check covers 14 items:
+- Gate open, and no pending/executing action.
+- Six seeded card ids, each checked for state, `restored_from_backup`, no token, no warning-card approval path, and being named in the notice:
+  - `proposed`, `awaiting_approval` (the card sent after the backup), `approved`, `scheduled` and `warning` must be cancelled.
+  - `executing` must be `delivery_uncertain`.
+- No approval token left on the account.
+- `ai_control` and `ai_managed` not granted.
+- No queued job.
+- Post-backup deletion applied.
+- Unrelated chat kept (replay) or all content cleared (purge).
 
 **Scenario 1 — journal replay (final upload acknowledged)**
 
 | Check | Result | Wall time |
 |---|---|---|
-| Backup with off-site sync | PASS | 143 s |
-| Journal shipped, `journal_status=acknowledged` | PASS | 299 s |
-| Barrier + cutoff + final journal upload before replacement | PASS | 307 s |
-| Database replaced from the dump (drop/create, `restore.sh` with cutoff, `db-roles setup`); gate closed | PASS | 403 s |
-| `post-restore`; gate still closed | PASS | 116 s |
-| `privacy-journal.sh fetch` into `recovery_cli replay`; gate opens | PASS | 101 s |
-| Invariants: gate open; no pending/executing action; restored `executing` card is `delivery_uncertain` (`restored_from_backup`); restored pending cards are `cancelled`; no approval token survives; `ai_control` and `ai_managed` not granted; no queued job; post-backup chat deletion applied; unrelated chat content kept | PASS (10/10) | 64 s |
-| `tools.acceptance.restore_verify`: `pending_actions=0`, `pending_jobs=0`, valid notice, `privacy_recovery_pending=no` | PASS | 45 s |
-| **RTO, failure to verified** (local, tiny database, loaded host) | **17.4 min** | 1045 s |
-| Repeated replay is a no-op (`privacy_replay_not_required`) | PASS | 63 s |
-| Journal shipping resumes after replay (`acknowledged`) | PASS | 66 s |
+| Backup with off-site sync | PASS | 31 s |
+| Journal shipped, `journal_status=acknowledged` | PASS | 24 s |
+| Barrier + cutoff + final journal upload before replacement | PASS | 26 s |
+| Database replaced from the dump (drop/create, `restore.sh` with cutoff, `db-roles setup`); gate closed | PASS | 73 s |
+| `post-restore` (app role); gate still closed | PASS | 86 s |
+| `privacy-journal.sh fetch` into `recovery_cli replay` (app role); gate opens | PASS | 77 s |
+| Invariants, app role | PASS (14/14) | 43 s |
+| `tools.acceptance.restore_verify` (app role): `pending_actions=0`, `pending_jobs=0`, valid notice, `privacy_recovery_pending=no` | PASS | 20 s |
+| **RTO, failure to verified** (local, tiny database; not the production definition) | **5.5 min** | 328 s |
+| Repeated replay is a no-op (`privacy_replay_not_required`) | PASS | 35 s |
+| Journal shipping resumes after replay (`acknowledged`) | PASS | 18 s |
 
 **Scenario 2 — stale journal tail, complete-purge fallback**
 
+Account 2 is seeded, and both accounts get a fresh card round before this dump, so account 1's checks cover cards restored by this restore.
+
 | Check | Result | Wall time |
 |---|---|---|
-| Second account seeded; backup with off-site sync | PASS | 110 s |
-| Final head upload fails (rclone stub): non-zero exit, `journal_status=head_upload_failed` | PASS | 121 s |
-| Restore + `post-restore`; gate closed | PASS | 246 s |
-| Replay refuses with `blocked: journal_stale_tail`; gate stays closed | PASS | 158 s |
-| `recovery_cli purge --restore-id <current>`; gate opens | PASS | 190 s |
-| Invariants for both accounts: no pending/executing action, executing card uncertain, pending cards cancelled, no token, no AI consent, no queued job, all message content cleared | PASS (10/10 each) | 97 s + 182 s |
-| `restore_verify` | PASS | 55 s |
-| **RTO, failure to verified (fallback)** (local) | **16.9 min** | 1011 s |
-| Shipping stays blocked afterwards (`recovery_blocked`): the old independent chain is not overwritten | PASS | 81 s |
+| Backup with off-site sync | PASS | 16 s |
+| Final head upload fails (rclone stub): non-zero exit, `journal_status=head_upload_failed` | PASS | 14 s |
+| Restore + `post-restore`; gate closed | PASS | 122 s |
+| Replay refuses with `blocked: journal_stale_tail`; gate stays closed | PASS | 89 s |
+| `recovery_cli purge --restore-id <current>` (app role); gate opens | PASS | 113 s |
+| Invariants, account 2 (app role) | PASS (14/14) | 35 s |
+| Invariants, account 1 with fresh round-2 cards (app role) | PASS (14/14) | 40 s |
+| `restore_verify` | PASS | 24 s |
+| **RTO, failure to verified (fallback)** (local) | **7.5 min** | 449 s |
+| Shipping stays blocked afterwards (`recovery_blocked`): the old independent chain is not overwritten | PASS | 22 s |
 
-RPO in this rehearsal was the gap between the dump and the simulated failure: 9.9 min (scenario 1) and 3.2 min (scenario 2). Business data written in that gap is lost by design. Journalled privacy decisions (revocation, deletion) were *not* lost in scenario 1. In scenario 2 they could not be proven, so the purge erased all restored content instead. The production RPO bound comes from the schedule (daily at `BACKUP_HOUR_UTC`, with immediate catch-up after downtime or a missing/24-hour-old marker; backup-smoke shows this). The bound is ≤ 24 h plus the time to detect a missed upload, against the NFR-09 target of ≤ 24 h. Privacy decisions have a shorter RPO: the journal-shipping retry interval.
+RPO in this rehearsal was the gap between the dump and the simulated failure: 1.4 min (scenario 1) and 0.7 min (scenario 2) on the 2026-11-18 run. Business data written in that gap is lost by design. The journalled post-backup *deletion* was not lost in scenario 1: the deleted chat's content is gone after replay while the other chat's content is kept. A journalled *revocation* cannot be told apart here, because `post-restore` withdraws every restored AI consent anyway. In scenario 2 the decisions could not be proven, so the purge erased all restored content instead. The production RPO bound comes from the schedule (daily at `BACKUP_HOUR_UTC`, with immediate catch-up after downtime or a missing/24-hour-old marker; backup-smoke shows this). The bound is ≤ 24 h plus the time to detect a missed upload, against the NFR-09 target of ≤ 24 h. Privacy decisions have a shorter RPO: the journal-shipping retry interval.
 
 Acceptance properties observed locally:
-- **No restored send.** The card that was approved and sent after the dump came back `cancelled`. The restored `executing` card became `delivery_uncertain`. Both are listed in the restore notice, and no approval token survives.
-- **No revoked processing.** Both AI scopes are not granted after replay and after purge. Fresh consent is required, as `privacy_reconciliation_complete; fresh_consent_required` reports.
+- **No restored send.** Each seeded card is checked by id (`card_<state>_*` checks):
+  - The card that was approved and sent after the dump came back `cancelled` (`restored_from_backup`).
+  - The other pending cards and the D-S17 warning card came back `cancelled`.
+  - The `executing` card came back `delivery_uncertain`.
+  - None of them keeps a token or an approval path, and each is named in the restore notice's cancelled/uncertain lists in `system_state`.
+- **No revoked processing.** Both AI scopes are not granted after replay and after purge. Replay prints `privacy_reconciliation_complete; fresh_consent_required` (the replay output is echoed into the rehearsal log), and purge prints `privacy_purge_complete; fresh_consent_required; journal_shipping_blocked`.
 - **No silently lost work.** Queued jobs were dropped by `post-restore`, as designed: reconcilers re-create valid work. The restore notice lists the cancelled and uncertain cards, and `restore_verify` checks it. The coverage gap row is written by `post-restore`; this rehearsal did not check it separately (`restore-test` prints it).
 - **No ambiguous-send replay.** An uncertain card is never re-executed (tests above). The rehearsal shows that the restored executing card is settled as uncertain, not re-queued.
 
 Limitations:
-- The real `deploy/server.sh` was not executed. It needs the server `.env`, `findmnt` and the data volume. The rehearsal reproduces its restore commands in the same order, and its mount guard is exercised by backup-smoke.
+- The real `deploy/server.sh` was not executed. It needs the server `.env`, `findmnt` and the data volume. The rehearsal reproduces its restore commands in the same order, and its mount guard is exercised by backup-smoke. Known drift from `server.sh restore`:
+  - The final journal upload runs as a one-off `compose run` of the backup image. On the server it is `compose exec` in the running sidecar, followed by `compose stop backup`; the sidecar never runs here.
+  - `server.sh`'s guards are skipped: `require_data_volume`, the running-app refusal, the dump-name check and the stdin identity check.
+  - `BACKUP_REMOTE` is a local rclone remote (`rehearsal:/backups/remote`), not the B2 remote.
+  - Recovery commands use `assistant_app`, as on the server. Before the 2026-11-18 fix round they ran as the database superuser, so a missing runtime grant could have passed unnoticed.
+- Manual selective reconciliation (`privacy-delete` + `privacy-manual-complete`) is not rehearsed; only replay and complete purge are.
+- RTO definitions differ. Local "failure to verified" runs from the simulated failure to the passing restore checks; the app never starts. The production checklist's RTO runs from app-stop to app healthy. The two are not directly comparable.
 - The app process never started, so "zero provider calls while unresolved" relies on `test_restore_consent.py` and the I19 startup gate tests.
 - The database is a few dozen rows, so durations say nothing about a production-size `pg_restore`.
 - The remote is local, not B2.
@@ -137,7 +173,10 @@ Limitations:
 2. **Fixed (script robustness):** `recovery-smoke.sh` hard-coded a 5 s readiness timeout. It applies to the recovery wait as well as the candidate, so the expand case fails on a slow host. The timeout is now overridable with `RECOVERY_HEALTH_TIMEOUT_SECONDS`; the default stays 5, so CI is unchanged. For the lead: in production the same `RELEASE_HEALTH_TIMEOUT_SECONDS` (default 180 s) bounds both waits. A slow recovered image therefore ends in the forward-fix stop, not a running service. That is safe, but worth knowing when choosing the production value.
 3. **Observation, no fix:** `backup-smoke.sh` and `recovery-smoke.sh` tag shared images (`assistant:prod`, `assistant-backup:prod`, `assistant:i23-rehearsal-base`). Two engineers running them concurrently from different worktrees can overwrite each other's images. `restore-rehearsal.sh` uses per-project tags and removes them afterwards.
 4. **Observation:** `rehearsal_state.py` had to import every model module (as `migrations/env.py` does) before ORM writes. `assistant.db.models` alone leaves `actions.run_id → agent_runs` unresolved. Operator tools that write through the ORM need the same imports. Existing CLIs are unaffected.
-5. No product defect was found in the rehearsed paths.
+5. **Fixed (product, minor; found in review):**
+   - What happens: `post_restore` already cancels restored D-S17 warning cards (OUTDATED with an approval token or freshness warning) and clears their tokens, because `cancel_pending` includes `warning_card_filter()`. But its restore-notice query selected only PENDING/executing rows, so a cancelled warning card was missing from the owner's restore notice.
+   - What it was not: the suspected "restored warning card stays approvable" was not reproduced. The new test showed the token cleared, the state `cancelled` / `restored_from_backup`, and `approve` with the old token returning `NOT_ACTIVE`; only the notice assertion failed.
+   - Fix: the notice query uses the same filter. Regression: `tests/integration/test_post_restore.py::test_post_restore_retires_a_restored_outdated_warning_card`.
 6. Optional: add `restore-rehearsal.sh` to the CI `deploy-scripts` job under the same `recovery-changes` condition. It would give continuous restore/replay evidence. Not done here because it adds CI time; this is the lead's call.
 
 ## 4. Production-only remainder (checklist; NOT executed)
@@ -162,9 +201,13 @@ Every item needs the owner's specific go-ahead and a planned window (AGENTS §9;
 **Real restore with privacy reconciliation (only if the owner chooses a full drill; rewinds production by up to 24 h)**
 - [ ] `just prod <ip> app-stop`, then `just prod-restore <ip> <file>`. Record the cutoff time and whether the final journal upload succeeded.
 - [ ] `just prod <ip> post-restore <ts>`, then `just prod <ip> privacy-status`. Record the restore UUID.
-- [ ] `just prod-privacy-replay <ip>`. On `journal_stale_tail`, the owner chooses `privacy-purge` or manual reconciliation.
+- [ ] `just prod-privacy-replay <ip>`. On `journal_stale_tail`, the owner chooses `privacy-purge` or manual reconciliation. Manual selective reconciliation was not rehearsed locally.
+- [ ] After a purge or manual fallback, journal shipping stays `recovery_blocked` on purpose: the old independent chain must not be overwritten. To recover it:
+  1. Follow runbooks/restore.md §D: inventory every restorable copy and retire the old epoch.
+  2. Run `just prod <ip> privacy-journal-reset --inventory-receipt <UUID> --copies-destroyed` with app and backup stopped.
+  3. Restart, take a backup, and check `journal_status=acknowledged` in `just prod-status <ip>`.
 - [ ] Start the backup service and the app. The owner confirms the restore notice, the fresh `/start` and `/privacy managed` consents, and the coverage gap.
-- [ ] Record RPO (dump time to failure) and RTO (app-stop to app healthy) for replay, and separately for the fallback.
+- [ ] Record RPO (dump time to failure) and RTO (app-stop to app healthy) for replay, and separately for the fallback. This production RTO is defined differently from the local "failure to verified" figure.
 
 **Failed release**
 - [ ] The owner approves a deliberate failing-candidate drill, or accepts the CI/local evidence instead. A real drill needs a reviewed throwaway SHA on `main`, so the default recommendation is: accept `recovery-smoke` plus one real `just prod-rollback <ip>` across an expand-only head difference.

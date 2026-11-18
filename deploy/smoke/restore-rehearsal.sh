@@ -25,6 +25,17 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
 project="${REHEARSAL_PROJECT:-alviro-restore-rehearsal}"
 results="${REHEARSAL_RESULTS:-/dev/null}"
+# Checked before anything is created, so cleanup's `down -v` and `image rm`
+# can only ever target a rehearsal project, never a dev or production stack.
+case "$project" in
+  assistant-dev* | assistant-prod* | prod*) echo "refusing project name $project" >&2; exit 2 ;;
+esac
+[[ "$project" =~ ^(alviro|st)-[a-z0-9][a-z0-9-]*$ ]] \
+  || { echo "REHEARSAL_PROJECT must match (alviro|st)-<lowercase name>" >&2; exit 2; }
+if [ "$results" != /dev/null ] && git ls-files --error-unmatch -- "$results" > /dev/null 2>&1; then
+  echo "refusing to overwrite tracked file $results" >&2
+  exit 2
+fi
 tmp="$(mktemp -d)"
 host_path() { if command -v cygpath > /dev/null; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 SMOKE_ENV_FILE="$(host_path "$tmp/smoke.env")"
@@ -61,14 +72,29 @@ expect() {
   if "$@"; then record "$scenario" "$check" PASS "$started"; else record "$scenario" "$check" FAIL "$started"; fi
 }
 migrate_pw="$(printf 'a%.0s' {1..64})"
+app_pw="$(printf 'b%.0s' {1..64})"
+# Recovery commands use the runtime role, as .env.app does on the server
+# (deploy/oci/push-env.sh); only seeding uses the database owner.
+app_url="postgresql+psycopg://assistant_app:$app_pw@db:5432/assistant"
+app_run() { dc run --rm --no-deps -T -e "DATABASE_URL=$app_url" "$@"; }
 bk() { dc run --rm -T --no-deps --entrypoint bash backup -c "$1" | tr -d '\r'; }
+# state [--as-app] ARGS: rehearsal_state.py (owner role unless --as-app).
 state() {
-  dc run --rm --no-deps -T -v "$(host_path "$root/deploy/smoke"):/rehearsal:ro" \
+  local env=()
+  if [ "$1" = --as-app ]; then env=(-e "DATABASE_URL=$app_url"); shift; fi
+  dc run --rm --no-deps -T "${env[@]}" -v "$(host_path "$root/deploy/smoke"):/rehearsal:ro" \
     --entrypoint python app /rehearsal/rehearsal_state.py "$@" | tr -d '\r'
 }
-privacy_status() { dc run --rm --no-deps -T app python -m assistant.privacy.recovery_cli status | tr -d '\r'; }
-gate_closed() { privacy_status | grep -qx privacy_reconciliation_required; }
-gate_open() { ! gate_closed; }
+# The status command must succeed and report a positive state either way.
+status_out=""
+privacy_status() {
+  status_out="$(app_run app python -m assistant.privacy.recovery_cli status | tr -d '\r')"
+}
+gate_closed() { privacy_status && grep -qx privacy_reconciliation_required <<< "$status_out"; }
+gate_open() {
+  privacy_status && grep -q '^journal_accounts: ' <<< "$status_out" \
+    && ! grep -q '^restore_id: ' <<< "$status_out"
+}
 # journal_ship [docker run options]: a forced shipping attempt, as server.sh does.
 journal_ship() { dc run --rm --no-deps -T "$@" --entrypoint privacy-journal.sh backup ship force; }
 journal_status() { bk 'cat /backups/journal_status'; }
@@ -110,15 +136,18 @@ replace_database() {
     -c 'exec restore.sh "$1" "$PGDATABASE"' sh "/backups/daily/$file" < "$tmp/identity.txt" > /dev/null
   dc run --rm --no-deps -T db-roles python -m assistant.db.production_roles setup > /dev/null
 }
-post_restore() { dc run --rm --no-deps -T app python -m assistant post-restore --backup-taken-at "$1" > /dev/null; }
+post_restore() { app_run app python -m assistant post-restore --backup-taken-at "$1" > /dev/null; }
 replay() {
   dc run --rm --no-deps -T --entrypoint privacy-journal.sh backup fetch < "$tmp/identity.txt" \
-    | dc run --rm --no-deps -T app python -m assistant.privacy.recovery_cli replay 2>&1 | tr -d '\r'
+    | app_run app python -m assistant.privacy.recovery_cli replay 2>&1 | tr -d '\r'
 }
 restore_verify() {
-  dc run --rm --no-deps -T -v "$(host_path "$root/tools/acceptance"):/app/tools/acceptance:ro" \
+  app_run -v "$(host_path "$root/tools/acceptance"):/app/tools/acceptance:ro" \
     app python -m tools.acceptance.restore_verify | tr -d '\r' | grep -x 'restore_verification=PASS' > /dev/null
 }
+# cards USER ROUND: a fresh card set (one per state + a warning card); prints its ids line.
+cards() { state cards --user "$1" --round "$2" | grep '^cards '; }
+card_id() { sed -n "s/.* $2=\([0-9]*\).*/\1/p" <<< " $1 "; }
 
 step "build images, throwaway key, placeholder settings"
 started="$(ms)"
@@ -138,7 +167,7 @@ POSTGRES_PASSWORD=$password
 POSTGRES_DB=assistant
 DATABASE_URL=postgresql+psycopg://assistant:$password@db:5432/assistant
 MIGRATION_DB_PASSWORD=$migrate_pw
-APP_DB_PASSWORD=$(printf 'b%.0s' {1..64})
+APP_DB_PASSWORD=$app_pw
 BACKUP_DB_PASSWORD=$(printf 'c%.0s' {1..64})
 PGHOST=db
 PGUSER=assistant_backup
@@ -163,6 +192,8 @@ record setup "stack built and migrated" PASS "$started"
 scenario="restore+journal replay"
 step "$scenario: synthetic state, backup, journal acknowledged"
 state seed --user 7000000001
+cards1="$(cards 7000000001 1)"
+printf '%s\n' "$cards1"
 started="$(ms)"
 dump="$(backup_once)"
 expect "$scenario" "backup with off-site sync" "$started" test -n "$dump"
@@ -171,7 +202,7 @@ journal_ship > /dev/null
 expect "$scenario" "journal shipped and acknowledged" "$started" test "$(journal_status)" = acknowledged
 
 step "$scenario: after the dump — managed consent revoked, chat deleted, card approved and sent"
-state after-backup --user 7000000001
+state after-backup --user 7000000001 --sent "$(card_id "$cards1" awaiting_approval)"
 failure_at="$(ms)"
 # Data written after the dump and lost by a restore (journalled privacy
 # decisions excepted). Production bound: the daily schedule plus catch-up.
@@ -193,7 +224,8 @@ out="$(replay)"
 printf '%s\n' "$out"
 expect "$scenario" "journal replay opens the gate" "$started" gate_open
 started="$(ms)"
-expect "$scenario" "restored-state invariants" "$started" state check --user 7000000001 --mode replay
+expect "$scenario" "restored-state invariants (app role)" "$started" \
+  state --as-app check --user 7000000001 --mode replay --cards "$cards1"
 started="$(ms)"
 expect "$scenario" "restore_verify gate (pending actions/jobs, notice)" "$started" restore_verify
 record "$scenario" "RTO failure-to-verified (local, synthetic size)" PASS "$failure_at"
@@ -206,12 +238,16 @@ expect "$scenario" "journal shipping resumes after replay" "$started" test "$(jo
 
 # ---------------------------------------------------------------- scenario 2
 scenario="stale journal tail+complete purge"
-step "$scenario: second account, backup, decisions after the dump"
+step "$scenario: second account, fresh cards for both, backup, decisions after the dump"
 state seed --user 7000000002
+cards2="$(cards 7000000002 1)"
+# Fresh live cards for account 1 too, so its checks cover this restore.
+cards1="$(cards 7000000001 2)"
+printf '%s\n%s\n' "$cards2" "$cards1"
 started="$(ms)"
 dump="$(backup_once)"
 expect "$scenario" "backup with off-site sync" "$started" test -n "$dump"
-state after-backup --user 7000000002
+state after-backup --user 7000000002 --sent "$(card_id "$cards2" awaiting_approval)"
 failure_at="$(ms)"
 record "$scenario" "RPO dump-to-failure (local)" PASS "$(($(date -u -d "$(stamp_iso "$dump")" +%s) * 1000))"
 
@@ -239,13 +275,16 @@ printf '%s\n' "$out"
 stale_refused() { grep -q journal_stale_tail <<< "$out" && gate_closed; }
 expect "$scenario" "replay refuses the stale tail; gate stays closed" "$started" stale_refused
 started="$(ms)"
-restore_id="$(privacy_status | sed -n 's/^restore_id: //p')"
-dc run --rm --no-deps -T app python -m assistant.privacy.recovery_cli purge --restore-id "$restore_id" \
-  | tr -d '\r'
+privacy_status
+restore_id="$(sed -n 's/^restore_id: //p' <<< "$status_out")"
+app_run app python -m assistant.privacy.recovery_cli purge --restore-id "$restore_id" | tr -d '\r'
 expect "$scenario" "complete purge opens the gate" "$started" gate_open
 started="$(ms)"
-expect "$scenario" "restored-state invariants (account 2)" "$started" state check --user 7000000002 --mode purge
-expect "$scenario" "restored-state invariants (account 1)" "$started" state check --user 7000000001 --mode purge
+expect "$scenario" "restored-state invariants (account 2, app role)" "$started" \
+  state --as-app check --user 7000000002 --mode purge --cards "$cards2"
+started="$(ms)"
+expect "$scenario" "restored-state invariants (account 1, fresh cards, app role)" "$started" \
+  state --as-app check --user 7000000001 --mode purge --cards "$cards1"
 started="$(ms)"
 expect "$scenario" "restore_verify gate" "$started" restore_verify
 record "$scenario" "RTO failure-to-verified (local, synthetic size)" PASS "$failure_at"

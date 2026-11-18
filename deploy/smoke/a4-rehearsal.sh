@@ -19,7 +19,21 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 prefix="${A4_PROJECT_PREFIX:-alviro-a4}"
 suites=" ${A4_SUITES:-backup recovery restore} "
 results="${1:-$(mktemp)}"
+# Each suite's EXIT trap runs `down -v` on "$prefix-<suite>": refuse anything
+# that is not a rehearsal prefix before any project exists.
+case "$prefix" in
+  assistant-dev* | assistant-prod* | prod*) echo "refusing A4_PROJECT_PREFIX $prefix" >&2; exit 2 ;;
+esac
+[[ "$prefix" =~ ^(alviro|st)-[a-z0-9][a-z0-9-]*$ ]] \
+  || { echo "A4_PROJECT_PREFIX must match (alviro|st)-<lowercase name>" >&2; exit 2; }
+if git -C "$root" ls-files --error-unmatch -- "$(realpath -m "$results")" > /dev/null 2>&1; then
+  echo "refusing to overwrite tracked file $results" >&2
+  exit 2
+fi
 : > "$results"
+# Ctrl-C reaches the whole process group, so the running suite's own EXIT trap
+# tears its stack down; this only reports and stops the remaining suites.
+trap 'echo "A4 LOCAL REHEARSAL INTERRUPTED (results so far: $results)" >&2; exit 130' INT TERM
 ms() { date +%s%3N; }
 row() { printf '%s\t%s\t%s\t%s\n' "$@" >> "$results"; }
 overall=0
