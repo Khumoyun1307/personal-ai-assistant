@@ -161,17 +161,35 @@ async def month_spend(session: AsyncSession, *, account_id: int, since: datetime
     return Decimal(admitted) + Decimal(unadmitted)
 
 
-async def billing_uncertain_count(session: AsyncSession, *, account_id: int) -> int:
-    """Attempts whose billing is not known yet (dispatched or uncertain)."""
+async def billing_uncertain_count(
+    session: AsyncSession, *, account_id: int, since: datetime
+) -> int:
+    """Attempts of admission months from `since` whose billing is not known
+    yet (dispatched or uncertain)."""
     return int(
         (
             await session.execute(
                 select(func.count()).where(
                     LlmAdmission.account_id == account_id,
+                    LlmAdmission.month_start >= since,
                     LlmAdmission.status.in_(("dispatched", "billing_uncertain")),
                 )
             )
         ).scalar_one()
+    )
+
+
+async def bound_overrun_pending(session: AsyncSession, *, account_id: int) -> bool:
+    """Whether an unreviewed bound overrun is blocking admission."""
+    return bool(
+        await session.scalar(
+            select(
+                exists().where(
+                    LlmAdmission.account_id == account_id,
+                    LlmAdmission.error_code == "bound_exceeded",
+                )
+            )
+        )
     )
 
 
@@ -224,15 +242,7 @@ async def admit_call(
         return AdmissionDenied.INVALID_BOUND
     if not await _lock_account(session, account_id):
         return AdmissionDenied.INVALID_BOUND
-    overrun = await session.scalar(
-        select(
-            exists().where(
-                LlmAdmission.account_id == account_id,
-                LlmAdmission.error_code == "bound_exceeded",
-            )
-        )
-    )
-    if overrun:
+    if await bound_overrun_pending(session, account_id=account_id):
         logger.warning("llm_admission_denied", reason="bound_overrun_unreviewed")
         return AdmissionDenied.INVALID_BOUND
     if run_id is not None:

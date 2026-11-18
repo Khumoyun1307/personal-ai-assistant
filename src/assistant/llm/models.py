@@ -69,6 +69,7 @@ class LlmAdmission(Base):
         ),
         Index("ix_llm_admissions_account_id_month_start", "account_id", "month_start"),
         Index("ix_llm_admissions_status_updated_at", "status", "updated_at"),
+        Index("ix_llm_admissions_run_id", "run_id"),
         Index("ix_llm_admissions_llm_call_id", "llm_call_id"),
     )
 

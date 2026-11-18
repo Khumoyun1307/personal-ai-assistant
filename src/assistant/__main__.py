@@ -62,6 +62,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "service-status",
         help="show service-completion monitoring indicators (ARCHITECTURE §17)",
     )
+    from assistant.llm.admission_cli import add_parser as add_admissions_parser
+
+    add_admissions_parser(sub)
     return parser
 
 
@@ -409,6 +412,32 @@ def service_status() -> int:
     return asyncio.run(run_it())
 
 
+def admissions_command(args: argparse.Namespace) -> int:
+    """Operator reconciliation of priced admissions (I16, ARCHITECTURE §14.3)."""
+    from assistant.config import Settings
+    from assistant.core.clock import SystemClock
+    from assistant.db.engine import build_engine, build_session_factory
+    from assistant.llm.admission_cli import run_admissions
+
+    try:
+        settings = Settings()  # type: ignore[call-arg]
+    except ValidationError as error:
+        print("Configuration invalid:", file=sys.stderr)
+        for item in error.errors(include_input=False, include_url=False):
+            location = ".".join(str(part) for part in item["loc"]) or "<settings>"
+            print(f"  {location.upper()}: {item['msg']}", file=sys.stderr)
+        return EXIT_FAILED
+
+    async def run_it() -> int:
+        engine = build_engine(settings.database_url.get_secret_value())
+        try:
+            return await run_admissions(build_session_factory(engine), SystemClock(), args)
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(run_it())
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "healthcheck":
@@ -425,6 +454,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return reindex_search_command(args)
     if args.command == "service-status":
         return service_status()
+    if args.command == "admissions":
+        return admissions_command(args)
     print(
         f"'{args.command}' is not implemented yet; see docs/IMPLEMENTATION_PLAN.md",
         file=sys.stderr,

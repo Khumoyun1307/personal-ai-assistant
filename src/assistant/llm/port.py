@@ -188,7 +188,14 @@ class LLMError(Exception):
     """A classified provider failure. Carries no request or response content."""
 
     def __init__(
-        self, kind: LLMErrorKind, *, code: str | None = None, exc_type: str | None = None
+        self,
+        kind: LLMErrorKind,
+        *,
+        code: str | None = None,
+        exc_type: str | None = None,
+        usage: Usage | None = None,
+        model: str | None = None,
+        request_id: str | None = None,
     ) -> None:
         super().__init__(kind.value if code is None else f"{kind.value}:{code}")
         self.kind = kind
@@ -196,6 +203,12 @@ class LLMError(Exception):
         #: The provider SDK's exception class name (e.g. `APITimeoutError`), when
         #: an adapter classified one: content-free, for diagnosis only.
         self.exc_type = exc_type
+        #: Billing facts of a call the provider completed but whose output we
+        #: rejected (INVALID_OUTPUT after a response arrived): numbers and ids
+        #: only, so admission can settle it instead of holding it uncertain (I16).
+        self.usage = usage
+        self.model = model
+        self.request_id = request_id
 
 
 @dataclass(frozen=True, slots=True)

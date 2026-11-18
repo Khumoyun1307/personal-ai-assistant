@@ -32,6 +32,7 @@ from assistant.llm.admission import (
     CallAllowance,
     admit_call,
     billing_uncertain_count,
+    bound_overrun_pending,
     mark_dispatched,
     month_of,
     month_spend,
@@ -183,15 +184,44 @@ async def test_unpriced_is_refused_even_without_a_monthly_budget(env: Env) -> No
 async def test_two_concurrent_admissions_for_the_last_allowance_admit_exactly_one(
     env: Env,
 ) -> None:
+    """The first admission holds its transaction open after reserving; the
+    second must be seen waiting on the account lock before the first commits.
+    Without the lock the second would not wait and would also be admitted."""
     account = await make_account(env)
-
-    results = await asyncio.gather(admit(env, account), admit(env, account))
-
-    granted = [r for r in results if isinstance(r, CallAllowance)]
-    assert len(granted) == 1
-    assert [r for r in results if not isinstance(r, CallAllowance)] == [
-        AdmissionDenied.MONTHLY_BUDGET
-    ]
+    async with env.factory() as first:
+        await first.begin()
+        values: dict[str, Any] = {
+            "account_id": account,
+            "operation_id": uuid4(),
+            "run_id": None,
+            "attempt_id": uuid4(),
+            "model": "gpt-6-luna",
+            "input_bound": 100,
+            "output_bound": 1000,
+            "now": env.clock.now(),
+            "monthly_budget_usd": LIMIT,
+        }
+        granted = await admit_call(first, **values)
+        assert isinstance(granted, CallAllowance)
+        second = asyncio.create_task(admit(env, account))
+        # Barrier: proceed only once the second admission is blocked on a lock.
+        async with env.factory() as probe:
+            for _ in range(200):
+                waiting = (
+                    await probe.execute(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity "
+                            "WHERE wait_event_type = 'Lock' AND datname = current_database()"
+                        )
+                    )
+                ).scalar_one()
+                if waiting or second.done():
+                    break
+                await asyncio.sleep(0.05)
+        assert not second.done(), "the second admission did not wait for the account lock"
+        assert waiting == 1
+        await first.commit()
+    assert await second == AdmissionDenied.MONTHLY_BUDGET
     (row,) = await rows(env)
     assert row.status == "reserved"
 
@@ -229,7 +259,9 @@ async def test_spend_and_status_count_held_reservations(env: Env) -> None:
 
     async with env.factory() as session:
         spent = await LlmCallRepository(session, account).spend_since(month_of(env.clock.now()))
-        uncertain = await billing_uncertain_count(session, account_id=account)
+        uncertain = await billing_uncertain_count(
+            session, account_id=account, since=month_of(env.clock.now())
+        )
     assert spent == allowance.reserved_usd
     assert uncertain == 0  # reserved: provably not sent yet
 
@@ -241,7 +273,12 @@ async def test_spend_and_status_count_held_reservations(env: Env) -> None:
             now=env.clock.now(),
         )
     async with env.factory() as session:
-        assert await billing_uncertain_count(session, account_id=account) == 1
+        assert (
+            await billing_uncertain_count(
+                session, account_id=account, since=month_of(env.clock.now())
+            )
+            == 1
+        )
 
 
 # --------------------------------------------------------------- outcomes
@@ -285,7 +322,12 @@ async def test_a_timeout_is_held_as_billing_uncertain_and_never_replayed(env: En
         assert await month_spend(session, account_id=account, since=month_of(env.clock.now())) == (
             row.reserved_usd
         )
-        assert await billing_uncertain_count(session, account_id=account) == 1
+        assert (
+            await billing_uncertain_count(
+                session, account_id=account, since=month_of(env.clock.now())
+            )
+            == 1
+        )
 
 
 async def test_unreadable_structured_output_is_billing_uncertain(env: Env) -> None:
@@ -301,6 +343,30 @@ async def test_unreadable_structured_output_is_billing_uncertain(env: Env) -> No
 
     (row,) = await rows(env)
     assert (row.status, row.error_code) == ("billing_uncertain", "invalid_output")
+
+
+async def test_rejected_output_with_known_usage_is_charged_once(env: Env) -> None:
+    class Out(BaseModel):
+        value: int
+
+    account = await make_account(env)
+    fake = FakeLLM()
+    fake.parsed.append(
+        LLMError(
+            LLMErrorKind.INVALID_OUTPUT,
+            usage=Usage(input_tokens=30, output_tokens=10),
+            model="gpt-6-luna",
+            request_id="req_fake",
+        )
+    )
+
+    with pytest.raises(LLMError):
+        await client(env, fake, limit=None).parse(request(account), Out)
+
+    (row,) = await rows(env)
+    assert row.status == "completed"
+    assert row.charged_usd == Decimal("0.000008")
+    assert await call_count(env) == 1
 
 
 async def test_a_cancelled_call_is_billing_uncertain(env: Env) -> None:
@@ -478,3 +544,65 @@ async def test_physical_account_removal_is_refused_while_admissions_remain(env: 
                 text("DELETE FROM app.accounts WHERE id = :id"), {"id": account}
             )
     assert len(await rows(env)) == 1
+
+
+# ------------------------------------------------------- operator + status
+async def operator(env: Env, *argv: str) -> tuple[int, list[str]]:
+    from assistant.__main__ import _build_parser
+    from assistant.llm.admission_cli import run_admissions
+
+    lines: list[str] = []
+    args = _build_parser().parse_args(["admissions", *argv])
+    code = await run_admissions(env.factory, env.clock, args, out=lines.append)
+    return code, lines
+
+
+async def test_operator_settles_an_uncertain_attempt_once(env: Env) -> None:
+    account = await make_account(env)
+    fake = FakeLLM(LLMError(LLMErrorKind.UNAVAILABLE, exc_type="APITimeoutError"))
+    with pytest.raises(LLMError):
+        await client(env, fake, limit=None).complete(request(account))
+    (row,) = await rows(env)
+
+    listed = await operator(env, "list", "--account", str(account))
+    usage = ("--input-tokens", "30", "--output-tokens", "10")
+    first = await operator(env, "settle", "--account", str(account), "--id", str(row.id), *usage)
+    second = await operator(env, "settle", "--account", str(account), "--id", str(row.id), *usage)
+    foreign = await operator(
+        env, "settle", "--account", str(account + 1), "--id", str(row.id), *usage
+    )
+
+    assert listed[0] == 0
+    assert listed[1][0].startswith(f"{row.id} billing_uncertain")
+    assert first == (0, ["settled"])
+    assert second[0] == 1
+    assert foreign[0] == 1
+    (settled,) = await rows(env)
+    assert (settled.status, settled.charged_usd) == ("completed", Decimal("0.000008"))
+    assert await call_count(env) == 1
+
+
+async def test_status_flags_an_overrun_and_counts_only_this_months_uncertain(env: Env) -> None:
+    account = await make_account(env)
+    huge = LLMResponse(StopReason.COMPLETED, "gpt-6-luna", Usage(50_000, 50_000), text="x")
+    fake = FakeLLM(huge, LLMError(LLMErrorKind.UNAVAILABLE, exc_type="APITimeoutError"))
+    llm = client(env, fake, limit=None)
+    await llm.complete(request(account))
+    (overrun,) = await rows(env)
+    async with env.factory() as session:
+        assert await bound_overrun_pending(session, account_id=account)
+    reviewed = await operator(
+        env, "review-overrun", "--account", str(account), "--id", str(overrun.id)
+    )
+    assert reviewed == (0, ["reviewed"])
+    async with env.factory() as session:
+        assert not await bound_overrun_pending(session, account_id=account)
+
+    with pytest.raises(LLMError):
+        await llm.complete(request(account))
+    october = month_of(env.clock.now())
+    env.clock.advance(days=31)
+    november = month_of(env.clock.now())
+    async with env.factory() as session:
+        assert await billing_uncertain_count(session, account_id=account, since=october) == 1
+        assert await billing_uncertain_count(session, account_id=account, since=november) == 0

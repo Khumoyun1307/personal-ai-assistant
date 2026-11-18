@@ -745,3 +745,59 @@ async def test_post_backup_retention_change_requires_manual_reconciliation(env: 
         assert account is not None
         assert account.settings["retention_days"]["control_chat"] == 14
         assert await session.get(SystemState, KEY_RESTORE_PENDING) is None
+
+
+async def test_account_replay_tombstones_an_account_that_holds_llm_admissions(env: Env) -> None:
+    """I16: priced-admission accounting is RESTRICT-kept, so replaying an
+    `account` deletion tombstones the account instead of failing the restore."""
+    await connect(env)
+    async with transaction(env.factory) as uow:
+        account = (await uow.session.scalars(select(Account))).one()
+        account_id = account.id
+        anchor = (await journal.anchors(uow.session))[0]
+        await uow.session.execute(
+            text(
+                "INSERT INTO app.llm_admissions (account_id, operation_id, attempt_id, model, "
+                "price_version, month_start, input_bound, output_bound, reserved_usd, status) "
+                "VALUES (:a, gen_random_uuid(), gen_random_uuid(), 'gpt-6-luna', 'v', now(), "
+                "1, 1, 0.000001, 'billing_uncertain')"
+            ),
+            {"a": account_id},
+        )
+        await uow.session.execute(
+            text("SELECT set_config('app.privacy_decided_at', :at, true)"),
+            {"at": env.clock.now().isoformat()},
+        )
+        # The live producer: the 0019 trigger journals `account` on status 'deleted'.
+        await uow.session.execute(
+            update(Account).where(Account.id == account_id).values(status="deleted")
+        )
+        segment = await journal.export_segment(uow.session, checked_at=env.clock.now())
+        assert segment.records[-1].scope == "account"
+    # Restore the pre-deletion snapshot of the account and its journal head.
+    async with transaction(env.factory) as uow:
+        await uow.session.execute(
+            update(Account).where(Account.id == account_id).values(status="active")
+        )
+        await uow.session.execute(
+            delete(PrivacyDecision).where(PrivacyDecision.sequence > anchor.sequence)
+        )
+        await uow.session.execute(
+            update(PrivacyJournalHead)
+            .where(PrivacyJournalHead.account_recovery_id == anchor.account_recovery_id)
+            .values(sequence=anchor.sequence, digest=anchor.digest)
+        )
+        uow.session.add(SystemState(key=KEY_RESTORE_PENDING, value={}))
+    await post_restore(env.factory, env.clock, backup_taken_at=env.clock.now())
+    await journal.reconcile(env.factory, env.clock, segment=segment)
+
+    async with env.factory() as session:
+        assert await session.get(SystemState, KEY_RESTORE_PENDING) is None
+        restored = await session.get(Account, account_id)
+        assert restored is not None
+        assert restored.status == "deleted"
+        held = await session.scalar(
+            text("SELECT count(*) FROM app.llm_admissions WHERE account_id = :a"),
+            {"a": account_id},
+        )
+        assert held == 1

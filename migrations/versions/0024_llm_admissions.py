@@ -105,6 +105,13 @@ def upgrade() -> None:
         ["status", "updated_at"],
         schema="app",
     )
+    # ON DELETE SET NULL from agent_runs: the year-old run sweep finds rows by it.
+    op.create_index(
+        "ix_llm_admissions_run_id",
+        "llm_admissions",
+        ["run_id"],
+        schema="app",
+    )
     # Settlement links one llm_calls row; spend excludes linked rows by it.
     op.create_index(
         "ix_llm_admissions_llm_call_id",

@@ -24,6 +24,7 @@ from typing import Protocol
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.core.clock import Clock
@@ -58,6 +59,11 @@ Sleep = Callable[[float], Awaitable[None]]
 _STATUS_ERRORS = frozenset({"InternalServerError", "APIStatusError"})
 #: Delays before the second and third attempt of a transient definite failure.
 RETRY_DELAYS_SECONDS = (0.5, 2.0)
+#: The admission transactions wait at most this long for the account lock. A
+#: caller that (wrongly) holds an account lock in its own open transaction
+#: while calling the model would otherwise wait forever on a second
+#: connection, which Postgres cannot see as a deadlock: fail fast and closed.
+LOCK_TIMEOUT_MS = 10_000
 
 
 class CallNotAdmittedError(LLMError):
@@ -119,7 +125,9 @@ class AdmittedLLMClient:
         new_id: Callable[[], UUID] = uuid4,
         sleep: Sleep = asyncio.sleep,
         retry_delays: tuple[float, ...] = RETRY_DELAYS_SECONDS,
+        lock_timeout_ms: int = LOCK_TIMEOUT_MS,
     ) -> None:
+        self._lock_timeout_ms = int(lock_timeout_ms)
         self._inner = inner
         self._factory = session_factory
         self._clock = clock
@@ -164,6 +172,7 @@ class AdmittedLLMClient:
         call: Callable[[], Awaitable[R]],
     ) -> R:
         async with transaction(self._factory) as uow:
+            await self._bound_lock_wait(uow.session)
             allowance = await admit_call(
                 uow.session,
                 account_id=request.account_id,
@@ -182,6 +191,7 @@ class AdmittedLLMClient:
             if self._before_dispatch is not None:
                 await self._before_dispatch(request)
             async with transaction(self._factory) as uow:
+                await self._bound_lock_wait(uow.session)
                 dispatched = await mark_dispatched(
                     uow.session,
                     account_id=request.account_id,
@@ -198,6 +208,17 @@ class AdmittedLLMClient:
         try:
             response = await call()
         except LLMError as error:
+            if error.usage is not None:
+                # The provider answered (e.g. output we rejected): charge it.
+                await self._settle(
+                    request,
+                    allowance,
+                    CallOutcome.COMPLETED,
+                    usage=error.usage,
+                    actual_model=error.model,
+                    request_id=error.request_id,
+                )
+                raise
             outcome, code = classify_failure(error)
             await self._settle(request, allowance, outcome, error_code=code)
             raise
@@ -216,6 +237,10 @@ class AdmittedLLMClient:
         )
         return response
 
+    async def _bound_lock_wait(self, session: AsyncSession) -> None:
+        # SET cannot take bind parameters; the value is an int we own.
+        await session.execute(text(f"SET LOCAL lock_timeout = '{self._lock_timeout_ms}ms'"))
+
     async def _settle(
         self,
         request: LLMRequest,
@@ -232,6 +257,7 @@ class AdmittedLLMClient:
         release (never dispatched) or mark `billing_uncertain`."""
         try:
             async with transaction(self._factory) as uow:
+                await self._bound_lock_wait(uow.session)
                 await settle_call(
                     uow.session,
                     account_id=request.account_id,
