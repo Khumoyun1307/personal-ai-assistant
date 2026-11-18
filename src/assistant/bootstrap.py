@@ -30,7 +30,7 @@ from assistant.actions.proposals import OwnerProposalFence
 from assistant.agent.confirmations import ConfirmationApplier
 from assistant.agent.drafting import AssistDraftJob, CardReviser, DraftConfig, Drafter
 from assistant.agent.monitor_eval import MonitorEvalConfig, MonitorEvaluator
-from assistant.agent.persistence import DbCallRecorder, DbConsentReader
+from assistant.agent.persistence import DbConsentReader
 from assistant.agent.ports import ControlChannel
 from assistant.agent.runtime import AgentConfig, OwnerRequestRuntime
 from assistant.agent.summarize import SummarizeConfig, Summarizer
@@ -68,8 +68,8 @@ from assistant.jobs.tasks import JobHandlers, register_tasks
 from assistant.jobs.tasks_actions import ActionsJobHandlers
 from assistant.jobs.tasks_automation import AutomationJobHandlers, MonitorJobs, ScheduleJobs
 from assistant.jobs.tasks_inbox import InboxJobHandlers, TriageJob
-from assistant.llm.consent import ConsentGatedLLMClient
-from assistant.llm.metering import MeteredLLMClient
+from assistant.llm.admitted import AdmittedLLMClient
+from assistant.llm.consent import ConsentChecker, ConsentGatedLLMClient
 from assistant.llm.openai_adapter import OpenAIClient
 from assistant.llm.port import LLMClient
 from assistant.memory.summaries import SummaryRefreshTrigger
@@ -104,9 +104,10 @@ from assistant.telegram.ingress.poller import Poller
 from assistant.telegram.ingress.writer import write_state
 from assistant.telegram.routing import route_update
 
-#: SDK-level retries for connection errors, 429 and 5xx. Safe for a model call
-#: (it changes nothing in the world); never applied to Telegram sends.
-OPENAI_MAX_RETRIES = 2
+#: No SDK-level retries (I16): an invisible retry could bill without an
+#: admission record. `AdmittedLLMClient` retries a definite 429/5xx itself, as
+#: a separately admitted attempt; an uncertain attempt is never replayed.
+OPENAI_MAX_RETRIES = 0
 
 
 def build_llm_client(
@@ -114,18 +115,27 @@ def build_llm_client(
     session_factory: async_sessionmaker[AsyncSession],
     clock: Clock,
 ) -> LLMClient:
-    """OpenAI behind the consent gate and metering, in that order.
+    """OpenAI behind the consent gate and priced admission, in that order.
 
-    Consent is outermost so that a call without consent never reaches even the
-    metering layer, let alone the provider (§6 invariant 9).
+    Consent is outermost so that a call without consent never reaches even a
+    reservation, let alone the provider (§6 invariant 9); admission re-checks
+    consent at the call boundary, after reserving (C7).
     """
     if settings.openai_api_key is None:
         raise ConfigError("OPENAI_API_KEY is not set")
     sdk = AsyncOpenAI(
         api_key=settings.openai_api_key.get_secret_value(), max_retries=OPENAI_MAX_RETRIES
     )
-    metered = MeteredLLMClient(OpenAIClient(sdk), DbCallRecorder(session_factory, clock))
-    return ConsentGatedLLMClient(metered, DbConsentReader(session_factory))
+    adapter = OpenAIClient(sdk)
+    consent = DbConsentReader(session_factory)
+    admitted = AdmittedLLMClient(
+        adapter,
+        session_factory,
+        clock,
+        before_dispatch=ConsentChecker(consent, processor=adapter.processor),
+        monthly_budget_usd=settings.llm_monthly_budget_usd,
+    )
+    return ConsentGatedLLMClient(admitted, consent)
 
 
 def agent_config(settings: Settings) -> AgentConfig:

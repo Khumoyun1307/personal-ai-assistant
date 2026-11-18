@@ -37,23 +37,20 @@ class ConsentReader(Protocol):
     async def __call__(self, account_id: int, kind: str) -> ConsentState: ...
 
 
-class ConsentGatedLLMClient:
-    """Wraps an `LLMClient`; refuses any call the owner has not agreed to."""
+class ConsentChecker:
+    """The consent rule itself, callable on its own.
 
-    def __init__(self, inner: LLMClient, read_consent: ConsentReader) -> None:
-        self._inner = inner
+    `ConsentGatedLLMClient` runs it before anything else; the admission
+    wrapper (`llm/admitted.py`) runs it again at the actual call boundary,
+    after the reservation and immediately before dispatch (C7), so a
+    withdrawal that lands while a reservation is taken still stops the call.
+    """
+
+    def __init__(self, read_consent: ConsentReader, *, processor: str) -> None:
         self._read_consent = read_consent
-        self.processor = inner.processor
+        self.processor = processor
 
-    async def complete(self, request: LLMRequest) -> LLMResponse:
-        await self._check(request)
-        return await self._inner.complete(request)
-
-    async def parse[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> ParsedResponse[T]:
-        await self._check(request)
-        return await self._inner.parse(request, schema)
-
-    async def _check(self, request: LLMRequest) -> None:
+    async def __call__(self, request: LLMRequest) -> None:
         # The processor is the one behind the request's (route's) model, not
         # just this adapter's: a route configured to another provider's model
         # must stop here, before anything is sent (M03 D48).
@@ -76,3 +73,20 @@ class ConsentGatedLLMClient:
             # Consent names who the data goes to; a provider switch without
             # re-consent must stop here (SEC-02).
             raise ConsentMissingError(f"'{kind}' consent does not name '{processor}'")
+
+
+class ConsentGatedLLMClient:
+    """Wraps an `LLMClient`; refuses any call the owner has not agreed to."""
+
+    def __init__(self, inner: LLMClient, read_consent: ConsentReader) -> None:
+        self._inner = inner
+        self._check = ConsentChecker(read_consent, processor=inner.processor)
+        self.processor = inner.processor
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        await self._check(request)
+        return await self._inner.complete(request)
+
+    async def parse[T: BaseModel](self, request: LLMRequest, schema: type[T]) -> ParsedResponse[T]:
+        await self._check(request)
+        return await self._inner.parse(request, schema)

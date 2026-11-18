@@ -67,6 +67,13 @@ def test_fence_erasure_trigger_requires_matching_executable() -> None:
     assert classify(graph, "0022", "0023") == "breaking"
 
 
+def test_priced_admission_table_is_an_expansion() -> None:
+    graph = load_graph(ROOT / "migrations/versions")
+    assert graph["0028"].parents == ("0027",)
+    assert graph["0028"].compatibility == "expand"
+    assert classify(graph, "0027", "0028") == "expand"
+
+
 def test_incident_trace_table_is_additive() -> None:
     graph = load_graph(ROOT / "migrations/versions")
     assert graph["0027"].parents == ("0026",)

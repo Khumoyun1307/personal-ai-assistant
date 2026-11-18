@@ -14,10 +14,12 @@ Uses real SDK model and exception classes with a stand-in client; no network.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import httpx2
 import openai
+import pydantic
 import pytest
 from openai.types.responses import (
     Response,
@@ -264,6 +266,39 @@ async def test_parse_refuses_tools_and_revalidates_output() -> None:
 
     with pytest.raises(ValueError, match="no tools"):
         await client.parse(request(tools=(TOOL,)), Answer)
+
+
+async def test_rejected_output_after_a_response_carries_its_billing() -> None:
+    """I16: the call completed and was billed, so admission can settle it."""
+    response = SimpleNamespace(
+        model="gpt-6-luna-2026-09-01",
+        status="completed",
+        incomplete_details=None,
+        output=[message(output_text("{}"))],
+        usage=usage(),
+        output_parsed=None,
+        _request_id="req_123",
+    )
+    client, _ = adapter(response)
+
+    with pytest.raises(LLMError) as raised:
+        await client.parse(request(), Answer)
+
+    assert raised.value.kind is LLMErrorKind.INVALID_OUTPUT
+    assert raised.value.usage is not None
+    assert (raised.value.usage.input_tokens, raised.value.usage.output_tokens) == (120, 40)
+    assert raised.value.model == "gpt-6-luna-2026-09-01"
+    assert raised.value.request_id == "req_123"
+
+
+async def test_sdk_internal_validation_failure_has_no_usage() -> None:
+    client, _ = adapter(pydantic.ValidationError.from_exception_data("Answer", []))
+
+    with pytest.raises(LLMError) as raised:
+        await client.parse(request(), Answer)
+
+    assert raised.value.kind is LLMErrorKind.INVALID_OUTPUT
+    assert raised.value.usage is None
 
 
 # -------------------------------------------------------------------- errors

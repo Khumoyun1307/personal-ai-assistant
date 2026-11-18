@@ -241,6 +241,18 @@ manual recovery and continues to block rollback. The next successful deploy
 (including a retry of the same selected SHA) writes the release state and clears
 the marker automatically; do not delete it manually to bypass the gate.
 
+## LLM admission reconciliation (I16)
+
+When the owner status data shows `bound_overrun` or a nonzero
+`billing_uncertain_calls`, inspect inside the app container with
+`python -m assistant admissions list --account <id>` (ids, status, month, USD and
+fixed codes only). Settle an uncertain attempt once with the usage shown in the
+provider's usage dashboard: `python -m assistant admissions settle --account <id>
+--id <admission> --input-tokens <n> --output-tokens <n>`. After checking why a
+call exceeded its reserved bound, resume admission with
+`python -m assistant admissions review-overrun --account <id> --id <admission>`;
+the true charge stays recorded. None of these calls a provider or Telegram.
+
 ## I24 role upgrade (fresh installs and existing production)
 
 Run only in an owner-approved production window. The init identity `assistant`
