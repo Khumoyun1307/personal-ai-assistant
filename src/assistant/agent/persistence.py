@@ -43,6 +43,7 @@ from assistant.core.clock import Clock
 from assistant.core.errors import NotInAccountError
 from assistant.db.repository import AccountScopedRepository
 from assistant.db.uow import transaction
+from assistant.llm.admission import month_spend
 from assistant.llm.metering import estimate_cost
 from assistant.llm.port import CallRecord
 
@@ -325,12 +326,12 @@ class LlmCallRepository(AccountScopedRepository[LlmCall]):
     model = LlmCall
 
     async def spend_since(self, since: datetime) -> Decimal:
-        """Estimated USD spent since `since` (NFR-10 budget checks)."""
-        statement = select(func.sum(LlmCall.cost_estimate)).where(
-            self._scope(), LlmCall.created_at >= since
-        )
-        total = (await self.session.execute(statement)).scalar_one()
-        return Decimal(0) if total is None else Decimal(total)
+        """USD committed since `since`, a month start (NFR-10 budget checks).
+
+        Includes every held I16 reservation (in flight or billing-uncertain),
+        not only recorded estimates, so a pre-check sees what admission sees.
+        """
+        return await month_spend(self.session, account_id=self.account_id, since=since)
 
 
 async def account_of_turn(session: AsyncSession, turn_id: int) -> int | None:

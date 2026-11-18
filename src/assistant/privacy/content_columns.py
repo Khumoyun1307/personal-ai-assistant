@@ -162,6 +162,12 @@ NON_CONTENT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
         ("llm_calls", "purpose"),
         ("llm_calls", "model"),
         ("llm_calls", "request_id"),
+        # I16 priced admissions: configured model id, static price version,
+        # fixed status and error classification. Accounting retention.
+        ("llm_admissions", "model"),
+        ("llm_admissions", "price_version"),
+        ("llm_admissions", "status"),
+        ("llm_admissions", "error_code"),
         ("inbound_updates", "kind"),
         ("inbound_updates", "status"),
         ("inbound_updates", "error_code"),

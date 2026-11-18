@@ -1009,6 +1009,14 @@ class OwnerRequestRuntime:
                     state, TEXT_NEEDS_CONSENT, RunStatus.FAILED, "consent_missing"
                 )
             except LLMError as error:
+                if error.kind is LLMErrorKind.NOT_ADMITTED:  # I16 priced admission
+                    budget = error.code == "monthly_budget"
+                    return await self._finish(
+                        state,
+                        TEXT_BUDGET_REACHED if budget else TEXT_INTERNAL_ERROR,
+                        RunStatus.BUDGET_EXCEEDED if budget else RunStatus.FAILED,
+                        "monthly_budget" if budget else f"llm_not_admitted_{error.code}",
+                    )
                 text = (
                     TEXT_PROVIDER_DOWN
                     if error.kind in {LLMErrorKind.UNAVAILABLE, LLMErrorKind.RATE_LIMITED}

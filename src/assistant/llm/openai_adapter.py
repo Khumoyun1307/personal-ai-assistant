@@ -87,15 +87,19 @@ class OpenAIClient:
         request_id = getattr(response, "_request_id", None)
         if stop is not StopReason.COMPLETED:
             return ParsedResponse(stop, response.model, usage, request_id=request_id)
+        # The response arrived: an invalid output still carries its billing (I16).
+        invalid = LLMError(
+            LLMErrorKind.INVALID_OUTPUT, usage=usage, model=response.model, request_id=request_id
+        )
         parsed = response.output_parsed
         if parsed is None:
-            raise LLMError(LLMErrorKind.INVALID_OUTPUT)
+            raise invalid
         try:
             # Re-validate with our own model: the SDK's parse is a convenience,
             # not the contract (AGENTS §8).
             validated = schema.model_validate(parsed.model_dump())
         except pydantic.ValidationError:
-            raise LLMError(LLMErrorKind.INVALID_OUTPUT) from None
+            raise invalid from None
         return ParsedResponse(stop, response.model, usage, validated, request_id)
 
 

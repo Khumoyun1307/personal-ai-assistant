@@ -286,7 +286,20 @@ async def _replay_record(
     elif record.scope in {"everything", "account"}:
         await delete_everything(session, account_id=aid, actor="system", clock=clock)
         if record.scope == "account":
-            await session.execute(delete(Account).where(Account.id == aid))
+            # I16: priced-admission accounting is kept (ON DELETE RESTRICT), so
+            # an account with admissions is tombstoned the way the live path
+            # records it (`status='deleted'`); replay mode keeps the journal
+            # trigger silent. Named by table: privacy may not import llm.
+            held = await session.scalar(
+                text("SELECT 1 FROM app.llm_admissions WHERE account_id = :aid LIMIT 1"),
+                {"aid": aid},
+            )
+            if held is None:
+                await session.execute(delete(Account).where(Account.id == aid))
+            else:
+                await session.execute(
+                    update(Account).where(Account.id == aid).values(status="deleted")
+                )
     elif record.scope == "managed":
         await delete_managed_data(session, account_id=aid, actor="system", clock=clock)
     elif record.scope in {"conversation", "contact"}:
