@@ -4,7 +4,7 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 tmp="$(mktemp -d)"
-project="alviro-recovery-$$"
+project="${RECOVERY_PROJECT:-alviro-recovery-$$}"
 images=()
 host_path() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 compose() { docker compose -p "$project" -f "$(host_path "$tmp/compose.yml")" "$@"; }
@@ -107,7 +107,7 @@ else
 fi
 BACKUP
   for sha in "$old" "$candidate"; do
-    docker build --label "org.opencontainers.image.revision=$sha" -t "assistant-backup:${sha:0:12}" -f "$tmp/build/Dockerfile.backup" "$(host_path "$tmp/build")"
+    docker build --label "org.opencontainers.image.revision=$sha" -t "assistant-backup:${sha:0:12}" -f "$(host_path "$tmp/build/Dockerfile.backup")" "$(host_path "$tmp/build")"
     images+=("assistant-backup:${sha:0:12}")
   done
   cd "$tmp/$compatibility"
@@ -118,9 +118,11 @@ BACKUP
   compose up -d --no-deps app backup
   release_started="$(date -u +%FT%TZ)"
   release_wait
+  # The same timeout also bounds the recovered previous image's readiness, so a
+  # loaded laptop may need RECOVERY_HEALTH_TIMEOUT_SECONDS above the CI default.
   # Use an explicit subshell in a background job: unlike an `if (release_up)`
   # condition, this preserves errexit inside every function under test.
-  (set -e; RELEASE_HEALTH_TIMEOUT_SECONDS=5; release_up "$candidate") > rehearsal.log 2>&1 &
+  (set -e; RELEASE_HEALTH_TIMEOUT_SECONDS="${RECOVERY_HEALTH_TIMEOUT_SECONDS:-5}"; release_up "$candidate") > rehearsal.log 2>&1 &
   job=$!
   status=0
   wait "$job" || status=$?

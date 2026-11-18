@@ -161,6 +161,24 @@ smoke-recovery:
 smoke-recovery:
     & "$env:ProgramFiles\Git\bin\bash.exe" deploy/smoke/recovery-smoke.sh
 
+# A4 local operational rehearsal: backup/upload failure, failed release, restore with journal replay and purge fallback; timed, placeholder secrets, isolated projects. Optional results.tsv path.
+[unix]
+rehearse-a4 *results:
+    bash deploy/smoke/a4-rehearsal.sh {{ results }}
+
+[windows]
+rehearse-a4 *results:
+    & "$env:ProgramFiles\Git\bin\bash.exe" deploy/smoke/a4-rehearsal.sh {{ results }}
+
+# Restore and privacy-reconciliation part of rehearse-a4 alone.
+[unix]
+rehearse-restore:
+    bash deploy/smoke/restore-rehearsal.sh
+
+[windows]
+rehearse-restore:
+    & "$env:ProgramFiles\Git\bin\bash.exe" deploy/smoke/restore-rehearsal.sh
+
 # The last production app log lines (content-free by construction, AGENTS §9).
 prod-logs ip lines="200":
     {{ ops }} deploy/oci/ssh.sh {{ ip }} logs {{ lines }}
